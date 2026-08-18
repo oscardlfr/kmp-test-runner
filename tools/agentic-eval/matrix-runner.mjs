@@ -296,8 +296,15 @@ export async function runSingleCondition({ condition, materializeFixture, previo
     // match the adapter that actually produced it (post-review hardening, round 1) -- shape-only
     // validation above cannot catch an adapter that is internally coherent but simply wrong (or
     // lying) about which runtime it claims to be.
+    // A closed literal code only (post-review hardening, round 3) -- never adapter/observation
+    // content. This check exists PRECISELY to catch an adapter that is internally coherent but
+    // simply wrong (or lying) about its own identity, so observation.runtime.id itself is not yet
+    // trusted content at the moment this fires; interpolating it into the thrown message would
+    // contradict this whole module's own established discipline (see the comment on the catch
+    // block below, which deliberately stopped attaching raw content to a thrown error for the same
+    // reason) and contract.mjs's own {field, code}-only error contract.
     if (observation.runtime.id !== runtimeAdapter.id || observation.runtime.protocolVersion !== runtimeAdapter.protocolVersion) {
-      throw new Error(`observation runtime identity mismatch: observation.runtime={id:${JSON.stringify(observation.runtime.id)},protocolVersion:${observation.runtime.protocolVersion}} but runtimeAdapter={id:${JSON.stringify(runtimeAdapter.id)},protocolVersion:${runtimeAdapter.protocolVersion}}`);
+      throw new Error('observation_runtime_identity_mismatch');
     }
     observation = freezeObservation(observation);
   } catch (err) {

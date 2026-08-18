@@ -252,4 +252,138 @@ if ($env:ANTHROPIC_API_KEY -ne 'placeholder-only') { exit 4 }
     expect(suspendIndex).toBeGreaterThan(tryIndex);
     expect(pushLocationIndex).toBeGreaterThan(tryIndex);
   });
+
+  // Post-review hardening (round 3): the round-1 test above proves SETUP-mutation resilience (a
+  // failure among the 3 steps BEFORE the try body runs). It does not prove CLEANUP-mutation
+  // resilience -- confirmed via direct repro that a bare `throw` as the FIRST statement inside a
+  // `finally` block aborts every statement after it in that SAME block; only wrapping each
+  // restoration in its own try/catch lets every later one still run. windows-gate.ps1's `finally`
+  // previously called Restore-ScopedEnvVar/Restore-SensitiveEnvironment/Pop-Location as bare
+  // sequential statements with no per-statement guard -- an exception from the FIRST restoration
+  // would have silently skipped every one after it.
+  it.skipIf(process.platform !== 'win32')('the resilience pattern windows-gate.ps1 uses attempts every restoration independently, even when an EARLIER restoration itself throws', () => {
+    const scriptPath = resolve(root, 'tools/local-ci/environment-utils.ps1').replaceAll("'", "''");
+    const script = `
+. '${scriptPath}'
+$env:ANTHROPIC_API_KEY = 'placeholder-only'
+$sensitive = $null
+$cleanupErrors = @()
+try {
+  $sensitive = Suspend-SensitiveEnvironment
+  throw 'simulated body failure'
+} catch {
+  $caught = $_
+} finally {
+  try { throw 'simulated: the FIRST restoration (e.g. Restore-ScopedEnvVar) itself throws' } catch { $cleanupErrors += $_.Exception.Message }
+  if ($sensitive) { try { Restore-SensitiveEnvironment -Entries $sensitive } catch { $cleanupErrors += $_.Exception.Message } }
+}
+if ($null -eq $caught) { exit 1 }
+if ($cleanupErrors.Count -ne 1) { exit 2 }
+if ($env:ANTHROPIC_API_KEY -ne 'placeholder-only') { exit 3 }
+`;
+    const checked = spawnSync('pwsh', ['-NoProfile', '-Command', script], { encoding: 'utf8' });
+    expect(checked.status, checked.stdout + checked.stderr).toBe(0);
+  });
+
+  it.skipIf(process.platform !== 'win32')('windows-gate.ps1 wraps each of its OWN cleanup restorations in an independent try/catch, not as bare sequential statements', () => {
+    const gate = read('tools/local-ci/windows-gate.ps1');
+    const finallyIndex = gate.indexOf('\nfinally {');
+    expect(finallyIndex).toBeGreaterThan(-1);
+    // Real statements, not comment text -- this file's own explanatory comment ahead of the
+    // finally block also mentions "Restore-ScopedEnvVar"/"Restore-SensitiveEnvironment"/
+    // "Pop-Location" by name (describing what used to run unguarded), so each pattern below
+    // requires the specific `try { <call>` shape, not a bare substring.
+    const restorationPatterns = [
+      "try { Restore-ScopedEnvVar -Saved $npmScriptShellScope }",
+      "try { Restore-ScopedEnvVar -Saved $nodeExeScope }",
+      'try { Restore-SensitiveEnvironment -Entries $sensitiveEnvironment }',
+      'try { Pop-Location }',
+    ];
+    for (const pattern of restorationPatterns) {
+      const index = gate.indexOf(pattern);
+      expect(index, `expected to find "${pattern}" after the finally block starts`).toBeGreaterThan(finallyIndex);
+    }
+  });
+
+  // Post-review hardening (round 4): Restore-SensitiveEnvironment's own internal foreach loop has
+  // no per-entry try/catch -- a Set-Item throw on one entry (confirmed live: an env var name
+  // containing '=' reliably throws ArgumentException) stops the loop outright, leaving every later
+  // entry unrestored. windows-gate.ps1's own OUTER try/catch around the whole call only catches ONE
+  // exception for the entire call, with no visibility into which individual entries inside it
+  // succeeded -- the fix must live INSIDE Restore-SensitiveEnvironment itself.
+  it.skipIf(process.platform !== 'win32')('Restore-SensitiveEnvironment attempts every entry independently, even when an earlier entry fails to restore', () => {
+    const scriptPath = resolve(root, 'tools/local-ci/environment-utils.ps1').replaceAll("'", "''");
+    // Every branch ends in an EXPLICIT exit, never relying on the script's natural end to imply
+    // success -- confirmed via direct repro that pwsh -Command's own process exit code reflects
+    // the ambient $?/error state left by a REAL, caught .NET exception (Set-Item's own
+    // ArgumentException on an illegal env var name) when the script reaches its end without an
+    // explicit exit, even though the exception was genuinely caught and handled. A plain `throw
+    // 'literal string'` (as every OTHER script in this file uses) does not leave that same
+    // residue -- this is the one test in this file whose tested code path throws a real cmdlet
+    // exception, so it is the one that needs the explicit exit in both branches.
+    const script = `
+. '${scriptPath}'
+$entries = @(
+  [pscustomobject]@{ Name = 'KMP_RESTORE_TEST_BAD=NAME'; Value = 'x' },
+  [pscustomobject]@{ Name = 'KMP_RESTORE_TEST_GOOD'; Value = 'restored-value' }
+)
+try { Restore-SensitiveEnvironment -Entries $entries } catch {}
+if ($env:KMP_RESTORE_TEST_GOOD -ne 'restored-value') { exit 1 } else { exit 0 }
+`;
+    const checked = spawnSync('pwsh', ['-NoProfile', '-Command', script], { encoding: 'utf8' });
+    expect(checked.status, checked.stdout + checked.stderr).toBe(0);
+  });
+
+  // Post-review hardening (round 4): windows-gate.ps1's round-3 fix collected $cleanupErrors but
+  // only Write-Warning'd them -- never affecting the script's own exit code, so a green body plus a
+  // failed restoration could still report overall success while leaving altered state. Proves the
+  // GENERAL pattern (not the live gate file, for the same cost/fragility reasons round 1/3 already
+  // established) with the same real functions: a body that succeeds cleanly, paired with a cleanup
+  // step that fails, must make the OVERALL script fail.
+  it.skipIf(process.platform !== 'win32')('the resilience pattern windows-gate.ps1 uses fails the OVERALL script when the body succeeded but a cleanup restoration failed', () => {
+    const scriptPath = resolve(root, 'tools/local-ci/environment-utils.ps1').replaceAll("'", "''");
+    const script = `
+. '${scriptPath}'
+$bodySucceeded = $false
+$cleanupErrors = @()
+try {
+  Write-Host 'body ran and succeeded'
+  $bodySucceeded = $true
+} finally {
+  try { throw 'simulated: a real restoration (e.g. Restore-ScopedEnvVar) throws' } catch { $cleanupErrors += $_.Exception.Message }
+  if ($cleanupErrors.Count -gt 0) {
+    Write-Warning "cleanup encountered $($cleanupErrors.Count) error(s)"
+    if ($bodySucceeded) { throw "body succeeded but cleanup failed ($($cleanupErrors.Count) error(s))" }
+  }
+}
+Write-Host 'unreachable if the pattern correctly fails the script'
+`;
+    const checked = spawnSync('pwsh', ['-NoProfile', '-Command', script], { encoding: 'utf8' });
+    expect(checked.status).not.toBe(0);
+  });
+
+  // The companion direction: when the BODY itself fails, that original error must remain the
+  // PRIMARY reported failure -- a cleanup error must never mask or replace it with a different one.
+  it.skipIf(process.platform !== 'win32')('the resilience pattern preserves the ORIGINAL body error as primary when both the body AND a cleanup restoration fail', () => {
+    const scriptPath = resolve(root, 'tools/local-ci/environment-utils.ps1').replaceAll("'", "''");
+    const script = `
+. '${scriptPath}'
+$bodySucceeded = $false
+$cleanupErrors = @()
+try {
+  throw 'THE ORIGINAL BODY ERROR'
+  $bodySucceeded = $true
+} finally {
+  try { throw 'a cleanup restoration also throws' } catch { $cleanupErrors += $_.Exception.Message }
+  if ($cleanupErrors.Count -gt 0) {
+    Write-Warning "cleanup encountered $($cleanupErrors.Count) error(s)"
+    if ($bodySucceeded) { throw "body succeeded but cleanup failed ($($cleanupErrors.Count) error(s))" }
+  }
+}
+`;
+    const checked = spawnSync('pwsh', ['-NoProfile', '-Command', script], { encoding: 'utf8' });
+    expect(checked.status).not.toBe(0);
+    expect(checked.stdout + checked.stderr).toContain('THE ORIGINAL BODY ERROR');
+    expect(checked.stdout + checked.stderr).not.toContain('body succeeded but cleanup failed');
+  });
 });

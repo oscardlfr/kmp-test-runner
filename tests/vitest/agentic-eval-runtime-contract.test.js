@@ -89,7 +89,11 @@ function validObservation(overrides = {}) {
     skill: { available: true, profileMatchesCondition: true, snapshotBindingMatches: true, targetInvocation: null, foreignInvocations: [], ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true } },
     hookStats: { hookCallCount: 1, hookResponseCount: 1, hookDenyCount: 0, hookAllowCount: 1, hookPairingOk: true, everyCallHooked: true },
     byteMetrics: { outputBytes: 10, streamJsonBytes: 100 },
-    timing: { receiptNsByEventIndex: new Map([[4, 100n]]) },
+    // Key 3, not 4 -- must match validToolAttempt()'s own eventIndex:3/receiptNs:100n (the tool_use
+    // event's own index), not its nested result.eventIndex:4 (a different event). Round-3 fix: this
+    // was silently 4 before, a latent fixture inconsistency the new cross-field
+    // toolAttempts<->timing.receiptNsByEventIndex check now correctly catches.
+    timing: { receiptNsByEventIndex: new Map([[3, 100n]]) },
     ...overrides,
   };
 }
@@ -400,7 +404,22 @@ describe('validateObservation -- toolAttempts invariants', () => {
   it('preserves duplicate eventIndex values for concurrent same-turn tool calls (not an ordering violation)', () => {
     const a = validToolAttempt({ id: 'a', eventIndex: 5, result: { found: false, eventIndex: null, isError: null, text: null, textStatus: 'missing' } });
     const b = validToolAttempt({ id: 'b', eventIndex: 5, result: { found: false, eventIndex: null, isError: null, text: null, textStatus: 'missing' } });
-    const result = validateObservation(validObservation({ toolAttempts: [a, b] }));
+    // Both share eventIndex 5 (a real same-turn-batch shape) AND the same inherited receiptNs
+    // (100n, from validToolAttempt()'s default) -- the timing map must carry exactly ONE entry for
+    // that shared index, matching real production (both attempts' receiptNs come from the SAME
+    // source event's _receiptNs).
+    // Both a and b have result.found:false -- the round-4 strictIncompleteToolResults<->toolAttempts
+    // relation is a SET comparison by eventIndex, so ONE entry at index:5 covers both.
+    const incomplete = [{ index: 5, receiptNs: 100n, name: 'Bash', id: null }];
+    const result = validateObservation(validObservation({
+      toolAttempts: [a, b],
+      timing: { receiptNsByEventIndex: new Map([[5, 100n]]) },
+      transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: incomplete, effectiveIncompleteToolResults: incomplete },
+      // Both are shell attempts (validToolAttempt()'s default kind) -- 2 real shell calls now,
+      // not validObservation()'s own default 1, so hookStats must be reset to stay consistent
+      // (round-4 everyCallHooked<->real-shell-count relation).
+      hookStats: { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: false },
+    }));
     expect(result.ok).toBe(true);
   });
 
@@ -415,7 +434,10 @@ describe('validateObservation -- toolAttempts invariants', () => {
   });
 
   it('accepts a null receiptNs', () => {
-    const result = validateObservation(validObservation({ toolAttempts: [validToolAttempt({ receiptNs: null })] }));
+    // A null receiptNs must correspond to NO entry in the timing map for that index (the
+    // null-together convention both fields share, per the one real producer) -- not the default
+    // observation's own 3->100n entry, which would otherwise contradict this attempt's own null.
+    const result = validateObservation(validObservation({ toolAttempts: [validToolAttempt({ receiptNs: null })], timing: { receiptNsByEventIndex: new Map() } }));
     expect(result.ok).toBe(true);
   });
 });
@@ -516,16 +538,20 @@ describe('validateObservation -- terminal.usage null vs zero', () => {
 describe('validateObservation -- transcript structural-issue / incomplete-result arrays', () => {
   it('accepts a real structural-issue shape per known type', () => {
     const observation = validObservation();
+    const issues = [
+      { type: 'init_count', count: 2 },
+      { type: 'duplicate_tool_use_id', id: 'toolu_1', count: 2 },
+      { type: 'orphan_tool_result', id: null },
+      { type: 'result_not_last', resultIndex: 3, eventsLength: 5 },
+      { type: 'init_not_first', initIndex: 1 },
+      { type: 'empty_tool_use_id' },
+    ];
     observation.transcript = {
+      // effectiveStructuralIssues mirrors strict exactly -- not a legitimate timeout (default
+      // process.terminated:false), so nothing is tolerated away (round-4 strict/effective relation).
       ...observation.transcript,
-      strictStructuralIssues: [
-        { type: 'init_count', count: 2 },
-        { type: 'duplicate_tool_use_id', id: 'toolu_1', count: 2 },
-        { type: 'orphan_tool_result', id: null },
-        { type: 'result_not_last', resultIndex: 3, eventsLength: 5 },
-        { type: 'init_not_first', initIndex: 1 },
-        { type: 'empty_tool_use_id' },
-      ],
+      strictStructuralIssues: issues,
+      effectiveStructuralIssues: issues,
     };
     expect(validateObservation(observation).ok).toBe(true);
   });
@@ -550,7 +576,18 @@ describe('validateObservation -- transcript structural-issue / incomplete-result
 
   it('accepts a real incomplete-tool-result entry', () => {
     const observation = validObservation();
-    observation.transcript = { ...observation.transcript, strictIncompleteToolResults: [{ index: 8, receiptNs: 8n, name: 'Bash', id: null }] };
+    const incomplete = [{ index: 8, receiptNs: 8n, name: 'Bash', id: null }];
+    // effectiveIncompleteToolResults mirrors strict (not a legitimate timeout). The entry's own
+    // index:8 must correspond to a REAL toolAttempt with result.found:false at that exact
+    // eventIndex (round-4 strictIncompleteToolResults<->toolAttempts relation) -- replaces
+    // validObservation()'s own default (found:true) shell attempt with a matching incomplete one.
+    observation.transcript = { ...observation.transcript, strictIncompleteToolResults: incomplete, effectiveIncompleteToolResults: incomplete };
+    observation.toolAttempts = [validToolAttempt({
+      eventIndex: 8, receiptNs: 8n,
+      result: { found: false, eventIndex: null, isError: null, text: null, textStatus: 'missing' },
+    })];
+    observation.timing = { receiptNsByEventIndex: new Map([[8, 8n]]) };
+    observation.hookStats = { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: false };
     expect(validateObservation(observation).ok).toBe(true);
   });
 
@@ -617,6 +654,12 @@ describe('validateObservation -- rejects prototype-inherited shapes (own-propert
 describe('validateObservation -- timing.receiptNsByEventIndex Map contents are validated, not just its type', () => {
   it('accepts a well-formed map (non-negative integer keys, bigint values)', () => {
     const observation = validObservation();
+    // Isolates the map-shape property under test: no toolAttempts means nothing for the
+    // toolAttempts<->timing cross-field check to compare this map's arbitrary content against.
+    // hookStats reset alongside it -- validObservation()'s own default hookCallCount:1/
+    // everyCallHooked:true was only consistent with ITS default single shell toolAttempt.
+    observation.toolAttempts = [];
+    observation.hookStats = { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: true };
     observation.timing = { receiptNsByEventIndex: new Map([[0, 10n], [4, 100n]]) };
     expect(validateObservation(observation).ok).toBe(true);
   });
@@ -663,7 +706,8 @@ describe('validateObservation -- structural issue extra-key VALUES are validated
 
   it('accepts orphan_tool_result with a null id (the one type/key combination allowed to be null)', () => {
     const observation = validObservation();
-    observation.transcript = { ...observation.transcript, strictStructuralIssues: [{ type: 'orphan_tool_result', id: null }] };
+    const issues = [{ type: 'orphan_tool_result', id: null }];
+    observation.transcript = { ...observation.transcript, strictStructuralIssues: issues, effectiveStructuralIssues: issues };
     expect(validateObservation(observation).ok).toBe(true);
   });
 
@@ -690,6 +734,11 @@ describe('validateObservation -- terminal.present coherence with its sibling fie
   it('accepts a genuinely absent terminal (present:false, everything else null)', () => {
     const observation = validObservation();
     observation.terminal = { present: false, isError: null, turnCount: null, finalText: null, resultSubtype: null, usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } };
+    // A genuine result_count:0 issue is what makes terminal.present:false valid at all (round-4
+    // terminal.present<->strictStructuralIssues relation) -- not a legitimate timeout here, so
+    // effective must mirror strict exactly.
+    const issues = [{ type: 'result_count', count: 0 }];
+    observation.transcript = { ...observation.transcript, strictStructuralIssues: issues, effectiveStructuralIssues: issues };
     expect(validateObservation(observation).ok).toBe(true);
   });
 
@@ -758,7 +807,7 @@ describe('freezeObservation -- deep freeze', () => {
     // Object.freeze on the wrapper object holding the Map/Set does not itself change the Map/Set
     // instance identity, and mutating the Map/Set's own contents is a contract violation the
     // validator (not the runtime) is responsible for catching -- never asserted as a runtime throw.
-    expect(observation.timing.receiptNsByEventIndex.get(4)).toBe(100n);
+    expect(observation.timing.receiptNsByEventIndex.get(3)).toBe(100n);
   });
 });
 
@@ -828,20 +877,20 @@ describe('canonicalNamesKey / fingerprintNames -- generic ambient HMAC helpers',
   });
 });
 
-// Post-review hardening (round 1): canonicalNamesKey/fingerprintNames here are a DELIBERATE
-// reimplementation of stream-parser.mjs's own canonicalAmbientSkillNamesKey/
-// fingerprintAmbientSkillNames -- not an accident, and not mergeable into one shared source
-// without violating the dependency direction this whole refactor exists to establish
-// (stream-parser.mjs is frozen and byte-identical to base; contract.mjs, the runtime-AGNOSTIC
-// layer, must never import a Claude-specific module, and the reverse direction -- stream-parser.mjs
-// importing from contract.mjs -- would require editing a file this PR is expressly forbidden from
-// touching). Given the duplication cannot be eliminated within this PR's authorized scope, this
-// equivalence test is the actual closure: it guards against the two implementations silently
-// drifting apart in the future, which "two files with a doc comment asking them to stay identical"
-// cannot enforce on its own. This is the ONE deliberate exception to this file's own header
-// comment ("never imports runtimes/claude-code.mjs or any Claude-specific module") -- stream-
-// parser.mjs is imported here SOLELY to prove this equivalence, not to make any contract behavior
-// itself depend on Claude-specific parsing.
+// Post-review hardening (round 3, correcting round 1's wrong framing): canonicalNamesKey/
+// fingerprintNames are now the ONE real implementation -- stream-parser.mjs's own
+// canonicalAmbientSkillNamesKey/fingerprintAmbientSkillNames are re-exports of these exact
+// functions, not an independent copy. Round 1 believed stream-parser.mjs was unconditionally
+// frozen and treated the duplication as unavoidable within scope; the runbook's own file-scope
+// allowlist explicitly authorizes editing stream-parser.mjs "solo para importar/re-exportar los
+// helpers genericos de canonical ambient names si evitar duplicacion lo exige" -- exactly this
+// case, missed on the first pass. The equivalence proven below is consequently closer to tautological
+// now (both sides resolve to the same function object) -- kept anyway as a regression guard on the
+// re-export wiring itself (both names stay callable with the same signature/behavior), not as the
+// drift-prevention mechanism round 1 described. This remains the ONE deliberate exception to this
+// file's own header comment ("never imports runtimes/claude-code.mjs or any Claude-specific
+// module") -- stream-parser.mjs is imported here solely to prove the re-export identity, not to
+// make any contract behavior itself depend on Claude-specific parsing.
 describe('canonicalNamesKey/fingerprintNames (contract.mjs) vs. canonicalAmbientSkillNamesKey/fingerprintAmbientSkillNames (stream-parser.mjs) -- byte-for-byte equivalence', () => {
   it('canonicalNamesKey produces the SAME output as canonicalAmbientSkillNamesKey for a representative range of inputs', async () => {
     const { canonicalAmbientSkillNamesKey } = await import('../../tools/agentic-eval/stream-parser.mjs');
@@ -1016,7 +1065,10 @@ describe('Stage 5 -- synthetic multi-source and typed-step fixtures both satisfy
         targetInvocation: null, foreignInvocations: [],
         ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
       },
-      hookStats: { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: true },
+      // everyCallHooked:false, not true -- this synthetic source models no hook evidence at all
+      // (hookCallCount:0), while toolAttempts above genuinely carries one real shell attempt; the
+      // round-4 everyCallHooked<->real-shell-count relation requires the two to agree.
+      hookStats: { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: false },
       byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
       timing: { receiptNsByEventIndex },
     };
@@ -1182,5 +1234,471 @@ describe('Stage 5 -- synthetic multi-source and typed-step fixtures both satisfy
     expect(attempt.preDispatchBlock.signature.length).toBeGreaterThan(0);
     expect(attempt.result.found).toBe(true);
     expect(attempt.result.isError).toBe(true);
+  });
+});
+
+// Round 4: a fully self-consistent minimal fixture satisfying every cross-field invariant below by
+// construction (emptiness/absence on every dimension) -- used instead of validObservation() for
+// these tests specifically, since validObservation()'s own non-empty defaults (a shell toolAttempt,
+// terminal.present:true, etc.) are now ALSO subject to these same cross-field checks and would
+// require careful co-adjustment on every override otherwise.
+function minimalConsistentObservation(overrides = {}) {
+  return {
+    schema: 1,
+    runtime: { id: 'synthetic-runtime', protocolVersion: 1 },
+    process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1n },
+    session: { initPresent: true, modelResolved: null, sessionIdObserved: null, runtimeVersion: null, toolProfileMatchesExpected: true },
+    // No structural issues at all -- absence of init_count/result_count means exactly one init and
+    // one result event were found, so session.initPresent/terminal.present must both be true.
+    transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+    terminal: { present: true, isError: false, turnCount: 1, finalText: 'done', resultSubtype: 'success', usage: { input: 1, cached_input: 0, cache_write: 0, output: 1, reasoning_output: null } },
+    toolAttempts: [],
+    skill: { available: false, profileMatchesCondition: true, snapshotBindingMatches: false, targetInvocation: null, foreignInvocations: [], ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true } },
+    // hookCallCount(0) === shell-attempt count(0) and hookPairingOk:true -- everyCallHooked:true is
+    // the ONLY value consistent with the real formula here (vacuously: zero calls, zero hooks).
+    hookStats: { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: true },
+    byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+    timing: { receiptNsByEventIndex: new Map() },
+    ...overrides,
+  };
+}
+
+describe('validateObservation -- hookStats.everyCallHooked cross-checked against the real shell toolAttempt count (round 4)', () => {
+  it('rejects everyCallHooked:true when hookCallCount does not match the real shell-attempt count', () => {
+    const attempt = validToolAttempt({ kind: 'shell', eventIndex: 0, receiptNs: 10n });
+    const observation = minimalConsistentObservation({
+      toolAttempts: [attempt],
+      timing: { receiptNsByEventIndex: new Map([[0, 10n]]) },
+      hookStats: { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: true },
+    });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('rejects everyCallHooked:false when hookCallCount/hookPairingOk actually satisfy the real formula (the reverse IFF direction)', () => {
+    const attempt = validToolAttempt({ kind: 'shell', eventIndex: 0, receiptNs: 10n });
+    const observation = minimalConsistentObservation({
+      toolAttempts: [attempt],
+      timing: { receiptNsByEventIndex: new Map([[0, 10n]]) },
+      hookStats: { hookCallCount: 1, hookResponseCount: 1, hookDenyCount: 0, hookAllowCount: 1, hookPairingOk: true, everyCallHooked: false },
+    });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('accepts everyCallHooked:true when hookCallCount genuinely matches the real shell-attempt count', () => {
+    const attempt = validToolAttempt({ kind: 'shell', eventIndex: 0, receiptNs: 10n });
+    const observation = minimalConsistentObservation({
+      toolAttempts: [attempt],
+      timing: { receiptNsByEventIndex: new Map([[0, 10n]]) },
+      hookStats: { hookCallCount: 1, hookResponseCount: 1, hookDenyCount: 0, hookAllowCount: 1, hookPairingOk: true, everyCallHooked: true },
+    });
+    expect(validateObservation(observation).ok).toBe(true);
+  });
+});
+
+describe('validateObservation -- skill.targetInvocation full projection against toolAttempts (round 4)', () => {
+  it('rejects confirmed:true when no matching toolAttempt has a found, non-error result', () => {
+    const attempt = validToolAttempt({
+      kind: 'skill', eventIndex: 3, receiptNs: 42n, targetsExpectedSkill: true, command: null,
+      result: { found: false, eventIndex: null, isError: null, text: null, textStatus: 'missing' },
+    });
+    const observation = minimalConsistentObservation({
+      toolAttempts: [attempt],
+      timing: { receiptNsByEventIndex: new Map([[3, 42n]]) },
+      skill: {
+        available: true, profileMatchesCondition: true, snapshotBindingMatches: true, foreignInvocations: [],
+        ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+        targetInvocation: { attempted: true, confirmed: true, attemptCount: 1, eventIndex: 3, receiptNs: 42n, resultIsError: null },
+      },
+    });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('rejects a receiptNs that disagrees with the timing map at the same eventIndex', () => {
+    const attempt = validToolAttempt({
+      kind: 'skill', eventIndex: 3, receiptNs: 42n, targetsExpectedSkill: true, command: null,
+      result: { found: true, eventIndex: 4, isError: false, text: 'ok', textStatus: 'text' },
+    });
+    const observation = minimalConsistentObservation({
+      toolAttempts: [attempt],
+      timing: { receiptNsByEventIndex: new Map([[3, 42n]]) },
+      skill: {
+        available: true, profileMatchesCondition: true, snapshotBindingMatches: true, foreignInvocations: [],
+        ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+        targetInvocation: { attempted: true, confirmed: true, attemptCount: 1, eventIndex: 3, receiptNs: 999999n, resultIsError: false },
+      },
+    });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it("rejects a resultIsError that disagrees with the matching toolAttempt's own result.isError", () => {
+    const attempt = validToolAttempt({
+      kind: 'skill', eventIndex: 3, receiptNs: 42n, targetsExpectedSkill: true, command: null,
+      result: { found: true, eventIndex: 4, isError: false, text: 'ok', textStatus: 'text' },
+    });
+    const observation = minimalConsistentObservation({
+      toolAttempts: [attempt],
+      timing: { receiptNsByEventIndex: new Map([[3, 42n]]) },
+      skill: {
+        available: true, profileMatchesCondition: true, snapshotBindingMatches: true, foreignInvocations: [],
+        ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+        targetInvocation: { attempted: true, confirmed: true, attemptCount: 1, eventIndex: 3, receiptNs: 42n, resultIsError: true },
+      },
+    });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('accepts a fully consistent targetInvocation projection', () => {
+    const attempt = validToolAttempt({
+      kind: 'skill', eventIndex: 3, receiptNs: 42n, targetsExpectedSkill: true, command: null,
+      result: { found: true, eventIndex: 4, isError: false, text: 'ok', textStatus: 'text' },
+    });
+    const observation = minimalConsistentObservation({
+      toolAttempts: [attempt],
+      timing: { receiptNsByEventIndex: new Map([[3, 42n]]) },
+      skill: {
+        available: true, profileMatchesCondition: true, snapshotBindingMatches: true, foreignInvocations: [],
+        ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+        targetInvocation: { attempted: true, confirmed: true, attemptCount: 1, eventIndex: 3, receiptNs: 42n, resultIsError: false },
+      },
+    });
+    expect(validateObservation(observation).ok).toBe(true);
+  });
+});
+
+describe('validateObservation -- skill.foreignInvocations cross-checked against toolAttempts, both directions (round 4)', () => {
+  it('rejects a foreignInvocations entry with no corresponding toolAttempt at all', () => {
+    const observation = minimalConsistentObservation({
+      skill: {
+        available: true, profileMatchesCondition: true, snapshotBindingMatches: true, targetInvocation: null,
+        ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+        foreignInvocations: [{ eventIndex: 5, receiptNs: 50n, id: 'f1', skillReference: 'other:other', resultIsError: true, confirmed: false }],
+      },
+    });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('rejects a foreign-skill toolAttempt with no corresponding foreignInvocations entry (reverse direction)', () => {
+    const foreignAttempt = validToolAttempt({
+      id: 'f1', kind: 'skill', eventIndex: 5, receiptNs: 50n, targetsExpectedSkill: false, skillReference: 'other:other', command: null,
+      result: { found: true, eventIndex: 6, isError: true, text: 'nope', textStatus: 'text' },
+    });
+    const observation = minimalConsistentObservation({
+      toolAttempts: [foreignAttempt],
+      timing: { receiptNsByEventIndex: new Map([[5, 50n]]) },
+      skill: {
+        available: true, profileMatchesCondition: true, snapshotBindingMatches: true, targetInvocation: null, foreignInvocations: [],
+        ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+      },
+    });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it("rejects a foreignInvocations entry whose fields disagree with its matching toolAttempt's own result", () => {
+    const foreignAttempt = validToolAttempt({
+      id: 'f1', kind: 'skill', eventIndex: 5, receiptNs: 50n, targetsExpectedSkill: false, skillReference: 'other:other', command: null,
+      result: { found: true, eventIndex: 6, isError: true, text: 'nope', textStatus: 'text' },
+    });
+    const observation = minimalConsistentObservation({
+      toolAttempts: [foreignAttempt],
+      timing: { receiptNsByEventIndex: new Map([[5, 50n]]) },
+      skill: {
+        available: true, profileMatchesCondition: true, snapshotBindingMatches: true, targetInvocation: null,
+        ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+        // resultIsError/confirmed flipped vs. the real, correlated result (found:true, isError:true).
+        foreignInvocations: [{ eventIndex: 5, receiptNs: 50n, id: 'f1', skillReference: 'other:other', resultIsError: false, confirmed: true }],
+      },
+    });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('accepts a fully consistent foreignInvocations projection', () => {
+    const foreignAttempt = validToolAttempt({
+      id: 'f1', kind: 'skill', eventIndex: 5, receiptNs: 50n, targetsExpectedSkill: false, skillReference: 'other:other', command: null,
+      result: { found: true, eventIndex: 6, isError: true, text: 'nope', textStatus: 'text' },
+    });
+    const observation = minimalConsistentObservation({
+      toolAttempts: [foreignAttempt],
+      timing: { receiptNsByEventIndex: new Map([[5, 50n]]) },
+      skill: {
+        available: true, profileMatchesCondition: true, snapshotBindingMatches: true, targetInvocation: null,
+        ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+        foreignInvocations: [{ eventIndex: 5, receiptNs: 50n, id: 'f1', skillReference: 'other:other', resultIsError: true, confirmed: false }],
+      },
+    });
+    expect(validateObservation(observation).ok).toBe(true);
+  });
+});
+
+describe('validateObservation -- strict/effective structuralIssues relation, keyed on legitimate timeout (round 4)', () => {
+  it('rejects effective UNCHANGED from strict when a legitimate timeout should have tolerated the result_count:0 issue', () => {
+    const observation = minimalConsistentObservation({
+      process: { exitCode: null, terminated: true, terminationReason: 'timeout', spawnHrtimeNs: 0n, endedHrtimeNs: 1n },
+      terminal: { present: false, isError: null, turnCount: null, finalText: null, resultSubtype: null, usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
+      transcript: { malformedLineCount: 0, strictStructuralIssues: [{ type: 'result_count', count: 0 }], effectiveStructuralIssues: [{ type: 'result_count', count: 0 }], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+    });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('accepts effective with the result_count:0 issue correctly filtered out under a legitimate timeout', () => {
+    const observation = minimalConsistentObservation({
+      process: { exitCode: null, terminated: true, terminationReason: 'timeout', spawnHrtimeNs: 0n, endedHrtimeNs: 1n },
+      terminal: { present: false, isError: null, turnCount: null, finalText: null, resultSubtype: null, usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
+      transcript: { malformedLineCount: 0, strictStructuralIssues: [{ type: 'result_count', count: 0 }], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+    });
+    expect(validateObservation(observation).ok).toBe(true);
+  });
+
+  it('rejects effective missing the result_count:0 issue when NOT a legitimate timeout (nothing should be filtered)', () => {
+    const observation = minimalConsistentObservation({
+      process: { exitCode: 1, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1n },
+      terminal: { present: false, isError: null, turnCount: null, finalText: null, resultSubtype: null, usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
+      transcript: { malformedLineCount: 0, strictStructuralIssues: [{ type: 'result_count', count: 0 }], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+    });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('rejects an effective structural issue that does not appear in strict at all', () => {
+    const observation = minimalConsistentObservation({
+      session: { initPresent: false, modelResolved: null, sessionIdObserved: null, runtimeVersion: null, toolProfileMatchesExpected: true },
+      transcript: { malformedLineCount: 0, strictStructuralIssues: [{ type: 'init_count', count: 0 }], effectiveStructuralIssues: [{ type: 'init_not_first', initIndex: 3 }], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+    });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+});
+
+describe('validateObservation -- strict/effective incompleteToolResults relation, keyed on legitimate timeout + last-tool-use (round 4)', () => {
+  it('rejects effective UNCHANGED from strict when a legitimate timeout should have tolerated the one, LAST incomplete result', () => {
+    const attempt = validToolAttempt({
+      kind: 'shell', eventIndex: 7, receiptNs: 70n,
+      result: { found: false, eventIndex: null, isError: null, text: null, textStatus: 'missing' },
+    });
+    const observation = minimalConsistentObservation({
+      process: { exitCode: null, terminated: true, terminationReason: 'timeout', spawnHrtimeNs: 0n, endedHrtimeNs: 1n },
+      toolAttempts: [attempt],
+      timing: { receiptNsByEventIndex: new Map([[7, 70n]]) },
+      hookStats: { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: false },
+      transcript: {
+        malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [],
+        strictIncompleteToolResults: [{ index: 7, receiptNs: 70n, name: 'Bash', id: null }],
+        effectiveIncompleteToolResults: [{ index: 7, receiptNs: 70n, name: 'Bash', id: null }],
+      },
+    });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('accepts effective with the one, LAST incomplete result correctly tolerated under a legitimate timeout', () => {
+    const attempt = validToolAttempt({
+      kind: 'shell', eventIndex: 7, receiptNs: 70n,
+      result: { found: false, eventIndex: null, isError: null, text: null, textStatus: 'missing' },
+    });
+    const observation = minimalConsistentObservation({
+      process: { exitCode: null, terminated: true, terminationReason: 'timeout', spawnHrtimeNs: 0n, endedHrtimeNs: 1n },
+      toolAttempts: [attempt],
+      timing: { receiptNsByEventIndex: new Map([[7, 70n]]) },
+      hookStats: { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: false },
+      transcript: {
+        malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [],
+        strictIncompleteToolResults: [{ index: 7, receiptNs: 70n, name: 'Bash', id: null }],
+        effectiveIncompleteToolResults: [],
+      },
+    });
+    expect(validateObservation(observation).ok).toBe(true);
+  });
+
+  it('rejects effective tolerating an incomplete result that is NOT the last tool_use, even under a legitimate timeout', () => {
+    const earlier = validToolAttempt({
+      id: 'earlier', kind: 'shell', eventIndex: 2, receiptNs: 20n,
+      result: { found: false, eventIndex: null, isError: null, text: null, textStatus: 'missing' },
+    });
+    const later = validToolAttempt({
+      id: 'later', kind: 'shell', eventIndex: 7, receiptNs: 70n,
+      result: { found: true, eventIndex: 8, isError: false, text: 'ok', textStatus: 'text' },
+    });
+    const observation = minimalConsistentObservation({
+      process: { exitCode: null, terminated: true, terminationReason: 'timeout', spawnHrtimeNs: 0n, endedHrtimeNs: 1n },
+      toolAttempts: [earlier, later],
+      timing: { receiptNsByEventIndex: new Map([[2, 20n], [7, 70n]]) },
+      hookStats: { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: false },
+      transcript: {
+        malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [],
+        // index:2 is NOT the last tool_use (index:7 is) -- must stay fully blocking regardless of timeout.
+        strictIncompleteToolResults: [{ index: 2, receiptNs: 20n, name: 'Bash', id: null }],
+        effectiveIncompleteToolResults: [],
+      },
+    });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+});
+
+describe('validateObservation -- strictIncompleteToolResults eventIndex-set matches toolAttempts with result.found:false (round 4)', () => {
+  it('rejects a toolAttempt with result.found:false that has no corresponding strictIncompleteToolResults entry', () => {
+    const attempt = validToolAttempt({
+      kind: 'shell', eventIndex: 2, receiptNs: 20n,
+      result: { found: false, eventIndex: null, isError: null, text: null, textStatus: 'missing' },
+    });
+    const observation = minimalConsistentObservation({
+      toolAttempts: [attempt],
+      timing: { receiptNsByEventIndex: new Map([[2, 20n]]) },
+      hookStats: { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: false },
+      // strictIncompleteToolResults left empty -- should have an entry at index:2.
+    });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('rejects a strictIncompleteToolResults entry whose index has no corresponding result.found:false toolAttempt', () => {
+    const attempt = validToolAttempt({
+      kind: 'shell', eventIndex: 2, receiptNs: 20n,
+      result: { found: true, eventIndex: 3, isError: false, text: 'ok', textStatus: 'text' },
+    });
+    const observation = minimalConsistentObservation({
+      toolAttempts: [attempt],
+      timing: { receiptNsByEventIndex: new Map([[2, 20n]]) },
+      hookStats: { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: false },
+      transcript: {
+        malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [],
+        strictIncompleteToolResults: [{ index: 2, receiptNs: 20n, name: 'Bash', id: null }],
+        effectiveIncompleteToolResults: [{ index: 2, receiptNs: 20n, name: 'Bash', id: null }],
+      },
+    });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('accepts a fully consistent result.found:false <-> strictIncompleteToolResults correspondence', () => {
+    const attempt = validToolAttempt({
+      kind: 'shell', eventIndex: 2, receiptNs: 20n,
+      result: { found: false, eventIndex: null, isError: null, text: null, textStatus: 'missing' },
+    });
+    const observation = minimalConsistentObservation({
+      toolAttempts: [attempt],
+      timing: { receiptNsByEventIndex: new Map([[2, 20n]]) },
+      hookStats: { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: false },
+      transcript: {
+        malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [],
+        strictIncompleteToolResults: [{ index: 2, receiptNs: 20n, name: 'Bash', id: null }],
+        effectiveIncompleteToolResults: [{ index: 2, receiptNs: 20n, name: 'Bash', id: null }],
+      },
+    });
+    expect(validateObservation(observation).ok).toBe(true);
+  });
+});
+
+describe('validateObservation -- session.initPresent cross-checked against strictStructuralIssues\' init_count (round 4)', () => {
+  it('rejects initPresent:false with no init_count issue reported at all', () => {
+    const observation = minimalConsistentObservation({
+      session: { initPresent: false, modelResolved: null, sessionIdObserved: null, runtimeVersion: null, toolProfileMatchesExpected: true },
+    });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('rejects initPresent:true when strictStructuralIssues reports init_count:0', () => {
+    const observation = minimalConsistentObservation({
+      transcript: { malformedLineCount: 0, strictStructuralIssues: [{ type: 'init_count', count: 0 }], effectiveStructuralIssues: [{ type: 'init_count', count: 0 }], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+    });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('accepts initPresent:false paired with a genuine init_count:0 issue', () => {
+    const observation = minimalConsistentObservation({
+      session: { initPresent: false, modelResolved: null, sessionIdObserved: null, runtimeVersion: null, toolProfileMatchesExpected: true },
+      transcript: { malformedLineCount: 0, strictStructuralIssues: [{ type: 'init_count', count: 0 }], effectiveStructuralIssues: [{ type: 'init_count', count: 0 }], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+    });
+    expect(validateObservation(observation).ok).toBe(true);
+  });
+
+  it('accepts initPresent:true paired with an init_count:2 issue (init present, just duplicated)', () => {
+    const observation = minimalConsistentObservation({
+      transcript: { malformedLineCount: 0, strictStructuralIssues: [{ type: 'init_count', count: 2 }], effectiveStructuralIssues: [{ type: 'init_count', count: 2 }], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+    });
+    expect(validateObservation(observation).ok).toBe(true);
+  });
+});
+
+describe('validateObservation -- terminal.present cross-checked against strictStructuralIssues\' result_count (round 4)', () => {
+  it('rejects terminal.present:true when strictStructuralIssues reports result_count:0', () => {
+    const observation = minimalConsistentObservation({
+      transcript: { malformedLineCount: 0, strictStructuralIssues: [{ type: 'result_count', count: 0 }], effectiveStructuralIssues: [{ type: 'result_count', count: 0 }], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+    });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('rejects terminal.present:false with no result_count issue reported at all', () => {
+    const observation = minimalConsistentObservation({
+      terminal: { present: false, isError: null, turnCount: null, finalText: null, resultSubtype: null, usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
+    });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('accepts terminal.present:false paired with a genuine result_count:0 issue (using strict, even when effective tolerated it away)', () => {
+    const observation = minimalConsistentObservation({
+      process: { exitCode: null, terminated: true, terminationReason: 'timeout', spawnHrtimeNs: 0n, endedHrtimeNs: 1n },
+      terminal: { present: false, isError: null, turnCount: null, finalText: null, resultSubtype: null, usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
+      transcript: { malformedLineCount: 0, strictStructuralIssues: [{ type: 'result_count', count: 0 }], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+    });
+    expect(validateObservation(observation).ok).toBe(true);
+  });
+});
+
+// Round 4, finding 14: round 3's own new invariants were verified via a throwaway script and
+// deleted, never persisted -- pinned here as durable regressions, each reproducing exactly one of
+// the 6 examples confirmed live against the pre-round-3 contract.mjs.
+describe('validateObservation -- round-3 P1 bypass examples, pinned as durable regressions', () => {
+  it('rejects duplicate_tool_use_id with count:0 (a "duplicate" requires count>=2)', () => {
+    const observation = minimalConsistentObservation({
+      transcript: { malformedLineCount: 0, strictStructuralIssues: [{ type: 'duplicate_tool_use_id', id: 'x', count: 0 }], effectiveStructuralIssues: [{ type: 'duplicate_tool_use_id', id: 'x', count: 0 }], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+    });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('rejects result_not_last with resultIndex at eventsLength-1 (contradicts "not last")', () => {
+    const observation = minimalConsistentObservation({
+      transcript: { malformedLineCount: 0, strictStructuralIssues: [{ type: 'result_not_last', resultIndex: 4, eventsLength: 5 }], effectiveStructuralIssues: [{ type: 'result_not_last', resultIndex: 4, eventsLength: 5 }], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+    });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('rejects a negative receiptNs on a toolAttempt', () => {
+    const attempt = validToolAttempt({ kind: 'shell', eventIndex: 0, receiptNs: -5n });
+    const observation = minimalConsistentObservation({ toolAttempts: [attempt] });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('rejects terminated:true with terminationReason:null', () => {
+    const observation = minimalConsistentObservation({
+      process: { exitCode: null, terminated: true, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1n },
+    });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('rejects everyCallHooked:true paired with hookPairingOk:false', () => {
+    const observation = minimalConsistentObservation({
+      hookStats: { hookCallCount: 2, hookResponseCount: 1, hookDenyCount: 0, hookAllowCount: 1, hookPairingOk: false, everyCallHooked: true },
+    });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('rejects a targetInvocation with zero matching toolAttempts at all', () => {
+    const observation = minimalConsistentObservation({
+      skill: {
+        available: true, profileMatchesCondition: true, snapshotBindingMatches: true, foreignInvocations: [],
+        ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+        targetInvocation: { attempted: true, confirmed: true, attemptCount: 1, eventIndex: 7, receiptNs: 1n, resultIsError: false },
+      },
+    });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+});
+
+// Round 4, finding 15: the round-1/round-3 equivalence test only compared OUTPUTS -- a future
+// independent reimplementation producing byte-identical output would still pass silently. Pins the
+// actual re-export IDENTITY (the same function object), not just equal behavior.
+describe('canonicalNamesKey/fingerprintNames -- stream-parser.mjs re-exports the EXACT SAME function objects, not just equal-output copies', () => {
+  it('canonicalAmbientSkillNamesKey IS canonicalNamesKey (reference equality)', async () => {
+    const { canonicalAmbientSkillNamesKey } = await import('../../tools/agentic-eval/stream-parser.mjs');
+    expect(canonicalAmbientSkillNamesKey).toBe(canonicalNamesKey);
+  });
+
+  it('fingerprintAmbientSkillNames IS fingerprintNames (reference equality)', async () => {
+    const { fingerprintAmbientSkillNames } = await import('../../tools/agentic-eval/stream-parser.mjs');
+    expect(fingerprintAmbientSkillNames).toBe(fingerprintNames);
   });
 });

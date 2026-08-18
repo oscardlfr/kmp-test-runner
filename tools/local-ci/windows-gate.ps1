@@ -50,6 +50,11 @@ $npmScriptShellScope = $null
 $sensitiveEnvironment = $null
 $pushedLocation = $false
 $nodeExeScope = $null
+# Post-review hardening (round 4): set ONLY as the try block's own last statement, right after the
+# success Write-Host -- if the body throws anywhere before reaching that point, this stays $false,
+# so the finally block below knows NOT to raise a new cleanup-triggered failure on top of (and
+# thereby masking) whatever original exception is already propagating.
+$bodySucceeded = $false
 try {
     # On hosts where a child cmd.exe process inherits an empty PATH regardless of the caller's own
     # environment, npm's own cmd.exe-routed lifecycle-script execution breaks (e.g. esbuild's
@@ -130,15 +135,45 @@ try {
     Invoke-NativeChecked (Join-Path $Node18Home 'npx.cmd') @('vitest', 'run') 'Vitest (Node 18)'
 
     Write-Host '[local-ci] Windows Node 24/18, Pester, and Gradle lane passed' -ForegroundColor Green
+    $bodySucceeded = $true
 }
 finally {
-    $env:PATH = $originalPath
-    $env:JAVA_HOME = $originalJavaHome
-    # Every restoration below is conditional on the matching setup step having actually succeeded
-    # (tracked via the inert defaults declared before the try) -- resilient to a throw at ANY point,
-    # not just after every setup step has already completed.
-    if ($npmScriptShellScope) { Restore-ScopedEnvVar -Saved $npmScriptShellScope }
-    if ($nodeExeScope) { Restore-ScopedEnvVar -Saved $nodeExeScope }
-    if ($sensitiveEnvironment) { Restore-SensitiveEnvironment -Entries $sensitiveEnvironment }
-    if ($pushedLocation) { Pop-Location }
+    # Post-review hardening (round 3): each restoration below is now wrapped in its OWN try/catch,
+    # not a bare sequential statement -- confirmed via direct repro that an exception thrown by the
+    # FIRST restoration in a `finally` block aborts every statement after it in that SAME block
+    # (PowerShell does not auto-continue past an unhandled error mid-`finally`, same as every other
+    # mainstream language's finally semantics). Before this, a failure in Restore-ScopedEnvVar for
+    # npm_config_script_shell would have silently skipped restoring KMP_LOCAL_CI_NODE_EXE, every
+    # suspended sensitive env var, PATH/JAVA_HOME, and the pushed location. $cleanupErrors
+    # accumulates every individual failure (surfaced via Write-Warning below) without ever
+    # interfering with the ORIGINAL exception that triggered entry into this finally in the first
+    # place -- that exception keeps propagating normally once this block finishes, since nothing
+    # here re-throws or swallows it.
+    $cleanupErrors = @()
+    try { $env:PATH = $originalPath } catch { $cleanupErrors += "PATH restore: $($_.Exception.Message)" }
+    try { $env:JAVA_HOME = $originalJavaHome } catch { $cleanupErrors += "JAVA_HOME restore: $($_.Exception.Message)" }
+    if ($npmScriptShellScope) {
+        try { Restore-ScopedEnvVar -Saved $npmScriptShellScope } catch { $cleanupErrors += "npm_config_script_shell restore: $($_.Exception.Message)" }
+    }
+    if ($nodeExeScope) {
+        try { Restore-ScopedEnvVar -Saved $nodeExeScope } catch { $cleanupErrors += "KMP_LOCAL_CI_NODE_EXE restore: $($_.Exception.Message)" }
+    }
+    if ($sensitiveEnvironment) {
+        try { Restore-SensitiveEnvironment -Entries $sensitiveEnvironment } catch { $cleanupErrors += "sensitive-environment restore: $($_.Exception.Message)" }
+    }
+    if ($pushedLocation) {
+        try { Pop-Location } catch { $cleanupErrors += "Pop-Location: $($_.Exception.Message)" }
+    }
+    if ($cleanupErrors.Count -gt 0) {
+        Write-Warning "cleanup encountered $($cleanupErrors.Count) error(s) during restoration: $($cleanupErrors -join '; ')"
+        # Post-review hardening (round 4): a green body plus a failed restoration previously still
+        # exited 0 -- $cleanupErrors was only ever Write-Warning'd, never affecting the script's own
+        # exit code, so altered state could be left behind while the gate reported overall success.
+        # Only raised when the body itself already succeeded ($bodySucceeded) -- if the body failed
+        # too, THAT original exception is already propagating past this finally block on its own and
+        # must remain the primary reported error, never replaced by a new one raised from here.
+        if ($bodySucceeded) {
+            throw "windows-gate.ps1: body succeeded but cleanup failed ($($cleanupErrors.Count) error(s)) -- environment may be left altered: $($cleanupErrors -join '; ')"
+        }
+    }
 }

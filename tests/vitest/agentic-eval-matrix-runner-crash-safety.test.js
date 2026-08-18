@@ -488,7 +488,10 @@ describe('runSingleCondition -- the observation\'s self-reported runtime identit
           runtime: { id: 'a-completely-different-runtime-id', protocolVersion: 1 },
           process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 10n },
           session: { initPresent: true, modelResolved: null, sessionIdObserved: null, runtimeVersion: null, toolProfileMatchesExpected: true },
-          transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+          // A genuine result_count:0 issue is what makes terminal.present:false valid at all
+          // (round-4 terminal.present<->strictStructuralIssues relation) -- not a legitimate
+          // timeout here (terminated:false), so effective mirrors strict exactly.
+          transcript: { malformedLineCount: 0, strictStructuralIssues: [{ type: 'result_count', count: 0 }], effectiveStructuralIssues: [{ type: 'result_count', count: 0 }], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
           terminal: { present: false, isError: null, turnCount: null, finalText: null, resultSubtype: null, usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
           toolAttempts: [],
           skill: { available: false, profileMatchesCondition: true, snapshotBindingMatches: true, targetInvocation: null, foreignInvocations: [], ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true } },
@@ -527,7 +530,12 @@ describe('runSingleCondition -- the observation\'s self-reported runtime identit
       }
 
       expect(caught).not.toBeNull();
-      expect(caught.message).toMatch(/runtime identity|runtime\.id/i);
+      // A closed literal code only (post-review hardening, round 3) -- observation.runtime.id is
+      // not yet trusted content at the moment this fires (that's the whole reason the check
+      // exists), so the thrown message must never interpolate either adapter's own id.
+      expect(caught.message).toBe('observation_runtime_identity_mismatch');
+      expect(caught.message).not.toContain('a-completely-different-runtime-id');
+      expect(caught.message).not.toContain('the-real-adapter-id');
       expect(caught.agenticEvalPhase).toBe('parsing_or_attributing_cell');
     } finally {
       rmSync(journalRunsRoot, { recursive: true, force: true });

@@ -8,7 +8,9 @@
 // field directly. Reads real source files as text -- never imports them -- so this test never
 // itself becomes a new consumer of the modules it is policing.
 import { describe, it, expect } from 'vitest';
-import { readFileSync, readdirSync } from 'node:fs';
+import {
+  readFileSync, readdirSync, mkdirSync, writeFileSync, rmSync,
+} from 'node:fs';
 import { join, dirname, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -65,11 +67,33 @@ const ALLOWED_IMPORTERS_OF_RUNTIME_ONLY_MODULES = new Set([
   'runtimes/claude-code.mjs', // the sole new consumer -- now walked at its real nested path
 ]);
 
-function importsFromRelative(src, moduleFile) {
-  const escaped = moduleFile.replace(/\./g, '\\.');
-  return new RegExp(`from\\s+['"]\\.\\/${escaped}['"]`).test(src)
-    || new RegExp(`from\\s+['"]\\.\\.\\/${escaped}['"]`).test(src)
-    || new RegExp(`from\\s+['"]\\.\\/runtimes\\/\\.\\.\\/${escaped}['"]`).test(src);
+// Post-review hardening (round 3): the prior version matched only 3 literal patterns (./x, ../x,
+// ./runtimes/../x) -- a module two directories deep under tools/agentic-eval/ (e.g. a hypothetical
+// runtimes/provider/foo.mjs) importing '../../stream-parser.mjs' matched NONE of them and stayed
+// invisible to every check below, a real depth-dependent gap now that ALL_AGENTIC_MJS_FILES already
+// walks arbitrarily nested subdirectories. Resolves every relative specifier in the source against
+// `dirname(importerRelPath)` via real path joining (which collapses `..` segments correctly at any
+// depth) and compares the normalized absolute-equivalent path against the target module -- not a
+// fixed set of depth-limited literal forms.
+//
+// Post-review hardening (round 4): the round-3 regex required the literal word "from" immediately
+// before the quoted specifier -- covers static `import ... from '...'` and `export ... from '...'`
+// (both contain that literal text) but misses two other real ESM import forms that carry no `from`
+// keyword at all: a side-effect-only import (`import '../../x.mjs';`) and a dynamic import
+// (`import('../../x.mjs')` / `await import('../../x.mjs')`). `\b(?:from|import)\s*\(?\s*['"]` covers
+// all four forms uniformly: "from" (static/re-export) or "import" (side-effect/dynamic), optionally
+// followed by dynamic-import's own `(`, then the quoted specifier -- `\b` prevents a false match
+// inside a longer identifier (e.g. "reimport(").
+function importsFromRelative(importerRelPath, src, moduleFile) {
+  const importerDir = dirname(importerRelPath);
+  const targetPath = join(AGENTIC_DIR, moduleFile).split(sep).join('/');
+  const specifierRe = /\b(?:from|import)\s*\(?\s*['"](\.[^'"]*)['"]/g;
+  let m;
+  while ((m = specifierRe.exec(src)) !== null) {
+    const resolved = join(AGENTIC_DIR, importerDir, m[1]).split(sep).join('/');
+    if (resolved === targetPath) return true;
+  }
+  return false;
 }
 
 describe('boundary -- the six core consumers never import a runtime-only module directly', () => {
@@ -77,7 +101,7 @@ describe('boundary -- the six core consumers never import a runtime-only module 
     for (const runtimeModule of RUNTIME_ONLY_MODULES) {
       it(`${consumer} does not import ./${runtimeModule}`, () => {
         const src = read(consumer);
-        expect(importsFromRelative(src, runtimeModule)).toBe(false);
+        expect(importsFromRelative(consumer, src, runtimeModule)).toBe(false);
       });
     }
   }
@@ -92,7 +116,7 @@ describe('boundary -- matrix-runner.mjs depends on the Claude runtime singleton,
   it('does not import runtimes/contract.mjs\'s runtime-only dependencies via any other path', () => {
     const src = read('matrix-runner.mjs');
     for (const runtimeModule of RUNTIME_ONLY_MODULES) {
-      expect(importsFromRelative(src, runtimeModule)).toBe(false);
+      expect(importsFromRelative('matrix-runner.mjs', src, runtimeModule)).toBe(false);
     }
   });
 });
@@ -122,7 +146,7 @@ describe('boundary -- RUNTIME_ONLY_MODULES gain no new importers repo-wide', () 
       for (const file of ALL_AGENTIC_MJS_FILES) {
         if (file === runtimeModule) continue; // a module never "imports" itself
         const src = read(file);
-        if (importsFromRelative(src, runtimeModule)) actualImporters.push(file);
+        if (importsFromRelative(file, src, runtimeModule)) actualImporters.push(file);
       }
       // runtimes/claude-code.mjs itself lives under tools/agentic-eval/runtimes/, outside
       // ALL_AGENTIC_MJS_FILES's flat top-level manifest -- checked directly, separately, below.
@@ -159,9 +183,62 @@ describe('boundary -- RUNTIME_ONLY_MODULES gain no new importers repo-wide', () 
   it('runtimes/contract.mjs imports none of the four runtime-only modules -- it stays runtime-agnostic', () => {
     const src = read(join('runtimes', 'contract.mjs'));
     for (const runtimeModule of RUNTIME_ONLY_MODULES) {
-      expect(importsFromRelative(src, runtimeModule)).toBe(false);
+      expect(importsFromRelative(join('runtimes', 'contract.mjs'), src, runtimeModule)).toBe(false);
       const escaped = runtimeModule.replace(/\./g, '\\.');
       expect(new RegExp(`from\\s+['"]\\.\\.\\/${escaped}['"]`).test(src)).toBe(false);
+    }
+  });
+
+  // Post-review hardening (round 3): proves the depth-bypass fix actually catches a real violation,
+  // not just that it still passes on existing files. A genuine temporary file (not a synthetic
+  // string fed directly to the helper) two directories under tools/agentic-eval/ -- matching the
+  // reviewer's own "runtimes/provider/" example -- importing '../../stream-parser.mjs', which the
+  // prior 3-pattern regex (./x, ../x, ./runtimes/../x) could never match at this depth. Cleaned up
+  // in a finally so a failed assertion never leaves the probe file behind.
+  it('catches a depth-2 relative import the old ./x or ../x-only regex would miss', () => {
+    const probeDir = join(AGENTIC_DIR, 'runtimes', '__boundary_probe__');
+    const probeRelPath = join('runtimes', '__boundary_probe__', 'example.mjs');
+    const probeAbsPath = join(AGENTIC_DIR, probeRelPath);
+    mkdirSync(probeDir, { recursive: true });
+    writeFileSync(probeAbsPath, "import { parseStreamJsonl } from '../../stream-parser.mjs';\n");
+    try {
+      const src = readFileSync(probeAbsPath, 'utf8');
+      expect(importsFromRelative(probeRelPath, src, 'stream-parser.mjs')).toBe(true);
+    } finally {
+      rmSync(probeDir, { recursive: true, force: true });
+    }
+  });
+
+  // Post-review hardening (round 4): importsFromRelative's specifier regex requires the literal
+  // word "from" before the quoted path -- a side-effect-only import (no "from" at all) never
+  // matches. Same real-temp-file-and-cleanup pattern as the depth-2 probe above.
+  it('catches a side-effect-only import ("import \'...\';", no `from`) the from-only regex would miss', () => {
+    const probeDir = join(AGENTIC_DIR, 'runtimes', '__boundary_probe_sideeffect__');
+    const probeRelPath = join('runtimes', '__boundary_probe_sideeffect__', 'example.mjs');
+    const probeAbsPath = join(AGENTIC_DIR, probeRelPath);
+    mkdirSync(probeDir, { recursive: true });
+    writeFileSync(probeAbsPath, "import '../../stream-parser.mjs';\n");
+    try {
+      const src = readFileSync(probeAbsPath, 'utf8');
+      expect(importsFromRelative(probeRelPath, src, 'stream-parser.mjs')).toBe(true);
+    } finally {
+      rmSync(probeDir, { recursive: true, force: true });
+    }
+  });
+
+  // Post-review hardening (round 4): a dynamic import ("import('...')") also carries no literal
+  // "from" keyword -- same gap, different syntax.
+  it("catches a dynamic import (\"await import('...')\", no `from`) the from-only regex would miss", () => {
+    const probeDir = join(AGENTIC_DIR, 'runtimes', '__boundary_probe_dynamic__');
+    const probeRelPath = join('runtimes', '__boundary_probe_dynamic__', 'example.mjs');
+    const probeAbsPath = join(AGENTIC_DIR, probeRelPath);
+    mkdirSync(probeDir, { recursive: true });
+    writeFileSync(probeAbsPath, "export async function load() { return await import('../../stream-parser.mjs'); }\n");
+    try {
+      const src = readFileSync(probeAbsPath, 'utf8');
+      expect(importsFromRelative(probeRelPath, src, 'stream-parser.mjs')).toBe(true);
+    } finally {
+      rmSync(probeDir, { recursive: true, force: true });
     }
   });
 });

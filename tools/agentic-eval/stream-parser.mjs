@@ -20,7 +20,7 @@
 // Skill invocation is detected from a real `tool_use` content block with name:"Skill" --
 // never inferred from which CLI binary the agent happened to run (that conflation is exactly
 // what this harness exists to fix -- see the PR context).
-import { createHmac } from 'node:crypto';
+import { canonicalNamesKey, fingerprintNames } from './runtimes/contract.mjs';
 
 /**
  * @param {string} rawJsonl - the full stdout capture from a `claude -p ... --output-format
@@ -209,32 +209,30 @@ export function computeAmbientSkillProfile(initEvent, pluginName, skillName, { e
   return { ok: structurallyWellFormed && targetIdentityOk, names, targetPresent, targetDuplicated, structurallyWellFormed, targetIdentityOk };
 }
 
-/** Canonical, order-independent string identity for an ambient-skill name Set -- the single
- * source of truth both the cross-cell equality check (a matrix's cells must agree exactly) and
- * `fingerprintAmbientSkillNames` (below) are built on, so "are these the same profile" and "what
- * hashes to what" can never drift apart into two independently-maintained notions of equality. */
-export function canonicalAmbientSkillNamesKey(names) {
-  return JSON.stringify([...names].sort());
-}
+/** Canonical, order-independent string identity for an ambient-skill name Set -- re-exported from
+ * runtimes/contract.mjs (review-round-3 fix: this file previously carried its OWN independent
+ * reimplementation of this and fingerprintAmbientSkillNames below, with only a test asserting they
+ * happened to produce the same output rather than actually sharing one implementation; the runbook's
+ * own file-scope allowlist explicitly authorizes editing this file "solo para importar/re-exportar
+ * los helpers genericos de canonical ambient names si evitar duplicacion lo exige" -- exactly this
+ * case). contract.mjs owns the one real implementation now; this name is kept so every existing
+ * caller (this file's own fingerprintAmbientSkillNames below, plus this file's dedicated unit tests
+ * that import the name directly) keeps working unchanged -- no parsing semantics changed, only
+ * where the one implementation lives. */
+export const canonicalAmbientSkillNamesKey = canonicalNamesKey;
 
 /**
- * Privacy-safe fingerprint of an ambient-skill name Set, for committed evidence (never the raw
- * names themselves -- see buildRunRecord's own `ambient_skill_profile` field). Review-round-2 fix:
- * this is now HMAC-SHA256, keyed by a caller-supplied `key` (a `Buffer`/`Uint8Array`), NOT a bare
- * unkeyed `SHA256(names)` -- the original unkeyed version was directly demonstrated to be
- * reversible by dictionary attack (hashing every candidate in a short guess list against a small,
- * guessable universe of real Claude Code skill names recovers the exact recorded fingerprint; an
- * unkeyed hash over a small input space is pseudonymization, not anonymization). `key` MUST be a
- * fresh random value generated once per harness invocation and shared by every cell in that
- * matrix/pair (see cli.mjs's `generateAmbientProfileScope`), and MUST NEVER be persisted anywhere
- * -- only its resulting digests are recorded. Two records fingerprinted under two DIFFERENT keys
- * (i.e. two separate invocations) are never meaningfully comparable, by design: see
- * `ambient_skill_profile.scope_id` (cli.mjs/schemas.mjs) for the opaque label that makes this
- * explicit rather than leaving it to be assumed.
+ * Privacy-safe HMAC-SHA256 fingerprint of an ambient-skill name Set, keyed by a caller-supplied
+ * `key` (a `Buffer`/`Uint8Array`) -- re-exported from runtimes/contract.mjs, same reasoning as
+ * canonicalAmbientSkillNamesKey above. `key` MUST be a fresh random value generated once per
+ * harness invocation and shared by every cell in that matrix/pair (see cli.mjs's
+ * `generateAmbientProfileScope`), and MUST NEVER be persisted anywhere -- only its resulting
+ * digests are recorded. Two records fingerprinted under two DIFFERENT keys (i.e. two separate
+ * invocations) are never meaningfully comparable, by design: see `ambient_skill_profile.scope_id`
+ * (cli.mjs/schemas.mjs) for the opaque label that makes this explicit rather than leaving it to be
+ * assumed.
  */
-export function fingerprintAmbientSkillNames(names, key) {
-  return createHmac('sha256', key).update(canonicalAmbientSkillNamesKey(names)).digest('hex');
-}
+export const fingerprintAmbientSkillNames = fingerprintNames;
 
 /**
  * Finds EVERY Skill tool_use for a given skill name and aggregates their correlated outcomes --

@@ -255,14 +255,26 @@ function validateRuntimeRef(runtime, errors) {
   if (!(Number.isInteger(runtime.protocolVersion) && runtime.protocolVersion > 0)) errors.push({ field: 'runtime.protocolVersion', code: 'invalid_value' });
 }
 
+// The closed set of real values condition-launcher.mjs's spawnCondition ever produces (never an
+// arbitrary string) -- both its 'close' path (timedOut ? 'timeout' : (signal != null ? 'error' :
+// null)) and its 'error' path (always 'error') only ever emit these two.
+const TERMINATION_REASONS = Object.freeze(['timeout', 'error']);
+
 function validateProcess(proc, errors) {
   if (!checkKeys(proc, PROCESS_KEYS, 'process', errors)) return;
   if (proc.exitCode !== null && !Number.isInteger(proc.exitCode)) errors.push({ field: 'process.exitCode', code: 'invalid_type' });
   if (typeof proc.terminated !== 'boolean') errors.push({ field: 'process.terminated', code: 'invalid_type' });
-  if (proc.terminationReason !== null && typeof proc.terminationReason !== 'string') errors.push({ field: 'process.terminationReason', code: 'invalid_type' });
+  if (proc.terminationReason !== null && !TERMINATION_REASONS.includes(proc.terminationReason)) errors.push({ field: 'process.terminationReason', code: 'invalid_value' });
+  // A full biconditional, not just one direction -- condition-launcher.mjs's spawnCondition proves
+  // terminated is computed as `timedOut || signal != null` and terminationReason as `timedOut ?
+  // 'timeout' : (signal != null ? 'error' : null)` on EVERY resolution path (close and the
+  // spawn-level error path alike), so terminated is true iff terminationReason is non-null, always.
   if (proc.terminated === false && proc.terminationReason !== null) errors.push({ field: 'process.terminationReason', code: 'invalid_relation' });
+  if (proc.terminated === true && proc.terminationReason === null) errors.push({ field: 'process.terminationReason', code: 'invalid_relation' });
   if (typeof proc.spawnHrtimeNs !== 'bigint') errors.push({ field: 'process.spawnHrtimeNs', code: 'invalid_type' });
   if (typeof proc.endedHrtimeNs !== 'bigint') errors.push({ field: 'process.endedHrtimeNs', code: 'invalid_type' });
+  if (typeof proc.spawnHrtimeNs === 'bigint' && proc.spawnHrtimeNs < 0n) errors.push({ field: 'process.spawnHrtimeNs', code: 'invalid_value' });
+  if (typeof proc.endedHrtimeNs === 'bigint' && proc.endedHrtimeNs < 0n) errors.push({ field: 'process.endedHrtimeNs', code: 'invalid_value' });
   if (typeof proc.spawnHrtimeNs === 'bigint' && typeof proc.endedHrtimeNs === 'bigint' && proc.endedHrtimeNs < proc.spawnHrtimeNs) {
     errors.push({ field: 'process.endedHrtimeNs', code: 'invalid_relation' });
   }
@@ -310,6 +322,24 @@ function validateStructuralIssues(issues, field, errors) {
     if (shape.includes('resultIndex') && !nonNegInt(issue.resultIndex)) errors.push({ field: `${itemField}.resultIndex`, code: 'invalid_value' });
     if (shape.includes('eventsLength') && !nonNegInt(issue.eventsLength)) errors.push({ field: `${itemField}.eventsLength`, code: 'invalid_value' });
     if (shape.includes('initIndex') && !nonNegInt(issue.initIndex)) errors.push({ field: `${itemField}.initIndex`, code: 'invalid_value' });
+    // Semantic predicates PER TYPE, derived from stream-parser.mjs's findTranscriptStructuralIssues
+    // -- each issue type is only ever pushed under one specific numeric condition; a `count`/`index`
+    // that is merely a well-typed non-negative integer can still contradict the very reason the
+    // issue exists at all (e.g. a "duplicate" with count:0, or a "not last" result that IS last).
+    if (nonNegInt(issue.count)) {
+      if ((type === 'init_count' || type === 'result_count') && issue.count === 1) {
+        errors.push({ field: `${itemField}.count`, code: 'invalid_value' });
+      }
+      if ((type === 'duplicate_tool_use_id' || type === 'duplicate_tool_result') && issue.count < 2) {
+        errors.push({ field: `${itemField}.count`, code: 'invalid_value' });
+      }
+    }
+    if (type === 'result_not_last' && nonNegInt(issue.resultIndex) && nonNegInt(issue.eventsLength) && issue.resultIndex >= issue.eventsLength - 1) {
+      errors.push({ field: `${itemField}.resultIndex`, code: 'invalid_relation' });
+    }
+    if (type === 'init_not_first' && nonNegInt(issue.initIndex) && issue.initIndex === 0) {
+      errors.push({ field: `${itemField}.initIndex`, code: 'invalid_value' });
+    }
     if (shape.includes('id')) {
       // orphan_tool_result is the one type stream-parser.mjs can legitimately emit with a null id
       // (a tool_result with no tool_use_id at all) -- every other id-carrying type only ever fires
@@ -332,6 +362,7 @@ function validateIncompleteResults(items, field, errors) {
     if (!checkKeys(item, INCOMPLETE_RESULT_KEYS, itemField, errors)) return;
     if (!nonNegInt(item.index)) errors.push({ field: `${itemField}.index`, code: 'invalid_value' });
     if (item.receiptNs !== null && typeof item.receiptNs !== 'bigint') errors.push({ field: `${itemField}.receiptNs`, code: 'invalid_type' });
+    if (typeof item.receiptNs === 'bigint' && item.receiptNs < 0n) errors.push({ field: `${itemField}.receiptNs`, code: 'invalid_value' });
     if (item.name !== null && typeof item.name !== 'string') errors.push({ field: `${itemField}.name`, code: 'invalid_type' });
     if (item.id !== null && typeof item.id !== 'string') errors.push({ field: `${itemField}.id`, code: 'invalid_type' });
   });
@@ -434,6 +465,7 @@ function validateToolAttempts(attempts, errors) {
     if (attempt.runtimeName !== null && (typeof attempt.runtimeName !== 'string' || attempt.runtimeName.length === 0)) errors.push({ field: `${field}.runtimeName`, code: 'invalid_value' });
     if (!nonNegInt(attempt.eventIndex)) errors.push({ field: `${field}.eventIndex`, code: 'invalid_value' });
     if (attempt.receiptNs !== null && typeof attempt.receiptNs !== 'bigint') errors.push({ field: `${field}.receiptNs`, code: 'invalid_type' });
+    if (typeof attempt.receiptNs === 'bigint' && attempt.receiptNs < 0n) errors.push({ field: `${field}.receiptNs`, code: 'invalid_value' });
     if (typeof attempt.profileAllowed !== 'boolean') errors.push({ field: `${field}.profileAllowed`, code: 'invalid_type' });
 
     const isShell = attempt.kind === 'shell';
@@ -492,6 +524,7 @@ function validateSkill(skill, errors) {
       if (!(Number.isInteger(ti.attemptCount) && ti.attemptCount >= 1)) errors.push({ field: 'skill.targetInvocation.attemptCount', code: 'invalid_value' });
       if (!nonNegInt(ti.eventIndex)) errors.push({ field: 'skill.targetInvocation.eventIndex', code: 'invalid_value' });
       if (ti.receiptNs !== null && typeof ti.receiptNs !== 'bigint') errors.push({ field: 'skill.targetInvocation.receiptNs', code: 'invalid_type' });
+      if (typeof ti.receiptNs === 'bigint' && ti.receiptNs < 0n) errors.push({ field: 'skill.targetInvocation.receiptNs', code: 'invalid_value' });
       if (ti.resultIsError !== null && typeof ti.resultIsError !== 'boolean') errors.push({ field: 'skill.targetInvocation.resultIsError', code: 'invalid_type' });
     }
   }
@@ -504,6 +537,7 @@ function validateSkill(skill, errors) {
       if (!checkKeys(fi, FOREIGN_INVOCATION_KEYS, field, errors)) return;
       if (!nonNegInt(fi.eventIndex)) errors.push({ field: `${field}.eventIndex`, code: 'invalid_value' });
       if (fi.receiptNs !== null && typeof fi.receiptNs !== 'bigint') errors.push({ field: `${field}.receiptNs`, code: 'invalid_type' });
+      if (typeof fi.receiptNs === 'bigint' && fi.receiptNs < 0n) errors.push({ field: `${field}.receiptNs`, code: 'invalid_value' });
       if (fi.id !== null && typeof fi.id !== 'string') errors.push({ field: `${field}.id`, code: 'invalid_type' });
       if (fi.skillReference !== null && typeof fi.skillReference !== 'string') errors.push({ field: `${field}.skillReference`, code: 'invalid_type' });
       if (fi.resultIsError !== null && typeof fi.resultIsError !== 'boolean') errors.push({ field: `${field}.resultIsError`, code: 'invalid_type' });
@@ -521,6 +555,28 @@ function validateHookStats(hookStats, errors) {
   }
   for (const key of ['hookPairingOk', 'everyCallHooked']) {
     if (typeof hookStats[key] !== 'boolean') errors.push({ field: `hookStats.${key}`, code: 'invalid_type' });
+  }
+  // Real relations, derived from stream-parser.mjs's countHookEvents (the one producer of this
+  // whole object). hookPairingOk's own formula requires the started/response id SETS to match in
+  // size, which (combined with each side's ids being unique, also part of that same formula) forces
+  // hookCallCount === hookResponseCount whenever hookPairingOk is true. everyCallHooked's own
+  // formula ANDs hookPairingOk in directly, so everyCallHooked can never be true while
+  // hookPairingOk is false. `decisions` has exactly hookResponseCount entries, each classified into
+  // allow XOR deny XOR neither, so allow+deny can never exceed the response count.
+  if (
+    hookStats.hookPairingOk === true && nonNegInt(hookStats.hookCallCount) && nonNegInt(hookStats.hookResponseCount)
+    && hookStats.hookCallCount !== hookStats.hookResponseCount
+  ) {
+    errors.push({ field: 'hookStats.hookPairingOk', code: 'invalid_relation' });
+  }
+  if (hookStats.everyCallHooked === true && hookStats.hookPairingOk === false) {
+    errors.push({ field: 'hookStats.everyCallHooked', code: 'invalid_relation' });
+  }
+  if (
+    nonNegInt(hookStats.hookAllowCount) && nonNegInt(hookStats.hookDenyCount) && nonNegInt(hookStats.hookResponseCount)
+    && (hookStats.hookAllowCount + hookStats.hookDenyCount) > hookStats.hookResponseCount
+  ) {
+    errors.push({ field: 'hookStats.hookAllowCount', code: 'invalid_relation' });
   }
 }
 
@@ -544,6 +600,200 @@ function validateTiming(timing, errors) {
   for (const [key, value] of map) {
     if (!nonNegInt(key)) errors.push({ field: 'timing.receiptNsByEventIndex', code: 'invalid_key' });
     if (typeof value !== 'bigint') errors.push({ field: 'timing.receiptNsByEventIndex', code: 'invalid_value' });
+    if (typeof value === 'bigint' && value < 0n) errors.push({ field: 'timing.receiptNsByEventIndex', code: 'invalid_value' });
+  }
+}
+
+/** Real, byte-derived timing lookup: returns the timing map's own recorded value for `eventIndex`
+ * (or `null` if absent), used throughout validateCrossFieldInvariants to check a receiptNs-carrying
+ * field against the single shared source of truth instead of trusting the field's own value. */
+function timingValueAt(timingMap, eventIndex) {
+  if (!nonNegInt(eventIndex)) return undefined; // sentinel: caller should skip, not compare
+  return timingMap.has(eventIndex) ? timingMap.get(eventIndex) : null;
+}
+
+/**
+ * Cross-field invariants that span more than one top-level observation section -- every one
+ * derived from the real producers (runtimes/claude-code.mjs's normalizeObservations composing
+ * stream-parser.mjs's countHookEvents/findSkillInvocation/classifyForeignSkillUses/
+ * findTranscriptStructuralIssues(+TolerantOfTimeout)/findIncompleteToolResults(+TolerantOfTimeout)/
+ * findInitEvent/findResultEvent) but unreachable from any single-section validator above, since
+ * each of those only ever sees its own slice. Full IFF relations throughout, not one-directional
+ * checks -- see the runbook's own review-round-4 requirement and PROGRESS.md's invariant table for
+ * the derivation of each. Only runs when the relevant section is already shape-valid
+ * (`isPlainObject`/`Array.isArray` checked inline) -- a malformed section already reports its own
+ * specific error above; this function's job is catching an internally well-typed observation whose
+ * PARTS disagree with each other.
+ */
+function validateCrossFieldInvariants(observation, errors) {
+  const toolAttempts = Array.isArray(observation.toolAttempts) ? observation.toolAttempts : [];
+  const timingMap = isPlainObject(observation.timing) && observation.timing.receiptNsByEventIndex instanceof Map
+    ? observation.timing.receiptNsByEventIndex
+    : null;
+  const isLegitimateTimeout = isPlainObject(observation.process)
+    && observation.process.terminated === true && observation.process.terminationReason === 'timeout';
+
+  // #1 (round 3): every toolAttempts[] entry's own receiptNs must agree exactly with
+  // timing.receiptNsByEventIndex.get(eventIndex) -- both read from the SAME source event.
+  if (timingMap) {
+    for (const attempt of toolAttempts) {
+      if (!isPlainObject(attempt) || !nonNegInt(attempt.eventIndex)) continue;
+      const mapValue = timingValueAt(timingMap, attempt.eventIndex);
+      const attemptReceipt = typeof attempt.receiptNs === 'bigint' ? attempt.receiptNs : null;
+      if (attemptReceipt !== mapValue) {
+        errors.push({ field: 'timing.receiptNsByEventIndex', code: 'invalid_relation' });
+        break;
+      }
+    }
+  }
+
+  // #round-4-1: hookStats.everyCallHooked===true IFF (hookCallCount === the real shell-attempt
+  // count AND hookPairingOk===true) -- countHookEvents' own formula ANDs bashCallCount===
+  // hookStarted.length into everyCallHooked directly; hookPairingOk already implies
+  // hookCallCount===hookResponseCount (validateHookStats), so together these two conjuncts are the
+  // full real formula.
+  if (isPlainObject(observation.hookStats) && typeof observation.hookStats.everyCallHooked === 'boolean') {
+    const shellCount = toolAttempts.filter((a) => isPlainObject(a) && a.kind === 'shell').length;
+    const conditionsHold = observation.hookStats.hookCallCount === shellCount && observation.hookStats.hookPairingOk === true;
+    if (observation.hookStats.everyCallHooked !== conditionsHold) {
+      errors.push({ field: 'hookStats.everyCallHooked', code: 'invalid_relation' });
+    }
+  }
+
+  if (isPlainObject(observation.skill)) {
+    // #round-3 + round-4-2/3/4: skill.targetInvocation <-> toolAttempts with kind='skill' &&
+    // targetsExpectedSkill===true. Existence/count/membership (round 3) PLUS the full field
+    // projection (round 4): confirmed (findSkillInvocation: confirmed iff some match has
+    // result.found&&!result.isError), receiptNs (via the shared timing map), resultIsError (the
+    // toolAttempt AT that exact eventIndex's own result.isError -- the representative IS one of the
+    // matching toolAttempts, same correlated tool_result).
+    const skillAttempts = toolAttempts.filter((a) => isPlainObject(a) && a.kind === 'skill' && a.targetsExpectedSkill === true);
+    const ti = observation.skill.targetInvocation;
+    if (ti === null) {
+      if (skillAttempts.length > 0) errors.push({ field: 'skill.targetInvocation', code: 'invalid_relation' });
+    } else if (isPlainObject(ti)) {
+      if (skillAttempts.length === 0) {
+        errors.push({ field: 'skill.targetInvocation', code: 'invalid_relation' });
+      } else {
+        if (ti.attemptCount !== skillAttempts.length) errors.push({ field: 'skill.targetInvocation.attemptCount', code: 'invalid_relation' });
+        const matching = skillAttempts.find((a) => a.eventIndex === ti.eventIndex);
+        if (!matching) {
+          errors.push({ field: 'skill.targetInvocation.eventIndex', code: 'invalid_relation' });
+        } else {
+          const realConfirmed = skillAttempts.some((a) => isPlainObject(a.result) && a.result.found === true && a.result.isError === false);
+          if (ti.confirmed !== realConfirmed) errors.push({ field: 'skill.targetInvocation.confirmed', code: 'invalid_relation' });
+          if (timingMap && ti.receiptNs !== timingValueAt(timingMap, ti.eventIndex)) {
+            errors.push({ field: 'skill.targetInvocation.receiptNs', code: 'invalid_relation' });
+          }
+          const matchingResultIsError = isPlainObject(matching.result) ? matching.result.isError : null;
+          if (ti.resultIsError !== matchingResultIsError) errors.push({ field: 'skill.targetInvocation.resultIsError', code: 'invalid_relation' });
+        }
+      }
+    }
+
+    // #round-4-5/6: skill.foreignInvocations[] <-> toolAttempts with kind='skill' &&
+    // targetsExpectedSkill===false, both directions (bijection by eventIndex), plus field
+    // consistency -- classifyForeignSkillUses keys off the identical input.skill classification
+    // claude-code.mjs's own toolAttempts construction uses.
+    if (Array.isArray(observation.skill.foreignInvocations)) {
+      const foreignAttempts = toolAttempts.filter((a) => isPlainObject(a) && a.kind === 'skill' && a.targetsExpectedSkill === false);
+      const matchedForeignAttemptIndices = new Set();
+      for (const fi of observation.skill.foreignInvocations) {
+        if (!isPlainObject(fi)) continue;
+        const matching = foreignAttempts.find((a) => a.eventIndex === fi.eventIndex);
+        if (!matching) {
+          errors.push({ field: 'skill.foreignInvocations', code: 'invalid_relation' });
+          continue;
+        }
+        matchedForeignAttemptIndices.add(matching.eventIndex);
+        if (fi.id !== matching.id) errors.push({ field: 'skill.foreignInvocations', code: 'invalid_relation' });
+        const matchingResultIsError = isPlainObject(matching.result) ? matching.result.isError : null;
+        if (fi.resultIsError !== matchingResultIsError) errors.push({ field: 'skill.foreignInvocations', code: 'invalid_relation' });
+        const realConfirmed = isPlainObject(matching.result) && matching.result.found === true && matching.result.isError === false;
+        if (fi.confirmed !== realConfirmed) errors.push({ field: 'skill.foreignInvocations', code: 'invalid_relation' });
+        if (timingMap && fi.receiptNs !== timingValueAt(timingMap, fi.eventIndex)) errors.push({ field: 'skill.foreignInvocations', code: 'invalid_relation' });
+      }
+      for (const attempt of foreignAttempts) {
+        if (!matchedForeignAttemptIndices.has(attempt.eventIndex)) {
+          errors.push({ field: 'skill.foreignInvocations', code: 'invalid_relation' });
+        }
+      }
+    }
+  }
+
+  if (isPlainObject(observation.transcript)) {
+    const strictIssues = Array.isArray(observation.transcript.strictStructuralIssues) ? observation.transcript.strictStructuralIssues : null;
+    const effectiveIssues = Array.isArray(observation.transcript.effectiveStructuralIssues) ? observation.transcript.effectiveStructuralIssues : null;
+    const strictIncomplete = Array.isArray(observation.transcript.strictIncompleteToolResults) ? observation.transcript.strictIncompleteToolResults : null;
+    const effectiveIncomplete = Array.isArray(observation.transcript.effectiveIncompleteToolResults) ? observation.transcript.effectiveIncompleteToolResults : null;
+    // JSON.stringify throws on a raw BigInt (strictIncompleteToolResults/effectiveIncompleteToolResults
+    // entries carry a bigint receiptNs) -- stringify bigints to a tagged string form first.
+    const issueKey = (i) => JSON.stringify(i, (_k, v) => (typeof v === 'bigint' ? `__bigint__${v}` : v));
+
+    // #round-4-7: effectiveStructuralIssues = strictStructuralIssues minus (at most one
+    // {type:'result_count',count:0}, only under a legitimate timeout) -- findTranscriptStructural
+    // IssuesToleratingTimeout's exact filter.
+    if (strictIssues && effectiveIssues) {
+      const strictKeys = strictIssues.map(issueKey);
+      const effectiveKeys = effectiveIssues.map(issueKey);
+      const resultCount0Key = JSON.stringify({ type: 'result_count', count: 0 });
+      const expectedEffectiveKeys = (isLegitimateTimeout && strictKeys.includes(resultCount0Key))
+        ? (() => { const k = [...strictKeys]; k.splice(k.indexOf(resultCount0Key), 1); return k; })()
+        : strictKeys;
+      const sortedA = [...effectiveKeys].sort();
+      const sortedB = [...expectedEffectiveKeys].sort();
+      if (sortedA.length !== sortedB.length || sortedA.some((v, i) => v !== sortedB[i])) {
+        errors.push({ field: 'transcript.effectiveStructuralIssues', code: 'invalid_relation' });
+      }
+    }
+
+    // #round-4-8: effectiveIncompleteToolResults = strictIncompleteToolResults minus (the ONE
+    // entry, only when legitimate timeout AND strict has exactly 1 entry AND that entry's index
+    // equals the max eventIndex among toolAttempts) -- findIncompleteToolResultsToleratingTimeout's
+    // exact filter.
+    if (strictIncomplete && effectiveIncomplete) {
+      const maxAttemptIndex = toolAttempts.reduce((max, a) => (isPlainObject(a) && nonNegInt(a.eventIndex) && a.eventIndex > max ? a.eventIndex : max), -1);
+      const toleratesTheOne = isLegitimateTimeout && strictIncomplete.length === 1
+        && isPlainObject(strictIncomplete[0]) && strictIncomplete[0].index === maxAttemptIndex;
+      const expectedEffective = toleratesTheOne ? [] : strictIncomplete;
+      const sortedA = effectiveIncomplete.map(issueKey).sort();
+      const sortedB = expectedEffective.map(issueKey).sort();
+      if (sortedA.length !== sortedB.length || sortedA.some((v, i) => v !== sortedB[i])) {
+        errors.push({ field: 'transcript.effectiveIncompleteToolResults', code: 'invalid_relation' });
+      }
+    }
+
+    // #round-4-9: strictIncompleteToolResults' eventIndex-set === toolAttempts' eventIndex-set
+    // where result.found===false -- findIncompleteToolResults' two-branch condition (id==null OR
+    // findToolResultById(...)==null) is identical to how toolAttempts[].result.found is derived.
+    if (strictIncomplete) {
+      const incompleteIndices = new Set(strictIncomplete.filter(isPlainObject).map((i) => i.index));
+      const attemptFoundFalseIndices = new Set(
+        toolAttempts.filter((a) => isPlainObject(a) && isPlainObject(a.result) && a.result.found === false && nonNegInt(a.eventIndex)).map((a) => a.eventIndex),
+      );
+      const setsEqual = incompleteIndices.size === attemptFoundFalseIndices.size
+        && [...incompleteIndices].every((i) => attemptFoundFalseIndices.has(i));
+      if (!setsEqual) errors.push({ field: 'transcript.strictIncompleteToolResults', code: 'invalid_relation' });
+    }
+
+    // #round-4-10/11: session.initPresent / terminal.present <-> strictStructuralIssues' init_count
+    // / result_count issue (findInitEvent/findResultEvent take the FIRST matching event
+    // regardless of count; the *_count issue fires exactly when count!==1). MUST read strict, not
+    // effective -- effective may have result_count:0 filtered away under a legitimate timeout while
+    // terminal.present is still genuinely false.
+    if (strictIssues) {
+      const initCountIssue = strictIssues.find((i) => isPlainObject(i) && i.type === 'init_count');
+      const expectedInitPresent = initCountIssue ? (nonNegInt(initCountIssue.count) && initCountIssue.count >= 1) : true;
+      if (isPlainObject(observation.session) && typeof observation.session.initPresent === 'boolean' && observation.session.initPresent !== expectedInitPresent) {
+        errors.push({ field: 'session.initPresent', code: 'invalid_relation' });
+      }
+
+      const resultCountIssue = strictIssues.find((i) => isPlainObject(i) && i.type === 'result_count');
+      const expectedTerminalPresent = resultCountIssue ? (nonNegInt(resultCountIssue.count) && resultCountIssue.count >= 1) : true;
+      if (isPlainObject(observation.terminal) && typeof observation.terminal.present === 'boolean' && observation.terminal.present !== expectedTerminalPresent) {
+        errors.push({ field: 'terminal.present', code: 'invalid_relation' });
+      }
+    }
   }
 }
 
@@ -577,6 +827,8 @@ export function validateObservation(observation) {
   if ('byteMetrics' in observation) validateByteMetrics(observation.byteMetrics, errors);
   if ('timing' in observation) validateTiming(observation.timing, errors);
 
+  validateCrossFieldInvariants(observation, errors);
+
   return { ok: errors.length === 0, errors };
 }
 
@@ -603,18 +855,21 @@ export function msSinceOrigin(receiptNs, originNs) {
   return Number(receiptNs - originNs) / 1e6;
 }
 
-/** Order-independent string identity for an ambient-name Set -- the same formula
- * stream-parser.mjs's own canonicalAmbientSkillNamesKey uses (JSON array of the sorted names),
- * reimplemented here so this runtime-agnostic module never imports a Claude-specific one. Must
- * stay byte-for-byte identical to stream-parser.mjs's version: both are expected to produce the
- * same fingerprint for the same names + key. */
+/** Order-independent string identity for an ambient-name Set (JSON array of the sorted names).
+ * The ONE implementation: stream-parser.mjs's canonicalAmbientSkillNamesKey re-exports this exact
+ * function (review-round-3 fix -- previously stream-parser.mjs carried its own independent copy,
+ * with only a test asserting the two happened to produce the same output; the runbook's file-scope
+ * allowlist explicitly authorizes editing stream-parser.mjs to import/re-export this exact generic
+ * helper instead). Defined here, not in stream-parser.mjs, so this runtime-agnostic module never
+ * needs to import a Claude-specific one -- the dependency arrow points from stream-parser.mjs to
+ * this contract, never the reverse. */
 export function canonicalNamesKey(names) {
   return JSON.stringify([...names].sort());
 }
 
-/** HMAC-SHA256 fingerprint of an ambient-name Set, keyed by a caller-supplied ephemeral key --
- * same algorithm as stream-parser.mjs's fingerprintAmbientSkillNames, reimplemented generically
- * here (see canonicalNamesKey's doc comment for why). */
+/** HMAC-SHA256 fingerprint of an ambient-name Set, keyed by a caller-supplied ephemeral key. The
+ * ONE implementation -- see canonicalNamesKey's doc comment above; stream-parser.mjs's
+ * fingerprintAmbientSkillNames re-exports this exact function. */
 export function fingerprintNames(names, key) {
   return createHmac('sha256', key).update(canonicalNamesKey(names)).digest('hex');
 }
