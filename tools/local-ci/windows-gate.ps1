@@ -38,16 +38,30 @@ function Find-Jdk17 {
 
 $originalPath = $env:PATH
 $originalJavaHome = $env:JAVA_HOME
-# On hosts where a child cmd.exe process inherits an empty PATH regardless of the caller's own
-# environment, npm's own cmd.exe-routed lifecycle-script execution breaks (e.g. esbuild's
-# postinstall fails to find `node`). Routing npm's lifecycle
-# scripts through PowerShell instead avoids that hop entirely. Set-ScopedEnvVar/Restore-ScopedEnvVar
-# (environment-utils.ps1) capture/restore exactly -- present vs. absent, not just value -- so a
-# caller's own environment is never permanently altered by running this gate.
-$npmScriptShellScope = Set-ScopedEnvVar -Name 'npm_config_script_shell' -Value (Get-Command powershell -ErrorAction Stop).Source
-$sensitiveEnvironment = Suspend-SensitiveEnvironment
-Push-Location $RepoRoot
+# Every state mutation below (env vars, current-location) is initialized to an inert default here,
+# then only ever ASSIGNED inside the try block that follows -- so the finally block's own
+# conditional restoration (`if ($x) { ... }`) can tell "this step never even ran" apart from "this
+# step ran and needs undoing" regardless of exactly where inside the try a throw happens. Before
+# this hardening, the 3 setup mutations below ran BEFORE the try started: a failure partway through
+# them (Get-Command not finding powershell, Suspend-SensitiveEnvironment itself throwing,
+# Push-Location failing) left whatever had already succeeded permanently unrestored, since
+# PowerShell's finally only guards code that is actually inside the try.
+$npmScriptShellScope = $null
+$sensitiveEnvironment = $null
+$pushedLocation = $false
+$nodeExeScope = $null
 try {
+    # On hosts where a child cmd.exe process inherits an empty PATH regardless of the caller's own
+    # environment, npm's own cmd.exe-routed lifecycle-script execution breaks (e.g. esbuild's
+    # postinstall fails to find `node`). Routing npm's lifecycle scripts through PowerShell instead
+    # avoids that hop entirely. Set-ScopedEnvVar/Restore-ScopedEnvVar (environment-utils.ps1)
+    # capture/restore exactly -- present vs. absent, not just value -- so a caller's own
+    # environment is never permanently altered by running this gate.
+    $npmScriptShellScope = Set-ScopedEnvVar -Name 'npm_config_script_shell' -Value (Get-Command powershell -ErrorAction Stop).Source
+    $sensitiveEnvironment = Suspend-SensitiveEnvironment
+    Push-Location $RepoRoot
+    $pushedLocation = $true
+
     $node24 = Join-Path $Node24Home 'node.exe'
     if (-not (Test-Path $node24)) {
         throw "Node 24.18.0 not found at $Node24Home. Install it with nvm-windows before running the full gate."
@@ -120,10 +134,11 @@ try {
 finally {
     $env:PATH = $originalPath
     $env:JAVA_HOME = $originalJavaHome
-    Restore-ScopedEnvVar -Saved $npmScriptShellScope
-    # $nodeExeScope is only assigned once node24 has been located (inside the try block) -- a
-    # throw before that point means there is nothing to restore.
+    # Every restoration below is conditional on the matching setup step having actually succeeded
+    # (tracked via the inert defaults declared before the try) -- resilient to a throw at ANY point,
+    # not just after every setup step has already completed.
+    if ($npmScriptShellScope) { Restore-ScopedEnvVar -Saved $npmScriptShellScope }
     if ($nodeExeScope) { Restore-ScopedEnvVar -Saved $nodeExeScope }
-    Restore-SensitiveEnvironment -Entries $sensitiveEnvironment
-    Pop-Location
+    if ($sensitiveEnvironment) { Restore-SensitiveEnvironment -Entries $sensitiveEnvironment }
+    if ($pushedLocation) { Pop-Location }
 }

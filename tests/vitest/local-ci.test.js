@@ -191,4 +191,65 @@ describe('local CI cost gate', () => {
     const checked = spawnSync('pwsh', ['-NoProfile', '-Command', script], { encoding: 'utf8' });
     expect(checked.status, checked.stdout + checked.stderr).toBe(0);
   });
+
+  // Post-review hardening (round 1): windows-gate.ps1 previously ran its 3 setup mutations
+  // (Set-ScopedEnvVar for npm_config_script_shell, Suspend-SensitiveEnvironment, Push-Location)
+  // BEFORE its own try block started -- a failure partway through (e.g. the 2nd or 3rd step
+  // throwing after the 1st already succeeded) would leave that already-mutated state permanently
+  // unrestored, since PowerShell's finally only guards code INSIDE the try. This test doesn't force
+  // windows-gate.ps1's own specific Get-Command/Push-Location calls to fail (fragile and, for
+  // Get-Command, would require neutering this test process's own PATH) -- it instead proves the
+  // GENERAL resilience pattern windows-gate.ps1 now uses, with the same real functions
+  // (Set-ScopedEnvVar/Suspend-SensitiveEnvironment/Restore-ScopedEnvVar/Restore-SensitiveEnvironment)
+  // it actually calls, injecting a deliberate failure between the 2nd and 3rd setup step and
+  // proving the first two ARE still cleanly restored despite the third never running.
+  it.skipIf(process.platform !== 'win32')('the resilience pattern windows-gate.ps1 uses restores every mutation that already succeeded, even when a LATER setup step fails', () => {
+    const scriptPath = resolve(root, 'tools/local-ci/environment-utils.ps1').replaceAll("'", "''");
+    // A real multi-line try/catch/finally, not a `.join('; ')`'d array -- joining a compound
+    // try/catch/finally statement with '; ' as the separator inserts a semicolon between the `}`
+    // closing catch and the `finally` keyword, which breaks PowerShell's parsing of the compound
+    // statement (every other script in this file is flat/single-statement-per-line, so this is the
+    // first one to hit that pitfall).
+    const script = `
+. '${scriptPath}'
+$env:KMP_RESILIENCE_TEST_NPM_SHELL = 'before-gate'
+$env:ANTHROPIC_API_KEY = 'placeholder-only'
+$npmScope = $null
+$sensitive = $null
+$thirdStepRan = $false
+$caught = $null
+try {
+  $npmScope = Set-ScopedEnvVar -Name 'KMP_RESILIENCE_TEST_NPM_SHELL' -Value 'during-gate'
+  $sensitive = Suspend-SensitiveEnvironment
+  throw 'simulated: the 3rd setup step (e.g. Push-Location) fails here'
+  $thirdStepRan = $true
+} catch {
+  $caught = $_
+} finally {
+  if ($npmScope) { Restore-ScopedEnvVar -Saved $npmScope }
+  if ($sensitive) { Restore-SensitiveEnvironment -Entries $sensitive }
+}
+if ($null -eq $caught) { exit 1 }
+if ($thirdStepRan) { exit 2 }
+if ($env:KMP_RESILIENCE_TEST_NPM_SHELL -ne 'before-gate') { exit 3 }
+if ($env:ANTHROPIC_API_KEY -ne 'placeholder-only') { exit 4 }
+`;
+    const checked = spawnSync('pwsh', ['-NoProfile', '-Command', script], { encoding: 'utf8' });
+    expect(checked.status, checked.stdout + checked.stderr).toBe(0);
+  });
+
+  it.skipIf(process.platform !== 'win32')('windows-gate.ps1 wraps its OWN setup mutations (npm_config_script_shell, Suspend-SensitiveEnvironment, Push-Location) inside its try, not before it', () => {
+    const gate = read('tools/local-ci/windows-gate.ps1');
+    const tryIndex = gate.indexOf('\ntry {');
+    // The real statements, not a bare substring -- this file's own explanatory comment ahead of
+    // the try block mentions "Suspend-SensitiveEnvironment"/"Push-Location" by name too (describing
+    // what used to run unguarded), so a plain indexOf would match the COMMENT, not the call.
+    const npmScopeIndex = gate.indexOf("Set-ScopedEnvVar -Name 'npm_config_script_shell'");
+    const suspendIndex = gate.indexOf('$sensitiveEnvironment = Suspend-SensitiveEnvironment');
+    const pushLocationIndex = gate.indexOf('Push-Location $RepoRoot\n    $pushedLocation');
+    expect(tryIndex).toBeGreaterThan(-1);
+    expect(npmScopeIndex).toBeGreaterThan(tryIndex);
+    expect(suspendIndex).toBeGreaterThan(tryIndex);
+    expect(pushLocationIndex).toBeGreaterThan(tryIndex);
+  });
 });

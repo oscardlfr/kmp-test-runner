@@ -9,7 +9,7 @@
 // itself becomes a new consumer of the modules it is policing.
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -19,22 +19,37 @@ function read(relPath) {
   return readFileSync(join(AGENTIC_DIR, relPath), 'utf8');
 }
 
-// Hardcoded, not a dynamic directory walk (fs.readdirSync's recursive option needs Node 20.1+;
-// package.json declares >=18) -- also more precise: a newly added file must be deliberately
-// added to this manifest for the boundary sweep below to see it, rather than being silently
-// picked up (or silently skipped, if some future glob logic missed it).
-const ALL_AGENTIC_MJS_FILES = [
-  'accepted-run-audit.mjs', 'aggregate.mjs', 'analysis.mjs', 'auth-preflight.mjs',
-  'cell-integrity.mjs', 'cli.mjs', 'command-classify.mjs', 'condition-launcher.mjs',
-  'dispatch-accounting.mjs', 'durable-journal.mjs', 'env-builder.mjs', 'evidence-io.mjs',
-  'graders.mjs', 'incident-diagnostics.mjs', 'junit-evidence-hook.mjs', 'junit-evidence-io.mjs',
-  'junit-evidence.mjs', 'materialize.mjs', 'matrix-runner.mjs', 'measurement-scope.mjs',
-  'path-shim.mjs', 'policy-config.mjs', 'policy-hook.mjs', 'privacy.mjs', 'randomizer.mjs',
-  'rejection-diagnostics.mjs', 'resolve-bash.mjs', 'run-record-loader.mjs', 'schemas.mjs',
-  'stream-parser.mjs',
-];
+// Post-review hardening (round 1): a static, hand-maintained file list means a newly added .mjs
+// file that ITSELF violates the boundary (imports stream-parser.mjs directly, say) stays invisible
+// to every check below unless someone remembers to add it here too -- CI stays green on a real
+// violation. A real recursive walk closes that gap; fs.readdirSync's own `recursive: true` option
+// needs Node 20.1+ (package.json declares >=18), so this walks manually instead. Covers the WHOLE
+// tools/agentic-eval/ tree, including runtimes/ -- previously a separately-manifested, hand-listed
+// exception (see the boundary-repo-wide describe block below, which now needs no such carve-out).
+function walkMjsFiles(dir, baseDir = dir) {
+  const results = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const fullPath = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      results.push(...walkMjsFiles(fullPath, baseDir));
+    } else if (entry.isFile() && entry.name.endsWith('.mjs')) {
+      results.push(relative(baseDir, fullPath).split(sep).join('/'));
+    }
+  }
+  return results;
+}
 
-it('ALL_AGENTIC_MJS_FILES sanity: every listed file actually exists (catches manifest drift)', () => {
+const ALL_AGENTIC_MJS_FILES = walkMjsFiles(AGENTIC_DIR);
+
+it('the recursive walk actually found files (catches a walker regression that would silently pass every "no violation" check below by finding nothing)', () => {
+  expect(ALL_AGENTIC_MJS_FILES.length).toBeGreaterThan(25);
+  expect(ALL_AGENTIC_MJS_FILES).toContain('cli.mjs');
+  expect(ALL_AGENTIC_MJS_FILES).toContain('stream-parser.mjs');
+  expect(ALL_AGENTIC_MJS_FILES).toContain('runtimes/contract.mjs');
+  expect(ALL_AGENTIC_MJS_FILES).toContain('runtimes/claude-code.mjs');
+});
+
+it('ALL_AGENTIC_MJS_FILES sanity: every discovered file actually exists and reads cleanly', () => {
   for (const file of ALL_AGENTIC_MJS_FILES) {
     expect(() => read(file)).not.toThrow();
   }
@@ -47,7 +62,7 @@ const RUNTIME_ONLY_MODULES = ['stream-parser.mjs', 'condition-launcher.mjs', 'au
 const ALLOWED_IMPORTERS_OF_RUNTIME_ONLY_MODULES = new Set([
   'condition-launcher.mjs', // imports env-builder.mjs
   'auth-preflight.mjs', // imports condition-launcher.mjs
-  'claude-code.mjs', // runtimes/claude-code.mjs -- the sole new consumer
+  'runtimes/claude-code.mjs', // the sole new consumer -- now walked at its real nested path
 ]);
 
 function importsFromRelative(src, moduleFile) {

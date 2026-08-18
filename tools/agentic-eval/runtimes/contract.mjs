@@ -58,6 +58,23 @@ const TRANSCRIPT_KEYS = ['malformedLineCount', 'strictStructuralIssues', 'effect
 // observation.
 const STRUCTURAL_ISSUE_TYPES = ['init_count', 'result_count', 'empty_tool_use_id', 'duplicate_tool_use_id', 'orphan_tool_result', 'duplicate_tool_result', 'result_not_last', 'init_not_first'];
 const STRUCTURAL_ISSUE_EXTRA_KEYS = ['count', 'id', 'resultIndex', 'eventsLength', 'initIndex'];
+// The exact extra-key set PER TYPE, taken directly from stream-parser.mjs's own
+// findTranscriptStructuralIssues() construction sites (never guessed) -- STRUCTURAL_ISSUE_EXTRA_KEYS
+// above is the flat union across all 8 types, used only for the top-level "is this even a
+// recognized extra-key NAME anywhere" pre-check; this map is what actually pins which keys (and
+// therefore which VALUES) a given `type` may legitimately carry, closing the gap where e.g. an
+// `init_count` issue (real shape: {type, count}) could otherwise carry an unrelated `id` value
+// (a real key name for OTHER types) with nothing ever inspecting it.
+const STRUCTURAL_ISSUE_SHAPE_BY_TYPE = {
+  init_count: ['count'],
+  result_count: ['count'],
+  empty_tool_use_id: [],
+  duplicate_tool_use_id: ['id', 'count'],
+  orphan_tool_result: ['id'],
+  duplicate_tool_result: ['id', 'count'],
+  result_not_last: ['resultIndex', 'eventsLength'],
+  init_not_first: ['initIndex'],
+};
 const INCOMPLETE_RESULT_KEYS = ['index', 'receiptNs', 'name', 'id'];
 // resultSubtype is additive beyond the runbook's literal terminal spec ({present, isError,
 // turnCount, finalText, usage}) -- calibrationHardGate/smokeHardGate (cli.mjs) need it alongside
@@ -76,25 +93,37 @@ const HOOK_STATS_KEYS = ['hookCallCount', 'hookResponseCount', 'hookDenyCount', 
 const BYTE_METRICS_KEYS = ['outputBytes', 'streamJsonBytes'];
 const TIMING_KEYS = ['receiptNsByEventIndex'];
 
+// Rejects anything backed by a prototype chain beyond the plain-object baseline (Object.prototype
+// or null) -- not just Array.isArray. Post-review hardening: `key in obj` (below) traverses the
+// prototype chain, so an object with ZERO own properties but a well-formed object as its
+// prototype (Object.create(realShape)) previously validated as if every key were genuinely
+// present. Rejecting any non-baseline prototype here closes that at the root, before checkKeys
+// ever runs -- an adversarial shape can't reach the `in`-based check at all.
 function isPlainObject(v) {
-  return v != null && typeof v === 'object' && !Array.isArray(v);
+  if (v == null || typeof v !== 'object' || Array.isArray(v)) return false;
+  const proto = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
 }
 
 function nonNegInt(v) {
   return Number.isInteger(v) && v >= 0;
 }
 
-/** Closed-keyset check at one nesting level: every allowed key must be present, no other key may
- * appear. Returns false only when `obj` itself isn't a plain object (nothing further to check at
- * this level) -- a missing/unknown individual KEY still returns true, so a caller can keep
- * validating the rest of a partially-malformed object instead of aborting the whole pass. */
+/** Closed-keyset check at one nesting level: every allowed key must be present as the object's
+ * OWN property, no other own property may appear. Returns false only when `obj` itself isn't a
+ * plain object (nothing further to check at this level) -- a missing/unknown individual KEY still
+ * returns true, so a caller can keep validating the rest of a partially-malformed object instead
+ * of aborting the whole pass. Uses hasOwnProperty (not `key in obj`) as a second, independent
+ * layer against the same prototype-inheritance class isPlainObject already guards -- own-property
+ * enumeration is the correct semantics for a closed contract either way, regardless of how deep an
+ * adversarial prototype chain runs. */
 function checkKeys(obj, allowedKeys, field, errors) {
   if (!isPlainObject(obj)) {
     errors.push({ field, code: 'invalid_shape' });
     return false;
   }
   for (const key of allowedKeys) {
-    if (!(key in obj)) errors.push({ field: field ? `${field}.${key}` : key, code: 'missing_key' });
+    if (!Object.prototype.hasOwnProperty.call(obj, key)) errors.push({ field: field ? `${field}.${key}` : key, code: 'missing_key' });
   }
   for (const key of Object.keys(obj)) {
     if (!allowedKeys.includes(key)) errors.push({ field: field ? `${field}.${key}` : key, code: 'unknown_key' });
@@ -234,6 +263,9 @@ function validateProcess(proc, errors) {
   if (proc.terminated === false && proc.terminationReason !== null) errors.push({ field: 'process.terminationReason', code: 'invalid_relation' });
   if (typeof proc.spawnHrtimeNs !== 'bigint') errors.push({ field: 'process.spawnHrtimeNs', code: 'invalid_type' });
   if (typeof proc.endedHrtimeNs !== 'bigint') errors.push({ field: 'process.endedHrtimeNs', code: 'invalid_type' });
+  if (typeof proc.spawnHrtimeNs === 'bigint' && typeof proc.endedHrtimeNs === 'bigint' && proc.endedHrtimeNs < proc.spawnHrtimeNs) {
+    errors.push({ field: 'process.endedHrtimeNs', code: 'invalid_relation' });
+  }
 }
 
 function validateSession(session, errors) {
@@ -256,9 +288,36 @@ function validateStructuralIssues(issues, field, errors) {
       errors.push({ field: itemField, code: 'invalid_shape' });
       return;
     }
-    if (!STRUCTURAL_ISSUE_TYPES.includes(issue.type)) errors.push({ field: `${itemField}.type`, code: 'invalid_value' });
+    const type = issue.type;
+    if (!STRUCTURAL_ISSUE_TYPES.includes(type)) {
+      errors.push({ field: `${itemField}.type`, code: 'invalid_value' });
+      // Shape is only meaningful relative to a real, recognized type -- an unrecognized type
+      // already fails closed on its own; validating "extra keys" against the flat union would
+      // let a fabricated type smuggle any real key name through unchecked.
+      for (const key of Object.keys(issue)) {
+        if (key !== 'type') errors.push({ field: `${itemField}.${key}`, code: 'unknown_key' });
+      }
+      return;
+    }
+    const shape = STRUCTURAL_ISSUE_SHAPE_BY_TYPE[type];
     for (const key of Object.keys(issue)) {
-      if (key !== 'type' && !STRUCTURAL_ISSUE_EXTRA_KEYS.includes(key)) errors.push({ field: `${itemField}.${key}`, code: 'unknown_key' });
+      if (key !== 'type' && !shape.includes(key)) errors.push({ field: `${itemField}.${key}`, code: 'unknown_key' });
+    }
+    for (const key of shape) {
+      if (!Object.prototype.hasOwnProperty.call(issue, key)) errors.push({ field: `${itemField}.${key}`, code: 'missing_key' });
+    }
+    if (shape.includes('count') && !nonNegInt(issue.count)) errors.push({ field: `${itemField}.count`, code: 'invalid_value' });
+    if (shape.includes('resultIndex') && !nonNegInt(issue.resultIndex)) errors.push({ field: `${itemField}.resultIndex`, code: 'invalid_value' });
+    if (shape.includes('eventsLength') && !nonNegInt(issue.eventsLength)) errors.push({ field: `${itemField}.eventsLength`, code: 'invalid_value' });
+    if (shape.includes('initIndex') && !nonNegInt(issue.initIndex)) errors.push({ field: `${itemField}.initIndex`, code: 'invalid_value' });
+    if (shape.includes('id')) {
+      // orphan_tool_result is the one type stream-parser.mjs can legitimately emit with a null id
+      // (a tool_result with no tool_use_id at all) -- every other id-carrying type only ever fires
+      // for an id already confirmed present in the transcript.
+      const idOk = type === 'orphan_tool_result'
+        ? (issue.id === null || (typeof issue.id === 'string' && issue.id.length > 0))
+        : (typeof issue.id === 'string' && issue.id.length > 0);
+      if (!idOk) errors.push({ field: `${itemField}.id`, code: 'invalid_value' });
     }
   });
 }
@@ -295,6 +354,14 @@ function validateUsage(usage, errors) {
   }
 }
 
+// present/sibling-field coherence, derived from the ONE real construction site (runtimes/
+// claude-code.mjs's own terminal object): present:false means no result event ever arrived, so
+// isError/turnCount/finalText/resultSubtype/every usage dimension are ALWAYS null there -- never
+// independently non-null. present:true means a result event DID arrive, so `isError` (a plain
+// `=== true` comparison in the adapter, never itself undefined/null once a result exists) is
+// ALWAYS a real boolean -- but turnCount/finalText/resultSubtype stay independently nullable even
+// when present (a real result missing num_turns/result/subtype is still a genuinely-present,
+// just degraded, result -- not the same fact as "no result at all").
 function validateTerminal(terminal, errors) {
   if (!checkKeys(terminal, TERMINAL_KEYS, 'terminal', errors)) return;
   if (typeof terminal.present !== 'boolean') errors.push({ field: 'terminal.present', code: 'invalid_type' });
@@ -303,6 +370,19 @@ function validateTerminal(terminal, errors) {
   if (terminal.finalText !== null && typeof terminal.finalText !== 'string') errors.push({ field: 'terminal.finalText', code: 'invalid_type' });
   if (terminal.resultSubtype !== null && typeof terminal.resultSubtype !== 'string') errors.push({ field: 'terminal.resultSubtype', code: 'invalid_type' });
   if ('usage' in terminal) validateUsage(terminal.usage, errors);
+  if (terminal.present === false) {
+    if (terminal.isError !== null) errors.push({ field: 'terminal.isError', code: 'invalid_relation' });
+    if (terminal.turnCount !== null) errors.push({ field: 'terminal.turnCount', code: 'invalid_relation' });
+    if (terminal.finalText !== null) errors.push({ field: 'terminal.finalText', code: 'invalid_relation' });
+    if (terminal.resultSubtype !== null) errors.push({ field: 'terminal.resultSubtype', code: 'invalid_relation' });
+    if (isPlainObject(terminal.usage)) {
+      for (const key of USAGE_DIMENSIONS) {
+        if (terminal.usage[key] !== null) errors.push({ field: `terminal.usage.${key}`, code: 'invalid_relation' });
+      }
+    }
+  } else if (terminal.present === true && terminal.isError === null) {
+    errors.push({ field: 'terminal.isError', code: 'invalid_relation' });
+  }
 }
 
 function validateToolResult(result, field, errors) {
@@ -453,7 +533,18 @@ function validateByteMetrics(byteMetrics, errors) {
 
 function validateTiming(timing, errors) {
   if (!checkKeys(timing, TIMING_KEYS, 'timing', errors)) return;
-  if (!(timing.receiptNsByEventIndex instanceof Map)) errors.push({ field: 'timing.receiptNsByEventIndex', code: 'invalid_type' });
+  const map = timing.receiptNsByEventIndex;
+  if (!(map instanceof Map)) {
+    errors.push({ field: 'timing.receiptNsByEventIndex', code: 'invalid_type' });
+    return;
+  }
+  // Contents, not just "is a Map" -- a Map's entries are opaque to the closed-keyset machinery
+  // above, so provider-native content (a raw event object, a string) could otherwise ride along
+  // as a value with no other check ever inspecting it.
+  for (const [key, value] of map) {
+    if (!nonNegInt(key)) errors.push({ field: 'timing.receiptNsByEventIndex', code: 'invalid_key' });
+    if (typeof value !== 'bigint') errors.push({ field: 'timing.receiptNsByEventIndex', code: 'invalid_value' });
+  }
 }
 
 /**

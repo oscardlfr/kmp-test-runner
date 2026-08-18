@@ -3,7 +3,10 @@
 // contract validator and the generic helpers core consumers (cli.mjs, matrix-runner.mjs,
 // cell-integrity.mjs, graders.mjs, accepted-run-audit.mjs, junit-evidence.mjs) use instead of
 // reaching into a provider's own wire format. Exercised entirely against synthetic data --
-// this file never imports runtimes/claude-code.mjs or any Claude-specific module.
+// this file never imports runtimes/claude-code.mjs. The one exception is a dynamic import of
+// stream-parser.mjs, scoped to a single describe block near the end of this file, solely to prove
+// contract.mjs's own canonicalNamesKey/fingerprintNames stay byte-for-byte equivalent to
+// stream-parser.mjs's analogous (frozen, unmodifiable) functions -- see that block's own comment.
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -570,6 +573,153 @@ describe('validateObservation -- transcript structural-issue / incomplete-result
   });
 });
 
+// ---------------------------------------------------------------------------
+// Post-review hardening (round 1): the contract's "closed" keyset check used `key in obj`
+// (traverses the prototype chain) instead of an own-property check, and several sub-validators
+// checked a key's NAME/TYPE without checking its VALUE or its coherence with a sibling field --
+// both let synthetic-but-adversarial input validate clean. Each case below is reproduced first
+// (RED), then closed.
+// ---------------------------------------------------------------------------
+
+describe('validateRuntimeAdapter -- rejects prototype-inherited shapes (own-properties only)', () => {
+  it('an adapter with ZERO own properties, fully backed by a well-formed prototype, is rejected', () => {
+    const proto = validAdapter();
+    const evilAdapter = Object.create(proto);
+    expect(Object.keys(evilAdapter)).toEqual([]); // sanity: genuinely zero own keys
+    const result = validateRuntimeAdapter(evilAdapter);
+    expect(result.ok).toBe(false);
+    expect(result.errors.length).toBeGreaterThan(0);
+  });
+
+  it('capabilities backed only by an inherited prototype is also rejected, not just the adapter root', () => {
+    const evilCaps = Object.create(validCapabilities());
+    const adapter = validAdapter({ capabilities: evilCaps });
+    expect(validateRuntimeAdapter(adapter).ok).toBe(false);
+  });
+});
+
+describe('validateObservation -- rejects prototype-inherited shapes (own-properties only)', () => {
+  it('an observation with ZERO own properties, fully backed by a well-formed prototype, is rejected', () => {
+    const proto = validObservation();
+    const evilObservation = Object.create(proto);
+    expect(Object.keys(evilObservation)).toEqual([]);
+    expect(validateObservation(evilObservation).ok).toBe(false);
+  });
+
+  it('a null-prototype object with every key as an OWN property still validates normally (not a false positive)', () => {
+    const observation = Object.assign(Object.create(null), validObservation());
+    // toolAttempts/skill/etc. are themselves still ordinary objects with Object.prototype --
+    // only the root got a null prototype, which the contract explicitly allows.
+    expect(validateObservation(observation).ok).toBe(true);
+  });
+});
+
+describe('validateObservation -- timing.receiptNsByEventIndex Map contents are validated, not just its type', () => {
+  it('accepts a well-formed map (non-negative integer keys, bigint values)', () => {
+    const observation = validObservation();
+    observation.timing = { receiptNsByEventIndex: new Map([[0, 10n], [4, 100n]]) };
+    expect(validateObservation(observation).ok).toBe(true);
+  });
+
+  it('rejects a map value that is not a bigint (e.g. a raw provider-shaped object)', () => {
+    const observation = validObservation();
+    observation.timing = { receiptNsByEventIndex: new Map([[4, { message: 'provider-native leaked here' }]]) };
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('rejects a map key that is not a non-negative integer', () => {
+    const observation = validObservation();
+    observation.timing = { receiptNsByEventIndex: new Map([[-1, 10n]]) };
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('rejects a non-integer map key', () => {
+    const observation = validObservation();
+    observation.timing = { receiptNsByEventIndex: new Map([['not-a-number', 10n]]) };
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+});
+
+describe('validateObservation -- structural issue extra-key VALUES are validated per type, not just key names', () => {
+  it('rejects provider data smuggled into an allowed extra key (id) via a type that never carries an id', () => {
+    const observation = validObservation();
+    // init_count's only allowed extra key is `count` -- `id` is not a member of ITS shape, even
+    // though `id` is a valid extra key name for a DIFFERENT issue type.
+    observation.transcript = { ...observation.transcript, strictStructuralIssues: [{ type: 'init_count', count: 2, id: 'toolu_smuggled' }] };
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('rejects a nested object where a real structural issue only ever carries a string id', () => {
+    const observation = validObservation();
+    observation.transcript = { ...observation.transcript, strictStructuralIssues: [{ type: 'duplicate_tool_use_id', id: { message: 'nested provider content' }, count: 2 }] };
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('rejects a negative count', () => {
+    const observation = validObservation();
+    observation.transcript = { ...observation.transcript, strictStructuralIssues: [{ type: 'init_count', count: -1 }] };
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('accepts orphan_tool_result with a null id (the one type/key combination allowed to be null)', () => {
+    const observation = validObservation();
+    observation.transcript = { ...observation.transcript, strictStructuralIssues: [{ type: 'orphan_tool_result', id: null }] };
+    expect(validateObservation(observation).ok).toBe(true);
+  });
+
+  it('rejects duplicate_tool_use_id with a null id (unlike orphan_tool_result, this type never has a null id in practice)', () => {
+    const observation = validObservation();
+    observation.transcript = { ...observation.transcript, strictStructuralIssues: [{ type: 'duplicate_tool_use_id', id: null, count: 2 }] };
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+});
+
+describe('validateObservation -- terminal.present coherence with its sibling fields', () => {
+  it('rejects present:false with a non-null isError/turnCount/finalText/resultSubtype', () => {
+    const observation = validObservation();
+    observation.terminal = { present: false, isError: true, turnCount: 1, finalText: 'leaked result text', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } };
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('rejects present:false with non-null usage dimensions', () => {
+    const observation = validObservation();
+    observation.terminal = { present: false, isError: null, turnCount: null, finalText: null, resultSubtype: null, usage: { input: 5, cached_input: null, cache_write: null, output: null, reasoning_output: null } };
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('accepts a genuinely absent terminal (present:false, everything else null)', () => {
+    const observation = validObservation();
+    observation.terminal = { present: false, isError: null, turnCount: null, finalText: null, resultSubtype: null, usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } };
+    expect(validateObservation(observation).ok).toBe(true);
+  });
+
+  it('rejects present:true with a null isError (the one field that must always resolve to a real boolean once a result exists)', () => {
+    const observation = validObservation();
+    observation.terminal = { ...observation.terminal, present: true, isError: null };
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('accepts present:true with turnCount/finalText/resultSubtype independently null (a real, degraded-but-present result)', () => {
+    const observation = validObservation();
+    observation.terminal = { present: true, isError: false, turnCount: null, finalText: null, resultSubtype: null, usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } };
+    expect(validateObservation(observation).ok).toBe(true);
+  });
+});
+
+describe('validateObservation -- process hrtime ordering', () => {
+  it('rejects endedHrtimeNs before spawnHrtimeNs', () => {
+    const observation = validObservation();
+    observation.process = { ...observation.process, spawnHrtimeNs: 1000n, endedHrtimeNs: 500n };
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('accepts endedHrtimeNs exactly equal to spawnHrtimeNs (an immeasurably fast process)', () => {
+    const observation = validObservation();
+    observation.process = { ...observation.process, spawnHrtimeNs: 1000n, endedHrtimeNs: 1000n };
+    expect(validateObservation(observation).ok).toBe(true);
+  });
+});
+
 describe('validateObservation -- does not silently absorb anomalies', () => {
   it('a malformed shape still reports errors rather than validating clean by omission', () => {
     const observation = validObservation({ toolAttempts: 'not-an-array' });
@@ -675,6 +825,52 @@ describe('canonicalNamesKey / fingerprintNames -- generic ambient HMAC helpers',
   it('fingerprintNames never leaks a raw skill name into its own output', () => {
     const digest = fingerprintNames(new Set(['a-very-distinctive-skill-name']), Buffer.from('key'));
     expect(digest).not.toContain('a-very-distinctive-skill-name');
+  });
+});
+
+// Post-review hardening (round 1): canonicalNamesKey/fingerprintNames here are a DELIBERATE
+// reimplementation of stream-parser.mjs's own canonicalAmbientSkillNamesKey/
+// fingerprintAmbientSkillNames -- not an accident, and not mergeable into one shared source
+// without violating the dependency direction this whole refactor exists to establish
+// (stream-parser.mjs is frozen and byte-identical to base; contract.mjs, the runtime-AGNOSTIC
+// layer, must never import a Claude-specific module, and the reverse direction -- stream-parser.mjs
+// importing from contract.mjs -- would require editing a file this PR is expressly forbidden from
+// touching). Given the duplication cannot be eliminated within this PR's authorized scope, this
+// equivalence test is the actual closure: it guards against the two implementations silently
+// drifting apart in the future, which "two files with a doc comment asking them to stay identical"
+// cannot enforce on its own. This is the ONE deliberate exception to this file's own header
+// comment ("never imports runtimes/claude-code.mjs or any Claude-specific module") -- stream-
+// parser.mjs is imported here SOLELY to prove this equivalence, not to make any contract behavior
+// itself depend on Claude-specific parsing.
+describe('canonicalNamesKey/fingerprintNames (contract.mjs) vs. canonicalAmbientSkillNamesKey/fingerprintAmbientSkillNames (stream-parser.mjs) -- byte-for-byte equivalence', () => {
+  it('canonicalNamesKey produces the SAME output as canonicalAmbientSkillNamesKey for a representative range of inputs', async () => {
+    const { canonicalAmbientSkillNamesKey } = await import('../../tools/agentic-eval/stream-parser.mjs');
+    const cases = [
+      new Set(),
+      new Set(['solo']),
+      new Set(['b', 'a']),
+      new Set(['a', 'b']), // same members, different insertion order
+      new Set(['zeta', 'alpha', 'mid-name']),
+      new Set(['kmp-test-runner', 'kmp-test-runner-namespaced/kmp-test-runner']),
+      new Set(['name with spaces', 'name"with"quotes', "name'with'apostrophes"]),
+    ];
+    for (const names of cases) {
+      expect(canonicalNamesKey(names)).toBe(canonicalAmbientSkillNamesKey(names));
+    }
+  });
+
+  it('fingerprintNames produces the SAME digest as fingerprintAmbientSkillNames for the same names + key', async () => {
+    const { fingerprintAmbientSkillNames } = await import('../../tools/agentic-eval/stream-parser.mjs');
+    const key = Buffer.from('synthetic-shared-equivalence-key');
+    const cases = [
+      new Set(),
+      new Set(['skill-a']),
+      new Set(['skill-b', 'skill-a']),
+      new Set(['kmp-test-runner']),
+    ];
+    for (const names of cases) {
+      expect(fingerprintNames(names, key)).toBe(fingerprintAmbientSkillNames(names, key));
+    }
   });
 });
 

@@ -29,7 +29,7 @@ import { attributeCondition } from './junit-evidence.mjs';
 import { buildBashDispatchAccounting } from './dispatch-accounting.mjs';
 import { cellTranscriptIntegrityOk } from './cell-integrity.mjs';
 import { tagIncidentPhase } from './durable-journal.mjs';
-import { validateObservation, freezeObservation, selectShellAttempts } from './runtimes/contract.mjs';
+import { validateRuntimeAdapter, validateObservation, freezeObservation, selectShellAttempts } from './runtimes/contract.mjs';
 // The one authorized exception (contract.mjs's own doc comment): matrix-runner.mjs may import the
 // Claude singleton as the default runtime while no registry exists. No other core module may
 // import runtimes/claude-code.mjs or any Claude-specific module (stream-parser.mjs,
@@ -87,6 +87,16 @@ function createCleanupAccumulator() {
  *   resetGradleToSnapshot, daemonPolicy, kmpEvalTempHome, sharedEnv, registerCleanup, runCleanup}>}
  */
 export async function acquireSharedEvalResources({ allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, junitEvidenceEnabled = false, runtimeAdapter = claudeCodeRuntimeAdapter }) {
+  // Validated BEFORE any resource below is created (post-review hardening, round 1): the default
+  // (claudeCodeRuntimeAdapter) is already validated once, at module load, by defineRuntimeAdapter
+  // -- but that guarantee is specific to the DEFAULT instance, not to whatever an individual
+  // caller injects here. A malformed injected adapter (a caller's typo, a stale test double, a
+  // real integration bug) must be rejected before a shim/snapshot/Gradle-home/temp-dir is ever
+  // created, not discovered only once one of its methods happens to be called.
+  const { ok: adapterOk, errors: adapterErrors } = validateRuntimeAdapter(runtimeAdapter);
+  if (!adapterOk) {
+    throw new Error(`invalid runtime adapter: ${adapterErrors.map((e) => `${e.field}:${e.code}`).join(', ')}`);
+  }
   const { registerCleanup, runCleanup } = createCleanupAccumulator();
   try {
     const { shimDir } = buildPathShim({ worktreeRoot: repoRoot });
@@ -282,16 +292,29 @@ export async function runSingleCondition({ condition, materializeFixture, previo
     if (!ok) {
       throw new Error(`normalized observation failed contract validation: ${errors.map((e) => `${e.field}:${e.code}`).join(', ')}`);
     }
+    // The observation's own self-reported runtime identity (RUNTIME_REF_KEYS, contract.mjs) must
+    // match the adapter that actually produced it (post-review hardening, round 1) -- shape-only
+    // validation above cannot catch an adapter that is internally coherent but simply wrong (or
+    // lying) about which runtime it claims to be.
+    if (observation.runtime.id !== runtimeAdapter.id || observation.runtime.protocolVersion !== runtimeAdapter.protocolVersion) {
+      throw new Error(`observation runtime identity mismatch: observation.runtime={id:${JSON.stringify(observation.runtime.id)},protocolVersion:${observation.runtime.protocolVersion}} but runtimeAdapter={id:${JSON.stringify(runtimeAdapter.id)},protocolVersion:${runtimeAdapter.protocolVersion}}`);
+    }
     observation = freezeObservation(observation);
   } catch (err) {
-    throw tagIncidentPhase(err, 'parsing_or_attributing_cell', cellOrdinal ?? undefined, sources.capture.primaryText);
+    // No raw 4th argument here (post-review hardening, round 1): by this point
+    // journal.persistSpawnOutcome has ALREADY succeeded (a failure there is caught separately,
+    // above, and DOES still carry raw as the legitimate last-resort recovery path) -- raw is
+    // durably in the journal already, so re-attaching a second copy onto the thrown error is an
+    // unnecessary extra raw-content pathway, not a recovery mechanism.
+    throw tagIncidentPhase(err, 'parsing_or_attributing_cell', cellOrdinal ?? undefined);
   }
 
   if (journal && didSpawn) {
     try {
       journal.recordParsed(cellOrdinal);
     } catch (err) {
-      throw tagIncidentPhase(err, 'persisting_cell_journal', cellOrdinal, sources.capture.primaryText);
+      // Same reasoning as above -- persistSpawnOutcome already succeeded by this point too.
+      throw tagIncidentPhase(err, 'persisting_cell_journal', cellOrdinal);
     }
   }
 
