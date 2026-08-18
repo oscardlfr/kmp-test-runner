@@ -15,9 +15,6 @@ import { join } from 'node:path';
 import { forEachJunitXml, extractTestcaseFailures } from '../../lib/parsers/junit-xml.js';
 import { classifyBashCommand, isRelevantGradleInvocation, isRelevantKmpTestParallel, isRelevantKmpTestChanged } from './command-classify.mjs';
 import { sha256Hex, listSidecarIds, readSidecarRecord } from './junit-evidence-io.mjs';
-// stream-parser.mjs imports only node:crypto, so a hook subprocess importing this module still
-// pulls in nothing heavy -- the same constraint that keeps graders.mjs out of this file.
-import { isRecognizedPreDispatchBlock } from './stream-parser.mjs';
 
 /** Concrete, documented aggregate bounds for a single capture (round 5 -- fixed now, not decided
  * during implementation). `MAX_JUNIT_XML_FILES` is comfortably above any realistic single Gradle
@@ -119,14 +116,17 @@ export function countEvidenceTaskJunit(fixtureRoot, evidenceTask) {
  * "the last RELEVANT attempt" to "the last attempt, period" -- there is no narrower relevance
  * concept to scope it to here, since this function covers every attempt uniformly.
  * @param {string} evidenceDir - KMP_EVAL_JUNIT_EVIDENCE_DIR for this condition
- * @param {Array} bashResults - conditionResult.bashResults (real transcript order, real `.id`)
+ * @param {Array} bashResults - canonical shell attempts (real transcript order, real `.id`,
+ *   `.preDispatchBlock`) -- the runtime-adapter-normalized shape, never a raw transcript re-scan.
  * @param {{terminated?: boolean, terminationReason?: string|null}} [terminationInfo]
  * SECOND tolerance (Claude Code pre-dispatch tool blocks): a Bash attempt Claude Code rejected at
  * its OWN tool layer never reaches the PreToolUse:Bash hook, so no decision sidecar can exist for
  * it -- the hook is what writes them. That is not a capture failure, so it does not raise
- * `captureIncomplete`. It is admitted ONLY when the strict transcript matcher
- * (`isRecognizedPreDispatchBlock`) recognizes the exact observed product shape; any divergence
- * falls through to the ordinary missing-record branch and still fails closed. Note the decision
+ * `captureIncomplete`. It is admitted ONLY when `b.preDispatchBlock.recognized` is `true` -- the
+ * strict transcript matcher already run once, by the runtime adapter, when the observation was
+ * normalized (see runtimes/claude-code.mjs's own isRecognizedPreDispatchBlock usage); this module
+ * never re-runs that matcher itself. Any divergence falls through to the ordinary missing-record
+ * branch and still fails closed. Note the decision
  * itself stays `null`: that is what keeps such an attempt out of graders.mjs's own attempt list
  * (`decision === 'deny' || decision === null` excludes it), so a blocked call can never be counted
  * as a test invocation. Recognized ids are returned so no downstream consumer re-derives them.
@@ -160,7 +160,7 @@ export function resolveDecisions(evidenceDir, bashResults, terminationInfo = {})
       // pre-dispatch block legitimately has no sidecar, because the hook that writes sidecars
       // never ran. An anomaly tombstone or an incoherent record is a different, real failure and
       // is never excused here.
-      if (isRecognizedPreDispatchBlock(b)) {
+      if (b.preDispatchBlock?.recognized === true) {
         preDispatchBlockedAttemptIds.add(b.id);
         decisionByAttempt.set(b.id, null);
         continue;
@@ -255,7 +255,9 @@ export function resolveDecisions(evidenceDir, bashResults, terminationInfo = {})
  * Gradle-evidence-specific status marking `evaluateGradleAttempt` reads).
  * @param {string} evidenceDir - KMP_EVAL_JUNIT_EVIDENCE_DIR for this condition
  * @param {object} scenario - the validated scenario object
- * @param {Array} bashResults - conditionResult.bashResults (real transcript order, real `.id`/`.index`)
+ * @param {Array} bashResults - the caller's own selectShellAttempts(observation.toolAttempts)-derived
+ *   legacy-shaped array (real transcript order, real `.id`/`.index`) -- this function's own body is
+ *   unchanged and still expects exactly that shape, regardless of what canonical source builds it
  * @param {{terminated?: boolean, terminationReason?: string|null}} [terminationInfo]
  * @param {boolean} [junitXmlAttributionEnabled] - see this function's own doc above; default true
  *   preserves this function's exact pre-existing behavior for every caller that predates this

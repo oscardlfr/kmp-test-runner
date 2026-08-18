@@ -30,7 +30,7 @@ import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync } from 'node:
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runScenarioMatrix } from '../../tools/agentic-eval/matrix-runner.mjs';
+import { runScenarioMatrix, runSingleCondition, acquireSharedEvalResources } from '../../tools/agentic-eval/matrix-runner.mjs';
 import { runConditionPair } from '../../tools/agentic-eval/cli.mjs';
 import { createInvocationJournal } from '../../tools/agentic-eval/durable-journal.mjs';
 import { runValidator as runPluginValidator } from '../../tools/validate-plugin.mjs';
@@ -301,6 +301,246 @@ describe("runConditionPair -- crash-safety journal preserves B (current-skill, c
     } finally {
       rmSync(journalRunsRoot, { recursive: true, force: true });
       for (const dir of fixtureDirs) rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30000);
+});
+
+// Post-review hardening (round 1): once persistSpawnOutcome has ALREADY succeeded (raw is durably
+// in the journal), a LATER failure -- normalizeObservations/validateObservation throwing, or
+// journal.recordParsed throwing -- must not ALSO carry the raw transcript on the thrown error's
+// own agenticEvalRawStdout property. That extra copy is unnecessary once the journal already has
+// it, and is exactly the kind of second raw-content pathway the raw-custody rules exist to
+// prevent. Unlike the sibling tests above (which drive a REAL spawned session through
+// runScenarioMatrix/runConditionPair), this test drives runSingleCondition directly with a
+// minimal, fully-synthetic runtimeAdapter injection -- no live process, no fixture -- specifically
+// so normalizeObservations' own failure is deterministically, cheaply triggerable rather than
+// depending on a stream-json shape that's malformed in exactly the right way to make a real
+// adapter's own parser throw (as opposed to merely failing a later gate check, like
+// fake-claude-malformed's own tolerated-parse design).
+describe('runSingleCondition -- raw never rides on the thrown error once persistSpawnOutcome already succeeded', () => {
+  it('normalizeObservations throwing: the error carries NO agenticEvalRawStdout (raw already safely in the journal)', async () => {
+    const journalRunsRoot = mkdtempSync(path.join(os.tmpdir(), 'aemr-normalize-throw-journal-root-'));
+    const kmpEvalTempHome = mkdtempSync(path.join(os.tmpdir(), 'aemr-normalize-throw-home-'));
+    const fixtureDir = mkdtempSync(path.join(os.tmpdir(), 'aemr-normalize-throw-fixture-'));
+    const RAW_MARKER = '{"type":"synthetic-marker-that-must-never-leak-onto-the-error-object"}';
+
+    // A minimal, fully-synthetic adapter satisfying the full 11-key contract -- collectObservationSources
+    // returns a real raw capture (so persistSpawnOutcome genuinely persists it), then
+    // normalizeObservations deliberately throws, simulating a genuine parse/normalize failure
+    // AFTER raw is already safe.
+    const throwingAdapter = {
+      id: 'fake-normalize-throw-adapter',
+      protocolVersion: 1,
+      capabilities: {
+        observationSources: ['fake'], structuredTranscript: true, correlatedToolResults: true,
+        skillDeliveryModes: [], skillStateEvidence: true, usageDimensions: ['input'], softPermissionDenial: true,
+      },
+      async probeInstallation() { return {}; },
+      async preflight() { return { ok: true, terminated: false, exitCode: 0, loggedIn: true, reasonCode: null }; },
+      async prepareIsolatedHome() { return { sharedEnv: {}, settingsPath: null, cleanupPaths: [] }; },
+      prepareSkillDelivery(baseArgv) { return baseArgv; },
+      buildInvocation() { return []; },
+      async collectObservationSources(_argv, { onSpawned }) {
+        onSpawned();
+        return { process: { terminated: false, terminationReason: null }, capture: { primaryText: RAW_MARKER, stderrText: '' }, providerSources: {} };
+      },
+      normalizeObservations() {
+        throw new Error('simulated: normalizeObservations failed after raw was already persisted');
+      },
+      redactRuntimeDiagnostics(v) { return v; },
+    };
+
+    try {
+      const journal = createInvocationJournal({ runKind: 'scenario', plannedCellCount: 1, runsRootOverride: journalRunsRoot });
+
+      let caught = null;
+      try {
+        await runSingleCondition({
+          condition: 'no-skill',
+          materializeFixture: () => ({ fixtureDir }),
+          previousFixtureDir: undefined,
+          cleanupFixtureOnce: () => {},
+          resetGradleToSnapshot: () => {},
+          kmpEvalTempHome,
+          sharedEnv: {},
+          baseArgv: [],
+          snapshotDir: null,
+          targetPluginName: 'kmp-test-runner',
+          targetSkillName: 'kmp-test-runner',
+          timeoutMs: 30000,
+          journal,
+          cellOrdinal: 0,
+          runtimeAdapter: throwingAdapter,
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).not.toBeNull();
+      expect(caught.message).toMatch(/simulated: normalizeObservations failed/);
+      expect(caught.agenticEvalPhase).toBe('parsing_or_attributing_cell');
+
+      // The central proof: raw is genuinely, durably in the journal (persistSpawnOutcome DID
+      // succeed, strictly before normalizeObservations ever ran) --
+      const raw0 = journal.readRawFor(0);
+      expect(raw0).toBe(RAW_MARKER);
+
+      // -- but the thrown error itself carries no second copy. Un-persisted-and-only-on-the-error
+      // is the LEGITIMATE case (see the stderr-persistence-failure test above, same file); THIS
+      // is the case where persistence already succeeded, so the error must be clean.
+      expect(caught.agenticEvalRawStdout).toBeUndefined();
+    } finally {
+      rmSync(journalRunsRoot, { recursive: true, force: true });
+      rmSync(kmpEvalTempHome, { recursive: true, force: true });
+      rmSync(fixtureDir, { recursive: true, force: true });
+    }
+  }, 30000);
+});
+
+// Post-review hardening (round 1): acquireSharedEvalResources previously created a shim directory,
+// a skill snapshot, a Gradle user home, and a temp KMP_EVAL_HOME -- genuine filesystem side
+// effects -- BEFORE ever validating the injected runtimeAdapter's own shape. An adapter missing a
+// required method (a caller's typo, a stale test double, or a real integration bug) would only
+// surface once one of ITS methods was actually called, well after those resources already existed
+// (and, on a subsequent failure, needed cleanup at all). Validating first means a malformed
+// adapter is rejected before any resource is ever created.
+describe('acquireSharedEvalResources -- rejects a malformed injected runtimeAdapter BEFORE creating any resource', () => {
+  it('an adapter missing a required method throws immediately, with a closed-contract error', async () => {
+    // "Before any resource is created" is a STRUCTURAL property of the fix, not something this
+    // test infers from a side effect: validateRuntimeAdapter(runtimeAdapter) is literally the
+    // first statement in acquireSharedEvalResources' body (see matrix-runner.mjs), before
+    // createCleanupAccumulator() or buildPathShim() are ever reached -- verifiable directly by
+    // reading that ordering, which a runtime side-effect check can't make any more true than the
+    // source already guarantees. (An earlier version of this test instead diffed os.tmpdir()'s
+    // full listing before/after; that was flaky under the real concurrent full-suite run, since
+    // unrelated test files legitimately create/remove their own temp entries in the same shared
+    // OS temp directory throughout this test's lifetime -- a test-isolation artifact, not evidence
+    // of anything production-relevant.) What IS meaningfully asserted here is the fast-fail
+    // ERROR ITSELF: a malformed adapter must be rejected with a clear, closed-contract message.
+
+    // A shape that is otherwise plausible but missing one required method entirely (not just a
+    // bad implementation of it) -- exactly the "caller's typo / stale double" scenario the
+    // hardening targets.
+    const brokenAdapter = {
+      id: 'fake-broken-adapter', protocolVersion: 1,
+      capabilities: {
+        observationSources: ['fake'], structuredTranscript: true, correlatedToolResults: true,
+        skillDeliveryModes: [], skillStateEvidence: true, usageDimensions: ['input'], softPermissionDenial: true,
+      },
+      async probeInstallation() { return {}; },
+      async preflight() { return { ok: true, terminated: false, exitCode: 0, loggedIn: true, reasonCode: null }; },
+      async prepareIsolatedHome() { return { sharedEnv: {}, settingsPath: null, cleanupPaths: [] }; },
+      prepareSkillDelivery(baseArgv) { return baseArgv; },
+      buildInvocation() { return []; },
+      async collectObservationSources() { return { process: {}, capture: { primaryText: '', stderrText: '' }, providerSources: {} }; },
+      normalizeObservations() { return {}; },
+      // redactRuntimeDiagnostics deliberately OMITTED.
+    };
+
+    let caught = null;
+    try {
+      await acquireSharedEvalResources({
+        allowedGradleTasks: [':fakemod:test'], allowedKmpTestSubcommands: ['doctor'],
+        repoRoot: REPO_ROOT, pinnedSkillSha: PINNED_SKILL_SHA, runPluginValidator,
+        runtimeAdapter: brokenAdapter,
+      });
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).not.toBeNull();
+    expect(caught.message).toMatch(/invalid runtime adapter/i);
+    expect(caught.message).toMatch(/redactRuntimeDiagnostics|missing_key/);
+  }, 30000);
+});
+
+// Post-review hardening (round 1): normalizeObservations' returned observation carries its OWN
+// self-reported runtime.{id,protocolVersion} (RUNTIME_REF_KEYS, contract.mjs) -- but nothing
+// previously cross-checked that self-reported identity against the runtimeAdapter that actually
+// produced it. An adapter that lies about (or simply gets wrong) its own observation's runtime
+// identity would otherwise validate cleanly on shape alone.
+describe('runSingleCondition -- the observation\'s self-reported runtime identity must match the adapter that produced it', () => {
+  it('rejects an observation whose runtime.id does not match runtimeAdapter.id', async () => {
+    const journalRunsRoot = mkdtempSync(path.join(os.tmpdir(), 'aemr-identity-mismatch-journal-root-'));
+    const kmpEvalTempHome = mkdtempSync(path.join(os.tmpdir(), 'aemr-identity-mismatch-home-'));
+    const fixtureDir = mkdtempSync(path.join(os.tmpdir(), 'aemr-identity-mismatch-fixture-'));
+
+    const mismatchedAdapter = {
+      id: 'the-real-adapter-id', protocolVersion: 1,
+      capabilities: {
+        observationSources: ['fake'], structuredTranscript: true, correlatedToolResults: true,
+        skillDeliveryModes: [], skillStateEvidence: true, usageDimensions: ['input'], softPermissionDenial: true,
+      },
+      async probeInstallation() { return {}; },
+      async preflight() { return { ok: true, terminated: false, exitCode: 0, loggedIn: true, reasonCode: null }; },
+      async prepareIsolatedHome() { return { sharedEnv: {}, settingsPath: null, cleanupPaths: [] }; },
+      prepareSkillDelivery(baseArgv) { return baseArgv; },
+      buildInvocation() { return []; },
+      async collectObservationSources(_argv, { onSpawned }) {
+        onSpawned();
+        return { process: { terminated: false, terminationReason: null }, capture: { primaryText: '{}', stderrText: '' }, providerSources: {} };
+      },
+      normalizeObservations() {
+        return {
+          schema: 1,
+          // Structurally valid, but claims a DIFFERENT runtime than the adapter that produced it --
+          // exactly the mismatch this hardening closes.
+          runtime: { id: 'a-completely-different-runtime-id', protocolVersion: 1 },
+          process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 10n },
+          session: { initPresent: true, modelResolved: null, sessionIdObserved: null, runtimeVersion: null, toolProfileMatchesExpected: true },
+          // A genuine result_count:0 issue is what makes terminal.present:false valid at all
+          // (round-4 terminal.present<->strictStructuralIssues relation) -- not a legitimate
+          // timeout here (terminated:false), so effective mirrors strict exactly.
+          transcript: { malformedLineCount: 0, strictStructuralIssues: [{ type: 'result_count', count: 0 }], effectiveStructuralIssues: [{ type: 'result_count', count: 0 }], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+          terminal: { present: false, isError: null, turnCount: null, finalText: null, resultSubtype: null, usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
+          toolAttempts: [],
+          skill: { available: false, profileMatchesCondition: true, snapshotBindingMatches: true, targetInvocation: null, foreignInvocations: [], ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true } },
+          hookStats: { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: true },
+          byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+          timing: { receiptNsByEventIndex: new Map() },
+        };
+      },
+      redactRuntimeDiagnostics(v) { return v; },
+    };
+
+    try {
+      const journal = createInvocationJournal({ runKind: 'scenario', plannedCellCount: 1, runsRootOverride: journalRunsRoot });
+
+      let caught = null;
+      try {
+        await runSingleCondition({
+          condition: 'no-skill',
+          materializeFixture: () => ({ fixtureDir }),
+          previousFixtureDir: undefined,
+          cleanupFixtureOnce: () => {},
+          resetGradleToSnapshot: () => {},
+          kmpEvalTempHome,
+          sharedEnv: {},
+          baseArgv: [],
+          snapshotDir: null,
+          targetPluginName: 'kmp-test-runner',
+          targetSkillName: 'kmp-test-runner',
+          timeoutMs: 30000,
+          journal,
+          cellOrdinal: 0,
+          runtimeAdapter: mismatchedAdapter,
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).not.toBeNull();
+      // A closed literal code only (post-review hardening, round 3) -- observation.runtime.id is
+      // not yet trusted content at the moment this fires (that's the whole reason the check
+      // exists), so the thrown message must never interpolate either adapter's own id.
+      expect(caught.message).toBe('observation_runtime_identity_mismatch');
+      expect(caught.message).not.toContain('a-completely-different-runtime-id');
+      expect(caught.message).not.toContain('the-real-adapter-id');
+      expect(caught.agenticEvalPhase).toBe('parsing_or_attributing_cell');
+    } finally {
+      rmSync(journalRunsRoot, { recursive: true, force: true });
+      rmSync(kmpEvalTempHome, { recursive: true, force: true });
+      rmSync(fixtureDir, { recursive: true, force: true });
     }
   }, 30000);
 });

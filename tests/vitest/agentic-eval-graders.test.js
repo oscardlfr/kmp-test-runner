@@ -93,22 +93,37 @@ const SCENARIO_3 = {
 
 // --- synthetic event/conditionResult builders (matches the real stream-json shapes used
 // throughout this suite, e.g. agentic-eval-hard-gates.test.js's own helpers) ---
-function initEventStub() {
-  return { type: 'system', subtype: 'init' };
-}
-function resultEventStub(text) {
-  return { type: 'result', subtype: 'success', result: text };
-}
-function bashToolUseEvent(id, command) {
-  return { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', id, input: { command } }] } };
-}
-function toolResultEvent(id, content, isError = false) {
-  return { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content, is_error: isError, tool_use_id: id }] } };
+/** A clean, minimal condition-observation-v1 skeleton -- every field gradeScenarioCondition itself
+ * never reads (session identity, hookStats, byteMetrics, timing, skill) stays a realistic constant
+ * no test in this file varies; only `overrides` (a partial observation, shallow-merged) changes
+ * per test. */
+function baseObservation(overrides = {}) {
+  return {
+    schema: 1,
+    runtime: { id: 'claude-code', protocolVersion: 1 },
+    process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1000n },
+    session: { initPresent: true, modelResolved: 'claude-sonnet-5', sessionIdObserved: 'sess-1', runtimeVersion: '2.1.212', toolProfileMatchesExpected: true },
+    transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+    terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
+    toolAttempts: [],
+    skill: {
+      available: false, profileMatchesCondition: true, snapshotBindingMatches: false,
+      targetInvocation: null, foreignInvocations: [],
+      ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+    },
+    hookStats: { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: true },
+    byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+    timing: { receiptNsByEventIndex: new Map() },
+    ...overrides,
+  };
 }
 
 /** Builds a full conditionResult from a list of steps plus a final answer string -- computes
- * bashResults the same shape findBashToolUsesWithResults() produces (index/resultIndex/
- * resultContent), by hand, so these tests don't need parseStreamJsonl in the loop.
+ * observation.toolAttempts in the canonical runtime-adapter shape directly, so these tests don't
+ * need a real transcript parse in the loop. effectiveStructuralIssues/effectiveIncompleteToolResults
+ * always start empty (a clean, already-tolerated transcript, per the adapter's own timeout-tolerant
+ * derivation) -- these tests exercise GRADING, never transcript-parsing/tolerance logic, which has
+ * its own dedicated coverage in agentic-eval-claude-runtime-adapter.test.js.
  *
  * Each step is `{command, resultContent, resultIsError, decision, evidence}`: `decision` is this
  * attempt's own resolved policy decision (default `'allow'` -- most tests here exercise grading
@@ -134,31 +149,53 @@ function buildConditionResult(steps, finalAnswerText, {
   terminated = false, terminationReason = null, dropFinalResultEvent = false,
   ambiguousJunitEvidence = false, captureIncomplete = false, unreliable = false,
 } = {}) {
-  const events = [initEventStub()];
-  const bashResults = [];
+  const toolAttempts = [];
   const decisionByAttempt = new Map();
   const perAttemptJunit = new Map();
+  let eventIndex = 1; // 0 is the (unmodeled) init event
   for (const step of steps) {
-    const id = `t${bashResults.length + 1}`;
-    const bashIndex = events.length;
-    events.push(bashToolUseEvent(id, step.command));
-    let resultIndex = null;
-    if (step.resultContent !== undefined) {
-      resultIndex = events.length;
-      events.push(toolResultEvent(id, step.resultContent, step.resultIsError ?? false));
-    }
-    bashResults.push({
-      index: bashIndex, id, command: step.command,
-      resultFound: resultIndex != null, resultIsError: resultIndex != null ? (step.resultIsError ?? false) : null,
-      resultIndex, resultContent: resultIndex != null ? step.resultContent : null,
+    const id = `t${toolAttempts.length + 1}`;
+    const attemptEventIndex = eventIndex++;
+    const hasResult = step.resultContent !== undefined;
+    const resultEventIndex = hasResult ? eventIndex++ : null;
+    toolAttempts.push({
+      id, kind: 'shell', runtimeName: 'Bash', eventIndex: attemptEventIndex, receiptNs: BigInt(attemptEventIndex),
+      profileAllowed: true, command: step.command, skillReference: null, targetsExpectedSkill: null,
+      result: {
+        found: hasResult,
+        eventIndex: hasResult ? resultEventIndex : null,
+        isError: hasResult ? (step.resultIsError ?? false) : null,
+        text: hasResult ? step.resultContent : null,
+        textStatus: hasResult ? 'text' : 'missing',
+      },
+      preDispatchBlock: { recognized: false, signature: null },
     });
     decisionByAttempt.set(id, step.decision === undefined ? 'allow' : step.decision);
     if (step.evidence !== undefined) perAttemptJunit.set(id, step.evidence);
   }
-  if (!dropFinalResultEvent) events.push(resultEventStub(finalAnswerText));
+  const hasFinalResult = !dropFinalResultEvent;
+  // strictIncompleteToolResults mirrors findIncompleteToolResults' own native shape (every
+  // resultless attempt); effectiveIncompleteToolResults mirrors
+  // findIncompleteToolResultsToleratingTimeout's exact tolerance rule (at most ONE incomplete
+  // result excused, only when it's the chronologically LAST tool_use overall AND the condition
+  // genuinely timed out) -- gradeScenarioCondition reads effective* directly now, so an orphaned,
+  // non-timeout-tolerated attempt must still show up there for check 3 to fail as these tests need.
+  const strictIncomplete = toolAttempts.filter((a) => !a.result.found).map((a) => ({ index: a.eventIndex, receiptNs: a.receiptNs, name: a.runtimeName, id: a.id }));
+  const isLegitimateTimeout = terminated && terminationReason === 'timeout';
+  const lastToolUseIndex = toolAttempts.length > 0 ? Math.max(...toolAttempts.map((a) => a.eventIndex)) : null;
+  const effectiveIncomplete = (isLegitimateTimeout && strictIncomplete.length === 1 && strictIncomplete[0].index === lastToolUseIndex)
+    ? []
+    : strictIncomplete;
   return {
-    events, bashResults, result: dropFinalResultEvent ? null : { result: finalAnswerText },
-    spawnResult: { terminated, terminationReason },
+    condition: 'current-skill',
+    observation: baseObservation({
+      process: { exitCode: terminated ? null : 0, terminated, terminationReason, spawnHrtimeNs: 0n, endedHrtimeNs: BigInt(eventIndex + 1) },
+      terminal: hasFinalResult
+        ? { present: true, isError: false, turnCount: 1, finalText: finalAnswerText, resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } }
+        : { present: false, isError: null, turnCount: null, finalText: null, resultSubtype: null, usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
+      transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: strictIncomplete, effectiveIncompleteToolResults: effectiveIncomplete },
+      toolAttempts,
+    }),
     junitAttribution: { perAttemptJunit, decisionByAttempt, ambiguousJunitEvidence, captureIncomplete, unreliable },
   };
 }
@@ -1355,7 +1392,7 @@ describe('gradeScenarioCondition -- terminal-attempt selection: intendedTargetMa
     expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(true);
     expect(grade.expectedOutcomeMatched).toBe(true);
     expect(grade.success).toBe(true);
-    expect(grade.terminalAuthoritativeEventIndex).toBe(cr.bashResults[0].resultIndex);
+    expect(grade.terminalAuthoritativeEventIndex).toBe(cr.observation.toolAttempts[0].result.eventIndex);
   });
 
   // Reproduced regression (post-merge review finding): intendedTargetMatches must NOT use
@@ -1377,7 +1414,7 @@ describe('gradeScenarioCondition -- terminal-attempt selection: intendedTargetMa
       SCENARIO_2_CORRECT_ANSWER,
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_2);
-    expect(grade.terminalAuthoritativeEventIndex).toBe(cr.bashResults[0].resultIndex);
+    expect(grade.terminalAuthoritativeEventIndex).toBe(cr.observation.toolAttempts[0].result.eventIndex);
     expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(true);
     expect(grade.expectedOutcomeMatched).toBe(true);
     expect(grade.success).toBe(true);
@@ -1951,19 +1988,17 @@ describe('gradeScenarioCondition -- round-3 dimension-matrix coverage (Gradle fo
   });
 
   it('gradle path: resultIsError:null (never determined, distinct from an explicit false) with a clean real footer still evaluates correctly from the footer alone -- neither contradiction direction requires a strict-boolean value it doesn\'t have', () => {
-    const events = [
-      initEventStub(),
-      bashToolUseEvent('t1', './gradlew.bat :shared:testAndroidHostTest --console=plain'),
-      { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: GRADLE_SCENARIO1_PASS_STDOUT, is_error: null, tool_use_id: 't1' }] } },
-      resultEventStub(SCENARIO_1_CORRECT_ANSWER),
-    ];
-    const bashResults = [{
-      index: 1, id: 't1', command: './gradlew.bat :shared:testAndroidHostTest --console=plain',
-      resultFound: true, resultIsError: null, resultIndex: 2, resultContent: GRADLE_SCENARIO1_PASS_STDOUT,
-    }];
     const cr = {
-      events, bashResults, result: { result: SCENARIO_1_CORRECT_ANSWER },
-      spawnResult: { terminated: false, terminationReason: null },
+      condition: 'current-skill',
+      observation: baseObservation({
+        terminal: { present: true, isError: false, turnCount: 1, finalText: SCENARIO_1_CORRECT_ANSWER, resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
+        toolAttempts: [{
+          id: 't1', kind: 'shell', runtimeName: 'Bash', eventIndex: 1, receiptNs: 1n, profileAllowed: true,
+          command: './gradlew.bat :shared:testAndroidHostTest --console=plain', skillReference: null, targetsExpectedSkill: null,
+          result: { found: true, eventIndex: 2, isError: null, text: GRADLE_SCENARIO1_PASS_STDOUT, textStatus: 'text' },
+          preDispatchBlock: { recognized: false, signature: null },
+        }],
+      }),
       junitAttribution: {
         perAttemptJunit: new Map([['t1', okJunit(24, 24, 0)]]),
         decisionByAttempt: new Map([['t1', 'allow']]),
@@ -2125,10 +2160,16 @@ describe('gradeScenarioCondition -- round-4 dimension-matrix coverage (provider 
   });
 
   it('no_transcript_structural_issues (check 1) is independently driven to FAILING by a genuinely malformed transcript (a duplicate init event) -- this grader\'s own wiring of check 1 has a real failing-case proof, not just a passing one', () => {
-    const duplicateInitEvents = [initEventStub(), initEventStub(), resultEventStub('irrelevant')];
+    // Check 1 reads observation.transcript.effectiveStructuralIssues directly (never re-derives it)
+    // -- declaring the adapter's own already-computed verdict is the correct way to drive this
+    // check independently, mirroring exactly what a real duplicate-init transcript would produce
+    // (findTranscriptStructuralIssues' own {type:'init_count', count:2} shape).
     const cr = {
-      events: duplicateInitEvents, bashResults: [], result: { result: 'irrelevant' },
-      spawnResult: { terminated: false, terminationReason: null },
+      condition: 'current-skill',
+      observation: baseObservation({
+        transcript: { malformedLineCount: 0, strictStructuralIssues: [{ type: 'init_count', count: 2 }], effectiveStructuralIssues: [{ type: 'init_count', count: 2 }], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+        terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
+      }),
     };
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.checks.find((c) => c.name === 'no_transcript_structural_issues').passed).toBe(false);

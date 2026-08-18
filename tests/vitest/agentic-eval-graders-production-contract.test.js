@@ -15,6 +15,52 @@ import path from 'node:path';
 import { runParallel } from '../../lib/orchestrators/parallel-orchestrator.js';
 import { runChanged } from '../../lib/orchestrators/changed-orchestrator.js';
 import { gradeScenarioCondition } from '../../tools/agentic-eval/graders.mjs';
+import {
+  findAllToolUsesWithResults, findResultEvent, findTranscriptStructuralIssuesToleratingTimeout,
+  findIncompleteToolResultsToleratingTimeout,
+} from '../../tools/agentic-eval/stream-parser.mjs';
+
+/**
+ * Converts this file's own pre-existing raw fixture shape ({events, spawnResult, junitAttribution})
+ * into the canonical condition-observation-v1 shape gradeScenarioCondition now reads exclusively --
+ * built via the REAL frozen stream-parser.mjs primitives (test files may import stream-parser.mjs
+ * directly). gradeScenarioCondition itself only ever reads observation.toolAttempts,
+ * observation.transcript.effective{StructuralIssues,IncompleteToolResults}, and
+ * observation.terminal.finalText -- confirmed by direct inspection of its current body -- so this
+ * conversion is deliberately narrow rather than a full condition-observation-v1 replica; every
+ * other observation field these fixtures never populated stays absent. `bashResults` is NOT
+ * consulted (dropped from every caller below) -- toolAttempts derives purely from `events`, and
+ * every pre-existing bashResults literal already agreed with its own sibling events construction.
+ */
+function toGraderConditionResult({ events, spawnResult = {}, junitAttribution } = {}) {
+  const timeoutCtx = { terminated: spawnResult.terminated ?? false, terminationReason: spawnResult.terminationReason ?? null };
+  const toolAttempts = findAllToolUsesWithResults(events).map((u) => {
+    const kind = u.name === 'Skill' ? 'skill' : u.name === 'Bash' ? 'shell' : 'other';
+    const command = kind === 'shell' ? (typeof u.input?.command === 'string' ? u.input.command : null) : null;
+    const textStatus = !u.resultFound ? 'missing' : (typeof u.resultContent === 'string' ? 'text' : 'unsupported');
+    return {
+      id: u.id ?? null, kind, runtimeName: u.name ?? null, eventIndex: u.index,
+      receiptNs: typeof u.receiptNs === 'bigint' ? u.receiptNs : null,
+      profileAllowed: kind === 'shell' || kind === 'skill', command,
+      skillReference: kind === 'skill' && typeof u.input?.skill === 'string' ? u.input.skill : null,
+      targetsExpectedSkill: null,
+      result: { found: u.resultFound, eventIndex: u.resultFound ? u.resultIndex : null, isError: u.resultFound ? u.resultIsError : null, text: textStatus === 'text' ? u.resultContent : null, textStatus },
+      preDispatchBlock: { recognized: false, signature: null },
+    };
+  });
+  return {
+    observation: {
+      process: { terminated: timeoutCtx.terminated, terminationReason: timeoutCtx.terminationReason, endedHrtimeNs: 1000n, spawnHrtimeNs: 0n, exitCode: 0 },
+      transcript: {
+        effectiveStructuralIssues: findTranscriptStructuralIssuesToleratingTimeout(events, timeoutCtx),
+        effectiveIncompleteToolResults: findIncompleteToolResultsToleratingTimeout(events, timeoutCtx),
+      },
+      terminal: { finalText: findResultEvent(events)?.result ?? null },
+      toolAttempts,
+    },
+    junitAttribution,
+  };
+}
 
 let workDir;
 afterEach(() => {
@@ -144,15 +190,9 @@ describe('gradeScenarioCondition -- production-real envelope (genuine runParalle
       { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: JSON.stringify(envelope), is_error: false, tool_use_id: 't1' }] } },
       { type: 'result', subtype: 'success', result: finalAnswer },
     ];
-    const bashResults = [{
-      index: 1, id: 't1', command: 'kmp-test parallel --test-type common --module-filter shared --json',
-      resultFound: true, resultIsError: false, resultIndex: 2, resultContent: JSON.stringify(envelope),
-    }];
-    const conditionResult = {
-      events, bashResults, result: { result: finalAnswer },
-      spawnResult: { terminated: false, terminationReason: null },
-      gradleJunitEvidence: null,
-    };
+    const conditionResult = toGraderConditionResult({
+      events, spawnResult: { terminated: false, terminationReason: null },
+    });
 
     const grade = gradeScenarioCondition(conditionResult, scenario);
     expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
@@ -228,14 +268,9 @@ describe('gradeScenarioCondition -- production-real envelope (genuine runParalle
       { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: JSON.stringify(envelope), is_error: false, tool_use_id: 't1' }] } },
       { type: 'result', subtype: 'success', result: finalAnswer },
     ];
-    const bashResults = [{
-      index: 1, id: 't1', command, resultFound: true, resultIsError: false, resultIndex: 2, resultContent: JSON.stringify(envelope),
-    }];
-    const conditionResult = {
-      events, bashResults, result: { result: finalAnswer },
-      spawnResult: { terminated: false, terminationReason: null },
-      gradleJunitEvidence: null,
-    };
+    const conditionResult = toGraderConditionResult({
+      events, spawnResult: { terminated: false, terminationReason: null },
+    });
 
     const grade = gradeScenarioCondition(conditionResult, scenario);
     expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
@@ -367,14 +402,10 @@ describe('runChanged() -- production-real envelope never carries a parallel key,
       { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: JSON.stringify(envelope), is_error: false, tool_use_id: 't1' }] } },
       { type: 'result', subtype: 'success', result: finalAnswer },
     ];
-    const bashResults = [{
-      index: 1, id: 't1', command, resultFound: true, resultIsError: false, resultIndex: 2, resultContent: JSON.stringify(envelope),
-    }];
-    const conditionResult = {
-      events, bashResults, result: { result: finalAnswer },
-      spawnResult: { terminated: false, terminationReason: null },
+    const conditionResult = toGraderConditionResult({
+      events, spawnResult: { terminated: false, terminationReason: null },
       junitAttribution: { perAttemptJunit: new Map(), decisionByAttempt: new Map([['t1', 'allow']]), ambiguousJunitEvidence: false, captureIncomplete: false, unreliable: false },
-    };
+    });
 
     const grade = gradeScenarioCondition(conditionResult, scenario);
     expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);

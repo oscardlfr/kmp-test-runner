@@ -16,6 +16,7 @@ import { LATEST_RUN_SCHEMA, validateRun, buildAggregateGroup } from '../../tools
 import { GRADING_CHECK_NAMES } from '../../tools/agentic-eval/graders.mjs';
 import { createInvocationJournal } from '../../tools/agentic-eval/durable-journal.mjs';
 import { readRejectionStderrFile } from '../../tools/agentic-eval/rejection-diagnostics.mjs';
+import { findAllToolUsesWithResults, classifyForeignSkillUses } from '../../tools/agentic-eval/stream-parser.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -488,16 +489,16 @@ describe('writeRunRecordEvidence', () => {
     return {
       recordA: { run_id: 'test-run-a-0001' },
       recordB: { run_id: 'test-run-b-0001' },
-      runA: { spawnResult: { rawStdout: '{"raw":"a"}\n' } },
-      runB: { spawnResult: { rawStdout: '{"raw":"b"}\n' } },
+      rawTextA: '{"raw":"a"}\n',
+      rawTextB: '{"raw":"b"}\n',
     };
   }
 
   it('writes all four files (two records, two raw transcripts) on a clean run', () => {
     const runsRoot = mkdtempSync(path.join(os.tmpdir(), 'aec-evidence-'));
     try {
-      const { recordA, recordB, runA, runB } = fixtureRecords();
-      const outDir = writeRunRecordEvidence('test-kind', recordA, recordB, runA, runB, '{"redacted":"a"}', '{"redacted":"b"}', runsRoot);
+      const { recordA, recordB, rawTextA, rawTextB } = fixtureRecords();
+      const outDir = writeRunRecordEvidence('test-kind', recordA, recordB, rawTextA, rawTextB, '{"redacted":"a"}', '{"redacted":"b"}', runsRoot);
       expect(existsSync(path.join(outDir, 'test-run-a-0001.json'))).toBe(true);
       expect(existsSync(path.join(outDir, 'test-run-b-0001.json'))).toBe(true);
       expect(existsSync(path.join(outDir, 'raw', 'test-run-a-0001.jsonl'))).toBe(true);
@@ -511,7 +512,7 @@ describe('writeRunRecordEvidence', () => {
   it('rolls back already-renamed files when a later rename in the same call fails', () => {
     const runsRoot = mkdtempSync(path.join(os.tmpdir(), 'aec-evidence-'));
     try {
-      const { recordA, recordB, runA, runB } = fixtureRecords();
+      const { recordA, recordB, rawTextA, rawTextB } = fixtureRecords();
       // Force the FOURTH target (raw/test-run-b-0001.jsonl) to fail its rename by pre-creating
       // that exact path as a DIRECTORY -- renameSync can never replace a directory with a file.
       // Targets 1-3 (record A, record B, raw A) rename successfully first, proving the rollback
@@ -521,7 +522,7 @@ describe('writeRunRecordEvidence', () => {
       mkdirSync(rawDir, { recursive: true });
       mkdirSync(path.join(rawDir, 'test-run-b-0001.jsonl'), { recursive: true });
 
-      expect(() => writeRunRecordEvidence('test-kind', recordA, recordB, runA, runB, '{"redacted":"a"}', '{"redacted":"b"}', runsRoot))
+      expect(() => writeRunRecordEvidence('test-kind', recordA, recordB, rawTextA, rawTextB, '{"redacted":"a"}', '{"redacted":"b"}', runsRoot))
         .toThrow();
 
       // The two record files and raw A -- all successfully renamed before the failure -- must
@@ -548,13 +549,13 @@ describe('writeRunRecordEvidence', () => {
   it('refuses before writing/renaming anything if any target already exists (run_id collision)', () => {
     const runsRoot = mkdtempSync(path.join(os.tmpdir(), 'aec-evidence-'));
     try {
-      const { recordA, recordB, runA, runB } = fixtureRecords();
+      const { recordA, recordB, rawTextA, rawTextB } = fixtureRecords();
       const outDir = path.join(runsRoot, 'agentic-eval-test-kind');
       mkdirSync(outDir, { recursive: true });
       const preExistingPath = path.join(outDir, 'test-run-a-0001.json');
       writeFileSync(preExistingPath, '{"this":"is prior, real evidence -- must survive"}');
 
-      expect(() => writeRunRecordEvidence('test-kind', recordA, recordB, runA, runB, '{"redacted":"a"}', '{"redacted":"b"}', runsRoot))
+      expect(() => writeRunRecordEvidence('test-kind', recordA, recordB, rawTextA, rawTextB, '{"redacted":"a"}', '{"redacted":"b"}', runsRoot))
         .toThrow(/already exists/);
 
       // The pre-existing file must be completely untouched -- not overwritten, not renamed away.
@@ -579,8 +580,8 @@ describe('writeRunRecordEvidence', () => {
     const insideRepoUnignored = path.join(REPO_ROOT, 'tools', `.tmp-test-gitignore-check-${process.pid}`);
     mkdirSync(insideRepoUnignored, { recursive: true });
     try {
-      const { recordA, recordB, runA, runB } = fixtureRecords();
-      expect(() => writeRunRecordEvidence('test-kind', recordA, recordB, runA, runB, '{"redacted":"a"}', '{"redacted":"b"}', insideRepoUnignored))
+      const { recordA, recordB, rawTextA, rawTextB } = fixtureRecords();
+      expect(() => writeRunRecordEvidence('test-kind', recordA, recordB, rawTextA, rawTextB, '{"redacted":"a"}', '{"redacted":"b"}', insideRepoUnignored))
         .toThrow(/not covered by \.gitignore/);
       // Nothing was created at all -- the check runs before any directory or file is touched.
       expect(readdirSync(insideRepoUnignored)).toEqual([]);
@@ -592,8 +593,8 @@ describe('writeRunRecordEvidence', () => {
   it('allows writing when runsRootOverride is entirely outside the repo worktree (the normal test-isolation case)', () => {
     const outsideRepo = mkdtempSync(path.join(os.tmpdir(), 'aec-evidence-outside-'));
     try {
-      const { recordA, recordB, runA, runB } = fixtureRecords();
-      const outDir = writeRunRecordEvidence('test-kind', recordA, recordB, runA, runB, '{"redacted":"a"}', '{"redacted":"b"}', outsideRepo);
+      const { recordA, recordB, rawTextA, rawTextB } = fixtureRecords();
+      const outDir = writeRunRecordEvidence('test-kind', recordA, recordB, rawTextA, rawTextB, '{"redacted":"a"}', '{"redacted":"b"}', outsideRepo);
       expect(existsSync(path.join(outDir, 'test-run-a-0001.json'))).toBe(true);
     } finally {
       rmSync(outsideRepo, { recursive: true, force: true });
@@ -620,8 +621,8 @@ describe('writeRunRecordEvidence', () => {
       const statusBefore = spawnSync('git', ['status', '--porcelain'], { cwd: otherRepo, encoding: 'utf8' });
       expect(statusBefore.status).toBe(0);
 
-      const { recordA, recordB, runA, runB } = fixtureRecords();
-      expect(() => writeRunRecordEvidence('test-kind', recordA, recordB, runA, runB, '{"redacted":"a"}', '{"redacted":"b"}', otherRepo))
+      const { recordA, recordB, rawTextA, rawTextB } = fixtureRecords();
+      expect(() => writeRunRecordEvidence('test-kind', recordA, recordB, rawTextA, rawTextB, '{"redacted":"a"}', '{"redacted":"b"}', otherRepo))
         .toThrow(/not covered by \.gitignore/);
       expect(readdirSync(otherRepo).filter((f) => f !== '.git')).toEqual([]);
 
@@ -642,17 +643,33 @@ describe('writeRunRecordEvidence', () => {
 // would produce -- proving finalizeAndWriteRecords() itself refuses before ever reaching the
 // hard gate, without needing to actually dirty this repo's own production code during a test.
 describe('finalizeAndWriteRecords -- fails closed on a dirty measured-code tree', () => {
+  // Matches the canonical minimal condition-observation-v1 shape (see e.g.
+  // agentic-eval-graders.test.js's own baseObservation helper) -- buildRunRecord now reads
+  // conditionResult.observation exclusively, never a raw provider event.
+  function fakeObservation() {
+    return {
+      schema: 1,
+      runtime: { id: 'claude-code', protocolVersion: 1 },
+      process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1000n },
+      session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true },
+      transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+      terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
+      toolAttempts: [],
+      skill: {
+        available: false, profileMatchesCondition: true, snapshotBindingMatches: false,
+        targetInvocation: null, foreignInvocations: [],
+        ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+      },
+      hookStats: { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: true },
+      byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+      timing: { receiptNsByEventIndex: new Map() },
+    };
+  }
   function fakeConditionResult() {
     return {
-      init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], skills: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
-      result: { subtype: 'success', is_error: false },
-      invocation: null,
-      hookStats: { hookCallCount: 0, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 0 },
-      byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+      observation: fakeObservation(),
       startedAt: new Date('2026-01-01T00:00:00.000Z'),
       endedAt: new Date('2026-01-01T00:00:01.000Z'),
-      spawnResult: { terminated: false, terminationReason: null, exitCode: 0 },
-      events: [],
     };
   }
 
@@ -669,9 +686,10 @@ describe('finalizeAndWriteRecords -- fails closed on a dirty measured-code tree'
     let hardGateCalled = false;
     const result = await finalizeAndWriteRecords({
       runKind: 'calibration', recordA, recordB,
-      runA: { spawnResult: { rawStdout: '' } },
-      runB: { spawnResult: { rawStdout: '' } },
+      runA: { observation: fakeObservation() },
+      runB: { observation: fakeObservation() },
       hardGateFn: () => { hardGateCalled = true; return { ok: true, reason: null }; },
+      transcriptsByRunId: { [recordA.run_id]: '', [recordB.run_id]: '' },
     });
     expect(result.ok).toBe(false);
     expect(result.reason).toContain('unclean measured-code tree');
@@ -698,9 +716,10 @@ describe('finalizeAndWriteRecords -- fails closed on a dirty measured-code tree'
     let hardGateCalled = false;
     const result = await finalizeAndWriteRecords({
       runKind: 'calibration', recordA, recordB,
-      runA: { spawnResult: { rawStdout: '' } },
-      runB: { spawnResult: { rawStdout: '' } },
+      runA: { observation: fakeObservation() },
+      runB: { observation: fakeObservation() },
       hardGateFn: () => { hardGateCalled = true; return { ok: false, reason: 'stubbed gate rejection -- test never intends to reach a real write' }; },
+      transcriptsByRunId: { [recordA.run_id]: '', [recordB.run_id]: '' },
     });
     expect(hardGateCalled).toBe(false);
     expect(result.ok).toBe(false);
@@ -720,17 +739,36 @@ describe('finalizeAndWriteRecords -- fails closed on a dirty measured-code tree'
 // the journal itself is safely discarded (both stdout and stderr correspondence held) while the
 // rejection-tier copy survives on its own, independent of the journal's lifecycle.
 describe('finalizeAndWriteRecords / finalizeAndWriteMatrixRecords -- a rejected cell\'s stderr survives independently in the rejection tier, for all 4 rejection producers', () => {
-  function fakeConditionResult(cellOrdinal, rawStdout) {
+  // Matches the canonical minimal condition-observation-v1 shape (see e.g.
+  // agentic-eval-graders.test.js's own baseObservation helper) -- buildRunRecord/
+  // finalizeAndWriteRecords/finalizeAndWriteMatrixRecords now read conditionResult.observation
+  // exclusively, never a raw provider event. Raw transcript text no longer lives on
+  // conditionResult at all (raw-custody rule) -- callers build transcriptsByRunId separately,
+  // sourced from the same journal.persistSpawnOutcome() calls these tests already make.
+  function fakeObservation(cellOrdinal) {
     return {
-      init: { model: 'claude-sonnet-5-fake', session_id: `sess-${cellOrdinal}`, claude_code_version: 'fake', plugins: [], skills: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
-      result: { subtype: 'success', is_error: false },
-      invocation: null,
-      hookStats: { hookCallCount: 0, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 0 },
+      schema: 1,
+      runtime: { id: 'claude-code', protocolVersion: 1 },
+      process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1000n },
+      session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: `sess-${cellOrdinal}`, runtimeVersion: 'fake', toolProfileMatchesExpected: true },
+      transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+      terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
+      toolAttempts: [],
+      skill: {
+        available: false, profileMatchesCondition: true, snapshotBindingMatches: false,
+        targetInvocation: null, foreignInvocations: [],
+        ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+      },
+      hookStats: { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: true },
       byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+      timing: { receiptNsByEventIndex: new Map() },
+    };
+  }
+  function fakeConditionResult(cellOrdinal) {
+    return {
+      observation: fakeObservation(cellOrdinal),
       startedAt: new Date('2026-01-01T00:00:00.000Z'),
       endedAt: new Date('2026-01-01T00:00:01.000Z'),
-      spawnResult: { terminated: false, terminationReason: null, exitCode: 0, rawStdout },
-      events: [],
       cellOrdinal,
     };
   }
@@ -763,7 +801,7 @@ describe('finalizeAndWriteRecords / finalizeAndWriteMatrixRecords -- a rejected 
     const runsRoot = freshRunsRoot();
     try {
       const common = commonFields('calibration');
-      const conditionResultB = fakeConditionResult(0, 'raw-b');
+      const conditionResultB = fakeConditionResult(0);
       const recordB = buildRunRecord({ conditionResult: conditionResultB, condition: 'current-skill', skillSourceSha: 'c5c0661852f7c9da145ef56892048e706216a6ce', ...common });
       const journal = createInvocationJournal({ runKind: 'calibration', plannedCellCount: 2, runsRootOverride: runsRoot });
       journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'raw-b', stderr: stderrFor(0) });
@@ -774,6 +812,7 @@ describe('finalizeAndWriteRecords / finalizeAndWriteMatrixRecords -- a rejected 
         privatePatternsFile: null, hardGateFn: () => { throw new Error('must not be called on the fail-fast path'); },
         matrixComplete: false, plannedCellCount: 2, executedCellCount: 1, failFastStop,
         journal, runsRootOverride: runsRoot,
+        transcriptsByRunId: { [recordB.run_id]: 'raw-b' },
       });
       expect(result.ok).toBe(false);
       assertStderrSurvivedFor(result, journal, runsRoot, 0, recordB.run_id);
@@ -790,8 +829,8 @@ describe('finalizeAndWriteRecords / finalizeAndWriteMatrixRecords -- a rejected 
     const runsRoot = freshRunsRoot();
     try {
       const common = commonFields('calibration');
-      const conditionResultA = fakeConditionResult(1, 'raw-a');
-      const conditionResultB = fakeConditionResult(0, 'raw-b');
+      const conditionResultA = fakeConditionResult(1);
+      const conditionResultB = fakeConditionResult(0);
       const recordA = buildRunRecord({ conditionResult: conditionResultA, condition: 'no-skill', skillSourceSha: null, ...common });
       const recordB = buildRunRecord({ conditionResult: conditionResultB, condition: 'current-skill', skillSourceSha: 'c5c0661852f7c9da145ef56892048e706216a6ce', ...common });
       const journal = createInvocationJournal({ runKind: 'calibration', plannedCellCount: 2, runsRootOverride: runsRoot });
@@ -803,6 +842,7 @@ describe('finalizeAndWriteRecords / finalizeAndWriteMatrixRecords -- a rejected 
         runKind: 'calibration', recordA, recordB, runA: conditionResultA, runB: conditionResultB,
         privatePatternsFile: null, hardGateFn: () => gate,
         journal, runsRootOverride: runsRoot,
+        transcriptsByRunId: { [recordA.run_id]: 'raw-a', [recordB.run_id]: 'raw-b' },
       });
       expect(result.ok).toBe(false);
       assertStderrSurvivedFor(result, journal, runsRoot, 0, recordB.run_id);
@@ -828,7 +868,7 @@ describe('finalizeAndWriteRecords / finalizeAndWriteMatrixRecords -- a rejected 
     const runsRoot = freshRunsRoot();
     try {
       const common = commonFields('scenario');
-      const conditionResult0 = fakeConditionResult(0, 'raw-0');
+      const conditionResult0 = fakeConditionResult(0);
       const record0 = buildRunRecord({ conditionResult: conditionResult0, condition: 'current-skill', skillSourceSha: 'c5c0661852f7c9da145ef56892048e706216a6ce', repetitionIndex: 0, orderIndex: 0, gradeResult: MINIMAL_GRADE_RESULT, ...common });
       const journal = createInvocationJournal({ runKind: 'scenario', plannedCellCount: 4, runsRootOverride: runsRoot });
       journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'raw-0', stderr: stderrFor(0) });
@@ -840,6 +880,7 @@ describe('finalizeAndWriteRecords / finalizeAndWriteMatrixRecords -- a rejected 
         privatePatternsFile: null, repeats: 2, matrixComplete: false,
         plannedCellCount: 4, executedCellCount: 1, localIntegrityByRunId,
         journal, runsRootOverride: runsRoot,
+        transcriptsByRunId: { [record0.run_id]: 'raw-0' },
       });
       expect(result.ok).toBe(false);
       assertStderrSurvivedFor(result, journal, runsRoot, 0, record0.run_id);
@@ -855,8 +896,8 @@ describe('finalizeAndWriteRecords / finalizeAndWriteMatrixRecords -- a rejected 
     const runsRoot = freshRunsRoot();
     try {
       const common = commonFields('scenario');
-      const conditionResult0 = fakeConditionResult(0, 'raw-0');
-      const conditionResult1 = fakeConditionResult(1, 'raw-1');
+      const conditionResult0 = fakeConditionResult(0);
+      const conditionResult1 = fakeConditionResult(1);
       const record0 = buildRunRecord({ conditionResult: conditionResult0, condition: 'current-skill', skillSourceSha: 'c5c0661852f7c9da145ef56892048e706216a6ce', repetitionIndex: 0, orderIndex: 0, gradeResult: MINIMAL_GRADE_RESULT, ...common });
       const record1 = buildRunRecord({ conditionResult: conditionResult1, condition: 'no-skill', skillSourceSha: null, repetitionIndex: 0, orderIndex: 1, gradeResult: MINIMAL_GRADE_RESULT, ...common });
       const journal = createInvocationJournal({ runKind: 'scenario', plannedCellCount: 2, runsRootOverride: runsRoot });
@@ -874,6 +915,7 @@ describe('finalizeAndWriteRecords / finalizeAndWriteMatrixRecords -- a rejected 
         runKind: 'scenario', records: [record0, record1], conditionResults: [conditionResult0, conditionResult1],
         hardGateFn: () => gate, privatePatternsFile: null, repeats: 1,
         journal, runsRootOverride: runsRoot,
+        transcriptsByRunId: { [record0.run_id]: 'raw-0', [record1.run_id]: 'raw-1' },
       });
       expect(result.ok).toBe(false);
       assertStderrSurvivedFor(result, journal, runsRoot, 0, record0.run_id);
@@ -890,7 +932,7 @@ describe('finalizeAndWriteRecords / finalizeAndWriteMatrixRecords -- a rejected 
     const runsRoot = freshRunsRoot();
     try {
       const common = commonFields('calibration');
-      const conditionResultB = fakeConditionResult(0, 'raw-b');
+      const conditionResultB = fakeConditionResult(0);
       const recordB = buildRunRecord({ conditionResult: conditionResultB, condition: 'current-skill', skillSourceSha: 'c5c0661852f7c9da145ef56892048e706216a6ce', ...common });
       const failFastStop = { reason: 'test fail-fast', failedChecks: ['cleanTranscriptOk'], unexpectedToolUsesCount: 0, unexpectedTools: [] };
       const result = await finalizeAndWriteRecords({
@@ -898,6 +940,7 @@ describe('finalizeAndWriteRecords / finalizeAndWriteMatrixRecords -- a rejected 
         privatePatternsFile: null, hardGateFn: () => { throw new Error('must not be called on the fail-fast path'); },
         matrixComplete: false, plannedCellCount: 2, executedCellCount: 1, failFastStop,
         runsRootOverride: runsRoot,
+        transcriptsByRunId: { [recordB.run_id]: 'raw-b' },
         // journal intentionally omitted -- defaults to null
       });
       expect(result.ok).toBe(false);
@@ -917,7 +960,7 @@ describe('finalizeAndWriteRecords / finalizeAndWriteMatrixRecords -- a rejected 
     const runsRoot = freshRunsRoot();
     try {
       const common = commonFields('calibration');
-      const conditionResultB = fakeConditionResult(0, 'raw-b');
+      const conditionResultB = fakeConditionResult(0);
       const recordB = buildRunRecord({ conditionResult: conditionResultB, condition: 'current-skill', skillSourceSha: 'c5c0661852f7c9da145ef56892048e706216a6ce', ...common });
       const journal = createInvocationJournal({ runKind: 'calibration', plannedCellCount: 2, runsRootOverride: runsRoot });
       journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'raw-b', stderr: stderrFor(0) });
@@ -935,6 +978,7 @@ describe('finalizeAndWriteRecords / finalizeAndWriteMatrixRecords -- a rejected 
         privatePatternsFile: null, hardGateFn: () => { throw new Error('must not be called on the fail-fast path'); },
         matrixComplete: false, plannedCellCount: 2, executedCellCount: 1, failFastStop,
         journal: journalWithBrokenStderrRead, runsRootOverride: runsRoot,
+        transcriptsByRunId: { [recordB.run_id]: 'raw-b' },
       });
 
       expect(result.ok).toBe(false);
@@ -961,7 +1005,7 @@ describe('finalizeAndWriteRecords / finalizeAndWriteMatrixRecords -- a rejected 
     const runsRoot = freshRunsRoot();
     try {
       const common = commonFields('scenario');
-      const conditionResult0 = fakeConditionResult(0, 'raw-0');
+      const conditionResult0 = fakeConditionResult(0);
       const record0 = buildRunRecord({ conditionResult: conditionResult0, condition: 'current-skill', skillSourceSha: 'c5c0661852f7c9da145ef56892048e706216a6ce', repetitionIndex: 0, orderIndex: 0, gradeResult: MINIMAL_GRADE_RESULT, ...common });
       const journal = createInvocationJournal({ runKind: 'scenario', plannedCellCount: 4, runsRootOverride: runsRoot });
       journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'raw-0', stderr: stderrFor(0) });
@@ -977,6 +1021,7 @@ describe('finalizeAndWriteRecords / finalizeAndWriteMatrixRecords -- a rejected 
         privatePatternsFile: null, repeats: 2, matrixComplete: false,
         plannedCellCount: 4, executedCellCount: 1, localIntegrityByRunId,
         journal: journalWithBrokenStderrRead, runsRootOverride: runsRoot,
+        transcriptsByRunId: { [record0.run_id]: 'raw-0' },
       });
 
       expect(result.ok).toBe(false);
@@ -1122,15 +1167,25 @@ describe('findBlockingHarnessToolingDirty', () => {
 describe('buildRunRecord -- raw_capture_location under the default (non-overridden) RUNS_ROOT', () => {
   it('reports the real tools/runs/ path and raises no override error, since this process never set KMP_EVAL_RUNS_ROOT', () => {
     const conditionResult = {
-      init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], skills: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
-      result: { subtype: 'success', is_error: false },
-      invocation: null,
-      hookStats: { hookCallCount: 0, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 0 },
-      byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+      observation: {
+        schema: 1,
+        runtime: { id: 'claude-code', protocolVersion: 1 },
+        process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1000n },
+        session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true },
+        transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+        terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
+        toolAttempts: [],
+        skill: {
+          available: false, profileMatchesCondition: true, snapshotBindingMatches: false,
+          targetInvocation: null, foreignInvocations: [],
+          ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+        },
+        hookStats: { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: true },
+        byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+        timing: { receiptNsByEventIndex: new Map() },
+      },
       startedAt: new Date('2026-01-01T00:00:00.000Z'),
       endedAt: new Date('2026-01-01T00:00:01.000Z'),
-      spawnResult: { terminated: false, terminationReason: null, exitCode: 0 },
-      events: [],
     };
     const record = buildRunRecord({
       conditionResult, condition: 'no-skill', runKind: 'calibration', scenarioId: 'test-default-root',
@@ -1153,15 +1208,25 @@ describe('buildRunRecord -- raw_capture_location under the default (non-overridd
 describe('buildRunRecord -- retries reflects "not tracked", never a hardcoded zero', () => {
   function fakeConditionResult() {
     return {
-      init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], skills: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
-      result: { subtype: 'success', is_error: false },
-      invocation: null,
-      hookStats: { hookCallCount: 0, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 0 },
-      byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+      observation: {
+        schema: 1,
+        runtime: { id: 'claude-code', protocolVersion: 1 },
+        process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1000n },
+        session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true },
+        transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+        terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
+        toolAttempts: [],
+        skill: {
+          available: false, profileMatchesCondition: true, snapshotBindingMatches: false,
+          targetInvocation: null, foreignInvocations: [],
+          ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+        },
+        hookStats: { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: true },
+        byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+        timing: { receiptNsByEventIndex: new Map() },
+      },
       startedAt: new Date('2026-01-01T00:00:00.000Z'),
       endedAt: new Date('2026-01-01T00:00:01.000Z'),
-      spawnResult: { terminated: false, terminationReason: null, exitCode: 0 },
-      events: [],
     };
   }
 
@@ -1196,15 +1261,25 @@ describe('buildRunRecord -- retries reflects "not tracked", never a hardcoded ze
 describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2 fix)', () => {
   function fakeScenarioConditionResult() {
     return {
-      init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], skills: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
-      result: { subtype: 'success', is_error: false },
-      invocation: null,
-      hookStats: { hookCallCount: 1, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 1 },
-      byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+      observation: {
+        schema: 1,
+        runtime: { id: 'claude-code', protocolVersion: 1 },
+        process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1000n },
+        session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true },
+        transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+        terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
+        toolAttempts: [],
+        skill: {
+          available: false, profileMatchesCondition: true, snapshotBindingMatches: false,
+          targetInvocation: null, foreignInvocations: [],
+          ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+        },
+        hookStats: { hookCallCount: 1, hookResponseCount: 1, hookDenyCount: 0, hookAllowCount: 1, hookPairingOk: true, everyCallHooked: true },
+        byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+        timing: { receiptNsByEventIndex: new Map() },
+      },
       startedAt: new Date('2026-01-01T00:00:00.000Z'),
       endedAt: new Date('2026-01-01T00:00:01.000Z'),
-      spawnResult: { terminated: false, terminationReason: null, exitCode: 0 },
-      events: [],
     };
   }
   function fakeGradeResult(overrides = {}) {
@@ -1441,24 +1516,63 @@ describe('buildRunRecord -- tool_calls_total counts every Skill attempt, not jus
   function skillToolUseEvent(id, skill) {
     return { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Skill', id, input: { skill } }] } };
   }
+  // tool_calls_total/shell_commands_total/foreign_skill_summary all derive from
+  // observation.toolAttempts/observation.skill.foreignInvocations now -- converts a raw events[]
+  // fixture into that canonical shape using the REAL frozen stream-parser.mjs primitives (test
+  // files are permitted to import stream-parser.mjs directly; only production consumers are bound
+  // by the core-consumer boundary). targetInvocation is left null throughout this describe block --
+  // none of its tests assert on skill_invocation_attempted/skill_invoked/skill_invocation_event, and
+  // buildRunRecord handles a null targetInvocation safely (optional-chained everywhere it's read).
+  function observationFromEvents(events, { targetPluginName = 'kmp-test-runner', targetSkillName = 'kmp-test-runner' } = {}) {
+    const expectedToolNames = new Set(['Bash', 'Skill']);
+    const toolAttempts = findAllToolUsesWithResults(events).map((u) => {
+      const kind = u.name === 'Skill' ? 'skill' : u.name === 'Bash' ? 'shell' : 'other';
+      const command = kind === 'shell' ? (typeof u.input?.command === 'string' ? u.input.command : null) : null;
+      const textStatus = !u.resultFound ? 'missing' : (typeof u.resultContent === 'string' ? 'text' : 'unsupported');
+      return {
+        id: u.id ?? null, kind, runtimeName: u.name ?? null, eventIndex: u.index,
+        receiptNs: typeof u.receiptNs === 'bigint' ? u.receiptNs : null,
+        profileAllowed: expectedToolNames.has(u.name), command,
+        skillReference: kind === 'skill' && typeof u.input?.skill === 'string' ? u.input.skill : null,
+        targetsExpectedSkill: null,
+        result: { found: u.resultFound, eventIndex: u.resultFound ? u.resultIndex : null, isError: u.resultFound ? u.resultIsError : null, text: textStatus === 'text' ? u.resultContent : null, textStatus },
+        preDispatchBlock: { recognized: false, signature: null },
+      };
+    });
+    const foreignInvocations = classifyForeignSkillUses(events, targetPluginName, targetSkillName).map((f) => ({
+      eventIndex: f.index, receiptNs: typeof f.receiptNs === 'bigint' ? f.receiptNs : null,
+      id: f.id ?? null, skillReference: f.skillArg ?? null, resultIsError: f.resultIsError, confirmed: f.confirmed,
+    }));
+    return {
+      schema: 1,
+      runtime: { id: 'claude-code', protocolVersion: 1 },
+      process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1000n },
+      session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true },
+      transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+      terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
+      toolAttempts,
+      skill: {
+        available: false, profileMatchesCondition: true, snapshotBindingMatches: false,
+        targetInvocation: null, foreignInvocations,
+        ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+      },
+      hookStats: { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: true },
+      byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+      timing: { receiptNsByEventIndex: new Map() },
+    };
+  }
 
   it('sums N real Bash tool_use events plus N real multi-attempt Skill tool_use events, not a flat 0-or-1', () => {
+    // 2 real Skill tool_use blocks below back a 2-attempt invocation (e.g. a
+    // failed-then-retried-successful invocation) -- tool_calls_total derives purely from the
+    // transcript's own tool_use blocks (findAllToolUsesWithResults), matching the
+    // accepted-run-audit sidecar's own derivation, so a decoupled attemptCount with no
+    // corresponding real event would no longer be reflected in the total.
+    const events = [bashToolUseEvent('toolu_1'), bashToolUseEvent('toolu_2'), bashToolUseEvent('toolu_3'), skillToolUseEvent('toolu_4', 'kmp-test-runner'), skillToolUseEvent('toolu_5', 'kmp-test-runner')];
     const conditionResult = {
-      init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [{ name: 'kmp-test-runner', path: '/fake', source: 'fake' }], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
-      result: { subtype: 'success', is_error: false },
-      // Simulates what findSkillInvocation() itself would return for 2 real Skill attempts
-      // (e.g. a failed-then-retried-successful invocation) -- attemptCount:2, not 1. tool_calls_total
-      // now derives purely from the transcript's own tool_use blocks (findAllToolUsesWithResults),
-      // matching the accepted-run-audit sidecar's own derivation, so the events array below
-      // carries 2 REAL Skill tool_use blocks backing this attemptCount -- a decoupled
-      // attemptCount with no corresponding real event would no longer be reflected in the total.
-      invocation: { attempted: true, confirmed: true, attemptCount: 2, type: 'assistant.tool_use.Skill', index: 3, receiptNs: 0n, input: { skill: 'kmp-test-runner' }, resultIsError: false },
-      hookStats: { hookCallCount: 3, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 3 },
-      byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+      observation: observationFromEvents(events),
       startedAt: new Date('2026-01-01T00:00:00.000Z'),
       endedAt: new Date('2026-01-01T00:00:01.000Z'),
-      spawnResult: { terminated: false, terminationReason: null, exitCode: 0 },
-      events: [bashToolUseEvent('toolu_1'), bashToolUseEvent('toolu_2'), bashToolUseEvent('toolu_3'), skillToolUseEvent('toolu_4', 'kmp-test-runner'), skillToolUseEvent('toolu_5', 'kmp-test-runner')],
     };
     const record = buildRunRecord({
       conditionResult, condition: 'current-skill', runKind: 'calibration', scenarioId: 'test-tool-calls-total',
@@ -1473,16 +1587,11 @@ describe('buildRunRecord -- tool_calls_total counts every Skill attempt, not jus
   });
 
   it('falls back to 0 for the Skill contribution when invocation is null (no attempt at all)', () => {
+    const events = [bashToolUseEvent('toolu_1')];
     const conditionResult = {
-      init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], skills: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
-      result: { subtype: 'success', is_error: false },
-      invocation: null,
-      hookStats: { hookCallCount: 1, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 1 },
-      byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+      observation: observationFromEvents(events),
       startedAt: new Date('2026-01-01T00:00:00.000Z'),
       endedAt: new Date('2026-01-01T00:00:01.000Z'),
-      spawnResult: { terminated: false, terminationReason: null, exitCode: 0 },
-      events: [bashToolUseEvent('toolu_1')],
     };
     const record = buildRunRecord({
       conditionResult, condition: 'no-skill', runKind: 'calibration', scenarioId: 'test-tool-calls-total-no-invocation',
@@ -1501,23 +1610,17 @@ describe('buildRunRecord -- tool_calls_total counts every Skill attempt, not jus
   // expected-skill invocation isolate the foreign contribution precisely: 0 (Bash) + 1
   // (invocation.attemptCount) + 1 (the new foreignSkillUses.length term) = 2, not 1.
   it('counts a foreign Skill attempt in the total -- it is no longer silently uncounted', () => {
+    const events = [
+      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Skill', id: 'toolu_foreign1', input: { skill: 'totally-unrelated-skill' } }] } },
+      { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_foreign1', is_error: true, content: '<tool_use_error>Unknown skill: totally-unrelated-skill</tool_use_error>' }] } },
+      // tool_calls_total derives purely from real transcript tool_use blocks -- this event is a
+      // second, expected-skill Skill tool_use, distinct from the foreign one above.
+      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Skill', id: 'toolu_target1', input: { skill: 'kmp-test-runner' } }] } },
+    ];
     const conditionResult = {
-      init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [{ name: 'kmp-test-runner', path: '/fake', source: 'fake' }], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
-      result: { subtype: 'success', is_error: false },
-      invocation: { attempted: true, confirmed: true, attemptCount: 1, type: 'assistant.tool_use.Skill', index: 2, receiptNs: 0n, input: { skill: 'kmp-test-runner' }, resultIsError: false },
-      hookStats: { hookCallCount: 0, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 0 },
-      byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+      observation: observationFromEvents(events),
       startedAt: new Date('2026-01-01T00:00:00.000Z'),
       endedAt: new Date('2026-01-01T00:00:01.000Z'),
-      spawnResult: { terminated: false, terminationReason: null, exitCode: 0 },
-      events: [
-        { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Skill', id: 'toolu_foreign1', input: { skill: 'totally-unrelated-skill' } }] } },
-        { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_foreign1', is_error: true, content: '<tool_use_error>Unknown skill: totally-unrelated-skill</tool_use_error>' }] } },
-        // tool_calls_total now derives purely from real transcript tool_use blocks -- this event
-        // is what actually backs invocation.attemptCount:1 above (a decoupled attemptCount with no
-        // corresponding real event would no longer be reflected in the total).
-        { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Skill', id: 'toolu_target1', input: { skill: 'kmp-test-runner' } }] } },
-      ],
     };
     const record = buildRunRecord({
       conditionResult, condition: 'current-skill', runKind: 'calibration', scenarioId: 'test-tool-calls-total-foreign-skill',
@@ -1546,15 +1649,25 @@ describe('finalizeAndWriteRecords -- a writeRunRecordEvidence() throw returns {o
   it('returns {ok:false, reason} instead of throwing when the target evidence file already exists', async () => {
     function fakeConditionResult() {
       return {
-        init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], skills: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
-        result: { subtype: 'success', is_error: false },
-        invocation: null,
-        hookStats: { hookCallCount: 0, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 0 },
-        byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+        observation: {
+          schema: 1,
+          runtime: { id: 'claude-code', protocolVersion: 1 },
+          process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1000n },
+          session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true },
+          transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+          terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
+          toolAttempts: [],
+          skill: {
+            available: false, profileMatchesCondition: true, snapshotBindingMatches: false,
+            targetInvocation: null, foreignInvocations: [],
+            ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+          },
+          hookStats: { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: true },
+          byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+          timing: { receiptNsByEventIndex: new Map() },
+        },
         startedAt: new Date('2026-01-01T00:00:00.000Z'),
         endedAt: new Date('2026-01-01T00:00:01.000Z'),
-        spawnResult: { terminated: false, terminationReason: null, exitCode: 0 },
-        events: [],
       };
     }
     const policySha256 = computePolicySha256();
@@ -1580,10 +1693,11 @@ describe('finalizeAndWriteRecords -- a writeRunRecordEvidence() throw returns {o
       try {
         result = await finalizeAndWriteRecords({
           runKind: 'calibration', recordA, recordB,
-          runA: { spawnResult: { rawStdout: '' } },
-          runB: { spawnResult: { rawStdout: '' } },
+          runA: { observation: fakeConditionResult().observation },
+          runB: { observation: fakeConditionResult().observation },
           hardGateFn: () => ({ ok: true, reason: null }),
           runsRootOverride: runsRoot,
+          transcriptsByRunId: { [recordA.run_id]: '', [recordB.run_id]: '' },
         });
       } catch (err) {
         thrown = err;
@@ -1874,18 +1988,50 @@ describe('cmdAggregate -- does not recurse into a nested audit/ directory', () =
 // exercised implicitly by every OTHER buildRunRecord test in this file continuing to pass
 // unmodified.
 describe('buildRunRecord -- schema v5 post-signal metrics + accepted_audit placeholder', () => {
-  function fakeConditionResultWithEvents({ events, bashResults = [], decisionByAttempt = new Map(), endedHrtimeNs } = {}) {
+  // toolAttempts (and hence tool_calls_total/post_signal_tool_calls/the policy-denial{before,after}
+  // split) now derive purely from observation.toolAttempts, built here via the REAL frozen
+  // findAllToolUsesWithResults (test files are permitted to import stream-parser.mjs directly) --
+  // the old hand-maintained `bashResults` parameter was always redundant with what that function
+  // independently derives from `events`, so it is dropped. receiptNsByEventIndex is built directly
+  // from each event's own `_receiptNs` (the real per-event field findAllToolUsesWithResults' own
+  // receiptNs output is sourced from -- see stream-parser.mjs), matching this describe block's
+  // pre-existing convention of hand-setting `_receiptNs` on synthetic event literals.
+  function fakeConditionResultWithEvents({ events = [], decisionByAttempt = new Map(), endedHrtimeNs } = {}) {
+    const expectedToolNames = new Set(['Bash', 'Skill']);
+    const toolAttempts = findAllToolUsesWithResults(events).map((u) => {
+      const kind = u.name === 'Skill' ? 'skill' : u.name === 'Bash' ? 'shell' : 'other';
+      const command = kind === 'shell' ? (typeof u.input?.command === 'string' ? u.input.command : null) : null;
+      const textStatus = !u.resultFound ? 'missing' : (typeof u.resultContent === 'string' ? 'text' : 'unsupported');
+      return {
+        id: u.id ?? null, kind, runtimeName: u.name ?? null, eventIndex: u.index,
+        receiptNs: typeof u.receiptNs === 'bigint' ? u.receiptNs : null,
+        profileAllowed: expectedToolNames.has(u.name), command,
+        skillReference: kind === 'skill' && typeof u.input?.skill === 'string' ? u.input.skill : null,
+        targetsExpectedSkill: null,
+        result: { found: u.resultFound, eventIndex: u.resultFound ? u.resultIndex : null, isError: u.resultFound ? u.resultIsError : null, text: textStatus === 'text' ? u.resultContent : null, textStatus },
+        preDispatchBlock: { recognized: false, signature: null },
+      };
+    });
     return {
-      init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], skills: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
-      result: { subtype: 'success', is_error: false },
-      invocation: null,
-      hookStats: { hookCallCount: bashResults.length, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: bashResults.length },
-      byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+      observation: {
+        schema: 1,
+        runtime: { id: 'claude-code', protocolVersion: 1 },
+        process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: endedHrtimeNs ?? 1000n },
+        session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true },
+        transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+        terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
+        toolAttempts,
+        skill: {
+          available: false, profileMatchesCondition: true, snapshotBindingMatches: false,
+          targetInvocation: null, foreignInvocations: [],
+          ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+        },
+        hookStats: { hookCallCount: toolAttempts.length, hookResponseCount: toolAttempts.length, hookDenyCount: 0, hookAllowCount: toolAttempts.length, hookPairingOk: true, everyCallHooked: true },
+        byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+        timing: { receiptNsByEventIndex: new Map(events.map((e, i) => [i, e._receiptNs])) },
+      },
       startedAt: new Date('2026-01-01T00:00:00.000Z'),
       endedAt: new Date('2026-01-01T00:00:01.000Z'),
-      spawnResult: { terminated: false, terminationReason: null, exitCode: 0, spawnHrtimeNs: 0n, endedHrtimeNs },
-      events,
-      bashResults,
       junitAttribution: { decisionByAttempt },
     };
   }
@@ -1946,14 +2092,10 @@ describe('buildRunRecord -- schema v5 post-signal metrics + accepted_audit place
       { type: 'assistant', _receiptNs: 3_000_000n, message: { content: [{ type: 'tool_use', name: 'Bash', id: 't2', input: { command: 'kmp-test doctor --json' } }] } },
       { type: 'user', _receiptNs: 4_000_000n, message: { content: [{ type: 'tool_result', tool_use_id: 't2', content: 'denied', is_error: true }] } },
     ];
-    const bashResults = [
-      { index: 1, id: 't1', command: 'kmp-test parallel --module-filter shared --json', resultFound: true, resultIsError: false, resultIndex: 2, resultContent: 'ok' },
-      { index: 3, id: 't2', command: 'kmp-test doctor --json', resultFound: true, resultIsError: true, resultIndex: 4, resultContent: 'denied' },
-    ];
     const decisionByAttempt = new Map([['t1', 'allow'], ['t2', 'deny']]);
     const endedHrtimeNs = 10_000_000n;
     const record = buildRunRecord({
-      conditionResult: fakeConditionResultWithEvents({ events, bashResults, decisionByAttempt, endedHrtimeNs }),
+      conditionResult: fakeConditionResultWithEvents({ events, decisionByAttempt, endedHrtimeNs }),
       ...commonScenarioParams,
       gradeResult: { expectedOutcomeMatched: true, success: true, checks: [], firstUsefulSignalEventIndex: 2, testInvocationsTotal: 1, retries: 0 },
     });
@@ -1981,13 +2123,9 @@ describe('buildRunRecord -- schema v5 post-signal metrics + accepted_audit place
       { type: 'user', _receiptNs: 2_000_000n, message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok', is_error: false }] } },
       { type: 'user', _receiptNs: 3_000_000n, message: { content: [{ type: 'tool_result', tool_use_id: 't2', content: 'denied', is_error: true }] } },
     ];
-    const bashResults = [
-      { index: 1, id: 't1', command: 'kmp-test parallel --module-filter shared --json', resultFound: true, resultIsError: false, resultIndex: 2, resultContent: 'ok' },
-      { index: 1, id: 't2', command: 'kmp-test doctor --json', resultFound: true, resultIsError: true, resultIndex: 3, resultContent: 'denied' },
-    ];
     const decisionByAttempt = new Map([['t1', 'allow'], ['t2', 'deny']]);
     const record = buildRunRecord({
-      conditionResult: fakeConditionResultWithEvents({ events, bashResults, decisionByAttempt, endedHrtimeNs: 20_000_000n }),
+      conditionResult: fakeConditionResultWithEvents({ events, decisionByAttempt, endedHrtimeNs: 20_000_000n }),
       ...commonScenarioParams,
       gradeResult: { expectedOutcomeMatched: true, success: true, checks: [], firstUsefulSignalEventIndex: 2, testInvocationsTotal: 1, retries: 0 },
     });
@@ -2054,6 +2192,29 @@ describe('finalizeAndWriteMatrixRecords -- gate rejection precedence over sideca
     };
   }
 
+  // Matches the canonical minimal condition-observation-v1 shape (see e.g.
+  // agentic-eval-graders.test.js's own baseObservation helper) -- finalizeAndWriteMatrixRecords now
+  // reads conditionResults[i].observation exclusively, never a raw provider event.
+  function minimalObservation() {
+    return {
+      schema: 1,
+      runtime: { id: 'claude-code', protocolVersion: 1 },
+      process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1000n },
+      session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true },
+      transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+      terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
+      toolAttempts: [],
+      skill: {
+        available: false, profileMatchesCondition: true, snapshotBindingMatches: false,
+        targetInvocation: null, foreignInvocations: [],
+        ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+      },
+      hookStats: { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: true },
+      byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+      timing: { receiptNsByEventIndex: new Map() },
+    };
+  }
+
   function twoCellMatrix() {
     return [
       minimalScenarioRecord({ run_id: 'scenario-current-skill-syn0001', condition: 'current-skill', order_index: 0 }),
@@ -2081,10 +2242,11 @@ describe('finalizeAndWriteMatrixRecords -- gate rejection precedence over sideca
       const records = twoCellMatrix();
       // cellOrdinal stamped on each -- captureOrdinalByRunId (cli.mjs) now derives from
       // conditionResult.cellOrdinal, never array position (Codex-audit fix, PR #418).
-      const conditionResults = [{ events: [], spawnResult: { rawStdout: '' }, cellOrdinal: 0 }, { events: [], spawnResult: { rawStdout: '' }, cellOrdinal: 1 }];
+      const conditionResults = [{ observation: minimalObservation(), cellOrdinal: 0 }, { observation: minimalObservation(), cellOrdinal: 1 }];
       const result = await finalizeAndWriteMatrixRecords({
         runKind: 'scenario', records, conditionResults, hardGateFn: rejectingGate,
         repeats: 1, runsRootOverride: dir, buildSidecarsFn: alwaysFailingSidecarBuilder,
+        transcriptsByRunId: { 'scenario-current-skill-syn0001': '', 'scenario-no-skill-syn0002': '' },
       });
       expect(result.ok).toBe(false);
       expect(result.reason).toBe('synthetic-gate-rejection:true');
@@ -2099,10 +2261,11 @@ describe('finalizeAndWriteMatrixRecords -- gate rejection precedence over sideca
       const records = twoCellMatrix();
       // cellOrdinal stamped on each -- captureOrdinalByRunId (cli.mjs) now derives from
       // conditionResult.cellOrdinal, never array position (Codex-audit fix, PR #418).
-      const conditionResults = [{ events: [], spawnResult: { rawStdout: '' }, cellOrdinal: 0 }, { events: [], spawnResult: { rawStdout: '' }, cellOrdinal: 1 }];
+      const conditionResults = [{ observation: minimalObservation(), cellOrdinal: 0 }, { observation: minimalObservation(), cellOrdinal: 1 }];
       const result = await finalizeAndWriteMatrixRecords({
         runKind: 'scenario', records, conditionResults, hardGateFn: rejectingGate,
         repeats: 1, runsRootOverride: dir, buildSidecarsFn: alwaysFailingSidecarBuilder,
+        transcriptsByRunId: { 'scenario-current-skill-syn0001': '', 'scenario-no-skill-syn0002': '' },
       });
       expect(result.diagnosticsWriteError).toBeFalsy();
       expect(typeof result.rejectionId).toBe('string');
@@ -2119,11 +2282,12 @@ describe('finalizeAndWriteMatrixRecords -- gate rejection precedence over sideca
       const records = twoCellMatrix();
       // cellOrdinal stamped on each -- captureOrdinalByRunId (cli.mjs) now derives from
       // conditionResult.cellOrdinal, never array position (Codex-audit fix, PR #418).
-      const conditionResults = [{ events: [], spawnResult: { rawStdout: '' }, cellOrdinal: 0 }, { events: [], spawnResult: { rawStdout: '' }, cellOrdinal: 1 }];
+      const conditionResults = [{ observation: minimalObservation(), cellOrdinal: 0 }, { observation: minimalObservation(), cellOrdinal: 1 }];
       const acceptingGate = () => ({ ok: true, reason: null, cellResults: [], ambientProfileMatrixOk: true });
       const result = await finalizeAndWriteMatrixRecords({
         runKind: 'scenario', records, conditionResults, hardGateFn: acceptingGate,
         repeats: 1, runsRootOverride: dir, buildSidecarsFn: alwaysFailingSidecarBuilder,
+        transcriptsByRunId: { 'scenario-current-skill-syn0001': '', 'scenario-no-skill-syn0002': '' },
       });
       expect(result.ok).toBe(false);
       expect(result.reason).toContain('sidecar builder should never be invoked for a rejected matrix');
@@ -2164,12 +2328,15 @@ describe('finalizeAndWriteMatrixRecords -- a localIntegrityByRunId mismatch on a
 
   it('returns {ok:false, reason} (never throws) when localIntegrityByRunId is missing a required key', async () => {
     const record = minimalScenarioRecord();
+    // observation content is irrelevant here -- the localIntegrityByRunId mismatch check (below)
+    // returns before this branch ever dereferences conditionResults[i].observation.
     const result = await finalizeAndWriteMatrixRecords({
-      runKind: 'scenario', records: [record], conditionResults: [{ events: [], spawnResult: { rawStdout: '' } }],
+      runKind: 'scenario', records: [record], conditionResults: [{ observation: {} }],
       hardGateFn: neverCalledHardGate, repeats: 1, matrixComplete: false,
       plannedCellCount: 4, executedCellCount: 1,
       localIntegrityByRunId: {}, // deliberately missing record.run_id's own key
       failFastStop: { reason: 'SIMULATED_LOCAL_FAILURE' },
+      transcriptsByRunId: { [record.run_id]: '' },
     });
     expect(result.ok).toBe(false);
     expect(result.reason).toContain("localIntegrityByRunId's keys must exactly match records[].run_id");
@@ -2179,11 +2346,12 @@ describe('finalizeAndWriteMatrixRecords -- a localIntegrityByRunId mismatch on a
   it('returns {ok:false, reason} (never throws) when localIntegrityByRunId carries an extra/stale key', async () => {
     const record = minimalScenarioRecord();
     const result = await finalizeAndWriteMatrixRecords({
-      runKind: 'scenario', records: [record], conditionResults: [{ events: [], spawnResult: { rawStdout: '' } }],
+      runKind: 'scenario', records: [record], conditionResults: [{ observation: {} }],
       hardGateFn: neverCalledHardGate, repeats: 1, matrixComplete: false,
       plannedCellCount: 4, executedCellCount: 1,
       localIntegrityByRunId: { [record.run_id]: { failedChecks: [], unexpectedToolUsesCount: 0, unexpectedTools: [] }, 'stale-run-id-from-another-batch': {} },
       failFastStop: { reason: 'SIMULATED_LOCAL_FAILURE' },
+      transcriptsByRunId: { [record.run_id]: '' },
     });
     expect(result.ok).toBe(false);
     expect(result.reason).toContain("localIntegrityByRunId's keys must exactly match records[].run_id");
@@ -2193,11 +2361,12 @@ describe('finalizeAndWriteMatrixRecords -- a localIntegrityByRunId mismatch on a
   it('returns {ok:false, reason} (never throws) when localIntegrityByRunId is null entirely', async () => {
     const record = minimalScenarioRecord();
     const result = await finalizeAndWriteMatrixRecords({
-      runKind: 'scenario', records: [record], conditionResults: [{ events: [], spawnResult: { rawStdout: '' } }],
+      runKind: 'scenario', records: [record], conditionResults: [{ observation: {} }],
       hardGateFn: neverCalledHardGate, repeats: 1, matrixComplete: false,
       plannedCellCount: 4, executedCellCount: 1,
       localIntegrityByRunId: null,
       failFastStop: { reason: 'SIMULATED_LOCAL_FAILURE' },
+      transcriptsByRunId: { [record.run_id]: '' },
     });
     expect(result.ok).toBe(false);
     expect(result.reason).toContain("localIntegrityByRunId's keys must exactly match records[].run_id");
@@ -2214,18 +2383,41 @@ describe('finalizeAndWriteMatrixRecords -- a localIntegrityByRunId mismatch on a
 // aggregateRuns, excluding and reporting any schema-v5 scenario record whose sidecar is
 // missing/malformed/mismatched.
 describe('cmdAggregate -- schema-v5 scenario records require a verifiable on-disk sidecar', () => {
+  // Matches the canonical minimal condition-observation-v1 shape (see e.g.
+  // agentic-eval-graders.test.js's own baseObservation helper) -- buildRunRecord now reads
+  // conditionResult.observation exclusively, never a raw provider event. This describe block's
+  // `events` param is always empty in practice (every call site below passes `{}`), so
+  // toolAttempts stays empty rather than deriving from findAllToolUsesWithResults.
   function fakeConditionResultWithEvents({ events = [] } = {}) {
     return {
-      init: { model: 'claude-sonnet-5-fake', session_id: 'sess-1', claude_code_version: 'fake', plugins: [], skills: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
-      result: { subtype: 'success', is_error: false },
-      invocation: null,
-      hookStats: { hookCallCount: 0, hookDenyCount: 0, everyCallHooked: true, hookAllowCount: 0 },
-      byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+      observation: {
+        schema: 1,
+        runtime: { id: 'claude-code', protocolVersion: 1 },
+        process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: undefined },
+        session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true },
+        transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+        terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
+        toolAttempts: events.length === 0 ? [] : findAllToolUsesWithResults(events).map((u) => ({
+          id: u.id ?? null, kind: u.name === 'Skill' ? 'skill' : u.name === 'Bash' ? 'shell' : 'other',
+          runtimeName: u.name ?? null, eventIndex: u.index, receiptNs: typeof u.receiptNs === 'bigint' ? u.receiptNs : null,
+          profileAllowed: new Set(['Bash', 'Skill']).has(u.name),
+          command: u.name === 'Bash' && typeof u.input?.command === 'string' ? u.input.command : null,
+          skillReference: u.name === 'Skill' && typeof u.input?.skill === 'string' ? u.input.skill : null,
+          targetsExpectedSkill: null,
+          result: { found: u.resultFound, eventIndex: u.resultFound ? u.resultIndex : null, isError: u.resultFound ? u.resultIsError : null, text: typeof u.resultContent === 'string' ? u.resultContent : null, textStatus: !u.resultFound ? 'missing' : (typeof u.resultContent === 'string' ? 'text' : 'unsupported') },
+          preDispatchBlock: { recognized: false, signature: null },
+        })),
+        skill: {
+          available: false, profileMatchesCondition: true, snapshotBindingMatches: false,
+          targetInvocation: null, foreignInvocations: [],
+          ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+        },
+        hookStats: { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: true },
+        byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+        timing: { receiptNsByEventIndex: new Map(events.map((e, i) => [i, e._receiptNs])) },
+      },
       startedAt: new Date('2026-01-01T00:00:00.000Z'),
       endedAt: new Date('2026-01-01T00:00:01.000Z'),
-      spawnResult: { terminated: false, terminationReason: null, exitCode: 0, spawnHrtimeNs: 0n, endedHrtimeNs: undefined },
-      events,
-      bashResults: [],
       junitAttribution: { decisionByAttempt: new Map() },
     };
   }

@@ -26,7 +26,7 @@
 // finalizeAcceptedRunAuditSidecar wires build->validate->redact->revalidate->hash into the one
 // sequence cli.mjs's matrix finalization needs before it can attach `accepted_audit` to a record.
 import { createHash } from 'node:crypto';
-import { findAllToolUsesWithResults, derivePostSignalMs, isTargetSkillReference, isRecognizedPreDispatchBlock } from './stream-parser.mjs';
+import { msSinceOrigin } from './runtimes/contract.mjs';
 import { classifyBashCommand } from './command-classify.mjs';
 import { assertCleanOrThrowObject } from './privacy.mjs';
 import { DISPATCH_STATUS_VALUES as BASH_DISPATCH_STATUS_VALUES } from './dispatch-accounting.mjs';
@@ -105,18 +105,19 @@ function rejectUnrecognizedKeys(obj, allowedKeys, field, errors) {
 }
 
 /**
- * Classifies one findAllToolUsesWithResults() entry into the sidecar's own closed-vocabulary
+ * Classifies one canonical observation.toolAttempts[] entry into the sidecar's own closed-vocabulary
  * tool_calls[] entry shape -- structural categories only, never the entry's own raw command/input.
  *
  * `dispatchStatusByAttempt` is CONSUMED, never re-derived: it is the canonical per-attempt
  * classification buildBashDispatchAccounting already produced for this condition. This function
  * never recombines `decisionByAttempt` with a recognized-id set of its own, and never infers a
  * status the map did not supply -- two independent derivations of the same fact is exactly how the
- * two channels would drift apart. The one place the matcher is re-run is a COHERENCE check on a
- * `pre_dispatch_blocked` entry (does the transcript entry still carry the exact literal shape?),
- * which can only ever reject, never assign.
+ * two channels would drift apart. The one place the matcher is re-consulted is a COHERENCE check on
+ * a `pre_dispatch_blocked` entry (does the observation's own `preDispatchBlock.recognized` still
+ * agree?), reading the runtime adapter's already-computed verdict rather than re-running the strict
+ * transcript matcher itself -- which can only ever reject, never assign.
  */
-function classifyToolCall(u, { targetPluginName, targetSkillName, allowedGradleTasks, allowedKmpTestSubcommands, decisionByAttempt, dispatchStatusByAttempt, firstUsefulSignalEventIndex }) {
+function classifyToolCall(a, { allowedGradleTasks, allowedKmpTestSubcommands, decisionByAttempt, dispatchStatusByAttempt, firstUsefulSignalEventIndex }) {
   let toolKind;
   let operation = null;
   let planOnly = null;
@@ -124,10 +125,10 @@ function classifyToolCall(u, { targetPluginName, targetSkillName, allowedGradleT
   // Non-Bash tools never enter hook dispatch at all.
   let dispatchStatus = 'not_applicable';
 
-  if (u.name === 'Skill') {
-    toolKind = isTargetSkillReference(u.input?.skill, targetPluginName, targetSkillName) ? 'target-skill' : 'non-target-skill';
-  } else if (u.name === 'Bash') {
-    const classification = classifyBashCommand(u.input?.command);
+  if (a.kind === 'skill') {
+    toolKind = a.targetsExpectedSkill ? 'target-skill' : 'non-target-skill';
+  } else if (a.kind === 'shell') {
+    const classification = classifyBashCommand(a.command);
     if (classification.kind === 'kmp-test') {
       toolKind = 'kmp-test';
       operation = classification.subcommand != null && allowedKmpTestSubcommands.includes(classification.subcommand) ? classification.subcommand : 'other';
@@ -140,7 +141,7 @@ function classifyToolCall(u, { targetPluginName, targetSkillName, allowedGradleT
       toolKind = 'other-bash';
       planOnly = false;
     }
-    const decision = decisionByAttempt.get(u.id);
+    const decision = decisionByAttempt.get(a.id);
     // The canonical accounting is the ONLY source of dispatch_status. A missing map, or a missing
     // entry within it, yields `unaccounted` -- deliberately even when decisionByAttempt holds an
     // allow/deny. Re-deriving `hook_evaluated` from the decision here would be a SECOND, independent
@@ -150,13 +151,13 @@ function classifyToolCall(u, { targetPluginName, targetSkillName, allowedGradleT
     // (policy_decision:allow + dispatch_status:unaccounted) violates the validator's biconditional
     // and the sidecar fails closed -- which is the intended outcome, not an oversight.
     // Calibrate/smoke never build accepted-run sidecars at all, so they justify no fallback here.
-    dispatchStatus = dispatchStatusByAttempt?.get(u.id) ?? 'unaccounted';
+    dispatchStatus = dispatchStatusByAttempt?.get(a.id) ?? 'unaccounted';
     // Coherence check, NOT a second classification: if the map claims this call was blocked before
-    // dispatch, the entry must still carry the exact literal shape the strict matcher recognizes.
-    // This catches a corrupted or fabricated map, and throws rather than silently downgrading --
+    // dispatch, the observation's own preDispatchBlock must still agree it was recognized. This
+    // catches a corrupted or fabricated map, and throws rather than silently downgrading --
     // downgrading to `unaccounted` would pair with policy_decision:missing and quietly VALIDATE.
-    if (dispatchStatus === 'pre_dispatch_blocked' && !isRecognizedPreDispatchBlock(u)) {
-      throw new Error(`accepted-run-audit: dispatch accounting claims pre_dispatch_blocked for tool_use ordinal at event index ${u.index}, but the transcript entry does not match the recognized pre-dispatch block shape`);
+    if (dispatchStatus === 'pre_dispatch_blocked' && a.preDispatchBlock?.recognized !== true) {
+      throw new Error(`accepted-run-audit: dispatch accounting claims pre_dispatch_blocked for tool_use ordinal at event index ${a.eventIndex}, but the observation's own preDispatchBlock does not agree it was recognized`);
     }
     if (decision === 'allow') policyDecision = 'allow';
     else if (decision === 'deny') policyDecision = 'deny';
@@ -170,22 +171,22 @@ function classifyToolCall(u, { targetPluginName, targetSkillName, allowedGradleT
     toolKind = 'unexpected-tool';
   }
 
-  const resultStatus = !u.resultFound ? 'missing' : (u.resultIsError === true ? 'error' : 'success');
+  const resultStatus = !a.result.found ? 'missing' : (a.result.isError === true ? 'error' : 'success');
 
   let phase;
   if (firstUsefulSignalEventIndex == null) {
     phase = 'no-signal';
-  } else if (u.resultFound && u.resultIndex === firstUsefulSignalEventIndex) {
+  } else if (a.result.found && a.result.eventIndex === firstUsefulSignalEventIndex) {
     phase = 'produced-signal';
-  } else if (u.index > firstUsefulSignalEventIndex) {
+  } else if (a.eventIndex > firstUsefulSignalEventIndex) {
     phase = 'post-signal';
   } else {
     phase = 'pre-signal';
   }
 
   return {
-    tool_use_event_index: u.index,
-    tool_result_event_index: u.resultFound ? u.resultIndex : null,
+    tool_use_event_index: a.eventIndex,
+    tool_result_event_index: a.result.found ? a.result.eventIndex : null,
     tool_kind: toolKind,
     operation,
     plan_only: planOnly,
@@ -200,36 +201,34 @@ function classifyToolCall(u, { targetPluginName, targetSkillName, allowedGradleT
  * Builds the structural audit sidecar for one accepted scenario run record. Pure -- never touches
  * the filesystem, never redacts (see finalizeAcceptedRunAuditSidecar for that). `record` supplies
  * identity fields (run_id/schema/run_kind/condition/scenario_id), the first-useful-signal event
- * ref, and the policy-allowed lists it already carries; `conditionResult` supplies the events this
- * record's own condition produced plus its decision-attribution map; `terminalAuthoritativeEventIndex`
- * is graders.mjs's own additive gradeScenarioCondition() field -- taken directly, never re-derived
- * by guessing from the last Bash call.
+ * ref, and the policy-allowed lists it already carries; `conditionResult` supplies the canonical
+ * observation this record's own condition produced plus its decision-attribution map;
+ * `terminalAuthoritativeEventIndex` is graders.mjs's own additive gradeScenarioCondition() field --
+ * taken directly, never re-derived by guessing from the last Bash call.
  *
  * post_signal_ms/post_signal_tool_calls/policy_denials_{before,after}_first_signal in `summary` are
- * independently RE-DERIVED here from the same raw conditionResult data buildRunRecord() itself
- * used (not copied from `record`) -- this is what makes crossValidateAcceptedRunAuditAgainstRecord
- * a genuine redundant check, not a tautology.
+ * independently RE-DERIVED here from the same observation data buildRunRecord() itself used (not
+ * copied from `record`) -- this is what makes crossValidateAcceptedRunAuditAgainstRecord a genuine
+ * redundant check, not a tautology.
  * @param {object} opts
  * @param {object} opts.record - an already-built schema-v5 scenario run record
- * @param {object} opts.conditionResult - this record's own conditionResult (events, junitAttribution.decisionByAttempt, spawnResult.endedHrtimeNs)
+ * @param {object} opts.conditionResult - this record's own conditionResult (observation.toolAttempts,
+ *   junitAttribution.decisionByAttempt, observation.process.endedHrtimeNs, observation.timing)
  * @param {number|null} opts.terminalAuthoritativeEventIndex - graders.mjs's gradeScenarioCondition() additive field
- * @param {string} opts.targetPluginName
- * @param {string} opts.targetSkillName
  */
-export function buildAcceptedRunAuditSidecar({ record, conditionResult, terminalAuthoritativeEventIndex, targetPluginName, targetSkillName }) {
+export function buildAcceptedRunAuditSidecar({ record, conditionResult, terminalAuthoritativeEventIndex }) {
+  const observation = conditionResult.observation;
   const decisionByAttempt = conditionResult.junitAttribution?.decisionByAttempt ?? new Map();
   // The canonical per-attempt classification, consumed as-is and never re-derived. If it is absent
   // every Bash call reads as `unaccounted`, so a sidecar built without it cannot validate -- see
   // classifyToolCall for why that is the intended failure mode rather than a gap.
   const dispatchStatusByAttempt = conditionResult.dispatchAccounting?.dispatchStatusByAttempt ?? new Map();
   const firstUsefulSignalEventIndex = record.first_useful_signal_event?.index ?? null;
-  const events = conditionResult.events ?? [];
-  const allToolUses = findAllToolUsesWithResults(events);
+  const allToolAttempts = observation.toolAttempts ?? [];
 
-  const toolCalls = allToolUses.map((u, ordinal) => ({
+  const toolCalls = allToolAttempts.map((a, ordinal) => ({
     ordinal,
-    ...classifyToolCall(u, {
-      targetPluginName, targetSkillName,
+    ...classifyToolCall(a, {
       allowedGradleTasks: record.policy_allowed_gradle_tasks ?? [],
       allowedKmpTestSubcommands: record.policy_allowed_kmptest_subcommands ?? [],
       decisionByAttempt, dispatchStatusByAttempt, firstUsefulSignalEventIndex,
@@ -247,7 +246,7 @@ export function buildAcceptedRunAuditSidecar({ record, conditionResult, terminal
   const preDispatchBlockedTotal = toolCalls.filter((tc) => isBashKind(tc) && tc.dispatch_status === 'pre_dispatch_blocked').length;
 
   const hasBoundary = firstUsefulSignalEventIndex != null;
-  const postSignalMs = hasBoundary ? derivePostSignalMs(events, firstUsefulSignalEventIndex, conditionResult.spawnResult?.endedHrtimeNs) : null;
+  const postSignalMs = hasBoundary ? msSinceOrigin(observation.process.endedHrtimeNs, observation.timing.receiptNsByEventIndex.get(firstUsefulSignalEventIndex)) : null;
   const postSignalToolCalls = hasBoundary ? toolCalls.filter((tc) => tc.tool_use_event_index > firstUsefulSignalEventIndex).length : null;
   const policyDenialsBefore = hasBoundary ? toolCalls.filter((tc) => isBashKind(tc) && tc.policy_decision === 'deny' && tc.tool_use_event_index <= firstUsefulSignalEventIndex).length : null;
   const policyDenialsAfter = hasBoundary ? toolCalls.filter((tc) => isBashKind(tc) && tc.policy_decision === 'deny' && tc.tool_use_event_index > firstUsefulSignalEventIndex).length : null;

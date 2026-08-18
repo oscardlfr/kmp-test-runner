@@ -16,6 +16,7 @@ import {
   findBashToolUsesWithResults,
   countHookEvents,
   isRecognizedPreDispatchBlock,
+  findAllToolUsesWithResults,
 } from '../../tools/agentic-eval/stream-parser.mjs';
 import { buildBashDispatchAccounting, DISPATCH_STATUS_VALUES } from '../../tools/agentic-eval/dispatch-accounting.mjs';
 import { validateAcceptedRunAuditSidecar, buildAcceptedRunAuditSidecar } from '../../tools/agentic-eval/accepted-run-audit.mjs';
@@ -51,6 +52,41 @@ function incidentEvents(command = 'sleep 60', resultOpts = {}) {
 
 function firstBash(events) {
   return findBashToolUsesWithResults(events)[0];
+}
+
+/** Converts a raw events[] fixture into the canonical observation.toolAttempts[] shape, using the
+ * REAL frozen stream-parser.mjs primitives -- mirrors runtimes/claude-code.mjs's own toolAttempts
+ * construction exactly (test files are permitted to import stream-parser.mjs directly; only
+ * production consumers are bound by the core-consumer boundary). Every fixture in this file is a
+ * lone Bash tool_use, so skillReference/targetsExpectedSkill are always null here -- this helper
+ * doesn't need Skill-classification support to stay correct for what this file actually exercises. */
+function toolAttemptsFromEvents(events) {
+  const expectedToolNames = new Set(['Bash', 'Skill']);
+  return findAllToolUsesWithResults(events).map((u) => {
+    const kind = u.name === 'Skill' ? 'skill' : u.name === 'Bash' ? 'shell' : 'other';
+    const command = kind === 'shell' ? (typeof u.input?.command === 'string' ? u.input.command : null) : null;
+    const textStatus = !u.resultFound ? 'missing' : (typeof u.resultContent === 'string' ? 'text' : 'unsupported');
+    const recognized = isRecognizedPreDispatchBlock(u);
+    return {
+      id: u.id ?? null,
+      kind,
+      runtimeName: u.name ?? null,
+      eventIndex: u.index,
+      receiptNs: typeof u.receiptNs === 'bigint' ? u.receiptNs : null,
+      profileAllowed: expectedToolNames.has(u.name),
+      command,
+      skillReference: null,
+      targetsExpectedSkill: null,
+      result: {
+        found: u.resultFound,
+        eventIndex: u.resultFound ? u.resultIndex : null,
+        isError: u.resultFound ? u.resultIsError : null,
+        text: textStatus === 'text' ? u.resultContent : null,
+        textStatus,
+      },
+      preDispatchBlock: { recognized, signature: recognized ? 'claude-code/bash-pre-dispatch-block/v1' : null },
+    };
+  });
 }
 
 describe('isRecognizedPreDispatchBlock -- the exact demonstrated shape', () => {
@@ -426,10 +462,16 @@ describe('the audit sidecar cannot certify itself without the canonical accounti
   function build(events, { decisionByAttempt, dispatchAccounting }) {
     return buildAcceptedRunAuditSidecar({
       record: RECORD,
-      conditionResult: { events, junitAttribution: { decisionByAttempt }, dispatchAccounting, spawnResult: {} },
+      conditionResult: {
+        observation: {
+          toolAttempts: toolAttemptsFromEvents(events),
+          timing: { receiptNsByEventIndex: new Map() },
+          process: { endedHrtimeNs: 0n },
+        },
+        junitAttribution: { decisionByAttempt },
+        dispatchAccounting,
+      },
       terminalAuthoritativeEventIndex: null,
-      targetPluginName: 'kmp-test-runner',
-      targetSkillName: 'kmp-test-runner',
     });
   }
 
@@ -471,32 +513,43 @@ describe('the audit sidecar cannot certify itself without the canonical accounti
   });
 
   it('a FABRICATED pre_dispatch_blocked claim over a non-matching transcript fails closed', () => {
-    // The map asserts a block; the transcript is an ordinary hooked kmp-test call. The builder
-    // re-checks the literal shape purely as a coherence guard and refuses to emit the label.
+    // The map asserts a block; the transcript is an ordinary hooked kmp-test call. The builder's
+    // coherence guard reads the observation's own precomputed preDispatchBlock.recognized field
+    // (never re-runs the matcher itself) and refuses to emit the label when it disagrees.
     expect(() => build(HOOKED_EVENTS, {
       decisionByAttempt: new Map([['t1', null]]),
       dispatchAccounting: { dispatchStatusByAttempt: new Map([['t1', 'pre_dispatch_blocked']]) },
-    })).toThrow(/does not match the recognized pre-dispatch block shape/);
+    })).toThrow(/the observation's own preDispatchBlock does not agree it was recognized/);
   });
 
   it('a fabricated claim over a NEARLY-matching transcript also fails closed', () => {
     expect(() => build(incidentEvents('sleep 59'), {
       decisionByAttempt: new Map([['toolu_blocked', null]]),
       dispatchAccounting: { dispatchStatusByAttempt: new Map([['toolu_blocked', 'pre_dispatch_blocked']]) },
-    })).toThrow(/does not match the recognized pre-dispatch block shape/);
+    })).toThrow(/the observation's own preDispatchBlock does not agree it was recognized/);
   });
 });
 
 describe('requireDispatchAccounting is mandatory, never defaulted', () => {
+  // Matches the canonical minimal condition-observation-v1 shape (see e.g.
+  // agentic-eval-graders.test.js's own baseObservation helper) -- cellTranscriptIntegrityOk now
+  // reads conditionResult.observation exclusively, never a raw provider event. dispatchAccounting
+  // stays a TOP-LEVEL sibling of observation (unchanged), never nested inside it.
   const BASE = {
     condition: 'no-skill',
-    init: { plugins: [], skills: [], tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode: 'dontAsk' },
-    snapshotDir: null,
-    hookStats: { everyCallHooked: true, hookAllowCount: 1, hookDenyCount: 0 },
-    events: [],
-    malformedLines: [],
-    spawnResult: { terminated: false, terminationReason: null },
-    invocation: null,
+    observation: {
+      session: { initPresent: true, toolProfileMatchesExpected: true },
+      transcript: { malformedLineCount: 0, effectiveStructuralIssues: [], effectiveIncompleteToolResults: [] },
+      terminal: { present: true, isError: false, turnCount: 1, usage: { input: 0, output: 0, cached_input: 0, cache_write: 0 } },
+      toolAttempts: [],
+      skill: {
+        available: false, profileMatchesCondition: true, snapshotBindingMatches: false,
+        targetInvocation: null, foreignInvocations: [],
+        ambient: { structurallyWellFormed: true, targetIdentityOk: true },
+      },
+      hookStats: { everyCallHooked: true, hookAllowCount: 1, hookDenyCount: 0 },
+      process: { terminated: false, terminationReason: null },
+    },
     dispatchAccounting: { everyCallAccountedFor: true },
   };
   const IDS = { targetPluginName: 'kmp-test-runner', targetSkillName: 'kmp-test-runner' };
@@ -514,12 +567,12 @@ describe('requireDispatchAccounting is mandatory, never defaulted', () => {
   });
 
   it('explicit true uses the dispatch accounting', () => {
-    expect(cellTranscriptIntegrityOk({ ...BASE, hookStats: { everyCallHooked: false } }, { ...IDS, requireDispatchAccounting: true }).checksByName.hookAccountingOk).toBe(true);
+    expect(cellTranscriptIntegrityOk({ ...BASE, observation: { ...BASE.observation, hookStats: { everyCallHooked: false } } }, { ...IDS, requireDispatchAccounting: true }).checksByName.hookAccountingOk).toBe(true);
     expect(cellTranscriptIntegrityOk({ ...BASE, dispatchAccounting: { everyCallAccountedFor: false } }, { ...IDS, requireDispatchAccounting: true }).checksByName.hookAccountingOk).toBe(false);
   });
 
   it('explicit false preserves the calibrate/smoke aggregate proof', () => {
     expect(cellTranscriptIntegrityOk({ ...BASE, dispatchAccounting: null }, { ...IDS, requireDispatchAccounting: false }).checksByName.hookAccountingOk).toBe(true);
-    expect(cellTranscriptIntegrityOk({ ...BASE, hookStats: { everyCallHooked: false } }, { ...IDS, requireDispatchAccounting: false }).checksByName.hookAccountingOk).toBe(false);
+    expect(cellTranscriptIntegrityOk({ ...BASE, observation: { ...BASE.observation, hookStats: { everyCallHooked: false } } }, { ...IDS, requireDispatchAccounting: false }).checksByName.hookAccountingOk).toBe(false);
   });
 });

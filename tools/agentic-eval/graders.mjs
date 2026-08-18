@@ -22,7 +22,7 @@
 // and an authoritative kmp-test JSON envelope OR independently-read Gradle/JUnit evidence against
 // the scenario's exact expected module/task/outcome identifiers.
 import { classifyTaskExecutionMode, classifyTaskResults } from '../../lib/orchestrators/parallel/result-rollup.js';
-import { findTranscriptStructuralIssuesToleratingTimeout, findIncompleteToolResultsToleratingTimeout } from './stream-parser.mjs';
+import { selectShellAttempts } from './runtimes/contract.mjs';
 import { ENVELOPE_SCHEMA_VERSION, classifyExitCode } from '../../lib/envelope/exit-codes.js';
 import { TEST_TYPE_VALUES, COVERAGE_TOOL_VALUES } from '../../lib/parsers/argv-constants.js';
 import { classifyBashCommand, normalizeModuleName } from './command-classify.mjs';
@@ -1976,8 +1976,8 @@ function kmpEvalResultBlockMatchesObserved(block, observedResult) {
  *   deriveObservedKmpTestResult/deriveObservedGradleResult), or `null` when no well-formed,
  *   canonicalizable terminal evidence exists -- in which case this check fails closed regardless
  *   of what the final-answer block itself claims. */
-function evaluateFinalAnswer(resultEvent, observedResult) {
-  const text = typeof resultEvent?.result === 'string' ? resultEvent.result : '';
+function evaluateFinalAnswer(finalText, observedResult) {
+  const text = typeof finalText === 'string' ? finalText : '';
   if (text.length === 0) return { passed: false, detail: 'no final answer text found' };
 
   const { found, parsed, ambiguous } = extractKmpEvalResultBlock(text);
@@ -2024,10 +2024,14 @@ export function gradeScenarioCondition(conditionResult, scenario) {
     checks.push({ name, passed, detail, evidence_event_indices: evidenceEventIndices.filter((i) => i != null) });
   };
 
-  const terminated = conditionResult.spawnResult?.terminated === true;
-  const terminationReason = conditionResult.spawnResult?.terminationReason ?? null;
-  const events = conditionResult.events ?? [];
-  const bashResults = conditionResult.bashResults ?? [];
+  const observation = conditionResult.observation;
+  // Legacy-compatible shell-attempt shape (id/command/index/resultIndex/resultIsError/resultContent)
+  // -- evaluateKmpTestAttempt/evaluateGradleAttempt (below) are unchanged, byte-for-byte, and still
+  // expect exactly these 5 fields; only this construction (from observation.toolAttempts) is new.
+  const bashResults = selectShellAttempts(observation.toolAttempts).map((a) => ({
+    id: a.id, command: a.command, index: a.eventIndex,
+    resultIsError: a.result.isError, resultIndex: a.result.eventIndex, resultContent: a.result.text,
+  }));
 
   // Computed here (moved up from its original position, round-7 fix) so check 2 below can also
   // consult decisionByAttempt -- see this const's own original doc comment, still attached where
@@ -2040,8 +2044,9 @@ export function gradeScenarioCondition(conditionResult, scenario) {
     ambiguousJunitEvidence: false, captureIncomplete: false, unreliable: false,
   };
 
-  // Check 1 -- blocking precondition.
-  const structuralIssues = findTranscriptStructuralIssuesToleratingTimeout(events, { terminated, terminationReason });
+  // Check 1 -- blocking precondition. effectiveStructuralIssues is already timeout-tolerant
+  // (computed once, by the runtime adapter, at normalization time) -- never re-derived here.
+  const structuralIssues = observation.transcript.effectiveStructuralIssues;
   addCheck('no_transcript_structural_issues', structuralIssues.length === 0,
     structuralIssues.length === 0 ? 'no structural issues' : `${structuralIssues.length} issue(s): ${structuralIssues.map((i) => i.type).join(', ')}`);
 
@@ -2075,8 +2080,8 @@ export function gradeScenarioCondition(conditionResult, scenario) {
     policyAllowedResults.length > 0 ? `${policyAllowedResults.length} policy-allowed command(s) attempted` : 'no policy-allowed command was ever attempted',
     policyAllowedResults.map((b) => b.index));
 
-  // Check 3.
-  const incomplete = findIncompleteToolResultsToleratingTimeout(events, { terminated, terminationReason });
+  // Check 3. effectiveIncompleteToolResults is already timeout-tolerant, same rationale as check 1.
+  const incomplete = observation.transcript.effectiveIncompleteToolResults;
   addCheck('tool_result_correlated', incomplete.length === 0,
     incomplete.length === 0 ? 'every relevant tool_use has a correlated tool_result' : `${incomplete.length} orphaned tool_use(s)`,
     incomplete.map((i) => i.index));
@@ -2183,7 +2188,7 @@ export function gradeScenarioCondition(conditionResult, scenario) {
   // isn't trustworthy contributes no observedResult to compare against, regardless of what its own
   // best-effort derivation might otherwise have produced.
   const observedResult = evidenceWellFormed ? terminal.observedResult : null;
-  const finalAnswer = evaluateFinalAnswer(conditionResult.result, observedResult);
+  const finalAnswer = evaluateFinalAnswer(observation.terminal.finalText, observedResult);
   addCheck('final_answer_consistent_with_evidence', finalAnswer.passed, finalAnswer.detail);
 
   const success = expectedOutcomeMatched && finalAnswer.passed;

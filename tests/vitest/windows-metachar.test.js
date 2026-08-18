@@ -290,6 +290,19 @@ const CAND_B_PASSES = new Set([
   'class=com.example.Percent%NameTest',
 ]);
 
+// echo-args.bat invokes node via KMP_METACHAR_NODE_EXE (see that fixture's own comment) rather
+// than a bare `node` PATH lookup — a separate concern from the %VAR%/metachar transport this block
+// actually measures. Prepending to PATH is NOT sufficient here: directly probed (spawnSync a
+// minimal .bat through PowerShell with a deliberately marked custom PATH) and confirmed that on a
+// host where a PowerShell-routed .bat's nested cmd.exe inherits an empty PATH regardless of what
+// the caller passes, that empty PATH cannot be worked around by prepending to it. A plain env var
+// (not PATH) survives that same boundary intact, confirmed by the same probe. POISON_ENV itself
+// (the %VAR% poisoning every other describe block in this file also relies on) is read, never
+// mutated.
+function buildCandidateBEnv() {
+  return { ...POISON_ENV, KMP_METACHAR_NODE_EXE: process.execPath };
+}
+
 // describe.skipIf gates the whole block on Windows-only so that:
 // • it.fails tests (documenting B rejections) don't "unexpectedly pass"
 //   on Linux/macOS (where the early-return would count as no-failure).
@@ -309,7 +322,7 @@ describe.skipIf(process.platform !== 'win32')('Candidate B — PowerShell single
       const result = spawnSync(
         shell,
         ['-NoLogo', '-NoProfile', '-Command', psCmd],
-        { encoding: 'utf8', env: POISON_ENV }
+        { encoding: 'utf8', env: buildCandidateBEnv() }
       );
 
       expect(result.error, `spawn error: ${result.error?.code}`).toBeFalsy();

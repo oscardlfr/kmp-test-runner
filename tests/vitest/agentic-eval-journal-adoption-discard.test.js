@@ -1,16 +1,20 @@
 // tests/vitest/agentic-eval-journal-adoption-discard.test.js
-// Direct unit coverage for cli.mjs's three journal-adoption/discard helpers -- adoptJournalRaw,
+// Direct unit coverage for cli.mjs's three journal-adoption/discard helpers -- readJournalRawFor,
 // journalRawExactlyMatchesRejectionManifest, discardJournalIfRedundant. All three are exported
 // solely for direct testability (same established convention as e.g.
 // checkScenarioFilenameMatchesId/findDuplicateScenarioIds elsewhere in this file).
 //
-// adoptJournalRaw's own doc comment flags the property this file's first describe block exists to
-// prove: "the journal's own ordinal assignment (0=B/current-skill then 1=A/no-skill for a pair)
-// does not match this codebase's historical recordA/recordB parameter ordering; conflating the two
-// would silently swap two live sessions' transcripts" -- a severe, QUIET correctness bug (both
-// transcripts look like plausible session output, so nothing here would fail loudly without a
-// dedicated test). Distinct sentinel content per cellOrdinal, adopted in an order that deliberately
-// does NOT match cellOrdinal order, is the only way to actually catch a position-keyed regression.
+// readJournalRawFor (renamed from adoptJournalRaw by the Claude-runtime-adapter refactor -- same
+// cellOrdinal-keyed lookup and fail-closed throw, now a PURE read returning the raw string instead
+// of mutating a conditionResult.spawnResult.rawStdout field that no longer exists on the
+// observation-contract conditionResult shape) flags the property this file's first describe block
+// exists to prove: "the journal's own ordinal assignment (0=B/current-skill then 1=A/no-skill for a
+// pair) does not match this codebase's historical recordA/recordB parameter ordering; conflating
+// the two would silently swap two live sessions' transcripts" -- a severe, QUIET correctness bug
+// (both transcripts look like plausible session output, so nothing here would fail loudly without
+// a dedicated test). Distinct sentinel content per cellOrdinal, read back in an order that
+// deliberately does NOT match cellOrdinal order, is the only way to actually catch a
+// position-keyed regression.
 //
 // Post-Codex-audit fix (PR #418): the second describe block was independently confirmed insufficient
 // by an adversarial review -- journalRawExactlyMatchesRejectionManifest previously compared ONLY
@@ -29,7 +33,7 @@ import { mkdtempSync, rmSync, existsSync, writeFileSync, unlinkSync } from 'node
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
-import { adoptJournalRaw, journalRawExactlyMatchesRejectionManifest, discardJournalIfRedundant } from '../../tools/agentic-eval/cli.mjs';
+import { readJournalRawFor, journalRawExactlyMatchesRejectionManifest, discardJournalIfRedundant } from '../../tools/agentic-eval/cli.mjs';
 import { createInvocationJournal } from '../../tools/agentic-eval/durable-journal.mjs';
 import { deriveTranscriptFilename, writeRejectionRawStderr, deriveStderrFilename } from '../../tools/agentic-eval/rejection-diagnostics.mjs';
 
@@ -39,26 +43,30 @@ function makeJournal() {
   return { journal, runsRootOverride };
 }
 
-describe('adoptJournalRaw -- keyed strictly by cellOrdinal, never array position or call order', () => {
-  it('adopts each conditionResult\'s own journal-persisted raw, even when read back in the OPPOSITE order they were persisted -- never swapped', () => {
+describe('readJournalRawFor -- keyed strictly by cellOrdinal, never array position or call order, never mutates conditionResult', () => {
+  it('reads back each conditionResult\'s own journal-persisted raw, even when read in the OPPOSITE order they were persisted -- never swapped', () => {
     const { journal, runsRootOverride } = makeJournal();
     try {
       // B (current-skill) is journal cellOrdinal 0; A (no-skill) is cellOrdinal 1 -- the exact
-      // convention adoptJournalRaw's own doc comment warns does NOT match recordA/recordB's
+      // convention readJournalRawFor's own doc comment warns does NOT match recordA/recordB's
       // historical parameter ordering.
       journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: 1, rawStdout: 'SENTINEL_B_REAL_TRANSCRIPT', stderr: '' });
       journal.persistSpawnOutcome(1, { didSpawn: true, spawnStartedAt: 2, rawStdout: 'SENTINEL_A_REAL_TRANSCRIPT', stderr: '' });
 
-      const condB = { cellOrdinal: 0, didSpawn: true, spawnResult: { rawStdout: 'stale-in-memory-B' } };
-      const condA = { cellOrdinal: 1, didSpawn: true, spawnResult: { rawStdout: 'stale-in-memory-A' } };
+      const condB = { cellOrdinal: 0, didSpawn: true };
+      const condA = { cellOrdinal: 1, didSpawn: true };
 
-      // Deliberately adopt A BEFORE B -- proves correctness is keyed by cellOrdinal alone, never
-      // by "the order adoptJournalRaw happens to be called in" or an assumed A-then-B convention.
-      adoptJournalRaw(condA, journal);
-      adoptJournalRaw(condB, journal);
+      // Deliberately read A BEFORE B -- proves correctness is keyed by cellOrdinal alone, never
+      // by "the order readJournalRawFor happens to be called in" or an assumed A-then-B convention.
+      const rawA = readJournalRawFor(condA, journal);
+      const rawB = readJournalRawFor(condB, journal);
 
-      expect(condA.spawnResult.rawStdout).toBe('SENTINEL_A_REAL_TRANSCRIPT');
-      expect(condB.spawnResult.rawStdout).toBe('SENTINEL_B_REAL_TRANSCRIPT');
+      expect(rawA).toBe('SENTINEL_A_REAL_TRANSCRIPT');
+      expect(rawB).toBe('SENTINEL_B_REAL_TRANSCRIPT');
+      // Pure read -- the input conditionResult objects are never mutated (no spawnResult field to
+      // write back into; the observation contract carries no raw/legacy fields).
+      expect(condA).toEqual({ cellOrdinal: 1, didSpawn: true });
+      expect(condB).toEqual({ cellOrdinal: 0, didSpawn: true });
     } finally {
       rmSync(runsRootOverride, { recursive: true, force: true });
     }
@@ -67,31 +75,26 @@ describe('adoptJournalRaw -- keyed strictly by cellOrdinal, never array position
   it('throws (fail-closed) when a cell genuinely spawned but the journal has no persisted raw for it', () => {
     const { journal, runsRootOverride } = makeJournal();
     try {
-      const cond = { cellOrdinal: 0, didSpawn: true, spawnResult: { rawStdout: 'in-memory-only' } };
-      expect(() => adoptJournalRaw(cond, journal)).toThrow(/no raw persisted for cellOrdinal 0/);
-      // Refuses to promote unverified content -- the in-memory value is left untouched, never
-      // silently substituted for the missing journal copy.
-      expect(cond.spawnResult.rawStdout).toBe('in-memory-only');
+      const cond = { cellOrdinal: 0, didSpawn: true };
+      expect(() => readJournalRawFor(cond, journal)).toThrow(/no raw persisted for cellOrdinal 0/);
     } finally {
       rmSync(runsRootOverride, { recursive: true, force: true });
     }
   });
 
-  it('is a no-op for a cell that never spawned (spawn_failed) -- never reads the journal, never throws', () => {
+  it('returns null for a cell that never spawned (spawn_failed) -- never reads the journal, never throws', () => {
     const { journal, runsRootOverride } = makeJournal();
     try {
-      const cond = { cellOrdinal: 0, didSpawn: false, spawnResult: { rawStdout: '' } };
-      expect(() => adoptJournalRaw(cond, journal)).not.toThrow();
-      expect(cond.spawnResult.rawStdout).toBe('');
+      const cond = { cellOrdinal: 0, didSpawn: false };
+      expect(readJournalRawFor(cond, journal)).toBe(null);
     } finally {
       rmSync(runsRootOverride, { recursive: true, force: true });
     }
   });
 
-  it('is a no-op when journal is null (matches every call site\'s own null-journal contract)', () => {
-    const cond = { cellOrdinal: 0, didSpawn: true, spawnResult: { rawStdout: 'unchanged' } };
-    expect(() => adoptJournalRaw(cond, null)).not.toThrow();
-    expect(cond.spawnResult.rawStdout).toBe('unchanged');
+  it('returns null when journal is null (matches every call site\'s own null-journal contract)', () => {
+    const cond = { cellOrdinal: 0, didSpawn: true };
+    expect(readJournalRawFor(cond, null)).toBe(null);
   });
 });
 

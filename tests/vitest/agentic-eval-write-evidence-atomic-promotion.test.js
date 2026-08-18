@@ -44,8 +44,8 @@ describe('writeRunRecordEvidence -- promotion is atomic even when the existsSync
     try {
       const recordA = { run_id: 'RACE-TARGET-a-0001' };
       const recordB = { run_id: 'RACE-TARGET-b-0001' };
-      const runA = { spawnResult: { rawStdout: '{"raw":"a"}\n' } };
-      const runB = { spawnResult: { rawStdout: '{"raw":"b"}\n' } };
+      const rawTextA = '{"raw":"a"}\n';
+      const rawTextB = '{"raw":"b"}\n';
 
       const outDir = path.join(runsRoot, 'agentic-eval-race-kind');
       mkdirSync(outDir, { recursive: true });
@@ -54,7 +54,7 @@ describe('writeRunRecordEvidence -- promotion is atomic even when the existsSync
       // (unmocked) writeFileSync, independent of the function under test.
       writeFileSync(winnerPath, '{"winner":"the other invocation, must survive untouched"}');
 
-      expect(() => writeRunRecordEvidence('race-kind', recordA, recordB, runA, runB, '{"redacted":"a"}', '{"redacted":"b"}', runsRoot))
+      expect(() => writeRunRecordEvidence('race-kind', recordA, recordB, rawTextA, rawTextB, '{"redacted":"a"}', '{"redacted":"b"}', runsRoot))
         .toThrow(/already exists/);
 
       // The pre-existing winner is completely untouched -- not overwritten, not removed by
@@ -75,24 +75,24 @@ describe('writeRunRecordEvidence -- promotion is atomic even when the existsSync
 // itself (correct target construction, all-or-nothing rollback for a batch), not the TOCTOU
 // mechanism a second time (already proven, verbatim-shared code).
 describe('writeRunMatrixRecordEvidence -- N-record atomic promotion (decision 3/11)', () => {
-  function fakeRecordsAndConditionResults(n) {
+  function fakeRecordsAndRawTexts(n) {
     const records = [];
-    const conditionResults = [];
+    const rawTexts = [];
     const redactedTexts = [];
     for (let i = 0; i < n; i++) {
       records.push({ run_id: `MATRIX-TARGET-r${i}-0001` });
-      conditionResults.push({ spawnResult: { rawStdout: `{"raw":${i}}\n` } });
+      rawTexts.push(`{"raw":${i}}\n`);
       redactedTexts.push(`{"redacted":${i}}`);
     }
-    return { records, conditionResults, redactedTexts };
+    return { records, rawTexts, redactedTexts };
   }
 
   it('writes exactly 2N files (N summaries + N raw transcripts) for a 4-record (2-repeat) matrix', async () => {
     const { writeRunMatrixRecordEvidence } = await import('../../tools/agentic-eval/cli.mjs');
     const runsRoot = mkdtempSync(path.join(os.tmpdir(), 'aemc-write-'));
     try {
-      const { records, conditionResults, redactedTexts } = fakeRecordsAndConditionResults(4);
-      const outDir = writeRunMatrixRecordEvidence('matrix-kind', records, conditionResults, redactedTexts, runsRoot);
+      const { records, rawTexts, redactedTexts } = fakeRecordsAndRawTexts(4);
+      const outDir = writeRunMatrixRecordEvidence('matrix-kind', records, rawTexts, redactedTexts, runsRoot);
       const summaryFiles = readdirSync(outDir).filter((f) => f.endsWith('.json'));
       const rawFiles = readdirSync(path.join(outDir, 'raw')).filter((f) => f.endsWith('.jsonl'));
       expect(summaryFiles.length).toBe(4);
@@ -110,13 +110,13 @@ describe('writeRunMatrixRecordEvidence -- N-record atomic promotion (decision 3/
     const { writeRunMatrixRecordEvidence } = await import('../../tools/agentic-eval/cli.mjs');
     const runsRoot = mkdtempSync(path.join(os.tmpdir(), 'aemc-partial-'));
     try {
-      const { records, conditionResults, redactedTexts } = fakeRecordsAndConditionResults(4);
+      const { records, rawTexts, redactedTexts } = fakeRecordsAndRawTexts(4);
       const outDir = path.join(runsRoot, 'agentic-eval-matrix-kind-partial');
       mkdirSync(outDir, { recursive: true });
       // Pre-create the THIRD record's target -- simulating a collision partway through the batch.
       writeFileSync(path.join(outDir, 'MATRIX-TARGET-r2-0001.json'), '{"pre-existing":true}');
 
-      expect(() => writeRunMatrixRecordEvidence('matrix-kind-partial', records, conditionResults, redactedTexts, runsRoot))
+      expect(() => writeRunMatrixRecordEvidence('matrix-kind-partial', records, rawTexts, redactedTexts, runsRoot))
         .toThrow(/already exists/);
 
       // Every OTHER target (r0, r1, r3) must not have been left behind -- an all-or-nothing batch,
@@ -135,26 +135,26 @@ describe('writeRunMatrixRecordEvidence -- N-record atomic promotion (decision 3/
   // accepted-run-observability PR: the optional 6th `sidecarTexts` param writes a THIRD tier
   // (audit/<run_id>.json) alongside the existing summary + raw tiers, as ONE atomic batch.
   describe('sidecarTexts (accepted-run-observability PR) -- the audit/ tier', () => {
-    function fakeRecordsConditionResultsAndSidecars(n) {
+    function fakeRecordsRawTextsAndSidecars(n) {
       const records = [];
-      const conditionResults = [];
+      const rawTexts = [];
       const redactedTexts = [];
       const sidecarTexts = [];
       for (let i = 0; i < n; i++) {
         records.push({ run_id: `MATRIX-TARGET-r${i}-0001` });
-        conditionResults.push({ spawnResult: { rawStdout: `{"raw":${i}}\n` } });
+        rawTexts.push(`{"raw":${i}}\n`);
         redactedTexts.push(`{"redacted":${i}}`);
         sidecarTexts.push(`{"audit":${i}}`);
       }
-      return { records, conditionResults, redactedTexts, sidecarTexts };
+      return { records, rawTexts, redactedTexts, sidecarTexts };
     }
 
     it('writes exactly 3N files (N summaries + N raw + N audit sidecars) for a 4-record matrix', async () => {
       const { writeRunMatrixRecordEvidence } = await import('../../tools/agentic-eval/cli.mjs');
       const runsRoot = mkdtempSync(path.join(os.tmpdir(), 'aemc-write-sidecar-'));
       try {
-        const { records, conditionResults, redactedTexts, sidecarTexts } = fakeRecordsConditionResultsAndSidecars(4);
-        const outDir = writeRunMatrixRecordEvidence('matrix-kind', records, conditionResults, redactedTexts, runsRoot, sidecarTexts);
+        const { records, rawTexts, redactedTexts, sidecarTexts } = fakeRecordsRawTextsAndSidecars(4);
+        const outDir = writeRunMatrixRecordEvidence('matrix-kind', records, rawTexts, redactedTexts, runsRoot, sidecarTexts);
         const summaryFiles = readdirSync(outDir).filter((f) => f.endsWith('.json'));
         const rawFiles = readdirSync(path.join(outDir, 'raw')).filter((f) => f.endsWith('.jsonl'));
         const auditFiles = readdirSync(path.join(outDir, 'audit')).filter((f) => f.endsWith('.json'));
@@ -173,14 +173,14 @@ describe('writeRunMatrixRecordEvidence -- N-record atomic promotion (decision 3/
       const { writeRunMatrixRecordEvidence } = await import('../../tools/agentic-eval/cli.mjs');
       const runsRoot = mkdtempSync(path.join(os.tmpdir(), 'aemc-partial-sidecar-'));
       try {
-        const { records, conditionResults, redactedTexts, sidecarTexts } = fakeRecordsConditionResultsAndSidecars(4);
+        const { records, rawTexts, redactedTexts, sidecarTexts } = fakeRecordsRawTextsAndSidecars(4);
         const outDir = path.join(runsRoot, 'agentic-eval-matrix-kind-partial-sidecar');
         const auditDir = path.join(outDir, 'audit');
         mkdirSync(auditDir, { recursive: true });
         // Pre-create ONLY the third record's AUDIT target -- every record/raw target is untouched.
         writeFileSync(path.join(auditDir, 'MATRIX-TARGET-r2-0001.json'), '{"pre-existing":true}');
 
-        expect(() => writeRunMatrixRecordEvidence('matrix-kind-partial-sidecar', records, conditionResults, redactedTexts, runsRoot, sidecarTexts))
+        expect(() => writeRunMatrixRecordEvidence('matrix-kind-partial-sidecar', records, rawTexts, redactedTexts, runsRoot, sidecarTexts))
           .toThrow(/already exists/);
 
         for (const i of [0, 1, 3]) {

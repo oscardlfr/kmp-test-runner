@@ -20,18 +20,21 @@
 // are logically distinct, even where (as in this harness) their literal string values coincide.
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join } from 'node:path';
 
 import { buildPathShim } from './path-shim.mjs';
 import { materializeSkillSnapshot, materializeGradleUserHome, realpath, applyFixtureSetup } from './materialize.mjs';
-import { buildBaseArgv, buildConditionArgv, buildSharedEnv, buildPolicySettingsFile, spawnCondition } from './condition-launcher.mjs';
-import { parseStreamJsonl, findInitEvent, findResultEvent, findSkillInvocation, countHookEvents, computeByteMetrics, findBashToolUsesWithResults } from './stream-parser.mjs';
 import { buildRunMatrix, buildConditionOrders } from './randomizer.mjs';
 import { attributeCondition } from './junit-evidence.mjs';
 import { buildBashDispatchAccounting } from './dispatch-accounting.mjs';
 import { cellTranscriptIntegrityOk } from './cell-integrity.mjs';
 import { tagIncidentPhase } from './durable-journal.mjs';
-import { runAuthPreflight, authPreflightReasonCode } from './auth-preflight.mjs';
+import { validateRuntimeAdapter, validateObservation, freezeObservation, selectShellAttempts } from './runtimes/contract.mjs';
+// The one authorized exception (contract.mjs's own doc comment): matrix-runner.mjs may import the
+// Claude singleton as the default runtime while no registry exists. No other core module may
+// import runtimes/claude-code.mjs or any Claude-specific module (stream-parser.mjs,
+// condition-launcher.mjs, auth-preflight.mjs, env-builder.mjs) directly.
+import claudeCodeRuntimeAdapter from './runtimes/claude-code.mjs';
 
 /** Prints a single, clearly-labeled WARNING line if `failures` (from a cleanup accumulator's
  * runCleanup()) is non-empty -- never silent, but never escalated into a hard failure either: a
@@ -83,11 +86,19 @@ function createCleanupAccumulator() {
  * @returns {Promise<{settingsPath, shimDir, snapshotDir, gradleUserHome, gradleSnapshotDir,
  *   resetGradleToSnapshot, daemonPolicy, kmpEvalTempHome, sharedEnv, registerCleanup, runCleanup}>}
  */
-export async function acquireSharedEvalResources({ allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, junitEvidenceEnabled = false }) {
+export async function acquireSharedEvalResources({ allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, junitEvidenceEnabled = false, runtimeAdapter = claudeCodeRuntimeAdapter }) {
+  // Validated BEFORE any resource below is created (post-review hardening, round 1): the default
+  // (claudeCodeRuntimeAdapter) is already validated once, at module load, by defineRuntimeAdapter
+  // -- but that guarantee is specific to the DEFAULT instance, not to whatever an individual
+  // caller injects here. A malformed injected adapter (a caller's typo, a stale test double, a
+  // real integration bug) must be rejected before a shim/snapshot/Gradle-home/temp-dir is ever
+  // created, not discovered only once one of its methods happens to be called.
+  const { ok: adapterOk, errors: adapterErrors } = validateRuntimeAdapter(runtimeAdapter);
+  if (!adapterOk) {
+    throw new Error(`invalid runtime adapter: ${adapterErrors.map((e) => `${e.field}:${e.code}`).join(', ')}`);
+  }
   const { registerCleanup, runCleanup } = createCleanupAccumulator();
   try {
-    const settingsPath = buildPolicySettingsFile({ junitEvidenceEnabled });
-    registerCleanup(() => rmSync(dirname(settingsPath), { recursive: true, force: true }));
     const { shimDir } = buildPathShim({ worktreeRoot: repoRoot });
     registerCleanup(() => rmSync(shimDir, { recursive: true, force: true }));
     const { snapshotDir } = await materializeSkillSnapshot({ repoRoot, sha: pinnedSkillSha, validateFn: runPluginValidator });
@@ -102,22 +113,28 @@ export async function acquireSharedEvalResources({ allowedGradleTasks, allowedKm
     const kmpEvalTempHome = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-home-'));
     registerCleanup(() => rmSync(kmpEvalTempHome, { recursive: true, force: true }));
 
-    const sharedEnv = buildSharedEnv({
+    // prepareIsolatedHome builds the same runtime environment/config as before (buildPolicySettingsFile
+    // + buildSharedEnv, composed behind the adapter) -- core stays the owner of path shim, Gradle
+    // home, skill snapshot, fixture and this cleanup accumulator; cleanupPaths (the settings
+    // directory the adapter itself created) is registered here, immediately, exactly like every
+    // other resource above.
+    const { sharedEnv, settingsPath, cleanupPaths } = await runtimeAdapter.prepareIsolatedHome({
       shimDir, gradleUserHome, kmpEvalTempHome,
       expectedFixtureRoot: null, // set per-condition once the fixture dir is materialized
-      allowedGradleTasks, allowedKmpTestSubcommands,
+      allowedGradleTasks, allowedKmpTestSubcommands, junitEvidenceEnabled,
     });
+    for (const p of cleanupPaths) registerCleanup(() => rmSync(p, { recursive: true, force: true }));
 
-    // Confirms `claude` can actually authenticate BEFORE the first live spawn -- the exact same
+    // Confirms the runtime can actually authenticate BEFORE the first live spawn -- the exact same
     // sharedEnv/PATH every measured session will receive, so a broken environment is caught here,
     // once, rather than burning every planned cell on a pre-inference failure (the macOS
     // incident this preflight exists to close). Self-tags 'acquiring_shared_resources': the
     // existing catch below has no phase-tagging of its own for other failures in this function
     // either, but this throw must not silently inherit the outer incidentPhaseOf() fallback.
-    const preflight = await runAuthPreflight({ sharedEnv, repoRoot });
+    const preflight = await runtimeAdapter.preflight({ sharedEnv, repoRoot });
     if (!preflight.ok) {
       throw tagIncidentPhase(
-        new Error(`Auth preflight failed: reason=${authPreflightReasonCode(preflight)}, exit_code=${Number.isInteger(preflight.exitCode) ? preflight.exitCode : 'null'}, logged_in=${preflight.loggedIn === true}`),
+        new Error(`Auth preflight failed: reason=${preflight.reasonCode}, exit_code=${Number.isInteger(preflight.exitCode) ? preflight.exitCode : 'null'}, logged_in=${preflight.loggedIn === true}`),
         'acquiring_shared_resources',
       );
     }
@@ -126,6 +143,12 @@ export async function acquireSharedEvalResources({ allowedGradleTasks, allowedKm
       settingsPath, shimDir, snapshotDir, gradleUserHome, gradleSnapshotDir,
       resetGradleToSnapshot: resetToSnapshot, daemonPolicy, kmpEvalTempHome, sharedEnv,
       registerCleanup, runCleanup,
+      // The RESOLVED adapter instance (default or test-injected) -- returned so a caller outside
+      // this module (cli.mjs's runConditionPair) can reuse the exact same instance for its own
+      // buildInvocation() call without importing runtimes/claude-code.mjs itself, which only this
+      // module is allowed to do (contract.mjs's own "matrix-runner.mjs may import the Claude
+      // singleton as default" exception).
+      runtimeAdapter,
     };
   } catch (err) {
     reportCleanupFailures(await runCleanup(), 'during acquisition-failure rollback');
@@ -188,7 +211,7 @@ export async function acquireSharedEvalResources({ allowedGradleTasks, allowedKm
  *   acquireSharedEvalResources); the scratch directory's removal is queued on it IMMEDIATELY after
  *   creation, before spawnCondition runs, so a failure anywhere later in this call is still covered.
  */
-export async function runSingleCondition({ condition, materializeFixture, previousFixtureDir, cleanupFixtureOnce, resetGradleToSnapshot, kmpEvalTempHome, sharedEnv, baseArgv, snapshotDir, targetPluginName, targetSkillName, timeoutMs, decisionAttributionEnabled = false, junitEvidenceEnabled = false, evidenceTask = null, allowedInvocations = null, registerCleanup = null, fixtureSetup = null, journal = null, cellOrdinal = null }) {
+export async function runSingleCondition({ condition, materializeFixture, previousFixtureDir, cleanupFixtureOnce, resetGradleToSnapshot, kmpEvalTempHome, sharedEnv, baseArgv, snapshotDir, targetPluginName, targetSkillName, timeoutMs, decisionAttributionEnabled = false, junitEvidenceEnabled = false, evidenceTask = null, allowedInvocations = null, registerCleanup = null, fixtureSetup = null, journal = null, cellOrdinal = null, runtimeAdapter = claudeCodeRuntimeAdapter }) {
   let fixtureDir;
   try {
     const materialized = materializeFixture(previousFixtureDir);
@@ -229,7 +252,7 @@ export async function runSingleCondition({ condition, materializeFixture, previo
       };
     }
   }
-  const argv = buildConditionArgv(baseArgv, condition, condition === 'current-skill' ? snapshotDir : null);
+  const argv = runtimeAdapter.prepareSkillDelivery(baseArgv, condition, condition === 'current-skill' ? snapshotDir : null);
   const startedAt = new Date();
   // onSpawned performs ZERO I/O and can never throw -- Node's EventEmitter dispatch does not
   // protect a listener from its own exception, so a callback that did fallible I/O here could
@@ -238,60 +261,72 @@ export async function runSingleCondition({ condition, materializeFixture, previo
   // `await`ed code inside a real try/catch, safe to fail without taking the process down with it.
   let didSpawn = false;
   let spawnStartedAt = null;
-  const spawnResult = await spawnCondition(argv, {
+  const sources = await runtimeAdapter.collectObservationSources(argv, {
     env: conditionEnv, cwd: fixtureDir, timeoutMs,
     onSpawned: () => { didSpawn = true; spawnStartedAt = Date.now(); },
   });
   const endedAt = new Date();
 
-  // The next operation after spawnCondition resolves, before any parsing touches anything --
-  // persists spawn_started/spawn_failed through raw_persisted as one journal operation. A failure
-  // here is tagged so finalizeIncident's own emergency raw fallback has a real chance to preserve
-  // this cell's rawStdout even though the journal's own bookkeeping is what broke.
+  // The next operation after collectObservationSources resolves, before any normalization touches
+  // anything -- persists spawn_started/spawn_failed through raw_persisted as one journal operation.
+  // A failure here is tagged so finalizeIncident's own emergency raw fallback has a real chance to
+  // preserve this cell's raw capture even though the journal's own bookkeeping is what broke.
+  // sources.capture is the adapter's ephemeral {primaryText, stderrText} envelope -- it exists
+  // solely for this persistence call and the normalize step below; it is never placed on the
+  // returned condition result.
   if (journal) {
     try {
-      journal.persistSpawnOutcome(cellOrdinal, { didSpawn, spawnStartedAt, rawStdout: spawnResult.rawStdout, stderr: spawnResult.stderr });
+      journal.persistSpawnOutcome(cellOrdinal, { didSpawn, spawnStartedAt, rawStdout: sources.capture.primaryText, stderr: sources.capture.stderrText });
     } catch (err) {
-      throw tagIncidentPhase(err, 'persisting_cell_journal', cellOrdinal, spawnResult.rawStdout);
+      throw tagIncidentPhase(err, 'persisting_cell_journal', cellOrdinal, sources.capture.primaryText);
     }
   }
 
-  let events;
-  let malformedLines;
-  let init;
-  let result;
-  let invocation;
-  let hookStats;
-  let byteMetrics;
-  let bashResults;
+  let observation;
   try {
-    ({ events, malformedLines } = parseStreamJsonl(spawnResult.rawStdout, { taggedLines: spawnResult.taggedLines }));
-    init = findInitEvent(events);
-    result = findResultEvent(events);
-    invocation = findSkillInvocation(events, targetPluginName, targetSkillName);
-    hookStats = countHookEvents(events);
-    byteMetrics = computeByteMetrics(spawnResult.rawStdout, events);
-    bashResults = findBashToolUsesWithResults(events);
+    observation = runtimeAdapter.normalizeObservations(sources, {
+      condition, targetPluginName, targetSkillName,
+      expectedSnapshotDir: condition === 'current-skill' ? snapshotDir : undefined,
+    });
+    const { ok, errors } = validateObservation(observation);
+    if (!ok) {
+      throw new Error(`normalized observation failed contract validation: ${errors.map((e) => `${e.field}:${e.code}`).join(', ')}`);
+    }
+    // The observation's own self-reported runtime identity (RUNTIME_REF_KEYS, contract.mjs) must
+    // match the adapter that actually produced it (post-review hardening, round 1) -- shape-only
+    // validation above cannot catch an adapter that is internally coherent but simply wrong (or
+    // lying) about which runtime it claims to be.
+    // A closed literal code only (post-review hardening, round 3) -- never adapter/observation
+    // content. This check exists PRECISELY to catch an adapter that is internally coherent but
+    // simply wrong (or lying) about its own identity, so observation.runtime.id itself is not yet
+    // trusted content at the moment this fires; interpolating it into the thrown message would
+    // contradict this whole module's own established discipline (see the comment on the catch
+    // block below, which deliberately stopped attaching raw content to a thrown error for the same
+    // reason) and contract.mjs's own {field, code}-only error contract.
+    if (observation.runtime.id !== runtimeAdapter.id || observation.runtime.protocolVersion !== runtimeAdapter.protocolVersion) {
+      throw new Error('observation_runtime_identity_mismatch');
+    }
+    observation = freezeObservation(observation);
   } catch (err) {
-    throw tagIncidentPhase(err, 'parsing_or_attributing_cell', cellOrdinal ?? undefined, spawnResult.rawStdout);
+    // No raw 4th argument here (post-review hardening, round 1): by this point
+    // journal.persistSpawnOutcome has ALREADY succeeded (a failure there is caught separately,
+    // above, and DOES still carry raw as the legitimate last-resort recovery path) -- raw is
+    // durably in the journal already, so re-attaching a second copy onto the thrown error is an
+    // unnecessary extra raw-content pathway, not a recovery mechanism.
+    throw tagIncidentPhase(err, 'parsing_or_attributing_cell', cellOrdinal ?? undefined);
   }
 
   if (journal && didSpawn) {
     try {
       journal.recordParsed(cellOrdinal);
     } catch (err) {
-      throw tagIncidentPhase(err, 'persisting_cell_journal', cellOrdinal, spawnResult.rawStdout);
+      // Same reasoning as above -- persistSpawnOutcome already succeeded by this point too.
+      throw tagIncidentPhase(err, 'persisting_cell_journal', cellOrdinal);
     }
   }
 
   return {
-    condition, argv, env: conditionEnv, fixtureDir, events, malformedLines, init, result,
-    invocation, hookStats, byteMetrics, bashResults, spawnResult, startedAt, endedAt,
-    // Only current-skill's own argv actually passed --plugin-dir snapshotDir (see
-    // buildConditionArgv) -- carried on the per-condition result itself (rather than as a
-    // separate hard-gate parameter) so pluginSnapshotBindingOk can read it directly, the same way
-    // every other gate check already reads its inputs off the per-condition result.
-    snapshotDir: condition === 'current-skill' ? snapshotDir : null,
+    condition, fixtureDir, observation, startedAt, endedAt,
     evidenceDir,
     // Stamped so promotion-time raw read-back (cli.mjs) always keys off THIS, never off array
     // position or an assumed A/B convention -- the journal's own ordinal assignment does not match
@@ -371,7 +406,7 @@ export function isJunitEvidenceOutcome(outcomeKind) {
   return outcomeKind === 'tests_executed' || outcomeKind === 'tests_failed' || outcomeKind === 'coverage_threshold_exceeded';
 }
 
-export async function runScenarioMatrix({ scenario, repeats, seed, model, allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, materializeFixture, cleanupFixture, targetPluginName, targetSkillName, timeoutMs, journal = null }) {
+export async function runScenarioMatrix({ scenario, repeats, seed, model, allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, materializeFixture, cleanupFixture, targetPluginName, targetSkillName, timeoutMs, journal = null, runtimeAdapter = claudeCodeRuntimeAdapter }) {
   // Decision attribution (allow/deny per Bash attempt) is needed for EVERY scenario regardless of
   // outcome_kind (round-7 fix): a no_applicable_tests condition's denied kmp-test-parallel
   // attempts were previously phantom-counted as real executions (test_invocations_total/retries),
@@ -386,7 +421,7 @@ export async function runScenarioMatrix({ scenario, repeats, seed, model, allowe
   const evidenceTask = scenario.expected?.gradle?.evidence_task ?? null;
   const allowedInvocations = scenario.expected?.gradle?.allowed_invocations ?? null;
   const fixtureSetup = scenario.fixture_setup ?? null;
-  const shared = await acquireSharedEvalResources({ allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, junitEvidenceEnabled });
+  const shared = await acquireSharedEvalResources({ allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, junitEvidenceEnabled, runtimeAdapter });
   const { registerCleanup, runCleanup } = shared;
 
   try {
@@ -395,7 +430,7 @@ export async function runScenarioMatrix({ scenario, repeats, seed, model, allowe
     // repetition index runs at each time-slot (see this function's own doc comment).
     const repetitionSlots = buildRunMatrix([scenario.id], ['trial'], repeats, seed);
     const conditionOrders = buildConditionOrders(repeats, seed);
-    const baseArgv = buildBaseArgv({ prompt: scenario.prompt, model, settingsPath: shared.settingsPath });
+    const baseArgv = runtimeAdapter.buildInvocation({ prompt: scenario.prompt, model, settingsPath: shared.settingsPath });
 
     let fixtureDir;
     let fixtureCleanupQueued = false;
@@ -446,15 +481,23 @@ export async function runScenarioMatrix({ scenario, repeats, seed, model, allowe
         fixtureSetup,
         journal,
         cellOrdinal: orderIndex,
+        runtimeAdapter,
       });
       fixtureDir = conditionResult.fixtureDir;
       let fullConditionResult;
       let localIntegrity;
       try {
+        // Canonical shell attempts, in the legacy {id, command, index, resultFound, preDispatchBlock}
+        // shape junit-evidence.mjs's attributeCondition/resolveDecisions and dispatch-accounting.mjs's
+        // buildBashDispatchAccounting still expect -- derived from observation.toolAttempts, never a
+        // second, independent transcript scan.
+        const shellAttempts = selectShellAttempts(conditionResult.observation.toolAttempts).map((a) => ({
+          id: a.id, command: a.command, index: a.eventIndex, resultFound: a.result.found, preDispatchBlock: a.preDispatchBlock,
+        }));
         const junitAttribution = decisionAttributionEnabled
-          ? attributeCondition(conditionResult.evidenceDir, scenario, conditionResult.bashResults, {
-              terminated: conditionResult.spawnResult.terminated,
-              terminationReason: conditionResult.spawnResult.terminationReason,
+          ? attributeCondition(conditionResult.evidenceDir, scenario, shellAttempts, {
+              terminated: conditionResult.observation.process.terminated,
+              terminationReason: conditionResult.observation.process.terminationReason,
             }, junitEvidenceEnabled)
           : null;
         // The scratch directory has now been fully consumed by attributeCondition -- eagerly
@@ -471,8 +514,8 @@ export async function runScenarioMatrix({ scenario, repeats, seed, model, allowe
         // cell gate below reads it.
         const dispatchAccounting = junitAttribution
           ? buildBashDispatchAccounting({
-              bashResults: conditionResult.bashResults,
-              hookStats: conditionResult.hookStats,
+              bashResults: shellAttempts,
+              hookStats: conditionResult.observation.hookStats,
               decisionByAttempt: junitAttribution.decisionByAttempt,
               preDispatchBlockedAttemptIds: junitAttribution.preDispatchBlockedAttemptIds,
             })
@@ -483,13 +526,19 @@ export async function runScenarioMatrix({ scenario, repeats, seed, model, allowe
         // that ran, never just the one that stopped the matrix.
         localIntegrity = cellTranscriptIntegrityOk(fullConditionResult, { targetPluginName, targetSkillName, requireDispatchAccounting: true });
       } catch (err) {
-        throw tagIncidentPhase(err, 'parsing_or_attributing_cell', orderIndex, conditionResult.spawnResult?.rawStdout);
+        // No raw-text 4th argument here (unlike runSingleCondition's own persistSpawnOutcome-failure
+        // catch): persistSpawnOutcome already succeeded for this cell by the time this loop body
+        // runs (it happens inside the runSingleCondition call above), so raw custody has already
+        // moved to the journal -- a later failure here depends on the journal, never a raw copy
+        // still held in memory (raw-custody rule: only a persistSpawnOutcome failure itself gets the
+        // emergency in-memory fallback).
+        throw tagIncidentPhase(err, 'parsing_or_attributing_cell', orderIndex);
       }
       if (journal && conditionResult.didSpawn) {
         try {
           journal.recordEvaluated(orderIndex);
         } catch (err) {
-          throw tagIncidentPhase(err, 'persisting_cell_journal', orderIndex, conditionResult.spawnResult?.rawStdout);
+          throw tagIncidentPhase(err, 'persisting_cell_journal', orderIndex);
         }
       }
       cellResults.push({ repetitionIndex, orderIndex, seed, conditionResult: fullConditionResult, localIntegrity });

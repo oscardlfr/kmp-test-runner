@@ -14,6 +14,14 @@ import {
   crossValidateAcceptedRunAuditAgainstRecord,
   finalizeAcceptedRunAuditSidecar,
 } from '../../tools/agentic-eval/accepted-run-audit.mjs';
+// Test-only: a test file constructing fixtures is not a "core consumer" under the runtime-adapter
+// boundary (that rule scopes production files only -- see agentic-eval-runtime-boundary.test.js's
+// own CORE_CONSUMERS list, which never includes test files). Reusing the REAL, frozen
+// stream-parser.mjs functions to convert this file's existing raw-event fixtures into canonical
+// toolAttempts[] is deliberately safer than hand-computing the mapping per fixture: it is the exact
+// same parsing logic runtimes/claude-code.mjs's own normalizeObservations composes, so there is no
+// risk of this file's mapping silently diverging from the real one.
+import { findAllToolUsesWithResults, isTargetSkillReference, isRecognizedPreDispatchBlock } from '../../tools/agentic-eval/stream-parser.mjs';
 
 const TARGET_PLUGIN_NAME = 'kmp-test-runner';
 const TARGET_SKILL_NAME = 'kmp-test-runner';
@@ -64,6 +72,36 @@ function baseRecord(overrides = {}) {
   };
 }
 
+/** Converts this file's existing raw `events` array fixtures into the canonical
+ * observation.toolAttempts[] shape, via the same real, frozen stream-parser.mjs functions
+ * runtimes/claude-code.mjs's own normalizeObservations composes -- every one of this file's
+ * existing event-array fixtures (built via initEventStub/bashToolUseEvent/skillToolUseEvent/
+ * multiCallEvent/otherToolUseEvent/toolResultEvent, unchanged below) keeps working exactly as
+ * before; only how the resulting conditionResult is SHAPED for accepted-run-audit.mjs to consume
+ * changed. receiptNs mirrors parseStreamJsonl's own no-taggedLines fallback (BigInt(event index)). */
+function toolAttemptsFromEvents(events) {
+  return findAllToolUsesWithResults(events).map((u) => {
+    const kind = u.name === 'Skill' ? 'skill' : u.name === 'Bash' ? 'shell' : 'other';
+    const command = kind === 'shell' ? (typeof u.input?.command === 'string' ? u.input.command : null) : null;
+    const skillReference = kind === 'skill' && typeof u.input?.skill === 'string' ? u.input.skill : null;
+    const targetsExpectedSkill = kind === 'skill' ? isTargetSkillReference(u.input?.skill, TARGET_PLUGIN_NAME, TARGET_SKILL_NAME) : null;
+    const textStatus = !u.resultFound ? 'missing' : (typeof u.resultContent === 'string' ? 'text' : 'unsupported');
+    const recognized = isRecognizedPreDispatchBlock(u);
+    return {
+      id: u.id ?? null, kind, runtimeName: u.name ?? null, eventIndex: u.index, receiptNs: BigInt(u.index),
+      profileAllowed: true, command, skillReference, targetsExpectedSkill,
+      result: {
+        found: u.resultFound,
+        eventIndex: u.resultFound ? u.resultIndex : null,
+        isError: u.resultFound ? u.resultIsError : null,
+        text: textStatus === 'text' ? u.resultContent : null,
+        textStatus,
+      },
+      preDispatchBlock: { recognized, signature: recognized ? 'claude-code/bash-pre-dispatch-block/v1' : null },
+    };
+  });
+}
+
 /**
  * `dispatchAccounting` mirrors what buildBashDispatchAccounting produces in production: every Bash
  * call carrying an allow/deny decision is `hook_evaluated`. It must be supplied explicitly, because
@@ -77,10 +115,13 @@ function conditionResultFrom(events, { decisionByAttempt = new Map(), endedHrtim
     ? dispatchAccounting
     : { dispatchStatusByAttempt: new Map([...decisionByAttempt].map(([id, d]) => [id, (d === 'allow' || d === 'deny') ? 'hook_evaluated' : 'unaccounted'])) };
   return {
-    events,
+    observation: {
+      toolAttempts: toolAttemptsFromEvents(events),
+      timing: { receiptNsByEventIndex: new Map(events.map((_, i) => [i, BigInt(i)])) },
+      process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs },
+    },
     junitAttribution: { decisionByAttempt },
     dispatchAccounting: derived,
-    spawnResult: { endedHrtimeNs },
   };
 }
 
