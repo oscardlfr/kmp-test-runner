@@ -386,4 +386,72 @@ try {
     expect(checked.stdout + checked.stderr).toContain('THE ORIGINAL BODY ERROR');
     expect(checked.stdout + checked.stderr).not.toContain('body succeeded but cleanup failed');
   });
+
+  // Post-review hardening (round 5): confirmed live (via a throwaway, non-persisted reproduction,
+  // not kept in this suite -- a permanently-red test has no place in a committed suite) that
+  // Write-Warning becomes a TERMINATING error when the ambient $WarningPreference is 'Stop' -- a new
+  // exception raised from inside `finally` (even one this script never intended as a real failure
+  // signal) supersedes whatever original exception was already propagating, exactly the same "a
+  // throw during unwind replaces the original" semantics documented for the round-3/round-4
+  // resilience fixes. Round 4's own `Write-Warning "cleanup encountered..."` call was exactly this
+  // shape, confirmed to genuinely lose "THE ORIGINAL BODY ERROR" under $WarningPreference='Stop'.
+  // The FIXED pattern (Write-Host, immune to $WarningPreference/$ErrorActionPreference entirely --
+  // it writes straight to host output, never through PowerShell's structured warning/error streams)
+  // -- proves the original body error survives even under the same hostile $WarningPreference='Stop'.
+  it.skipIf(process.platform !== 'win32')('the resilience pattern windows-gate.ps1 uses (Write-Host, not Write-Warning) preserves the ORIGINAL body error even under $WarningPreference=\'Stop\'', () => {
+    const script = `
+$WarningPreference = 'Stop'
+$bodySucceeded = $false
+$cleanupErrors = @()
+try {
+  throw 'THE ORIGINAL BODY ERROR'
+  $bodySucceeded = $true
+} finally {
+  try { throw 'a cleanup restoration also throws' } catch { $cleanupErrors += $_.Exception.Message }
+  if ($cleanupErrors.Count -gt 0) {
+    Write-Host "cleanup encountered $($cleanupErrors.Count) error(s): $($cleanupErrors -join '; ')"
+    if ($bodySucceeded) { throw "body succeeded but cleanup failed ($($cleanupErrors.Count) error(s))" }
+  }
+}
+`;
+    const checked = spawnSync('pwsh', ['-NoProfile', '-Command', script], { encoding: 'utf8' });
+    expect(checked.status).not.toBe(0);
+    expect(checked.stdout + checked.stderr).toContain('THE ORIGINAL BODY ERROR');
+    expect(checked.stdout + checked.stderr).not.toContain('body succeeded but cleanup failed');
+    expect(checked.stdout + checked.stderr).not.toContain('WarningPreference');
+  });
+
+  // The companion direction: cleanup failing after a SUCCESSFUL body must still fail the overall
+  // script, even under the same hostile $WarningPreference='Stop'.
+  it.skipIf(process.platform !== 'win32')('cleanup after a successful body still fails the script even under $WarningPreference=\'Stop\'', () => {
+    const script = `
+$WarningPreference = 'Stop'
+$bodySucceeded = $false
+$cleanupErrors = @()
+try {
+  Write-Host 'body ran and succeeded'
+  $bodySucceeded = $true
+} finally {
+  try { throw 'a cleanup restoration throws' } catch { $cleanupErrors += $_.Exception.Message }
+  if ($cleanupErrors.Count -gt 0) {
+    Write-Host "cleanup encountered $($cleanupErrors.Count) error(s): $($cleanupErrors -join '; ')"
+    if ($bodySucceeded) { throw "body succeeded but cleanup failed ($($cleanupErrors.Count) error(s))" }
+  }
+}
+`;
+    const checked = spawnSync('pwsh', ['-NoProfile', '-Command', script], { encoding: 'utf8' });
+    expect(checked.status).not.toBe(0);
+    expect(checked.stdout + checked.stderr).toContain('body succeeded but cleanup failed');
+  });
+
+  it.skipIf(process.platform !== 'win32')('windows-gate.ps1 does not use Write-Warning inside its own finally block', () => {
+    const gate = read('tools/local-ci/windows-gate.ps1');
+    const finallyIndex = gate.indexOf('\nfinally {');
+    expect(finallyIndex).toBeGreaterThan(-1);
+    // The real invocation form (a quote immediately after the cmdlet name), not a bare substring --
+    // this file's own explanatory comment ahead of the fix mentions "Write-Warning" by name too
+    // (describing what NOT to do and why), so a plain indexOf would match the COMMENT, not a call.
+    const afterFinally = gate.slice(finallyIndex);
+    expect(/Write-Warning\s*['"]/.test(afterFinally)).toBe(false);
+  });
 });

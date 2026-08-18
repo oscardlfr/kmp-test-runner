@@ -165,13 +165,21 @@ finally {
         try { Pop-Location } catch { $cleanupErrors += "Pop-Location: $($_.Exception.Message)" }
     }
     if ($cleanupErrors.Count -gt 0) {
-        Write-Warning "cleanup encountered $($cleanupErrors.Count) error(s) during restoration: $($cleanupErrors -join '; ')"
+        # Post-review hardening (round 5): Write-Host, never Write-Warning, for this notice -- a
+        # Write-Warning call becomes a TERMINATING error when the ambient (caller-controlled)
+        # $WarningPreference is 'Stop', confirmed live: it then supersedes whatever original
+        # exception was already propagating from the try body, silently replacing a genuine body
+        # failure's error text with a generic "stopped because WarningPreference" message. Write-Host
+        # writes straight to host output, bypassing PowerShell's warning/error stream machinery
+        # entirely, so it can never itself become a competing terminating error regardless of any
+        # ambient preference variable.
+        Write-Host "[local-ci] cleanup encountered $($cleanupErrors.Count) error(s) during restoration: $($cleanupErrors -join '; ')"
         # Post-review hardening (round 4): a green body plus a failed restoration previously still
-        # exited 0 -- $cleanupErrors was only ever Write-Warning'd, never affecting the script's own
-        # exit code, so altered state could be left behind while the gate reported overall success.
-        # Only raised when the body itself already succeeded ($bodySucceeded) -- if the body failed
-        # too, THAT original exception is already propagating past this finally block on its own and
-        # must remain the primary reported error, never replaced by a new one raised from here.
+        # exited 0 -- $cleanupErrors was only ever reported, never affecting the script's own exit
+        # code, so altered state could be left behind while the gate reported overall success. Only
+        # raised when the body itself already succeeded ($bodySucceeded) -- if the body failed too,
+        # THAT original exception is already propagating past this finally block on its own and must
+        # remain the primary reported error, never replaced by a new one raised from here.
         if ($bodySucceeded) {
             throw "windows-gate.ps1: body succeeded but cleanup failed ($($cleanupErrors.Count) error(s)) -- environment may be left altered: $($cleanupErrors -join '; ')"
         }

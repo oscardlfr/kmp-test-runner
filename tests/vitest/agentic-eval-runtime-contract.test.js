@@ -408,9 +408,14 @@ describe('validateObservation -- toolAttempts invariants', () => {
     // (100n, from validToolAttempt()'s default) -- the timing map must carry exactly ONE entry for
     // that shared index, matching real production (both attempts' receiptNs come from the SAME
     // source event's _receiptNs).
-    // Both a and b have result.found:false -- the round-4 strictIncompleteToolResults<->toolAttempts
-    // relation is a SET comparison by eventIndex, so ONE entry at index:5 covers both.
-    const incomplete = [{ index: 5, receiptNs: 100n, name: 'Bash', id: null }];
+    // Both a and b have result.found:false -- the producer emits ONE incomplete-tool-result entry
+    // PER tool_use block, so two concurrent incomplete calls sharing an eventIndex need TWO
+    // entries (round-5 fix: the round-4 SET-by-index comparison wrongly let one entry "cover" both;
+    // this is now an exact ordered projection with multiplicity), each carrying its OWN attempt id.
+    const incomplete = [
+      { index: 5, receiptNs: 100n, name: 'Bash', id: 'a' },
+      { index: 5, receiptNs: 100n, name: 'Bash', id: 'b' },
+    ];
     const result = validateObservation(validObservation({
       toolAttempts: [a, b],
       timing: { receiptNsByEventIndex: new Map([[5, 100n]]) },
@@ -536,11 +541,16 @@ describe('validateObservation -- terminal.usage null vs zero', () => {
 });
 
 describe('validateObservation -- transcript structural-issue / incomplete-result arrays', () => {
-  it('accepts a real structural-issue shape per known type', () => {
+  it('accepts a real structural-issue shape per known type (ordering + id-keyed types, mutually compatible)', () => {
     const observation = validObservation();
+    // init_not_first/result_not_last (round-5: mutually compatible with EACH OTHER -- both fire
+    // independently once initIndices.length===1 && resultIndices.length===1) and the 3 id-keyed
+    // types (each with a DISTINCT id, since round-5 requires per-type id uniqueness) + empty_tool_use_id
+    // -- deliberately excludes init_count/result_count, which round 5 proved mutually exclusive with
+    // BOTH ordering issues (see the dedicated count-vs-ordering tests below).
     const issues = [
-      { type: 'init_count', count: 2 },
       { type: 'duplicate_tool_use_id', id: 'toolu_1', count: 2 },
+      { type: 'duplicate_tool_result', id: 'toolu_2', count: 2 },
       { type: 'orphan_tool_result', id: null },
       { type: 'result_not_last', resultIndex: 3, eventsLength: 5 },
       { type: 'init_not_first', initIndex: 1 },
@@ -553,6 +563,15 @@ describe('validateObservation -- transcript structural-issue / incomplete-result
       strictStructuralIssues: issues,
       effectiveStructuralIssues: issues,
     };
+    expect(validateObservation(observation).ok).toBe(true);
+  });
+
+  it('accepts init_count and result_count together (the two count-mismatch types are mutually compatible with EACH OTHER, just not with either ordering type)', () => {
+    const observation = validObservation();
+    const issues = [{ type: 'init_count', count: 2 }, { type: 'result_count', count: 0 }];
+    observation.session = { ...observation.session, initPresent: true };
+    observation.terminal = { present: false, isError: null, turnCount: null, finalText: null, resultSubtype: null, usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } };
+    observation.transcript = { ...observation.transcript, strictStructuralIssues: issues, effectiveStructuralIssues: issues };
     expect(validateObservation(observation).ok).toBe(true);
   });
 
@@ -576,6 +595,9 @@ describe('validateObservation -- transcript structural-issue / incomplete-result
 
   it('accepts a real incomplete-tool-result entry', () => {
     const observation = validObservation();
+    // id:null on BOTH sides -- round 5 compares strictIncompleteToolResults' own id field EXACTLY
+    // against the matching toolAttempt's id (not just its eventIndex), so the toolAttempt below must
+    // also carry id:null, not validToolAttempt()'s own default 'attempt-1'.
     const incomplete = [{ index: 8, receiptNs: 8n, name: 'Bash', id: null }];
     // effectiveIncompleteToolResults mirrors strict (not a legitimate timeout). The entry's own
     // index:8 must correspond to a REAL toolAttempt with result.found:false at that exact
@@ -583,7 +605,7 @@ describe('validateObservation -- transcript structural-issue / incomplete-result
     // validObservation()'s own default (found:true) shell attempt with a matching incomplete one.
     observation.transcript = { ...observation.transcript, strictIncompleteToolResults: incomplete, effectiveIncompleteToolResults: incomplete };
     observation.toolAttempts = [validToolAttempt({
-      eventIndex: 8, receiptNs: 8n,
+      id: null, eventIndex: 8, receiptNs: 8n,
       result: { found: false, eventIndex: null, isError: null, text: null, textStatus: 'missing' },
     })];
     observation.timing = { receiptNsByEventIndex: new Map([[8, 8n]]) };
@@ -1488,7 +1510,7 @@ describe('validateObservation -- strict/effective incompleteToolResults relation
 
   it('accepts effective with the one, LAST incomplete result correctly tolerated under a legitimate timeout', () => {
     const attempt = validToolAttempt({
-      kind: 'shell', eventIndex: 7, receiptNs: 70n,
+      id: null, kind: 'shell', eventIndex: 7, receiptNs: 70n,
       result: { found: false, eventIndex: null, isError: null, text: null, textStatus: 'missing' },
     });
     const observation = minimalConsistentObservation({
@@ -1565,7 +1587,7 @@ describe('validateObservation -- strictIncompleteToolResults eventIndex-set matc
 
   it('accepts a fully consistent result.found:false <-> strictIncompleteToolResults correspondence', () => {
     const attempt = validToolAttempt({
-      kind: 'shell', eventIndex: 2, receiptNs: 20n,
+      id: null, kind: 'shell', eventIndex: 2, receiptNs: 20n,
       result: { found: false, eventIndex: null, isError: null, text: null, textStatus: 'missing' },
     });
     const observation = minimalConsistentObservation({
@@ -1700,5 +1722,311 @@ describe('canonicalNamesKey/fingerprintNames -- stream-parser.mjs re-exports the
   it('fingerprintAmbientSkillNames IS fingerprintNames (reference equality)', async () => {
     const { fingerprintAmbientSkillNames } = await import('../../tools/agentic-eval/stream-parser.mjs');
     expect(fingerprintAmbientSkillNames).toBe(fingerprintNames);
+  });
+});
+
+// Round 5: the canonical projection for targetInvocation/foreignInvocations/strictIncompleteToolResults
+// must be a full ORDERED, ONE-TO-ONE match against the real producer's own selection algorithm --
+// existence/count/Set-based checks (round 4) are not enough, since they can both under-reject
+// (accept a wrong representative, or a collapsed/reordered array) AND over-reject (a find(eventIndex)
+// grabbing the WRONG concurrent attempt at a shared index, rejecting genuinely valid producer output).
+describe('validateObservation -- skill.targetInvocation is the CANONICAL first-confirmed-else-last representative, not just any same-eventIndex match (round 5)', () => {
+  it('rejects targetInvocation pointing to the SECOND of two confirmed attempts (findSkillInvocation picks the FIRST confirmed)', () => {
+    const a1 = validToolAttempt({ id: 'a1', kind: 'skill', eventIndex: 3, receiptNs: 3n, targetsExpectedSkill: true, command: null, result: { found: true, eventIndex: 4, isError: false, text: 'ok', textStatus: 'text' } });
+    const a2 = validToolAttempt({ id: 'a2', kind: 'skill', eventIndex: 7, receiptNs: 7n, targetsExpectedSkill: true, command: null, result: { found: true, eventIndex: 8, isError: false, text: 'ok', textStatus: 'text' } });
+    const observation = minimalConsistentObservation({
+      toolAttempts: [a1, a2],
+      timing: { receiptNsByEventIndex: new Map([[3, 3n], [7, 7n]]) },
+      skill: {
+        available: true, profileMatchesCondition: true, snapshotBindingMatches: true, foreignInvocations: [],
+        ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+        targetInvocation: { attempted: true, confirmed: true, attemptCount: 2, eventIndex: 7, receiptNs: 7n, resultIsError: false },
+      },
+    });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('accepts targetInvocation correctly pointing to the FIRST of two confirmed attempts', () => {
+    const a1 = validToolAttempt({ id: 'a1', kind: 'skill', eventIndex: 3, receiptNs: 3n, targetsExpectedSkill: true, command: null, result: { found: true, eventIndex: 4, isError: false, text: 'ok', textStatus: 'text' } });
+    const a2 = validToolAttempt({ id: 'a2', kind: 'skill', eventIndex: 7, receiptNs: 7n, targetsExpectedSkill: true, command: null, result: { found: true, eventIndex: 8, isError: false, text: 'ok', textStatus: 'text' } });
+    const observation = minimalConsistentObservation({
+      toolAttempts: [a1, a2],
+      timing: { receiptNsByEventIndex: new Map([[3, 3n], [7, 7n]]) },
+      skill: {
+        available: true, profileMatchesCondition: true, snapshotBindingMatches: true, foreignInvocations: [],
+        ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+        targetInvocation: { attempted: true, confirmed: true, attemptCount: 2, eventIndex: 3, receiptNs: 3n, resultIsError: false },
+      },
+    });
+    expect(validateObservation(observation).ok).toBe(true);
+  });
+
+  it('accepts targetInvocation correctly reflecting the CONFIRMED attempt when a concurrent one at the SAME eventIndex failed first (a real producer shape that a naive find(eventIndex) would wrongly reject)', () => {
+    const fail = validToolAttempt({ id: 'fail', kind: 'skill', eventIndex: 5, receiptNs: 5n, targetsExpectedSkill: true, command: null, result: { found: true, eventIndex: 6, isError: true, text: 'err', textStatus: 'text' } });
+    const ok2 = validToolAttempt({ id: 'ok2', kind: 'skill', eventIndex: 5, receiptNs: 5n, targetsExpectedSkill: true, command: null, result: { found: true, eventIndex: 9, isError: false, text: 'ok', textStatus: 'text' } });
+    const observation = minimalConsistentObservation({
+      toolAttempts: [fail, ok2],
+      timing: { receiptNsByEventIndex: new Map([[5, 5n]]) },
+      skill: {
+        available: true, profileMatchesCondition: true, snapshotBindingMatches: true, foreignInvocations: [],
+        ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+        targetInvocation: { attempted: true, confirmed: true, attemptCount: 2, eventIndex: 5, receiptNs: 5n, resultIsError: false },
+      },
+    });
+    expect(validateObservation(observation).ok).toBe(true);
+  });
+
+  it('rejects targetInvocation reflecting the FAILED attempt when a concurrent one at the same eventIndex actually confirmed', () => {
+    const fail = validToolAttempt({ id: 'fail', kind: 'skill', eventIndex: 5, receiptNs: 5n, targetsExpectedSkill: true, command: null, result: { found: true, eventIndex: 6, isError: true, text: 'err', textStatus: 'text' } });
+    const ok2 = validToolAttempt({ id: 'ok2', kind: 'skill', eventIndex: 5, receiptNs: 5n, targetsExpectedSkill: true, command: null, result: { found: true, eventIndex: 9, isError: false, text: 'ok', textStatus: 'text' } });
+    const observation = minimalConsistentObservation({
+      toolAttempts: [fail, ok2],
+      timing: { receiptNsByEventIndex: new Map([[5, 5n]]) },
+      skill: {
+        available: true, profileMatchesCondition: true, snapshotBindingMatches: true, foreignInvocations: [],
+        ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+        // resultIsError:true would match the FAILED attempt, not the confirmed one -- wrong.
+        targetInvocation: { attempted: true, confirmed: true, attemptCount: 2, eventIndex: 5, receiptNs: 5n, resultIsError: true },
+      },
+    });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('accepts targetInvocation correctly pointing to the LAST attempt when NONE are confirmed', () => {
+    const a1 = validToolAttempt({ id: 'a1', kind: 'skill', eventIndex: 3, receiptNs: 3n, targetsExpectedSkill: true, command: null, result: { found: true, eventIndex: 4, isError: true, text: 'no', textStatus: 'text' } });
+    const a2 = validToolAttempt({ id: 'a2', kind: 'skill', eventIndex: 7, receiptNs: 7n, targetsExpectedSkill: true, command: null, result: { found: true, eventIndex: 8, isError: true, text: 'no', textStatus: 'text' } });
+    const observation = minimalConsistentObservation({
+      toolAttempts: [a1, a2],
+      timing: { receiptNsByEventIndex: new Map([[3, 3n], [7, 7n]]) },
+      skill: {
+        available: true, profileMatchesCondition: true, snapshotBindingMatches: true, foreignInvocations: [],
+        ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+        targetInvocation: { attempted: true, confirmed: false, attemptCount: 2, eventIndex: 7, receiptNs: 7n, resultIsError: true },
+      },
+    });
+    expect(validateObservation(observation).ok).toBe(true);
+  });
+
+  it('rejects targetInvocation pointing to the FIRST (unconfirmed) attempt when none are confirmed (should point to the LAST)', () => {
+    const a1 = validToolAttempt({ id: 'a1', kind: 'skill', eventIndex: 3, receiptNs: 3n, targetsExpectedSkill: true, command: null, result: { found: true, eventIndex: 4, isError: true, text: 'no', textStatus: 'text' } });
+    const a2 = validToolAttempt({ id: 'a2', kind: 'skill', eventIndex: 7, receiptNs: 7n, targetsExpectedSkill: true, command: null, result: { found: true, eventIndex: 8, isError: true, text: 'no', textStatus: 'text' } });
+    const observation = minimalConsistentObservation({
+      toolAttempts: [a1, a2],
+      timing: { receiptNsByEventIndex: new Map([[3, 3n], [7, 7n]]) },
+      skill: {
+        available: true, profileMatchesCondition: true, snapshotBindingMatches: true, foreignInvocations: [],
+        ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+        targetInvocation: { attempted: true, confirmed: false, attemptCount: 2, eventIndex: 3, receiptNs: 3n, resultIsError: true },
+      },
+    });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  // Round 6: the receiptNs comparison above was only ever enforced when the representative's own
+  // receiptNs was a bigint (`typeof representative.receiptNs === 'bigint' && ...`) -- when the real
+  // producer legitimately emits receiptNs:null (no _receiptNs captured on that event), the whole
+  // check was skipped, so targetInvocation.receiptNs could claim ANY bigint unchecked. Fixed to an
+  // unconditional `ti.receiptNs !== representative.receiptNs` (correct for both bigint and null).
+  it('rejects targetInvocation.receiptNs:999n when the real representative attempt has receiptNs:null', () => {
+    const a1 = validToolAttempt({ id: 'a1', kind: 'skill', eventIndex: 3, receiptNs: null, targetsExpectedSkill: true, command: null, result: { found: true, eventIndex: 4, isError: false, text: 'ok', textStatus: 'text' } });
+    const observation = minimalConsistentObservation({
+      toolAttempts: [a1],
+      timing: { receiptNsByEventIndex: new Map() },
+      skill: {
+        available: true, profileMatchesCondition: true, snapshotBindingMatches: true, foreignInvocations: [],
+        ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+        targetInvocation: { attempted: true, confirmed: true, attemptCount: 1, eventIndex: 3, receiptNs: 999n, resultIsError: false },
+      },
+    });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('accepts targetInvocation.receiptNs:null correctly matching a real representative attempt with receiptNs:null', () => {
+    const a1 = validToolAttempt({ id: 'a1', kind: 'skill', eventIndex: 3, receiptNs: null, targetsExpectedSkill: true, command: null, result: { found: true, eventIndex: 4, isError: false, text: 'ok', textStatus: 'text' } });
+    const observation = minimalConsistentObservation({
+      toolAttempts: [a1],
+      timing: { receiptNsByEventIndex: new Map() },
+      skill: {
+        available: true, profileMatchesCondition: true, snapshotBindingMatches: true, foreignInvocations: [],
+        ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+        targetInvocation: { attempted: true, confirmed: true, attemptCount: 1, eventIndex: 3, receiptNs: null, resultIsError: false },
+      },
+    });
+    expect(validateObservation(observation).ok).toBe(true);
+  });
+});
+
+describe('validateObservation -- skill.foreignInvocations is an exact ORDERED 1:1 projection of foreign toolAttempts, not a Set/find(eventIndex) match (round 5)', () => {
+  function foreignAttempts() {
+    const f1 = validToolAttempt({ id: 'f1', kind: 'skill', eventIndex: 2, receiptNs: 2n, targetsExpectedSkill: false, command: null, skillReference: 'other:a', result: { found: true, eventIndex: 10, isError: true, text: 'no', textStatus: 'text' } });
+    const f2 = validToolAttempt({ id: 'f2', kind: 'skill', eventIndex: 2, receiptNs: 2n, targetsExpectedSkill: false, command: null, skillReference: 'other:b', result: { found: true, eventIndex: 11, isError: false, text: 'ok', textStatus: 'text' } });
+    return [f1, f2];
+  }
+  function correctProjection() {
+    return [
+      { eventIndex: 2, receiptNs: 2n, id: 'f1', skillReference: 'other:a', resultIsError: true, confirmed: false },
+      { eventIndex: 2, receiptNs: 2n, id: 'f2', skillReference: 'other:b', resultIsError: false, confirmed: true },
+    ];
+  }
+  function withForeign(toolAttempts, foreignInvocations) {
+    return minimalConsistentObservation({
+      toolAttempts,
+      timing: { receiptNsByEventIndex: new Map([[2, 2n]]) },
+      skill: {
+        available: true, profileMatchesCondition: true, snapshotBindingMatches: true, targetInvocation: null,
+        ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+        foreignInvocations,
+      },
+    });
+  }
+
+  it('rejects MISSING a foreignInvocations entry (2 real foreign attempts, only 1 entry -- two concurrent foreign calls collapsed to one)', () => {
+    const observation = withForeign(foreignAttempts(), correctProjection().slice(0, 1));
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('rejects an EXTRA foreignInvocations entry (1 real foreign attempt, 2 entries -- a phantom invocation)', () => {
+    const [f1] = foreignAttempts();
+    const observation = withForeign([f1], [
+      { eventIndex: 2, receiptNs: 2n, id: 'f1', skillReference: 'other:a', resultIsError: true, confirmed: false },
+      { eventIndex: 2, receiptNs: 2n, id: 'phantom', skillReference: 'other:z', resultIsError: false, confirmed: true },
+    ]);
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('rejects a REORDERED foreignInvocations array (same 2 entries, swapped relative to real event order)', () => {
+    const attempts = foreignAttempts();
+    const projection = correctProjection();
+    const observation = withForeign(attempts, [projection[1], projection[0]]);
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('rejects a foreignInvocations entry with a FALSIFIED skillReference', () => {
+    const [f1] = foreignAttempts();
+    const observation = withForeign([f1], [
+      { eventIndex: 2, receiptNs: 2n, id: 'f1', skillReference: 'FALSIFIED:not-real', resultIsError: true, confirmed: false },
+    ]);
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('accepts a correctly-ordered, fully-consistent 2-entry foreignInvocations projection', () => {
+    const observation = withForeign(foreignAttempts(), correctProjection());
+    expect(validateObservation(observation).ok).toBe(true);
+  });
+
+  // Round 6: `receiptOk` above was only ever enforced when the attempt's own receiptNs was a bigint
+  // (`typeof attempt.receiptNs !== 'bigint' || ...`) -- when the real producer legitimately emits
+  // receiptNs:null, receiptOk was unconditionally true, so a foreignInvocations entry could claim
+  // ANY bigint unchecked. Fixed to an unconditional `fi.receiptNs !== attempt.receiptNs`.
+  it('rejects a foreignInvocations entry with receiptNs:999n when the real attempt has receiptNs:null', () => {
+    // Not using withForeign() here -- its own timing map is hardcoded to [[2, 2n]], which would
+    // itself conflict with a receiptNs:null attempt (a DIFFERENT, already-covered invariant) and
+    // stop this test from isolating the ONE property under test. An empty timing map is the
+    // consistent counterpart to a null attempt.receiptNs.
+    const f1 = validToolAttempt({ id: 'f1', kind: 'skill', eventIndex: 2, receiptNs: null, targetsExpectedSkill: false, command: null, skillReference: 'other:a', result: { found: true, eventIndex: 10, isError: true, text: 'no', textStatus: 'text' } });
+    const observation = minimalConsistentObservation({
+      toolAttempts: [f1],
+      timing: { receiptNsByEventIndex: new Map() },
+      skill: {
+        available: true, profileMatchesCondition: true, snapshotBindingMatches: true, targetInvocation: null,
+        ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+        foreignInvocations: [{ eventIndex: 2, receiptNs: 999n, id: 'f1', skillReference: 'other:a', resultIsError: true, confirmed: false }],
+      },
+    });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('accepts a foreignInvocations entry with receiptNs:null correctly matching a real attempt with receiptNs:null', () => {
+    const f1 = validToolAttempt({ id: 'f1', kind: 'skill', eventIndex: 2, receiptNs: null, targetsExpectedSkill: false, command: null, skillReference: 'other:a', result: { found: true, eventIndex: 10, isError: true, text: 'no', textStatus: 'text' } });
+    const observation = minimalConsistentObservation({
+      toolAttempts: [f1],
+      timing: { receiptNsByEventIndex: new Map() },
+      skill: {
+        available: true, profileMatchesCondition: true, snapshotBindingMatches: true, targetInvocation: null,
+        ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+        foreignInvocations: [{ eventIndex: 2, receiptNs: null, id: 'f1', skillReference: 'other:a', resultIsError: true, confirmed: false }],
+      },
+    });
+    expect(validateObservation(observation).ok).toBe(true);
+  });
+});
+
+describe('validateObservation -- strictIncompleteToolResults is an exact ORDERED projection WITH multiplicity, not a Set of indices (round 5)', () => {
+  function incompleteAttempts() {
+    const i1 = validToolAttempt({ id: 'i1', kind: 'shell', eventIndex: 5, receiptNs: 5n, skillReference: null, targetsExpectedSkill: null, result: { found: false, eventIndex: null, isError: null, text: null, textStatus: 'missing' } });
+    const i2 = validToolAttempt({ id: 'i2', kind: 'shell', eventIndex: 5, receiptNs: 5n, skillReference: null, targetsExpectedSkill: null, result: { found: false, eventIndex: null, isError: null, text: null, textStatus: 'missing' } });
+    return [i1, i2];
+  }
+  function withIncomplete(toolAttempts, incomplete) {
+    return minimalConsistentObservation({
+      toolAttempts,
+      timing: { receiptNsByEventIndex: new Map([[5, 5n]]) },
+      hookStats: { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: false },
+      transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: incomplete, effectiveIncompleteToolResults: incomplete },
+    });
+  }
+
+  it('rejects TWO concurrent result.found:false toolAttempts represented by only ONE strictIncompleteToolResults entry', () => {
+    const observation = withIncomplete(incompleteAttempts(), [{ index: 5, receiptNs: 5n, name: 'Bash', id: 'i1' }]);
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('accepts TWO concurrent incomplete attempts represented by TWO matching entries, in order', () => {
+    const observation = withIncomplete(incompleteAttempts(), [
+      { index: 5, receiptNs: 5n, name: 'Bash', id: 'i1' },
+      { index: 5, receiptNs: 5n, name: 'Bash', id: 'i2' },
+    ]);
+    expect(validateObservation(observation).ok).toBe(true);
+  });
+
+  it('rejects the same TWO entries in REORDERED form (id i2 before i1, contradicting real event order)', () => {
+    const observation = withIncomplete(incompleteAttempts(), [
+      { index: 5, receiptNs: 5n, name: 'Bash', id: 'i2' },
+      { index: 5, receiptNs: 5n, name: 'Bash', id: 'i1' },
+    ]);
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+});
+
+describe('validateObservation -- structurally impossible combinations within strictStructuralIssues (round 5)', () => {
+  it('rejects init_count and init_not_first co-occurring (the producer only computes init_not_first when initIndices.length===1, contradicting any init_count issue)', () => {
+    const issues = [{ type: 'init_count', count: 2 }, { type: 'init_not_first', initIndex: 3 }];
+    const observation = minimalConsistentObservation({
+      transcript: { malformedLineCount: 0, strictStructuralIssues: issues, effectiveStructuralIssues: issues, strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+    });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('rejects result_count and result_not_last co-occurring (same exclusion, the result-side pair)', () => {
+    const issues = [{ type: 'result_count', count: 0 }, { type: 'result_not_last', resultIndex: 2, eventsLength: 5 }];
+    const observation = minimalConsistentObservation({
+      terminal: { present: false, isError: null, turnCount: null, finalText: null, resultSubtype: null, usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
+      transcript: { malformedLineCount: 0, strictStructuralIssues: issues, effectiveStructuralIssues: issues, strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+    });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('accepts init_not_first and result_not_last co-occurring (both legitimately fire together when exactly one init/result exist but are misplaced)', () => {
+    const issues = [{ type: 'init_not_first', initIndex: 1 }, { type: 'result_not_last', resultIndex: 2, eventsLength: 5 }];
+    const observation = minimalConsistentObservation({
+      transcript: { malformedLineCount: 0, strictStructuralIssues: issues, effectiveStructuralIssues: issues, strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+    });
+    expect(validateObservation(observation).ok).toBe(true);
+  });
+
+  it('rejects two duplicate_tool_use_id issues sharing the same id (toolUseIdCounts is a Map -- one issue per unique id, never two)', () => {
+    const issues = [{ type: 'duplicate_tool_use_id', id: 'toolu_1', count: 2 }, { type: 'duplicate_tool_use_id', id: 'toolu_1', count: 3 }];
+    const observation = minimalConsistentObservation({
+      transcript: { malformedLineCount: 0, strictStructuralIssues: issues, effectiveStructuralIssues: issues, strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+    });
+    expect(validateObservation(observation).ok).toBe(false);
+  });
+
+  it('rejects two orphan_tool_result issues both with id:null (toolResultIdCounts keys id:null once -- at most one such issue)', () => {
+    const issues = [{ type: 'orphan_tool_result', id: null }, { type: 'orphan_tool_result', id: null }];
+    const observation = minimalConsistentObservation({
+      transcript: { malformedLineCount: 0, strictStructuralIssues: issues, effectiveStructuralIssues: issues, strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+    });
+    expect(validateObservation(observation).ok).toBe(false);
   });
 });

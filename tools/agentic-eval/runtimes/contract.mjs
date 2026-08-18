@@ -661,12 +661,15 @@ function validateCrossFieldInvariants(observation, errors) {
   }
 
   if (isPlainObject(observation.skill)) {
-    // #round-3 + round-4-2/3/4: skill.targetInvocation <-> toolAttempts with kind='skill' &&
-    // targetsExpectedSkill===true. Existence/count/membership (round 3) PLUS the full field
-    // projection (round 4): confirmed (findSkillInvocation: confirmed iff some match has
-    // result.found&&!result.isError), receiptNs (via the shared timing map), resultIsError (the
-    // toolAttempt AT that exact eventIndex's own result.isError -- the representative IS one of the
-    // matching toolAttempts, same correlated tool_result).
+    // #round-5: skill.targetInvocation must match the CANONICAL representative findSkillInvocation
+    // itself selects -- the first attempt (in real event/array order) with result.found&&!result
+    // .isError, else the LAST attempt -- not just any toolAttempts entry sharing ti's own claimed
+    // eventIndex. A find(eventIndex)-based match (round 3/4) both under-rejects (accepts ti pointing
+    // at the WRONG same-index or wrong-among-several-confirmed attempt) and over-rejects (grabs the
+    // first same-eventIndex attempt regardless of which one is actually confirmed, wrongly failing
+    // genuinely valid concurrent-call producer output). skillAttempts is assumed in real event order
+    // (toolAttempts' own construction order mirrors stream-parser.mjs's own events iteration, same
+    // as findSkillInvocation's own `matches` array) -- Array.prototype.find already respects that.
     const skillAttempts = toolAttempts.filter((a) => isPlainObject(a) && a.kind === 'skill' && a.targetsExpectedSkill === true);
     const ti = observation.skill.targetInvocation;
     if (ti === null) {
@@ -676,46 +679,55 @@ function validateCrossFieldInvariants(observation, errors) {
         errors.push({ field: 'skill.targetInvocation', code: 'invalid_relation' });
       } else {
         if (ti.attemptCount !== skillAttempts.length) errors.push({ field: 'skill.targetInvocation.attemptCount', code: 'invalid_relation' });
-        const matching = skillAttempts.find((a) => a.eventIndex === ti.eventIndex);
-        if (!matching) {
-          errors.push({ field: 'skill.targetInvocation.eventIndex', code: 'invalid_relation' });
-        } else {
-          const realConfirmed = skillAttempts.some((a) => isPlainObject(a.result) && a.result.found === true && a.result.isError === false);
-          if (ti.confirmed !== realConfirmed) errors.push({ field: 'skill.targetInvocation.confirmed', code: 'invalid_relation' });
-          if (timingMap && ti.receiptNs !== timingValueAt(timingMap, ti.eventIndex)) {
-            errors.push({ field: 'skill.targetInvocation.receiptNs', code: 'invalid_relation' });
-          }
-          const matchingResultIsError = isPlainObject(matching.result) ? matching.result.isError : null;
-          if (ti.resultIsError !== matchingResultIsError) errors.push({ field: 'skill.targetInvocation.resultIsError', code: 'invalid_relation' });
+        const confirmedMatch = skillAttempts.find((a) => isPlainObject(a.result) && a.result.found === true && a.result.isError === false);
+        const representative = confirmedMatch ?? skillAttempts[skillAttempts.length - 1];
+        const repConfirmed = confirmedMatch != null;
+        const repResultIsError = isPlainObject(representative.result) ? representative.result.isError : null;
+        if (ti.eventIndex !== representative.eventIndex) errors.push({ field: 'skill.targetInvocation.eventIndex', code: 'invalid_relation' });
+        if (ti.confirmed !== repConfirmed) errors.push({ field: 'skill.targetInvocation.confirmed', code: 'invalid_relation' });
+        // Round 6: unconditional equality, not gated on the representative's receiptNs being a
+        // bigint -- the producer legitimately emits receiptNs:null (no _receiptNs captured on that
+        // event), and the prior `typeof === 'bigint' &&` guard skipped the comparison entirely in
+        // that case, letting ti.receiptNs claim any bigint unchecked. Strict `!==` is correct for
+        // both bigint and null on either side.
+        if (ti.receiptNs !== representative.receiptNs) {
+          errors.push({ field: 'skill.targetInvocation.receiptNs', code: 'invalid_relation' });
         }
+        if (ti.resultIsError !== repResultIsError) errors.push({ field: 'skill.targetInvocation.resultIsError', code: 'invalid_relation' });
       }
     }
 
-    // #round-4-5/6: skill.foreignInvocations[] <-> toolAttempts with kind='skill' &&
-    // targetsExpectedSkill===false, both directions (bijection by eventIndex), plus field
-    // consistency -- classifyForeignSkillUses keys off the identical input.skill classification
-    // claude-code.mjs's own toolAttempts construction uses.
+    // #round-5: skill.foreignInvocations must be an EXACT ORDERED, ONE-TO-ONE projection of every
+    // foreign toolAttempts entry (kind='skill' && targetsExpectedSkill===false), compared
+    // POSITIONALLY (array index), not via find(eventIndex)/Set -- the prior approach both silently
+    // collapsed multiple concurrent foreign calls sharing an eventIndex into one accepted entry, and
+    // could match a foreignInvocations entry against the WRONG same-eventIndex attempt (the same
+    // over-rejection class as targetInvocation above). classifyForeignSkillUses and toolAttempts'
+    // own foreign-entry construction iterate the identical `events` array in the identical order, so
+    // positional comparison is the correct identity, not eventIndex membership. Every field in the
+    // producer's own summary shape is compared, including skillReference (never checked before).
     if (Array.isArray(observation.skill.foreignInvocations)) {
       const foreignAttempts = toolAttempts.filter((a) => isPlainObject(a) && a.kind === 'skill' && a.targetsExpectedSkill === false);
-      const matchedForeignAttemptIndices = new Set();
-      for (const fi of observation.skill.foreignInvocations) {
-        if (!isPlainObject(fi)) continue;
-        const matching = foreignAttempts.find((a) => a.eventIndex === fi.eventIndex);
-        if (!matching) {
-          errors.push({ field: 'skill.foreignInvocations', code: 'invalid_relation' });
-          continue;
-        }
-        matchedForeignAttemptIndices.add(matching.eventIndex);
-        if (fi.id !== matching.id) errors.push({ field: 'skill.foreignInvocations', code: 'invalid_relation' });
-        const matchingResultIsError = isPlainObject(matching.result) ? matching.result.isError : null;
-        if (fi.resultIsError !== matchingResultIsError) errors.push({ field: 'skill.foreignInvocations', code: 'invalid_relation' });
-        const realConfirmed = isPlainObject(matching.result) && matching.result.found === true && matching.result.isError === false;
-        if (fi.confirmed !== realConfirmed) errors.push({ field: 'skill.foreignInvocations', code: 'invalid_relation' });
-        if (timingMap && fi.receiptNs !== timingValueAt(timingMap, fi.eventIndex)) errors.push({ field: 'skill.foreignInvocations', code: 'invalid_relation' });
-      }
-      for (const attempt of foreignAttempts) {
-        if (!matchedForeignAttemptIndices.has(attempt.eventIndex)) {
-          errors.push({ field: 'skill.foreignInvocations', code: 'invalid_relation' });
+      const fis = observation.skill.foreignInvocations;
+      if (fis.length !== foreignAttempts.length) {
+        errors.push({ field: 'skill.foreignInvocations', code: 'invalid_relation' });
+      } else {
+        for (let i = 0; i < fis.length; i++) {
+          const fi = fis[i];
+          const attempt = foreignAttempts[i];
+          if (!isPlainObject(fi)) continue;
+          const expectedResultIsError = isPlainObject(attempt.result) ? attempt.result.isError : null;
+          const expectedConfirmed = isPlainObject(attempt.result) && attempt.result.found === true && attempt.result.isError === false;
+          // Round 6: unconditional equality (see the identical fix + rationale on targetInvocation's
+          // own receiptNs check above) -- receiptNs:null is a real, legitimate producer value, not
+          // just "absent", and must be compared exactly like any other value.
+          const receiptOk = fi.receiptNs === attempt.receiptNs;
+          if (
+            fi.eventIndex !== attempt.eventIndex || fi.id !== attempt.id || fi.skillReference !== attempt.skillReference
+            || fi.resultIsError !== expectedResultIsError || fi.confirmed !== expectedConfirmed || !receiptOk
+          ) {
+            errors.push({ field: `skill.foreignInvocations[${i}]`, code: 'invalid_relation' });
+          }
         }
       }
     }
@@ -729,51 +741,85 @@ function validateCrossFieldInvariants(observation, errors) {
     // JSON.stringify throws on a raw BigInt (strictIncompleteToolResults/effectiveIncompleteToolResults
     // entries carry a bigint receiptNs) -- stringify bigints to a tagged string form first.
     const issueKey = (i) => JSON.stringify(i, (_k, v) => (typeof v === 'bigint' ? `__bigint__${v}` : v));
+    const sameOrderedArray = (a, b) => a.length === b.length && a.every((v, i) => issueKey(v) === issueKey(b[i]));
 
-    // #round-4-7: effectiveStructuralIssues = strictStructuralIssues minus (at most one
-    // {type:'result_count',count:0}, only under a legitimate timeout) -- findTranscriptStructural
-    // IssuesToleratingTimeout's exact filter.
+    // #round-5: effectiveStructuralIssues is the ORDERED filter of strict (round 4 compared sorted
+    // keys, order-insensitive -- findTranscriptStructuralIssuesToleratingTimeout's real
+    // implementation is `issues.filter(...)`, which preserves strict's own relative order exactly;
+    // it never re-sorts). Splices out only the FIRST {type:'result_count',count:0} entry (there can
+    // only ever be one, per the new per-type single-instance check below), preserving every other
+    // entry's position.
     if (strictIssues && effectiveIssues) {
-      const strictKeys = strictIssues.map(issueKey);
-      const effectiveKeys = effectiveIssues.map(issueKey);
-      const resultCount0Key = JSON.stringify({ type: 'result_count', count: 0 });
-      const expectedEffectiveKeys = (isLegitimateTimeout && strictKeys.includes(resultCount0Key))
-        ? (() => { const k = [...strictKeys]; k.splice(k.indexOf(resultCount0Key), 1); return k; })()
-        : strictKeys;
-      const sortedA = [...effectiveKeys].sort();
-      const sortedB = [...expectedEffectiveKeys].sort();
-      if (sortedA.length !== sortedB.length || sortedA.some((v, i) => v !== sortedB[i])) {
+      const resultCount0Index = strictIssues.findIndex((v) => isPlainObject(v) && v.type === 'result_count' && v.count === 0);
+      const expectedEffective = (isLegitimateTimeout && resultCount0Index !== -1)
+        ? strictIssues.filter((_v, i) => i !== resultCount0Index)
+        : strictIssues;
+      if (!sameOrderedArray(effectiveIssues, expectedEffective)) {
         errors.push({ field: 'transcript.effectiveStructuralIssues', code: 'invalid_relation' });
       }
     }
 
-    // #round-4-8: effectiveIncompleteToolResults = strictIncompleteToolResults minus (the ONE
-    // entry, only when legitimate timeout AND strict has exactly 1 entry AND that entry's index
-    // equals the max eventIndex among toolAttempts) -- findIncompleteToolResultsToleratingTimeout's
-    // exact filter.
+    // #round-5: effectiveIncompleteToolResults is either IDENTICAL in order+content to strict, or
+    // EMPTY (round 4 compared sorted keys, order-insensitive -- the real
+    // findIncompleteToolResultsToleratingTimeout either returns `incomplete` completely unchanged or
+    // `[]`, never a reordered variant).
     if (strictIncomplete && effectiveIncomplete) {
       const maxAttemptIndex = toolAttempts.reduce((max, a) => (isPlainObject(a) && nonNegInt(a.eventIndex) && a.eventIndex > max ? a.eventIndex : max), -1);
       const toleratesTheOne = isLegitimateTimeout && strictIncomplete.length === 1
         && isPlainObject(strictIncomplete[0]) && strictIncomplete[0].index === maxAttemptIndex;
       const expectedEffective = toleratesTheOne ? [] : strictIncomplete;
-      const sortedA = effectiveIncomplete.map(issueKey).sort();
-      const sortedB = expectedEffective.map(issueKey).sort();
-      if (sortedA.length !== sortedB.length || sortedA.some((v, i) => v !== sortedB[i])) {
+      if (!sameOrderedArray(effectiveIncomplete, expectedEffective)) {
         errors.push({ field: 'transcript.effectiveIncompleteToolResults', code: 'invalid_relation' });
       }
     }
 
-    // #round-4-9: strictIncompleteToolResults' eventIndex-set === toolAttempts' eventIndex-set
-    // where result.found===false -- findIncompleteToolResults' two-branch condition (id==null OR
-    // findToolResultById(...)==null) is identical to how toolAttempts[].result.found is derived.
+    // #round-5: strictIncompleteToolResults must be an EXACT ORDERED projection WITH MULTIPLICITY of
+    // every toolAttempts entry with result.found===false, mapped to {index:eventIndex, receiptNs,
+    // name:runtimeName, id} -- round 4's Set-of-indices comparison silently collapsed two concurrent
+    // incomplete calls sharing an eventIndex into a single accepted entry and was blind to ordering.
+    // findIncompleteToolResults emits ONE entry PER tool_use block (never deduplicated by index), in
+    // the same event-iteration order toolAttempts itself is built in.
     if (strictIncomplete) {
-      const incompleteIndices = new Set(strictIncomplete.filter(isPlainObject).map((i) => i.index));
-      const attemptFoundFalseIndices = new Set(
-        toolAttempts.filter((a) => isPlainObject(a) && isPlainObject(a.result) && a.result.found === false && nonNegInt(a.eventIndex)).map((a) => a.eventIndex),
-      );
-      const setsEqual = incompleteIndices.size === attemptFoundFalseIndices.size
-        && [...incompleteIndices].every((i) => attemptFoundFalseIndices.has(i));
-      if (!setsEqual) errors.push({ field: 'transcript.strictIncompleteToolResults', code: 'invalid_relation' });
+      const incompleteAttempts = toolAttempts.filter((a) => isPlainObject(a) && isPlainObject(a.result) && a.result.found === false);
+      if (strictIncomplete.length !== incompleteAttempts.length) {
+        errors.push({ field: 'transcript.strictIncompleteToolResults', code: 'invalid_relation' });
+      } else {
+        for (let i = 0; i < strictIncomplete.length; i++) {
+          const item = strictIncomplete[i];
+          const attempt = incompleteAttempts[i];
+          if (!isPlainObject(item)) continue;
+          if (item.index !== attempt.eventIndex || item.receiptNs !== attempt.receiptNs || item.name !== attempt.runtimeName || item.id !== attempt.id) {
+            errors.push({ field: `transcript.strictIncompleteToolResults[${i}]`, code: 'invalid_relation' });
+          }
+        }
+      }
+    }
+
+    // #round-5: structurally impossible combinations WITHIN strictStructuralIssues, derived directly
+    // from findTranscriptStructuralIssues' own control flow -- init_not_first/result_not_last are
+    // computed ONLY inside `if (initIndices.length===1 && resultIndices.length===1)`, so EITHER
+    // count-mismatch issue (init_count or result_count, which only fire when that same length!==1)
+    // makes BOTH ordering issues impossible in the same real array. Each of these 4 types is pushed
+    // by a single non-looping `if`, so at most one instance of each ever appears. toolUseIdCounts/
+    // toolResultIdCounts are Maps (unique keys) that duplicate_tool_use_id/orphan_tool_result/
+    // duplicate_tool_result all iterate, so no two issues of the SAME type ever share an id
+    // (including at most one orphan_tool_result with id:null).
+    if (strictIssues) {
+      const countOf = (type) => strictIssues.filter((v) => isPlainObject(v) && v.type === type).length;
+      for (const type of ['init_count', 'result_count', 'init_not_first', 'result_not_last']) {
+        if (countOf(type) > 1) errors.push({ field: 'transcript.strictStructuralIssues', code: 'duplicate_value' });
+      }
+      const hasCountIssue = countOf('init_count') > 0 || countOf('result_count') > 0;
+      const hasOrderingIssue = countOf('init_not_first') > 0 || countOf('result_not_last') > 0;
+      if (hasCountIssue && hasOrderingIssue) {
+        errors.push({ field: 'transcript.strictStructuralIssues', code: 'invalid_relation' });
+      }
+      for (const type of ['duplicate_tool_use_id', 'orphan_tool_result', 'duplicate_tool_result']) {
+        const ids = strictIssues.filter((v) => isPlainObject(v) && v.type === type).map((v) => v.id);
+        if (new Set(ids).size !== ids.length) {
+          errors.push({ field: 'transcript.strictStructuralIssues', code: 'duplicate_value' });
+        }
+      }
     }
 
     // #round-4-10/11: session.initPresent / terminal.present <-> strictStructuralIssues' init_count
