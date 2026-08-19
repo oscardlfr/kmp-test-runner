@@ -30,6 +30,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { existsSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { TEST_RUN_RECORD_V6_INPUTS } from './_agentic-eval-run-record-fixtures.js';
 
 vi.mock('../../tools/agentic-eval/privacy.mjs', async (importOriginal) => {
   const actual = await importOriginal();
@@ -80,7 +81,7 @@ describe('finalizeAndWriteRecords -- evidence-directory-path privacy check runs 
     }
 
     const policySha256 = computePolicySha256();
-    const common = { runKind: 'calibration', scenarioId: 'test-outdir-order', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256, modelRequested: 'fake-model', ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex') };
+    const common = { runKind: 'calibration', scenarioId: 'test-outdir-order', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256, ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'), ...TEST_RUN_RECORD_V6_INPUTS };
     const recordA = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'no-skill', skillSourceSha: null, ...common });
     const recordB = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'current-skill', skillSourceSha: 'c5c0661852f7c9da145ef56892048e706216a6ce', ...common });
     // This test is specifically about outDir-privacy-check ordering, not dirty-tree behavior --

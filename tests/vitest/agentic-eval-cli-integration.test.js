@@ -88,7 +88,7 @@ function listEvidenceFiles(runKind) {
 
 describe('cli.mjs calibrate -- real subprocess against fake claude (no live API cost)', () => {
   it('success scenario: passes the hard gate, writes schema-valid evidence, sets a real wall_clock_ms', () => {
-    const result = runCli(['calibrate', '--model', 'fake-model-x'], fakeClaudeEnv('success'));
+    const result = runCli(['calibrate', '--model', 'claude-sonnet-5'], fakeClaudeEnv('success'));
     expect(result.status).toBe(0);
     expect(result.parsed).not.toBeNull();
     const { recordA, recordB } = result.parsed;
@@ -103,7 +103,27 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
     // Skill contribution regardless of how many Skill attempts actually occurred.
     expect(recordA.tool_calls_total.value).toBe(3);
     expect(recordB.tool_calls_total.value).toBe(3);
-    expect(recordA.model_requested).toBe('fake-model-x');
+    expect(recordA.model_requested).toBe('claude-sonnet-5');
+    // Stage 6 (agentic-eval-runtime-neutral-records-v1): proves the 4 new schema:6 groups are a
+    // REAL, complete projection against a real fake-claude calibrate run (see smoke's identical
+    // proof below for the full rationale on why cli_version/model_resolved are checked
+    // structurally rather than by exact string).
+    for (const record of [recordA, recordB]) {
+      expect(record.agent_runtime.runtime_id).toBe('claude-code');
+      expect(record.agent_runtime.model_requested).toBe('claude-sonnet-5');
+      expect(record.agent_runtime.model_vendor_expected).toBe('anthropic');
+      expect(typeof record.agent_runtime.cli_version).toBe('string');
+      expect(typeof record.agent_runtime.model_resolved).toBe('string');
+      expect(record.execution_profile).toEqual({
+        id: 'strict-policy-v1', sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+        isolation_kind: 'runtime-policy-hooks', isolation_attestation_sha256: null, network_mode: 'runtime-default',
+      });
+      expect(record.skill_observation.delivery_mode).toBe(record.condition === 'current-skill' ? 'runtime-extension' : 'none');
+      expect(record.skill_observation.treatment_size.prompt_sha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(record.usage).not.toBeNull();
+      expect(['runtime-reported', 'not-recorded']).toContain(record.usage.source);
+      expect(record.usage.attributable_to_skill_load.status).toBe('not-recorded');
+    }
     expect(typeof recordA.wall_clock_ms).toBe('number');
     expect(recordA.wall_clock_ms).toBeGreaterThanOrEqual(0);
     // started_at/ended_at must be genuinely captured before/after the spawn, not two nowIso()
@@ -141,7 +161,7 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
   // file already does. Fixed: the field is honest about a non-default root, and the actual
   // override path (runsRoot, a temp directory) is never itself written into the record.
   it('discloses a non-default KMP_EVAL_RUNS_ROOT honestly, never leaking the real override path', () => {
-    const result = runCli(['calibrate', '--model', 'fake-model-x'], fakeClaudeEnv('success'));
+    const result = runCli(['calibrate', '--model', 'claude-sonnet-5'], fakeClaudeEnv('success'));
     expect(result.status).toBe(0);
     const { recordA, recordB } = result.parsed;
     for (const record of [recordA, recordB]) {
@@ -164,7 +184,7 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
   // smoke's 'all-denied' scenario (see its comment above): fabricating a realistic transcript
   // shape that isn't independently verified anywhere isn't worth the guesswork.
   it('no-tool-use scenario: A never attempting the skill is a legitimate no-skill shape -- passes and writes evidence', () => {
-    const result = runCli(['calibrate', '--model', 'fake-model-x'], fakeClaudeEnv('no-tool-use'));
+    const result = runCli(['calibrate', '--model', 'claude-sonnet-5'], fakeClaudeEnv('no-tool-use'));
     expect(result.status).toBe(0);
     expect(result.parsed).not.toBeNull();
     const { recordA, recordB } = result.parsed;
@@ -190,7 +210,7 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
   // which cellTranscriptIntegrityOk's canonical 15 do not cover -- skillSelectionOk specifically
   // because it needs matrix-wide sharedAmbientNames that don't exist yet) never gets built at all.
   it('malformed-transcript scenario: fail-fast stops after current-skill fails its own cleanTranscriptOk check, never spawns no-skill, and writes NO evidence', () => {
-    const result = runCli(['calibrate', '--model', 'fake-model-x'], fakeClaudeEnv('malformed'));
+    const result = runCli(['calibrate', '--model', 'claude-sonnet-5'], fakeClaudeEnv('malformed'));
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('CALIBRATION FAILED');
     expect(result.stderr).toContain('cleanTranscriptOk:false');
@@ -215,7 +235,7 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
     // never reused), so the probe log genuinely cannot pre-exist here; asserting it demonstrates
     // that guarantee rather than assuming it silently.
     expect(existsSync(probeLogPath)).toBe(false);
-    const result = runCli(['calibrate', '--model', 'fake-model-x'], fakeClaudeEnv('failfast-pair'));
+    const result = runCli(['calibrate', '--model', 'claude-sonnet-5'], fakeClaudeEnv('failfast-pair'));
     expect(result.status).toBe(1);
     expect(existsSync(probeLogPath)).toBe(true);
     const invocationLines = readFileSync(probeLogPath, 'utf8').trim().split('\n').filter(Boolean);
@@ -244,7 +264,7 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
   // result-aware classifier PR, so this correctly still fails regardless of the confirmed/
   // rejected distinction; the title now says what's actually being tested.
   it('foreign-skill scenario: A calling an unrelated Skill that gets CONFIRMED is rejected by the gate (evidence-contamination bypass) and writes NO evidence', () => {
-    const result = runCli(['calibrate', '--model', 'fake-model-x'], fakeClaudeEnv('foreign-skill'));
+    const result = runCli(['calibrate', '--model', 'claude-sonnet-5'], fakeClaudeEnv('foreign-skill'));
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('CALIBRATION FAILED');
     expect(result.stderr).toContain('skillSelectionOk:false');
@@ -262,7 +282,7 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
   // (current-skill) before A (no-skill); a caller that instead assigned ordinals by the
   // (recordA, recordB) parameter order alone would silently swap them.
   it('captureOrdinal in the persisted transcript filenames reflects TRUE execution order (B=current-skill first=0, A=no-skill second=1), never parameter-list order', () => {
-    const result = runCli(['calibrate', '--model', 'fake-model-x'], fakeClaudeEnv('foreign-skill'));
+    const result = runCli(['calibrate', '--model', 'claude-sonnet-5'], fakeClaudeEnv('foreign-skill'));
     expect(result.status).toBe(1);
     const rejectionIdMatch = result.stderr.match(/rejection_id ([0-9a-f-]{36})/i);
     expect(rejectionIdMatch).not.toBeNull();
@@ -280,7 +300,7 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
   }, 20000);
 
   it('leaves no leftover temp directories after a passing run (cleanup ran)', () => {
-    const result = runCli(['calibrate', '--model', 'fake-model-x'], fakeClaudeEnv('success'));
+    const result = runCli(['calibrate', '--model', 'claude-sonnet-5'], fakeClaudeEnv('success'));
     expect(result.status).toBe(0);
     expect(readdirSync(isolatedTmp)).toEqual([]);
   }, 20000);
@@ -300,7 +320,7 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
   it('a resource-acquisition failure (mkdtempSync throwing on a broken TEMP dir) fails cleanly with exit 1, real zero counters, never an uncaught exit 2', () => {
     const brokenTemp = path.join(isolatedTmp, 'this-directory-does-not-exist');
     const env = { ...fakeClaudeEnv('success'), TEMP: brokenTemp, TMP: brokenTemp, TMPDIR: brokenTemp };
-    const result = runCli(['calibrate', '--model', 'fake-model-x'], env);
+    const result = runCli(['calibrate', '--model', 'claude-sonnet-5'], env);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('CALIBRATION FAILED');
     expect(result.stderr).toMatch(/0\/2 cells evaluated/);
@@ -335,7 +355,7 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
     // uncovered, exactly the condition isRawDirSafeFromAccidentalCommit must fail closed against.
     const unsafeRunsRoot = path.join(bareRepoDir, 'runs-root');
     const env = { ...fakeClaudeEnv('success'), KMP_EVAL_RUNS_ROOT: unsafeRunsRoot };
-    const result = runCli(['calibrate', '--model', 'fake-model-x'], env);
+    const result = runCli(['calibrate', '--model', 'claude-sonnet-5'], env);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('CALIBRATION FAILED');
     // Never the raw, unhandled "agentic-eval: <stack>" shape main()'s own top-level catch writes --
@@ -352,7 +372,7 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
   // in both conditions regardless of --plugin-dir, so it fails calibrate the same way it fails
   // smoke -- see this fixture's own header comment.
   it('leaves no leftover temp directories after a FAILING run either (cleanup runs in finally)', () => {
-    const result = runCli(['calibrate', '--model', 'fake-model-x'], fakeClaudeEnv('unexpected-tool'));
+    const result = runCli(['calibrate', '--model', 'claude-sonnet-5'], fakeClaudeEnv('unexpected-tool'));
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('noUnexpectedToolsOk:false');
     expect(readdirSync(isolatedTmp)).toEqual([]);
@@ -364,11 +384,37 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
   // just "cmdCalibrate's own code resolves the scope early" as a static/unit-level claim.
   it('a malformed --measurement-scope-file fails closed before spawning any Claude session', () => {
     const result = runCli(
-      ['calibrate', '--model', 'fake-model-x', '--measurement-scope-file', path.join(isolatedTmp, 'does-not-exist-scope.json')],
+      ['calibrate', '--model', 'claude-sonnet-5', '--measurement-scope-file', path.join(isolatedTmp, 'does-not-exist-scope.json')],
       fakeClaudeEnv('success'),
     );
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/--measurement-scope-file is invalid/);
+    expect(listEvidenceFiles('calibration')).toEqual([]);
+    expect(readdirSync(isolatedTmp)).toEqual([]);
+  }, 20000);
+
+  // Registry selection (agentic-eval-runtime-neutral-records-v1) is resolved before ANY other
+  // operation -- an unknown --runtime/--model/--execution-profile fails closed before auth,
+  // materialize, or journal creation, exactly like the malformed-scope-file case above. Proven the
+  // identical way: zero fake-claude invocation, zero temp resource under isolatedTmp (no journal,
+  // no shim, no snapshot -- acquireSharedEvalResources is never even reached).
+  it('an unknown --runtime fails closed before any Claude session, auth preflight, or journal creation', () => {
+    const result = runCli(['calibrate', '--runtime', 'nonexistent-runtime'], fakeClaudeEnv('success'));
+    expect(result.status).toBe(1);
+    expect(listEvidenceFiles('calibration')).toEqual([]);
+    expect(readdirSync(isolatedTmp)).toEqual([]);
+  }, 20000);
+
+  it('an unknown --model fails closed the same way', () => {
+    const result = runCli(['calibrate', '--model', 'not-a-real-model'], fakeClaudeEnv('success'));
+    expect(result.status).toBe(1);
+    expect(listEvidenceFiles('calibration')).toEqual([]);
+    expect(readdirSync(isolatedTmp)).toEqual([]);
+  }, 20000);
+
+  it('an unknown --execution-profile fails closed the same way', () => {
+    const result = runCli(['calibrate', '--execution-profile', 'not-a-real-profile'], fakeClaudeEnv('success'));
+    expect(result.status).toBe(1);
     expect(listEvidenceFiles('calibration')).toEqual([]);
     expect(readdirSync(isolatedTmp)).toEqual([]);
   }, 20000);
@@ -411,7 +457,7 @@ describe('cli.mjs smoke -- real subprocess against fake claude (no live API cost
   // duplicated --project-alias as a hard error -- a caller that wants a non-default alias must
   // set it here, not append a second --project-alias onto `extra`.
   function smokeArgs(extra = [], projectAlias = 'integration-test') {
-    return ['smoke', '--source-repo-dir', sourceRepoDir, '--pinned-commit', pinnedCommit, '--project-alias', projectAlias, '--model', 'fake-model-x', ...extra];
+    return ['smoke', '--source-repo-dir', sourceRepoDir, '--pinned-commit', pinnedCommit, '--project-alias', projectAlias, '--model', 'claude-sonnet-5', ...extra];
   }
 
   it('success scenario: passes the equivalent-real-work hard gate and writes schema-valid evidence', () => {
@@ -425,6 +471,30 @@ describe('cli.mjs smoke -- real subprocess against fake claude (no live API cost
     expect(recordB.hook_call_count).toBeGreaterThanOrEqual(1);
     expect(recordB.hook_deny_count).toBe(0);
     expect(recordA.privacy_status).toBe('public');
+
+    // Stage 6 (agentic-eval-runtime-neutral-records-v1): proves the 4 new schema:6 groups are a
+    // REAL, complete projection against a real fake-claude smoke run, not just buildRunRecord's
+    // own unit tests. Structural checks (never a raw command/path/skill name) rather than exact
+    // string equality for the runtime-observed fields (cli_version/model_resolved) -- those are
+    // smoke's own fake-claude fixture output, already covered exactly by buildRunRecord's own
+    // unit-level coverage; what this E2E proof needs is that a REAL subprocess run genuinely
+    // produces them, not their precise fixture text.
+    for (const record of [recordA, recordB]) {
+      expect(record.agent_runtime.runtime_id).toBe('claude-code');
+      expect(record.agent_runtime.model_requested).toBe('claude-sonnet-5');
+      expect(record.agent_runtime.model_vendor_expected).toBe('anthropic');
+      expect(typeof record.agent_runtime.cli_version).toBe('string');
+      expect(typeof record.agent_runtime.model_resolved).toBe('string');
+      expect(record.execution_profile).toEqual({
+        id: 'strict-policy-v1', sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+        isolation_kind: 'runtime-policy-hooks', isolation_attestation_sha256: null, network_mode: 'runtime-default',
+      });
+      expect(record.skill_observation.delivery_mode).toBe(record.condition === 'current-skill' ? 'runtime-extension' : 'none');
+      expect(record.skill_observation.treatment_size.prompt_sha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(record.usage).not.toBeNull();
+      expect(['runtime-reported', 'not-recorded']).toContain(record.usage.source);
+      expect(record.usage.attributable_to_skill_load.status).toBe('not-recorded');
+    }
 
     expect(listEvidenceFiles('smoke').length).toBe(2);
     // accepted-run-observability PR: smoke's pair-based writer is untouched -- no sidecar, no
@@ -713,6 +783,17 @@ describe('cli.mjs smoke -- real subprocess against fake claude (no live API cost
     );
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/--measurement-scope-file is invalid/);
+    expect(listEvidenceFiles('smoke')).toEqual([]);
+    const worktreeList = gitViaBash(['worktree', 'list'], sourceRepoDir);
+    expect(worktreeList.trim().split('\n').length).toBe(1);
+  }, 30000);
+
+  // Registry selection is resolved before ANY other operation for smoke too -- an unknown
+  // --runtime/--model/--execution-profile fails closed before auth, materialize (no git worktree
+  // ever created), or journal creation.
+  it('an unknown --runtime fails closed before any Claude session or worktree materialization', () => {
+    const result = runCli(smokeArgs(['--runtime', 'nonexistent-runtime']), fakeClaudeEnv('success'));
+    expect(result.status).toBe(1);
     expect(listEvidenceFiles('smoke')).toEqual([]);
     const worktreeList = gitViaBash(['worktree', 'list'], sourceRepoDir);
     expect(worktreeList.trim().split('\n').length).toBe(1);

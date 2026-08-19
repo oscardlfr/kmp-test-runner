@@ -6,6 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1,
+  ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2,
   LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA,
   SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS,
   acceptedAuditRelativePathFor,
@@ -13,6 +14,7 @@ import {
   validateAcceptedRunAuditSidecar,
   crossValidateAcceptedRunAuditAgainstRecord,
   finalizeAcceptedRunAuditSidecar,
+  computeRunProvenanceSha256,
 } from '../../tools/agentic-eval/accepted-run-audit.mjs';
 // Test-only: a test file constructing fixtures is not a "core consumer" under the runtime-adapter
 // boundary (that rule scopes production files only -- see agentic-eval-runtime-boundary.test.js's
@@ -110,6 +112,47 @@ function toolAttemptsFromEvents(events) {
  * validation, which is the intended fail-closed behaviour (asserted directly further down).
  * Pass `dispatchAccounting: null` to exercise that path.
  */
+/** A minimal, schema-v6-shaped run record -- baseRecord() plus the 4 new v6 groups and the
+ * remaining fields computeRunProvenanceSha256's own RUN_PROVENANCE_PROJECTION_KEYS projects
+ * (platform/repo_commit/kmp_test_cli_source_sha/project_commit). Every one of those 12 projected
+ * keys must be a real value, never undefined: canonicalStructuredValue throws on an
+ * undefined-valued object key even when the key itself is present (assigning `undefined` to a
+ * property does not remove it), so a real schema:6 record (and this fixture) must always populate
+ * all of them. Deliberately does not mirror record-level semantic consistency (e.g. condition vs.
+ * skill_observation.delivery_mode) beyond what buildAcceptedRunAuditSidecar/
+ * crossValidateAcceptedRunAuditAgainstRecord themselves read -- schemas.mjs's own validateRun is
+ * what enforces that, and is exercised separately in agentic-eval-schemas.test.js. */
+function v6Record(overrides = {}) {
+  return {
+    ...baseRecord(overrides),
+    schema: 6,
+    platform: 'windows',
+    repo_commit: 'a'.repeat(40),
+    kmp_test_cli_source_sha: 'b'.repeat(40),
+    project_commit: 'c'.repeat(40),
+    agent_runtime: {
+      runtime_id: 'claude-code', cli_version: '1.2.3-fake', model_requested: 'claude-sonnet-5',
+      model_resolved: 'claude-sonnet-5', model_vendor_expected: 'anthropic', model_vendor_observed: null,
+    },
+    execution_profile: {
+      id: 'strict-policy-v1', sha256: 'd'.repeat(64), isolation_kind: 'runtime-policy-hooks',
+      isolation_attestation_sha256: null, network_mode: 'runtime-default',
+    },
+    skill_observation: {
+      delivery_mode: 'none',
+      availability: { status: 'observed-absent', evidence_kind: 'runtime-catalog' },
+      activation: { status: 'not-observed', evidence_kind: 'runtime-explicit-event' },
+      source_sha: null,
+      treatment_size: {
+        snapshot_sha256: null, snapshot_bytes: null, snapshot_file_count: null,
+        prompt_sha256: 'e'.repeat(64), prompt_bytes: 55,
+        absent_reason: 'condition-no-skill',
+      },
+    },
+    ...overrides,
+  };
+}
+
 function conditionResultFrom(events, { decisionByAttempt = new Map(), endedHrtimeNs, dispatchAccounting } = {}) {
   const derived = dispatchAccounting !== undefined
     ? dispatchAccounting
@@ -136,7 +179,10 @@ describe('buildAcceptedRunAuditSidecar -- top-level identity + shape', () => {
     const record = baseRecord();
     const cr = conditionResultFrom([initEventStub(), resultEventStub()]);
     const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
-    expect(sidecar.schema).toBe(LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA);
+    // baseRecord() is schema:5 (still the only run schema a v1/v2 sidecar is compatible with) --
+    // the schema-aware builder therefore emits v2 here, never LATEST (which now means "v3, for a
+    // schema:6+ record only"). See the dedicated schema:6 describe block below for the v3 case.
+    expect(sidecar.schema).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2);
     expect(sidecar.run_id).toBe(record.run_id);
     expect(sidecar.run_schema).toBe(5);
     expect(sidecar.run_kind).toBe('scenario');
@@ -161,8 +207,9 @@ describe('buildAcceptedRunAuditSidecar -- top-level identity + shape', () => {
   // make the per-entry inventory vacuously true.
   it('freezes the sidecar schema constants and the nested summary / tool_calls[] field inventories', () => {
     expect(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1).toBe(1);
-    expect(LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA).toBe(2);
-    expect([...SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS]).toEqual([1, 2]);
+    expect(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2).toBe(2);
+    expect(LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA).toBe(3);
+    expect([...SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS]).toEqual([1, 2, 3]);
 
     const record = baseRecord({
       hook_call_count: 1,
@@ -778,14 +825,16 @@ describe('crossValidateAcceptedRunAuditAgainstRecord', () => {
     const record = baseRecord();
     const cr = conditionResultFrom([initEventStub(), resultEventStub()], { endedHrtimeNs: undefined });
     const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
-    expect(sidecar.schema).toBe(LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA);
+    // baseRecord() is schema:5 -- the schema-aware builder emits v2 here (see the note on the first
+    // test in this describe block for why this is not LATEST).
+    expect(sidecar.schema).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2);
 
     // Record says v1, file on disk is v2.
     record.accepted_audit = { schema: ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1, relative_path: `audit/${record.run_id}.json`, sha256: 'f'.repeat(64) };
     expect(crossValidateAcceptedRunAuditAgainstRecord(sidecar, record).map((e) => e.field)).toContain('schema');
 
     // ...and the reverse: record says v2, file on disk is v1.
-    record.accepted_audit.schema = LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA;
+    record.accepted_audit.schema = ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2;
     const v1Sidecar = { ...sidecar, schema: ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1 };
     expect(crossValidateAcceptedRunAuditAgainstRecord(v1Sidecar, record).map((e) => e.field)).toContain('schema');
   });
@@ -922,5 +971,155 @@ describe('finalizeAcceptedRunAuditSidecar -- validate -> redact -> revalidate ->
     const result = finalizeAcceptedRunAuditSidecar(malformed);
     expect(result.ok).toBe(false);
     expect(typeof result.reason).toBe('string');
+  });
+});
+
+describe('buildAcceptedRunAuditSidecar -- schema:6 record produces a v3 sidecar', () => {
+  it('stamps sidecar schema 3, run_schema 6, and a real run_provenance_sha256; keys are exactly the v1/v2 set plus run_provenance_sha256', () => {
+    const record = v6Record();
+    const cr = conditionResultFrom([initEventStub(), resultEventStub()]);
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    expect(sidecar.schema).toBe(LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA);
+    expect(sidecar.run_schema).toBe(6);
+    expect(sidecar.run_provenance_sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(sidecar.run_provenance_sha256).toBe(computeRunProvenanceSha256(record));
+    expect(Object.keys(sidecar).sort()).toEqual([
+      'condition', 'first_useful_signal_event', 'run_id', 'run_kind', 'run_provenance_sha256',
+      'run_schema', 'scenario_id', 'schema', 'summary', 'terminal_authoritative_event', 'tool_calls',
+    ]);
+  });
+
+  it('the built sidecar validates with zero errors', () => {
+    const record = v6Record();
+    const cr = conditionResultFrom([initEventStub(), resultEventStub()]);
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    expect(validateAcceptedRunAuditSidecar(sidecar).errors).toEqual([]);
+  });
+
+  it('cross-validates with zero errors against its own source record (including run_provenance_sha256)', () => {
+    const record = v6Record();
+    const cr = conditionResultFrom([initEventStub(), resultEventStub()]);
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    record.accepted_audit = { schema: sidecar.schema, relative_path: `audit/${record.run_id}.json`, sha256: 'f'.repeat(64) };
+    expect(crossValidateAcceptedRunAuditAgainstRecord(sidecar, record)).toEqual([]);
+  });
+});
+
+describe('validateAcceptedRunAuditSidecar -- v3-specific run_provenance_sha256 shape', () => {
+  function v3Sidecar(overrides = {}) {
+    const record = v6Record();
+    const sidecar = buildAcceptedRunAuditSidecar({
+      record, conditionResult: conditionResultFrom([initEventStub(), resultEventStub()]),
+      terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME,
+    });
+    return { ...sidecar, ...overrides };
+  }
+
+  it('rejects a non-hex run_provenance_sha256', () => {
+    const sidecar = v3Sidecar({ run_provenance_sha256: 'not-hex-at-all-'.repeat(5).slice(0, 64) });
+    expect(validateAcceptedRunAuditSidecar(sidecar).errors.some((e) => e.field === 'run_provenance_sha256')).toBe(true);
+  });
+
+  it('rejects an uppercase run_provenance_sha256', () => {
+    const sidecar = v3Sidecar({ run_provenance_sha256: 'A'.repeat(64) });
+    expect(validateAcceptedRunAuditSidecar(sidecar).errors.some((e) => e.field === 'run_provenance_sha256')).toBe(true);
+  });
+
+  it('rejects a run_provenance_sha256 of the wrong length', () => {
+    const sidecar = v3Sidecar({ run_provenance_sha256: 'a'.repeat(63) });
+    expect(validateAcceptedRunAuditSidecar(sidecar).errors.some((e) => e.field === 'run_provenance_sha256')).toBe(true);
+  });
+
+  it('rejects a v3 sidecar missing run_provenance_sha256 entirely', () => {
+    const sidecar = v3Sidecar();
+    delete sidecar.run_provenance_sha256;
+    expect(validateAcceptedRunAuditSidecar(sidecar).errors.some((e) => e.field === 'run_provenance_sha256' || e.field === '(root)')).toBe(true);
+  });
+
+  it('rejects run_provenance_sha256 present on a v1 or v2 sidecar (unrecognized key)', () => {
+    const record = baseRecord(); // schema:5
+    const v2Sidecar = buildAcceptedRunAuditSidecar({
+      record, conditionResult: conditionResultFrom([initEventStub(), resultEventStub()]),
+      terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME,
+    });
+    const tampered = { ...v2Sidecar, run_provenance_sha256: 'a'.repeat(64) };
+    expect(validateAcceptedRunAuditSidecar(tampered).errors.some((e) => e.field === '(root).run_provenance_sha256')).toBe(true);
+  });
+});
+
+describe('computeRunProvenanceSha256 -- provenance hash sensitivity + stability', () => {
+  it('changes when any ONE of the 11 non-schema bound fields changes', () => {
+    const base = v6Record();
+    const baseHash = computeRunProvenanceSha256(base);
+    const mutations = {
+      run_id: { ...base, run_id: 'scenario-current-skill-DIFFERENT' },
+      run_kind: { ...base, run_kind: 'calibration' },
+      condition: { ...base, condition: 'no-skill' },
+      scenario_id: { ...base, scenario_id: 'a-different-scenario-id' },
+      agent_runtime: { ...base, agent_runtime: { ...base.agent_runtime, cli_version: '9.9.9-different' } },
+      execution_profile: { ...base, execution_profile: { ...base.execution_profile, sha256: 'f'.repeat(64) } },
+      skill_observation: { ...base, skill_observation: { ...base.skill_observation, source_sha: 'f'.repeat(40) } },
+      platform: { ...base, platform: 'linux' },
+      repo_commit: { ...base, repo_commit: 'f'.repeat(40) },
+      kmp_test_cli_source_sha: { ...base, kmp_test_cli_source_sha: 'f'.repeat(40) },
+      project_commit: { ...base, project_commit: 'f'.repeat(40) },
+    };
+    for (const [field, mutated] of Object.entries(mutations)) {
+      expect(computeRunProvenanceSha256(mutated), `mutating ${field} should change the provenance hash`).not.toBe(baseHash);
+    }
+  });
+
+  it('does NOT change when a field outside the projection changes (wall_clock_ms, notes, errors)', () => {
+    const base = v6Record();
+    const baseHash = computeRunProvenanceSha256(base);
+    const mutated = { ...base, wall_clock_ms: 999999, notes: 'a completely different note', errors: [{ code: 'something_else', message: 'x' }] };
+    expect(computeRunProvenanceSha256(mutated)).toBe(baseHash);
+  });
+
+  it('is insensitive to the record\'s own accepted_audit field (avoids a hashing cycle -- the sidecar cannot bind its own not-yet-known sha256)', () => {
+    const base = v6Record();
+    const baseHash = computeRunProvenanceSha256(base);
+    const mutated = { ...base, accepted_audit: { schema: 3, relative_path: 'audit/whatever.json', sha256: 'z'.repeat(64) } };
+    expect(computeRunProvenanceSha256(mutated)).toBe(baseHash);
+  });
+
+  it('is insensitive to property insertion order (canonical JSON sorts object keys at every level)', () => {
+    const base = v6Record();
+    const baseHash = computeRunProvenanceSha256(base);
+    const reordered = {};
+    for (const k of Object.keys(base).reverse()) reordered[k] = base[k];
+    reordered.agent_runtime = {};
+    for (const k of Object.keys(base.agent_runtime).reverse()) reordered.agent_runtime[k] = base.agent_runtime[k];
+    expect(computeRunProvenanceSha256(reordered)).toBe(baseHash);
+  });
+});
+
+describe('crossValidateAcceptedRunAuditAgainstRecord -- run_provenance_sha256 (v3 only)', () => {
+  it('accepts a v3 sidecar whose run_provenance_sha256 matches the recomputed value', () => {
+    const record = v6Record();
+    const cr = conditionResultFrom([initEventStub(), resultEventStub()]);
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    expect(crossValidateAcceptedRunAuditAgainstRecord(sidecar, record).some((e) => e.field === 'run_provenance_sha256')).toBe(false);
+  });
+
+  it('rejects a syntactically well-formed but WRONG run_provenance_sha256 -- self-consistent alone, but points at a different record', () => {
+    const record = v6Record();
+    const cr = conditionResultFrom([initEventStub(), resultEventStub()]);
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    // Individually well-formed (64 lowercase hex) -- passes validateAcceptedRunAuditSidecar's own
+    // shape check in isolation -- but was not actually derived from THIS record (e.g. copied from a
+    // sibling run's sidecar by mistake). Only the record-comparison half can catch this.
+    const tamperedSidecar = { ...sidecar, run_provenance_sha256: '0'.repeat(64) };
+    expect(validateAcceptedRunAuditSidecar(tamperedSidecar).errors).toEqual([]);
+    const crossErrors = crossValidateAcceptedRunAuditAgainstRecord(tamperedSidecar, record);
+    expect(crossErrors.some((e) => e.field === 'run_provenance_sha256')).toBe(true);
+  });
+
+  it('is not checked at all for a v1/v2 sidecar (no such field exists on the sidecar or the check)', () => {
+    const record = baseRecord(); // schema:5
+    const cr = conditionResultFrom([initEventStub(), resultEventStub()]);
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    record.accepted_audit = { schema: sidecar.schema, relative_path: `audit/${record.run_id}.json`, sha256: 'f'.repeat(64) };
+    expect(crossValidateAcceptedRunAuditAgainstRecord(sidecar, record).some((e) => e.field === 'run_provenance_sha256')).toBe(false);
   });
 });

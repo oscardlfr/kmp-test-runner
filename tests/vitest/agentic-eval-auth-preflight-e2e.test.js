@@ -18,6 +18,12 @@ import { fileURLToPath } from 'node:url';
 import { runScenarioMatrix } from '../../tools/agentic-eval/matrix-runner.mjs';
 import { createInvocationJournal } from '../../tools/agentic-eval/durable-journal.mjs';
 import { runValidator as runPluginValidator } from '../../tools/validate-plugin.mjs';
+// Test-only, deliberately vendor-specific: matrix-runner.mjs no longer defaults runtimeAdapter
+// (agentic-eval-runtime-neutral-records-v1) -- an omitted adapter is now a contract error, not a
+// fallback. These two cases exist specifically to exercise the REAL Claude adapter's own
+// preflight/spawn behavior against a PATH-shadowed fake `claude` binary, so they inject the real
+// singleton directly rather than going through the registry default.
+import { claudeCodeRuntimeAdapter } from '../../tools/agentic-eval/runtimes/claude-code.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -95,6 +101,7 @@ describe('Caso A -- auth preflight fails closed BEFORE any live spawn', () => {
             targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME,
             timeoutMs: 30000,
             journal,
+            runtimeAdapter: claudeCodeRuntimeAdapter,
           });
         } catch (err) {
           caught = err;
@@ -169,6 +176,7 @@ describe('Caso B -- auth passes, the FIRST cell hits the exact pre-inference-fai
         targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME,
         timeoutMs: 30000,
         journal,
+        runtimeAdapter: claudeCodeRuntimeAdapter,
       }));
 
       // Exactly 1 live invocation of the normal argv -- the other 3 planned cells never spawned.

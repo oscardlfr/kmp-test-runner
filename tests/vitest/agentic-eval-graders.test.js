@@ -13,6 +13,7 @@ import { describe, it, expect } from 'vitest';
 import { extractKmpTestEnvelope, gradeScenarioCondition, GRADING_CHECK_NAMES, validateParallelEvidence } from '../../tools/agentic-eval/graders.mjs';
 import { buildRunRecord } from '../../tools/agentic-eval/cli.mjs';
 import { computePolicySha256 } from '../../tools/agentic-eval/policy-config.mjs';
+import { TEST_RUN_RECORD_V6_INPUTS } from './_agentic-eval-run-record-fixtures.js';
 
 // The three scenario shapes shipped in corpus/scenarios/*.json, kept here as plain objects so
 // grader tests don't depend on file I/O -- manually mirrored against the committed files, not
@@ -3461,7 +3462,7 @@ describe('gradeScenarioCondition -- a wrong-module attempt whose decision sideca
       condition: 'no-skill', runKind: 'scenario', scenarioId: SCENARIO_1.id,
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: SCENARIO_1.policy.allowed_gradle_tasks, allowedKmpTestSubcommands: SCENARIO_1.policy.allowed_kmptest_subcommands,
-      policySha256: computePolicySha256(), modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      policySha256: computePolicySha256(), ...TEST_RUN_RECORD_V6_INPUTS, seed: 1, orderIndex: 0, repetitionIndex: 0,
       ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
       gradeResult: grade,
     });

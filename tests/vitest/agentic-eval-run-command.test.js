@@ -208,8 +208,13 @@ function readAcceptedAuditSidecar(runId) {
   return JSON.parse(readFileSync(path.join(evidenceDirFor('scenario'), 'audit', `${runId}.json`), 'utf8'));
 }
 
+// --model must be a real registered model_id now that cmdRun resolves the selection against
+// registries.mjs before any spawn (agentic-eval-runtime-neutral-records-v1) -- 'fake-model-x' is
+// no longer a valid --model value; the FAKE-claude binary invoked via PATH override is still free
+// to report whatever synthetic `model_resolved` it wants in its own init event, independent of
+// the real, registered `--model` requested here.
 function runArgs(extra = []) {
-  return ['run', '--scenario', SCENARIO_ID, '--source-repo-dir', sourceRepoDir, '--model', 'fake-model-x', ...extra];
+  return ['run', '--scenario', SCENARIO_ID, '--source-repo-dir', sourceRepoDir, '--model', 'claude-sonnet-5', ...extra];
 }
 
 // "zero-spawn" here means what every test in THIS block actually exercises: no
@@ -242,8 +247,17 @@ describe('cli.mjs run --dry-run -- zero-spawn plan preview', () => {
     // Zero evidence written -- dry-run never reaches materialization or grading.
     expect(listEvidenceFiles('scenario')).toEqual([]);
     // Review-fix: the real live-session blast radius is disclosed explicitly, not left for a
-    // reviewer to compute themselves from repeats alone.
-    expect(result.parsed.total_live_claude_sessions).toBe(4);
+    // reviewer to compute themselves from repeats alone. Runtime-neutral name (never the
+    // Claude-specific total_live_claude_sessions -- agentic-eval-runtime-neutral-records-v1).
+    expect(result.parsed.total_live_sessions).toBe(4);
+    expect(result.parsed.total_live_claude_sessions).toBeUndefined();
+    // The dry-run preview now names the resolved registry selection explicitly -- the exact
+    // default (every flag omitted) resolves to claude-code / claude-sonnet-5 / strict-policy-v1.
+    expect(result.parsed.runtime_id).toBe('claude-code');
+    expect(result.parsed.model_id).toBe('claude-sonnet-5');
+    expect(result.parsed.model_vendor_expected).toBe('anthropic');
+    expect(result.parsed.execution_profile_id).toBe('strict-policy-v1');
+    expect(result.parsed.execution_profile_sha256).toMatch(/^[0-9a-f]{64}$/);
   }, 15000);
 
   it('is deterministic -- the same --seed produces the identical plan every time', async () => {
@@ -258,6 +272,53 @@ describe('cli.mjs run -- argument validation', () => {
     const result = await runCli(['run', '--scenario', SCENARIO_ID, '--source-repo-dir', sourceRepoDir, '--dry-run'], fakeClaudeEnv('run-scenario-success'));
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/--seed/);
+  });
+
+  // Registry selection (agentic-eval-runtime-neutral-records-v1) is resolved before ANY other
+  // check, including argument parsing that follows it -- an unknown/disabled/incompatible
+  // --runtime/--model/--execution-profile fails closed with exit 1 and prints no plan at all,
+  // even under --dry-run (which itself never spawns anything -- this proves the failure happens
+  // strictly earlier than even that zero-spawn preview).
+  it('an unknown --runtime fails closed, even under --dry-run, with no plan ever printed', async () => {
+    const result = await runCli(['run', '--scenario', SCENARIO_ID, '--source-repo-dir', sourceRepoDir, '--seed', '1', '--runtime', 'nonexistent-runtime', '--dry-run'], fakeClaudeEnv('run-scenario-success'));
+    expect(result.status).toBe(1);
+    expect(result.parsed).toBeNull();
+  });
+
+  it('an unknown --model fails closed the same way', async () => {
+    const result = await runCli(['run', '--scenario', SCENARIO_ID, '--source-repo-dir', sourceRepoDir, '--seed', '1', '--model', 'not-a-real-model', '--dry-run'], fakeClaudeEnv('run-scenario-success'));
+    expect(result.status).toBe(1);
+    expect(result.parsed).toBeNull();
+  });
+
+  it('an unknown --execution-profile fails closed the same way', async () => {
+    const result = await runCli(['run', '--scenario', SCENARIO_ID, '--source-repo-dir', sourceRepoDir, '--seed', '1', '--execution-profile', 'not-a-real-profile', '--dry-run'], fakeClaudeEnv('run-scenario-success'));
+    expect(result.status).toBe(1);
+    expect(result.parsed).toBeNull();
+  });
+
+  // A disabled selection (not merely unknown) must fail the identical way -- proven against the
+  // real shipped registry content itself: --execution-profile is case-sensitive and
+  // 'Strict-Policy-v1' is not a registered id (the closed [a-z0-9][a-z0-9-]* charset never
+  // matches an uppercase letter), so this doubles as an id-charset/unknown-id proof too.
+  it('a syntactically-close but unregistered id is rejected, never fuzzy-matched to a real one', async () => {
+    const result = await runCli(['run', '--scenario', SCENARIO_ID, '--source-repo-dir', sourceRepoDir, '--seed', '1', '--execution-profile', 'Strict-Policy-v1', '--dry-run'], fakeClaudeEnv('run-scenario-success'));
+    expect(result.status).toBe(1);
+    expect(result.parsed).toBeNull();
+  });
+
+  // Explicit defaults must resolve to the byte-identical selection as omitted flags -- the dry-run
+  // preview IS that resolved selection made visible, so a deep-equal comparison here is a direct
+  // proof of "same adapter/model/profile resolution", not just "both happen to succeed".
+  it('explicit defaults produce the identical dry-run resolution as omitted defaults', async () => {
+    const omitted = await runCli(['run', '--scenario', SCENARIO_ID, '--source-repo-dir', sourceRepoDir, '--seed', '42', '--dry-run'], fakeClaudeEnv('run-scenario-success'));
+    const explicit = await runCli([
+      'run', '--scenario', SCENARIO_ID, '--source-repo-dir', sourceRepoDir, '--seed', '42',
+      '--runtime', 'claude-code', '--model', 'claude-sonnet-5', '--execution-profile', 'strict-policy-v1', '--dry-run',
+    ], fakeClaudeEnv('run-scenario-success'));
+    expect(omitted.status).toBe(0);
+    expect(explicit.status).toBe(0);
+    expect(explicit.parsed).toEqual(omitted.parsed);
   });
 
   // Review-fix regression: --repeats previously accepted ANY positive integer with no upper
@@ -275,7 +336,7 @@ describe('cli.mjs run -- argument validation', () => {
     const result = await runCli(['run', '--scenario', SCENARIO_ID, '--source-repo-dir', '/nonexistent', '--seed', '1', '--repeats', '20', '--dry-run'], fakeClaudeEnv('run-scenario-success'));
     expect(result.status).toBe(0);
     expect(result.parsed.repeats).toBe(20);
-    expect(result.parsed.total_live_claude_sessions).toBe(40);
+    expect(result.parsed.total_live_sessions).toBe(40);
   });
 
   it('rejects --repeats one over the cap (21)', async () => {
@@ -504,6 +565,34 @@ describe('cli.mjs run -- real subprocess against fake claude (no live API cost)'
       expect(record.cache_state).toBe('cold');
       expect(record.project_commit).toBe(pinnedCommit);
       expect(record.project_url).toBe(PROJECT_URL);
+      // Stage 6 (agentic-eval-runtime-neutral-records-v1): the 4 new schema:6 groups are a REAL,
+      // complete projection of the registry-resolved selection + the observation's own reported
+      // identity -- proven directly against a real fake-claude run, not just via buildRunRecord's
+      // own unit tests. agent_runtime/execution_profile are condition-independent (every record in
+      // this matrix uses the same claude-code/strict-policy-v1 selection); skill_observation's own
+      // delivery_mode/source_sha/treatment_size legitimately vary by condition (asserted below,
+      // scoped to condition, since a blanket check here would be wrong for one arm).
+      expect(record.agent_runtime).toEqual({
+        runtime_id: 'claude-code', cli_version: 'fake', model_requested: 'claude-sonnet-5',
+        model_resolved: 'claude-sonnet-5-fake-resolved', model_vendor_expected: 'anthropic', model_vendor_observed: null,
+      });
+      expect(record.execution_profile.id).toBe('strict-policy-v1');
+      expect(record.execution_profile.sha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(record.execution_profile.isolation_kind).toBe('runtime-policy-hooks');
+      expect(record.execution_profile.network_mode).toBe('runtime-default');
+      expect(record.execution_profile.isolation_attestation_sha256).toBeNull();
+      expect(record.skill_observation.delivery_mode).toBe(record.condition === 'current-skill' ? 'runtime-extension' : 'none');
+      expect(record.skill_observation.treatment_size.prompt_sha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(typeof record.skill_observation.treatment_size.prompt_bytes).toBe('number');
+      expect(['observed-present', 'observed-absent']).toContain(record.skill_observation.availability.status);
+      expect(['confirmed', 'not-observed']).toContain(record.skill_observation.activation.status);
+      expect(record.usage).not.toBeNull();
+      expect(['runtime-reported', 'not-recorded']).toContain(record.usage.source);
+      for (const dim of ['input', 'cached_input', 'cache_write', 'output']) {
+        expect(record.usage[dim] === null || typeof record.usage[dim] === 'number').toBe(true);
+      }
+      expect(record.usage.reasoning_output).toBeNull();
+      expect(record.usage.attributable_to_skill_load.status).toBe('not-recorded');
       // The fixture's fake evidence exactly matches the scenario's expected.kmp_test contract in
       // both arms -- both conditions should grade as a genuine match, not a coincidental one.
       expect(record.expected_outcome_matched.value).toBe(true);
@@ -671,14 +760,15 @@ describe('cli.mjs run -- real subprocess against fake claude (no live API cost)'
       expect(record.test_invocations_total.value).toBe(1);
       expect(record.retries.value).toBe(0);
       expect((record.errors ?? []).some((e) => e.code === 'junit_evidence_capture_incomplete')).toBe(false);
-      // The record points at a schema-2 sidecar, matching what was actually written.
-      expect(record.accepted_audit.schema).toBe(2);
+      // The record points at a schema-3 sidecar (this CLI always builds schema:6 records now, and
+      // a schema:6 record requires exactly a v3 sidecar), matching what was actually written.
+      expect(record.accepted_audit.schema).toBe(3);
     }
 
     // The audit sidecar records the attempt honestly: present, error result, no policy decision
     // (none was ever due), and counted as a pre-dispatch block rather than a missing decision.
     const sidecar = readAcceptedAuditSidecar(records[0].run_id);
-    expect(sidecar.schema).toBe(2);
+    expect(sidecar.schema).toBe(3);
     expect(sidecar.summary.pre_dispatch_blocked_total).toBe(1);
     expect(sidecar.summary.policy_decisions_missing).toBe(0);
     expect(sidecar.summary.shell_commands_total).toBe(2);
@@ -843,7 +933,7 @@ describe('cli.mjs run -- JUnit-evidence-attribution pipeline, real subprocess ag
   }
 
   function runTestsExecutedArgs(extra = []) {
-    return ['run', '--scenario', TESTS_EXECUTED_SCENARIO_ID, '--source-repo-dir', sourceRepoDir, '--model', 'fake-model-x', ...extra];
+    return ['run', '--scenario', TESTS_EXECUTED_SCENARIO_ID, '--source-repo-dir', sourceRepoDir, '--model', 'claude-sonnet-5', ...extra];
   }
 
   it('two SEQUENTIAL Gradle attempts (fail then a --rerun-tasks retry that passes) attribute correctly end to end -- the terminal (passing) attempt governs, no harness-integrity error codes fire', async () => {
@@ -1083,7 +1173,7 @@ describe('fixture_setup real matrix/CLI wiring (post-open-PR review finding)', (
     // drop before it ever reached the fake-claude subprocess.
     const probeLogPath = path.join(isolatedTmp, 'fixture-setup-probe.log');
     const result = await runCli(
-      ['run', '--scenario', scenarioId, '--source-repo-dir', sourceRepoDir, '--model', 'fake-model-x', '--seed', '3', '--repeats', '2'],
+      ['run', '--scenario', scenarioId, '--source-repo-dir', sourceRepoDir, '--model', 'claude-sonnet-5', '--seed', '3', '--repeats', '2'],
       fakeClaudeEnv('run-fixture-setup-wiring'),
       60000,
     );

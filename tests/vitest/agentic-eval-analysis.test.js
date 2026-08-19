@@ -1250,3 +1250,170 @@ describe('module self-consistency', () => {
     }
   });
 });
+
+// Section F (agentic-eval-runtime-neutral-records-v1): analyzeRunRecord/buildSummary gain
+// agent_runtime/execution_profile/skill_observation/usage reporting fields (schema:6 real value or
+// the literal "not-recorded" sentinel below schema 6), canonical activation reads from
+// skill_observation.activation for schema:6 records, and buildGroupSummary gains 5 usage-dimension
+// distributions + usage_source_counts (deliberately no summed total). analyzeRunRecord/buildSummary
+// are pure functions -- neither calls validateRun, so these fixtures only need the specific fields
+// each function actually reads, not a fully schema-valid record (unlike agentic-eval-aggregate.
+// test.js's own exhaustive per-field partition-separation sweep, which DOES go through the real,
+// validateRun-gated aggregateRuns() and is the one place that sweep belongs -- both modules share
+// the identical run-record-view.mjs projection, so repeating it here would test nothing new).
+function scenarioRecord6(overrides = {}) {
+  return scenarioRecord({
+    schema: 6,
+    agent_runtime: {
+      runtime_id: 'claude-code', cli_version: '2.1.218', model_requested: 'claude-sonnet-5',
+      model_resolved: 'claude-sonnet-5', model_vendor_expected: 'anthropic', model_vendor_observed: null,
+    },
+    execution_profile: {
+      id: 'strict-policy-v1', sha256: 'd'.repeat(64), isolation_kind: 'runtime-policy-hooks',
+      isolation_attestation_sha256: null, network_mode: 'runtime-default',
+    },
+    skill_observation: {
+      delivery_mode: 'runtime-extension',
+      availability: { status: 'observed-present', evidence_kind: 'runtime-catalog' },
+      activation: { status: 'confirmed', evidence_kind: 'runtime-explicit-event' },
+      source_sha: '9e47a9d132f5b9ea6ac5bc50a66c844458fd363e',
+      treatment_size: {
+        snapshot_sha256: 'c'.repeat(64), snapshot_bytes: 234997, snapshot_file_count: 28,
+        prompt_sha256: 'e'.repeat(64), prompt_bytes: 55,
+        absent_reason: null,
+      },
+    },
+    usage: {
+      source: 'runtime-reported', input: 16, cached_input: 151916, cache_write: 7026, output: 1835, reasoning_output: null,
+      attributable_to_skill_load: {
+        status: 'not-recorded',
+        dimensions: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null },
+        unit: null, reason: 'runtime-does-not-report-skill-attribution',
+      },
+    },
+    ...overrides,
+  });
+}
+
+describe('analyzeRunRecord -- agent_runtime/execution_profile/skill_observation/usage reporting fields (Section F)', () => {
+  it('a schema:5 record reports all 4 new fields as the literal "not-recorded" sentinel', () => {
+    const record = scenarioRecord({ success: { value: true, reason: null }, expected_outcome_matched: { value: true, reason: null } });
+    const sidecar = sidecarFor(record, { entries: [targetSkillEntry(0)] });
+    const { entry } = analyzeRunRecord(record, sidecar);
+    expect(entry.agent_runtime).toBe('not-recorded');
+    expect(entry.execution_profile).toBe('not-recorded');
+    expect(entry.skill_observation).toBe('not-recorded');
+    expect(entry.usage).toEqual({
+      source: 'not-recorded', input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null,
+      attributable_to_skill_load: {
+        status: 'not-recorded',
+        dimensions: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null },
+        unit: null, reason: 'record schema is below 6 -- usage was not measured',
+      },
+    });
+  });
+
+  it('a schema:6 record reports the FULL (unnarrowed) real objects -- including isolation_attestation_sha256 and availability/activation, unlike aggregate.mjs\'s own narrowed partition-key projection', () => {
+    const record = scenarioRecord6({
+      success: { value: true, reason: null }, expected_outcome_matched: { value: true, reason: null },
+      execution_profile: { id: 'sandboxed-unrestricted-v1', sha256: 'd'.repeat(64), isolation_kind: 'external-sandbox', isolation_attestation_sha256: 'b'.repeat(64), network_mode: 'restricted' },
+    });
+    const sidecar = sidecarFor(record, { entries: [targetSkillEntry(0)] });
+    const { entry } = analyzeRunRecord(record, sidecar);
+    expect(entry.agent_runtime).toEqual(record.agent_runtime);
+    // The reporting field carries isolation_attestation_sha256 -- aggregate.mjs's own group_key
+    // projection deliberately excludes it (never a partition key), but there is no reason to hide
+    // it from a human-readable report.
+    expect(entry.execution_profile).toEqual(record.execution_profile);
+    expect(entry.execution_profile.isolation_attestation_sha256).toBe('b'.repeat(64));
+    expect(entry.skill_observation).toEqual(record.skill_observation);
+    expect(entry.skill_observation.availability.status).toBe('observed-present');
+    expect(entry.usage).toEqual(record.usage);
+  });
+
+  it('reads target_skill_invoked from skill_observation.activation.status for a schema:6 record, not the legacy skill_invoked field, when the two (deliberately, for this test only) disagree', () => {
+    // Schema invariant 8 would reject this combination via validateRun -- analyzeRunRecord itself
+    // never calls validateRun, so this fixture exists purely to prove WHICH field wins, using a
+    // combination validateRun would never let reach production.
+    const record = scenarioRecord6({
+      skill_invoked: { value: false, reason: null }, // legacy field says NOT invoked
+      // scenarioRecord's own skill_invocation_event auto-derivation looks at the legacy
+      // skill_invoked value above (false -> null) -- forced back to a real event ref here so
+      // deriveSkillRelativeFields' OWN correlation check (a separate concern from which field
+      // analyzeRunRecord reads target_skill_invoked from) does not itself fail closed first.
+      skill_invocation_event: { type: 'assistant.tool_use.Skill', index: 0 },
+      skill_observation: { ...scenarioRecord6().skill_observation, activation: { status: 'confirmed', evidence_kind: 'runtime-explicit-event' } }, // canonical field says CONFIRMED
+    });
+    const sidecar = sidecarFor(record, { entries: [targetSkillEntry(0)] });
+    const { entry } = analyzeRunRecord(record, sidecar);
+    expect(entry.target_skill_invoked).toBe(true);
+  });
+
+  it('reads target_skill_invoked from the legacy skill_invoked field for a schema:5 record (unchanged)', () => {
+    const record = scenarioRecord({ skill_invoked: { value: true, reason: null } });
+    const sidecar = sidecarFor(record, { entries: [targetSkillEntry(0)] });
+    const { entry } = analyzeRunRecord(record, sidecar);
+    expect(entry.target_skill_invoked).toBe(true);
+  });
+});
+
+describe('buildSummary -- group-level agent_runtime/execution_profile/skill_observation/usage reporting (Section F)', () => {
+  function pairFor(record, sidecarEntries = [targetSkillEntry(0)]) {
+    const sidecar = sidecarFor(record, { entries: sidecarEntries });
+    const { entry } = analyzeRunRecord(record, sidecar);
+    return { record, entry };
+  }
+
+  it('a schema:6 group reports the real agent_runtime/execution_profile/skill_observation (taken from entries[0], homogeneous by construction) and group_key\'s own NARROWED execution_profile/skill_treatment', () => {
+    const a = pairFor(scenarioRecord6({ run_id: 'scenario-current-skill-v6a' }));
+    const b = pairFor(scenarioRecord6({ run_id: 'scenario-current-skill-v6b' }));
+    const { groups } = buildSummary([a, b]);
+    expect(groups.length).toBe(1);
+    const [group] = groups;
+    expect(group.run_count).toBe(2);
+    expect(group.agent_runtime).toEqual(scenarioRecord6().agent_runtime);
+    expect(group.execution_profile).toEqual(scenarioRecord6().execution_profile); // FULL, unnarrowed
+    expect(group.skill_observation).toEqual(scenarioRecord6().skill_observation); // FULL, unnarrowed
+    expect(group.group_key.execution_profile).toEqual({ id: 'strict-policy-v1', sha256: 'd'.repeat(64), isolation_kind: 'runtime-policy-hooks', network_mode: 'runtime-default' }); // NARROWED
+    expect(group.group_key.skill_treatment).toEqual({ delivery_mode: 'runtime-extension', source_sha: scenarioRecord6().skill_observation.source_sha, treatment_size: scenarioRecord6().skill_observation.treatment_size }); // NARROWED
+  });
+
+  it('separates a schema:6 group from a schema:5 group with otherwise-identical fields (agent_runtime differs: real object vs "not-recorded")', () => {
+    const v5 = pairFor(scenarioRecord({ run_id: 'scenario-current-skill-v5x', success: { value: true, reason: null }, expected_outcome_matched: { value: true, reason: null } }));
+    const v6 = pairFor(scenarioRecord6({ run_id: 'scenario-current-skill-v6x', success: { value: true, reason: null }, expected_outcome_matched: { value: true, reason: null } }));
+    const { groups } = buildSummary([v5, v6]);
+    expect(groups.length).toBe(2);
+  });
+
+  it('usage distributions report each of the 5 dimensions SEPARATELY, preserve null (never coerce to 0), and never include a summed total field', () => {
+    const withCachedInputNull = pairFor(scenarioRecord6({
+      run_id: 'scenario-current-skill-usage-null', usage: { ...scenarioRecord6().usage, cached_input: null },
+    }));
+    const withCachedInputReal = pairFor(scenarioRecord6({
+      run_id: 'scenario-current-skill-usage-real', usage: { ...scenarioRecord6().usage, cached_input: 999 },
+    }));
+    const { groups } = buildSummary([withCachedInputNull, withCachedInputReal]);
+    expect(groups.length).toBe(1); // usage is never a partition key
+    const [group] = groups;
+    expect(group.usage_input_distribution).toEqual({ 16: 2 });
+    expect(group.usage_cached_input_distribution).toEqual({ null: 1, 999: 1 });
+    expect(group.usage_cache_write_distribution).toEqual({ 7026: 2 });
+    expect(group.usage_output_distribution).toEqual({ 1835: 2 });
+    expect(group.usage_reasoning_output_distribution).toEqual({ null: 2 });
+    expect(group.usage_source_counts).toEqual({ 'runtime-reported': 2 });
+    expect(group).not.toHaveProperty('tokens_total');
+    expect(group).not.toHaveProperty('usage_total');
+    expect(Object.keys(group).some((k) => /total/i.test(k) && /usage|token/i.test(k))).toBe(false);
+  });
+
+  it('a schema:5 group reports usage_source_counts as entirely "not-recorded" and every distribution as entirely null', () => {
+    const a = pairFor(scenarioRecord({ run_id: 'scenario-current-skill-v5-usage-a', success: { value: true, reason: null }, expected_outcome_matched: { value: true, reason: null } }));
+    const b = pairFor(scenarioRecord({ run_id: 'scenario-current-skill-v5-usage-b', success: { value: false, reason: null }, expected_outcome_matched: { value: false, reason: null } }));
+    const { groups } = buildSummary([a, b]);
+    expect(groups.length).toBe(1);
+    const [group] = groups;
+    expect(group.usage_source_counts).toEqual({ 'not-recorded': 2 });
+    expect(group.usage_input_distribution).toEqual({ null: 2 });
+    expect(group.usage_reasoning_output_distribution).toEqual({ null: 2 });
+  });
+});

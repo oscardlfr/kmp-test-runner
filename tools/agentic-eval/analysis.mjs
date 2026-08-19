@@ -44,8 +44,16 @@ import { join } from 'node:path';
 import { validateRunRecordFile } from './run-record-loader.mjs';
 import { HARD_PARTITION_FIELDS, canonicalStructuredValue, findScenarioBenchmarkCompletenessViolations } from './schemas.mjs';
 import { redactObjectAndVerify } from './privacy.mjs';
+import { withPartitionView, agentRuntimeView, executionProfileView, skillObservationView, usageView, targetSkillInvokedView } from './run-record-view.mjs';
 
-export const ANALYSIS_SCHEMA = 1;
+// v1 -> v2 (Section F, agentic-eval-runtime-neutral-records-v1): per-run entries and group
+// summaries both gained agent_runtime/execution_profile/skill_observation/usage reporting fields,
+// group_key gained the same 3 new structural partition keys aggregate.mjs's own
+// CURRENT_AGGREGATE_SCHEMA bump already covers, and group summaries gained 5 usage-dimension
+// distributions plus usage_source_counts. No historical committed analysis-output files exist to
+// preserve compatibility with (analysis output is always computed on demand), so this is a plain
+// constant bump, not a versioned dispatch.
+export const ANALYSIS_SCHEMA = 2;
 
 /** Closed vocabulary for `failure_class` -- exactly one per run, resolved by classifyFailure's own
  * documented precedence. `success` is not a "failure" in the literal sense; it is included so every
@@ -269,7 +277,12 @@ export function deriveSkillRelativeFields(record, sidecar, activationExpected, t
  */
 export function analyzeRunRecord(record, sidecar) {
   const activation_expected = record.condition === 'current-skill';
-  const rawInvoked = record.skill_invoked?.value ?? null;
+  // targetSkillInvokedView (run-record-view.mjs): for schema>=6, reads
+  // skill_observation.activation.status (canonical activation, Section F); below schema 6, reads
+  // the legacy skill_invoked.value field exactly as before. Schema invariant 8 already requires the
+  // two sources to agree for claude-code, so this is a behavior-preserving read for every record
+  // this PR can produce today.
+  const rawInvoked = targetSkillInvokedView(record);
   const target_skill_invoked = activation_expected ? rawInvoked : null;
 
   const skillFields = deriveSkillRelativeFields(record, sidecar, activation_expected, target_skill_invoked);
@@ -328,6 +341,16 @@ export function analyzeRunRecord(record, sidecar) {
       final_answer_consistent,
       success,
       failure_class,
+      // agent_runtime/execution_profile/skill_observation (Section F): the FULL real object for
+      // schema>=6, or the literal "not-recorded" sentinel below schema 6 -- never narrowed the way
+      // aggregate.mjs's own partition-key projection is, since these are human-readable reporting
+      // fields, not a bucketing key.
+      agent_runtime: agentRuntimeView(record),
+      execution_profile: executionProfileView(record),
+      skill_observation: skillObservationView(record),
+      // usage: the real v6 usage object, or run-record-view.mjs's canonical not-recorded shape
+      // (every dimension null, never zero) below schema 6.
+      usage: usageView(record),
     },
   };
 }
@@ -348,6 +371,18 @@ function buildDistribution(values) {
   return dist;
 }
 
+/** Compact {source_value: count} map over a group's own entries -- e.g. {"runtime-reported": 4,
+ * "not-recorded": 2}. Mirrors buildDistribution's own flat-map shape/rationale, scoped to
+ * usage.source specifically (never a raw per-run array). */
+function buildUsageSourceCounts(entries) {
+  const counts = {};
+  for (const e of entries) {
+    const src = e.usage?.source ?? 'not-recorded';
+    counts[src] = (counts[src] ?? 0) + 1;
+  }
+  return counts;
+}
+
 function buildGroupSummary(groupKey, entries) {
   const total = entries.length;
   const activationExpectedEntries = entries.filter((e) => e.activation_expected === true);
@@ -364,6 +399,15 @@ function buildGroupSummary(groupKey, entries) {
   return {
     group_key: groupKey,
     run_count: total,
+    // agent_runtime/execution_profile/skill_observation (Section F): every entry in a homogeneous
+    // group shares the IDENTICAL value by construction (the Fairness Contract already refuses to
+    // fold a mismatched run into this group -- these 3 are hard partition keys), so entries[0]'s own
+    // value is the group's value; `total` is always >0 whenever a group exists at all. Full
+    // (unnarrowed) objects, mirroring each entry's own reporting field -- not group_key's own
+    // narrowed partition-key projection.
+    agent_runtime: entries[0].agent_runtime,
+    execution_profile: entries[0].execution_profile,
+    skill_observation: entries[0].skill_observation,
     activation_expected_count: activationExpectedEntries.length,
     target_skill_invoked_count: invokedCount,
     target_skill_invoked_rate: rate(invokedCount, activationExpectedEntries.length),
@@ -380,6 +424,15 @@ function buildGroupSummary(groupKey, entries) {
     target_skill_attempt_ordinal_distribution: buildDistribution(entries.map((e) => e.target_skill_attempt_ordinal)),
     pre_skill_tool_calls_distribution: buildDistribution(entries.map((e) => e.pre_skill_tool_calls)),
     post_skill_tool_calls_total_distribution: buildDistribution(entries.map((e) => e.post_skill_tool_calls_total)),
+    // usage (Section F): 5 dimensions reported SEPARATELY, deliberately no summed "tokens_total" --
+    // runtime-native token counts are never rankable as if they shared a tokenizer or hidden
+    // prompt, so a single combined number would misleadingly imply they are.
+    usage_source_counts: buildUsageSourceCounts(entries),
+    usage_input_distribution: buildDistribution(entries.map((e) => e.usage?.input ?? null)),
+    usage_cached_input_distribution: buildDistribution(entries.map((e) => e.usage?.cached_input ?? null)),
+    usage_cache_write_distribution: buildDistribution(entries.map((e) => e.usage?.cache_write ?? null)),
+    usage_output_distribution: buildDistribution(entries.map((e) => e.usage?.output ?? null)),
+    usage_reasoning_output_distribution: buildDistribution(entries.map((e) => e.usage?.reasoning_output ?? null)),
   };
 }
 
@@ -399,8 +452,13 @@ function buildGroupSummary(groupKey, entries) {
 export function buildSummary(pairs) {
   const buckets = new Map();
   for (const { record, entry } of pairs) {
-    const key = JSON.stringify(HARD_PARTITION_FIELDS.map((f) => canonicalStructuredValue(record[f])));
-    if (!buckets.has(key)) buckets.set(key, { record, entries: [], sortKey: key });
+    // withPartitionView (Section F): projects the 3 new structural partition fields (real value for
+    // schema>=6, the literal "not-recorded" sentinel below schema 6) onto a COPY of `record`, the
+    // exact same projection aggregate.mjs's own bucketing already applies -- never a second,
+    // independently-drifting notion of "legacy vs v6" for this module's own bucketing.
+    const view = withPartitionView(record);
+    const key = JSON.stringify(HARD_PARTITION_FIELDS.map((f) => canonicalStructuredValue(view[f])));
+    if (!buckets.has(key)) buckets.set(key, { record: view, entries: [], sortKey: key });
     buckets.get(key).entries.push(entry);
   }
   const groups = [];

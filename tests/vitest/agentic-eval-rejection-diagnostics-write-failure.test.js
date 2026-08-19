@@ -15,6 +15,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { computePolicySha256 } from '../../tools/agentic-eval/policy-config.mjs';
+import { TEST_RUN_RECORD_V6_INPUTS } from './_agentic-eval-run-record-fixtures.js';
 
 vi.mock('../../tools/agentic-eval/rejection-diagnostics.mjs', async (importOriginal) => {
   const actual = await importOriginal();
@@ -67,7 +68,7 @@ describe('finalizeAndWriteRecords -- a rejection-diagnostics write failure never
   it('preserves ok:false and the ORIGINAL gate.reason, surfaces the throw as a separate diagnosticsWriteError field, never throws uncaught', async () => {
     const { finalizeAndWriteRecords, buildRunRecord } = await import('../../tools/agentic-eval/cli.mjs');
 
-    const common = { runKind: 'calibration', scenarioId: 'test-diagnostics-write-failure', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(), modelRequested: 'fake-model-x', ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex') };
+    const common = { runKind: 'calibration', scenarioId: 'test-diagnostics-write-failure', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(), ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'), ...TEST_RUN_RECORD_V6_INPUTS };
     const recordA = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'no-skill', skillSourceSha: null, ...common });
     const recordB = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'current-skill', skillSourceSha: 'a'.repeat(40), ...common });
 
@@ -139,7 +140,7 @@ describe('finalizeAndWriteRecords -- a rejection-diagnostics write failure never
   it('the matrix path (finalizeAndWriteMatrixRecords) preserves gate.reason identically when the diagnostics write throws (complete-matrix, ordinary hardGateFn invocation)', async () => {
     const { finalizeAndWriteMatrixRecords, buildRunRecord } = await import('../../tools/agentic-eval/cli.mjs');
 
-    const common = { runKind: 'scenario', scenarioId: 'test-diagnostics-write-failure-matrix', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(), modelRequested: 'fake-model-x', projectAlias: 'kampkit', projectCommit: 'd'.repeat(40), projectUrl: null, family: 'trigger-only', ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex') };
+    const common = { runKind: 'scenario', scenarioId: 'test-diagnostics-write-failure-matrix', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(), projectAlias: 'kampkit', projectCommit: 'd'.repeat(40), projectUrl: null, family: 'trigger-only', ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'), ...TEST_RUN_RECORD_V6_INPUTS };
     const gradeResult = { success: true, expectedOutcomeMatched: true, firstUsefulSignalEventIndex: null, testInvocationsTotal: 0, retries: 0, terminalAuthoritativeEventIndex: null, checks: [] };
     // repeats:1 requires exactly 2 records (1 repetition x 2 conditions) to pass
     // findMatrixCompletenessGap and reach the (mocked) gate at all.
@@ -194,7 +195,7 @@ describe('finalizeAndWriteRecords -- captureOrdinalByRunId is derived from the r
     const { finalizeAndWriteRecords, buildRunRecord } = await import('../../tools/agentic-eval/cli.mjs');
     const { deriveTranscriptFilename } = await import('../../tools/agentic-eval/rejection-diagnostics.mjs');
 
-    const common = { runKind: 'calibration', scenarioId: 'test-swapped-ordinal-binding', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(), modelRequested: 'fake-model-x', ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex') };
+    const common = { runKind: 'calibration', scenarioId: 'test-swapped-ordinal-binding', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(), ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'), ...TEST_RUN_RECORD_V6_INPUTS };
     const recordA = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'no-skill', skillSourceSha: null, ...common });
     const recordB = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'current-skill', skillSourceSha: 'a'.repeat(40), ...common });
 

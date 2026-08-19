@@ -107,17 +107,37 @@ describe('boundary -- the six core consumers never import a runtime-only module 
   }
 });
 
-describe('boundary -- matrix-runner.mjs depends on the Claude runtime singleton, not launcher/parser directly', () => {
-  it('imports runtimes/claude-code.mjs', () => {
-    const src = read('matrix-runner.mjs');
+describe('boundary -- only registries.mjs imports runtimes/claude-code.mjs directly (agentic-eval-runtime-neutral-records-v1)', () => {
+  it('registries.mjs imports runtimes/claude-code.mjs', () => {
+    const src = read('registries.mjs');
     expect(/from\s+['"]\.\/runtimes\/claude-code\.mjs['"]/.test(src)).toBe(true);
   });
 
-  it('does not import runtimes/contract.mjs\'s runtime-only dependencies via any other path', () => {
+  it('matrix-runner.mjs no longer imports runtimes/claude-code.mjs -- every caller must pass a resolved runtimeAdapter explicitly, never a default', () => {
+    const src = read('matrix-runner.mjs');
+    expect(importsFromRelative('matrix-runner.mjs', src, join('runtimes', 'claude-code.mjs'))).toBe(false);
+  });
+
+  it('matrix-runner.mjs does not import runtimes/contract.mjs\'s runtime-only dependencies via any other path', () => {
     const src = read('matrix-runner.mjs');
     for (const runtimeModule of RUNTIME_ONLY_MODULES) {
       expect(importsFromRelative('matrix-runner.mjs', src, runtimeModule)).toBe(false);
     }
+  });
+
+  it('cli.mjs does not import runtimes/claude-code.mjs directly -- it resolves an adapter only through registries.mjs\'s resolveSelection', () => {
+    const src = read('cli.mjs');
+    expect(importsFromRelative('cli.mjs', src, join('runtimes', 'claude-code.mjs'))).toBe(false);
+  });
+
+  it('no top-level .mjs file besides registries.mjs imports runtimes/claude-code.mjs directly (repo-wide sweep, mirrors the RUNTIME_ONLY_MODULES sweep below)', () => {
+    const actualImporters = [];
+    for (const file of ALL_AGENTIC_MJS_FILES) {
+      if (file === join('runtimes', 'claude-code.mjs').split(sep).join('/')) continue; // a module never "imports" itself
+      const src = read(file);
+      if (importsFromRelative(file, src, join('runtimes', 'claude-code.mjs'))) actualImporters.push(file);
+    }
+    expect(actualImporters).toEqual(['registries.mjs']);
   });
 });
 
@@ -280,19 +300,23 @@ describe('boundary -- no direct provider-native key access in a core consumer', 
   }
 });
 
-describe('boundary -- no anticipated multi-runtime scaffolding exists yet', () => {
+describe('boundary -- no anticipated FUTURE-runtime scaffolding exists yet (Codex/Copilot/Antigravity adapters, --provider)', () => {
   // Scoped to actual code constructs (import specifiers, id string literals, class/adapter
   // names), never a blanket word-boundary sweep -- this codebase's own comments legitimately
   // reference "Codex" as the code-review tool used on past PRs (see cli.mjs's "post-Codex-audit
   // fix (PR #418, ...)" comments), which has nothing to do with a Codex RUNTIME ADAPTER. A bare
   // /\bcodex\b/i check false-positives on that pre-existing, unrelated prose.
+  //
+  // --runtime/--execution-profile/registry.json/a schema-v6 marker were forbidden here through
+  // agentic-eval-runtime-neutral-records-v1's own Stage 0 baseline -- this PR is exactly what
+  // turns each of those from "anticipated" into real, shipped surface (registries.mjs,
+  // runtimes|models|execution-profiles/registry.json, schema v6 in schemas.mjs); removing them
+  // from this forbidden list is this test file's own intended evolution, not a weakening. A
+  // runtime-selector switch/if, --provider, and every OTHER runtime's adapter construct remain
+  // genuinely out of scope for this PR and stay forbidden below.
   const forbiddenAcrossAll = [
     { label: 'a runtime-selector switch/if', re: /runtime\s*===\s*['"]claude-code['"]/ },
-    { label: 'a --runtime CLI flag', re: /--runtime\b/ },
-    { label: 'a --execution-profile CLI flag', re: /--execution-profile\b/ },
     { label: 'a --provider CLI flag', re: /--provider\b/ },
-    { label: 'a registry.json reference', re: /registry\.json/ },
-    { label: 'a schema-v6 marker', re: /schema[-_ ]?v?6\b/i },
     { label: 'a Codex runtime adapter construct', re: /codex-code\.mjs|runtimes\/codex|CodexRuntimeAdapter|id:\s*['"]codex['"]/i },
     { label: 'a Copilot runtime adapter construct', re: /copilot-code\.mjs|runtimes\/copilot|CopilotRuntimeAdapter|id:\s*['"]copilot['"]/i },
     { label: 'an Antigravity runtime adapter construct', re: /antigravity-code\.mjs|runtimes\/antigravity|AntigravityRuntimeAdapter|id:\s*['"]antigravity['"]/i },
@@ -310,6 +334,17 @@ describe('boundary -- no anticipated multi-runtime scaffolding exists yet', () =
       });
     }
   }
+});
+
+describe('boundary -- sandboxed-unrestricted-v1 is a reserved schema ID only, never a selectable registry entry', () => {
+  it('execution-profiles/registry.json never lists sandboxed-unrestricted-v1', () => {
+    const src = read(join('execution-profiles', 'registry.json'));
+    expect(src.includes('sandboxed-unrestricted-v1')).toBe(false);
+  });
+  it('the shipped registry contains exactly one execution profile: strict-policy-v1', () => {
+    const json = JSON.parse(read(join('execution-profiles', 'registry.json')));
+    expect(json.execution_profiles.map((p) => p.id)).toEqual(['strict-policy-v1']);
+  });
 });
 
 describe('boundary -- runtimes/contract.mjs adapter validator rejects an ad hoc runtime switch by construction', () => {

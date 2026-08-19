@@ -15,7 +15,7 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { validateAcceptedRunAuditSidecar, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1, LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA, SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS } from '../../tools/agentic-eval/accepted-run-audit.mjs';
+import { validateAcceptedRunAuditSidecar, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2, SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS } from '../../tools/agentic-eval/accepted-run-audit.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const AUDIT_DIR = path.join(REPO_ROOT, 'tools', 'runs', 'agentic-eval-scenario', 'audit');
@@ -138,7 +138,7 @@ describe('offline sidecar validation accepts v1 and v2, and rejects a version mi
     return base;
   }
 
-  it.each([ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1, LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA])('a well-formed schema-%i sidecar validates', (schema) => {
+  it.each([ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2])('a well-formed schema-%i sidecar validates', (schema) => {
     expect(validateAcceptedRunAuditSidecar(sidecarFor(schema)).errors).toEqual([]);
   });
 
@@ -152,7 +152,7 @@ describe('offline sidecar validation accepts v1 and v2, and rejects a version mi
   });
 
   it('a v2 sidecar missing the v2-only fields is rejected as incomplete', () => {
-    const bad = sidecarFor(LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA);
+    const bad = sidecarFor(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2);
     delete bad.tool_calls[0].dispatch_status;
     delete bad.summary.pre_dispatch_blocked_total;
     const fields = validateAcceptedRunAuditSidecar(bad).errors.map((e) => e.field);
@@ -160,7 +160,10 @@ describe('offline sidecar validation accepts v1 and v2, and rejects a version mi
     expect(fields).toContain('summary.pre_dispatch_blocked_total');
   });
 
-  it.each([0, 3, 99, null, '2'])('an unsupported sidecar schema (%j) fails closed', (schema) => {
+  // 3 is deliberately excluded from this list: it is sidecar schema v3's own real, supported
+  // number since agentic-eval-runtime-neutral-records-v1 (see agentic-eval-accepted-run-audit.test.js
+  // for its dedicated coverage) -- asserting it here would contradict SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS.
+  it.each([0, 4, 99, null, '2'])('an unsupported sidecar schema (%j) fails closed', (schema) => {
     expect(validateAcceptedRunAuditSidecar(sidecarFor(schema)).errors.map((e) => e.field)).toContain('schema');
   });
 });

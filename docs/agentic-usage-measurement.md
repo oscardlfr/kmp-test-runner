@@ -451,6 +451,19 @@ proposes a second profile that removes the harness command allowlist in order
 to measure the missing comparison arm. It does not exist. No run has used it,
 no record carries it, and nothing in this document authorizes running one.
 
+The runtime-neutral-records PR (`agent_runtime`/`execution_profile`/
+`skill_observation`/`usage` groups, schema v6 -- see "The schema v6 groups"
+below) reserves `sandboxed-unrestricted-v1` as a closed `execution_profile.id`
+enum VALUE in `schemas.mjs`, so a future record CAN validly carry it once one
+exists. That is a schema-level reservation only: `execution-profiles/
+registry.json` registers exactly one entry, `strict-policy-v1`, and
+`resolveSelection()` fails closed on `--execution-profile
+sandboxed-unrestricted-v1` today exactly like any other unregistered id. No
+registry entry, no isolation implementation, and no adapter capability
+targets it -- everything below this point remains "proposed, not
+implemented" in the real-world sense; only the schema's own closed
+vocabulary changed.
+
 If it is ever built, removing the allowlist is only admissible inside an
 external containment boundary, because the policy hook was never an operating
 system or filesystem sandbox and a runtime's own workspace flag is defense in
@@ -530,11 +543,13 @@ schema version, validated by
 [`tools/agentic-eval/schemas.mjs`](../tools/agentic-eval/schemas.mjs), stored
 under `tools/runs/`.
 
-At the time of writing, `LATEST_RUN_SCHEMA` is `5` and
-`SUPPORTED_RUN_SCHEMAS` is `[1, 2, 3, 4, 5]`: every historical record keeps
+At the time of writing, `LATEST_RUN_SCHEMA` is `6` and
+`SUPPORTED_RUN_SCHEMAS` is `[1, 2, 3, 4, 5, 6]`: every historical record keeps
 validating under the schema version it declared, and new records are stamped
 with the latest. Accepted scenario records carry an accepted-audit sidecar,
-whose own supported schemas are `[1, 2]`.
+whose own supported schemas are `[1, 2, 3]` -- a schema-v5 record accepts
+only sidecar schema 1 or 2, a schema-v6 record accepts only sidecar schema 3
+(see "The schema v6 groups" below).
 
 Those records already cover the fields the sketch called for -- condition,
 scenario, model requested and resolved, repo/project commits, timestamps,
@@ -553,18 +568,47 @@ here unnecessary. They do not read this document and cannot detect prose that
 has gone stale, so the narrative around them still requires deliberate
 maintenance. Read the schema module for the authoritative list.
 
-### The prospective schema v6
+### The schema v6 groups
 
 [`docs/audits/agentic-eval-claude-codex-v1-plan.md`](audits/agentic-eval-claude-codex-v1-plan.md)
-proposes a schema v6 that would add explicit `agent_runtime`,
+proposed a schema v6 that would add explicit `agent_runtime`,
 `execution_profile`, `skill_observation`, and `usage` groups, so that the
 axes named above are recorded structurally instead of being implied by which
-harness produced the file.
+harness produced the file. The runtime-neutral-records PR implements exactly
+that: every schema-v6 record carries all four groups, required and
+non-nullable on every `run_kind`, populated from a registry-resolved
+runtime/model/execution-profile selection
+([`registries.mjs`](../tools/agentic-eval/registries.mjs)) rather than a
+hardcoded Claude Code assumption. `agent_runtime` records runtime ID,
+requested/resolved model, and expected/observed vendor; `execution_profile`
+records the resolved profile's id, canonical hash, isolation kind, and
+network mode (plus, when applicable, an isolation attestation hash --
+`strict-policy-v1`'s own frozen semantics require it `null`, since that
+profile never requires attestation); `skill_observation` records delivery
+mode, availability/activation evidence, source SHA, and treatment size (see
+"Treatment size is not consumption" above -- the v6 `treatment_size` group is
+the SAME artifact-availability measurement, not a new one); `usage` records
+the four runtime-reported dimensions plus a separate
+`attributable_to_skill_load` group, never inferring zero for an unavailable
+dimension.
 
-Schema v6 is not implemented. No such group exists on any record today, and
-this document does not authorize adding one. When it does land, historical
-v1-v5 records and v1/v2 sidecars stay frozen and are not regraded; a metric
-absent from an older record renders as `not recorded`, never zero.
+Historical v1-v5 records and v1/v2 sidecars stay frozen and are not
+regraded -- `aggregate`/`analyze` project all three new structural partition
+keys (`agent_runtime`/`execution_profile`/`skill_treatment`) as the literal
+`"not-recorded"` sentinel for any record below schema v6, never `null`,
+never inferred from `claude_code_version` or hook/policy fields. A metric
+absent from an older record renders as `not recorded`, never zero, exactly
+as this document has always required.
+
+This PR is schema/registry/reporting scope only: the runtime/execution-
+profile registries reserve `codex-cli` / `sandboxed-unrestricted-v1` as
+closed schema enum VALUES (so a future record can validly carry either), but
+register no such entry, no adapter, and no isolation implementation -- see
+"`sandboxed-unrestricted-v1` -- proposed, not implemented" above, which
+still applies in full. A real non-Claude adapter, a real
+`sandboxed-unrestricted-v1` isolation implementation, and this harness's own
+no-policy-hooks execution mode remain future PRs' scope, not authorized or
+implemented here.
 
 ### Recommendation
 
@@ -680,9 +724,13 @@ and the raw evidence has been checked for privacy.
   that evidence on Windows and macOS. All of it was produced under one
   runtime (`claude-code`) and one execution profile (`strict-policy-v1`), on
   one model profile per campaign, and it is scoped to exactly that partition.
-  It is preserved as-is: earlier campaigns are not regraded under later
-  graders, not relabelled under later terminology, and not pooled across
-  harness or schema generations.
+  Schema v6 (see "The schema v6 groups" above) now records that same
+  partition structurally on every new record instead of leaving it implicit
+  in which harness produced the file -- it does not change what was measured
+  or widen the partition itself; `aggregate`/`analyze` still refuse to pool a
+  pre-v6 record with a v6 one. It is preserved as-is: earlier campaigns are
+  not regraded under later graders, not relabelled under later terminology,
+  and not pooled across harness or schema generations.
 - The v1 pilot and v2 benchmark above predate that harness and remain exactly
   as they were reported, including their own stated confounds. Their
   condition labels are the same two skill conditions this document now names

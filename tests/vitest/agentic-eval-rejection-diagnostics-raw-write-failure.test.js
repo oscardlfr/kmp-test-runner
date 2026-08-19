@@ -19,6 +19,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { computePolicySha256 } from '../../tools/agentic-eval/policy-config.mjs';
+import { TEST_RUN_RECORD_V6_INPUTS } from './_agentic-eval-run-record-fixtures.js';
 
 vi.mock('../../tools/agentic-eval/rejection-diagnostics.mjs', async (importOriginal) => {
   const actual = await importOriginal();
@@ -70,7 +71,7 @@ describe('finalizeAndWriteRecords -- a raw-transcript write failure (Transaction
   it('writes a real, valid rejection diagnostic declaring raw_transcripts_persisted:false in BOTH tiers, and preserves the ORIGINAL gate.reason', async () => {
     const { finalizeAndWriteRecords, buildRunRecord } = await import('../../tools/agentic-eval/cli.mjs');
 
-    const common = { runKind: 'calibration', scenarioId: 'test-raw-write-failure', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(), modelRequested: 'fake-model-x', ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex') };
+    const common = { runKind: 'calibration', scenarioId: 'test-raw-write-failure', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(), ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'), ...TEST_RUN_RECORD_V6_INPUTS };
     const recordA = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'no-skill', skillSourceSha: null, ...common });
     const recordB = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'current-skill', skillSourceSha: 'a'.repeat(40), ...common });
 

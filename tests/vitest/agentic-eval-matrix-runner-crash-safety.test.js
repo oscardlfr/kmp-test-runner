@@ -34,6 +34,14 @@ import { runScenarioMatrix, runSingleCondition, acquireSharedEvalResources } fro
 import { runConditionPair } from '../../tools/agentic-eval/cli.mjs';
 import { createInvocationJournal } from '../../tools/agentic-eval/durable-journal.mjs';
 import { runValidator as runPluginValidator } from '../../tools/validate-plugin.mjs';
+// Test-only, deliberately vendor-specific: matrix-runner.mjs no longer defaults runtimeAdapter
+// (agentic-eval-runtime-neutral-records-v1) -- an omitted adapter is now a contract error, not a
+// fallback. The three real-spawn cases below (crash-safety journal wiring) exist specifically to
+// exercise the REAL Claude adapter's own spawn/parse behavior against a PATH-shadowed fake
+// `claude` binary, so they inject the real singleton directly rather than going through the
+// registry default. The two malformed-adapter negative tests further down already inject their
+// OWN synthetic adapters and are unaffected.
+import { claudeCodeRuntimeAdapter } from '../../tools/agentic-eval/runtimes/claude-code.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -121,6 +129,7 @@ describe("runScenarioMatrix -- crash-safety journal preserves an earlier cell ac
             targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME,
             timeoutMs: 30000,
             journal,
+            runtimeAdapter: claudeCodeRuntimeAdapter,
           });
         } catch (err) {
           caught = err;
@@ -204,6 +213,7 @@ describe('runScenarioMatrix -- a real stderr-persistence failure aborts as an in
             targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME,
             timeoutMs: 30000,
             journal,
+            runtimeAdapter: claudeCodeRuntimeAdapter,
           });
         } catch (err) {
           caught = err;
@@ -278,6 +288,7 @@ describe("runConditionPair -- crash-safety journal preserves B (current-skill, c
             allowedKmpTestSubcommands: ['doctor', 'describe', 'parallel'],
             materializeFixture,
             journal,
+            runtimeAdapter: claudeCodeRuntimeAdapter,
           });
         } catch (err) {
           caught = err;

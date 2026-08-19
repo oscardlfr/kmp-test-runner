@@ -91,6 +91,33 @@ function baseRun(overrides = {}) {
   };
 }
 
+// Module-scope (not describe-body-scope) so both the v1-v5 describe block below AND the sibling
+// schema-v6 describe block can share them without a second, independently-drifting copy.
+const VALID_SCOPE_ID = '11111111-2222-4333-8444-555555555555';
+function v4Base(overrides = {}) {
+  return {
+    ...baseRun({ schema: 4, run_kind: 'calibration', ...overrides }),
+    grading_checks: { value: null, reason: 'not applicable for run_kind calibration' },
+    repetition_index: null,
+    foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
+    ambient_skill_profile: { count: 0, scope_id: VALID_SCOPE_ID, fingerprint_hmac: '0'.repeat(64) },
+    ...overrides,
+  };
+}
+const V5_METRIC_NOT_APPLICABLE = { value: null, reason: 'calibration run -- no first-useful-signal predicate applies' };
+function v5Base(overrides = {}) {
+  return {
+    ...v4Base(overrides),
+    schema: 5,
+    post_signal_ms: V5_METRIC_NOT_APPLICABLE,
+    post_signal_tool_calls: V5_METRIC_NOT_APPLICABLE,
+    policy_denials_before_first_signal: V5_METRIC_NOT_APPLICABLE,
+    policy_denials_after_first_signal: V5_METRIC_NOT_APPLICABLE,
+    accepted_audit: null,
+    ...overrides,
+  };
+}
+
 describe('validateRun', () => {
   it('accepts a well-formed record', () => {
     const { errors } = validateRun(baseRun());
@@ -386,9 +413,8 @@ describe('validateRun', () => {
 // check. This is the fix: explicit per-version dispatch, proven both synthetically (this describe
 // block) and against the actual 8 committed files (the next describe block).
 describe('schema v1/v2/v3/v4/v5 dispatch (decision 6, extended for v3 -- foreign_skill_summary, v4 -- ambient_skill_profile, v5 -- accepted-run-observability)', () => {
-  it('SUPPORTED_RUN_SCHEMAS accepts 1 through 5; LATEST_RUN_SCHEMA is 5', () => {
-    expect(SUPPORTED_RUN_SCHEMAS).toEqual([1, 2, 3, 4, 5]);
-    expect(LATEST_RUN_SCHEMA).toBe(5);
+  it('SUPPORTED_RUN_SCHEMAS accepts 1 through 5 (schema v6 is a separate, additive describe block below)', () => {
+    expect(SUPPORTED_RUN_SCHEMAS).toEqual(expect.arrayContaining([1, 2, 3, 4, 5]));
   });
 
   // Characterization freeze (runtime-contract PR): the v5 record's top-level field set, written
@@ -624,7 +650,8 @@ describe('schema v1/v2/v3/v4/v5 dispatch (decision 6, extended for v3 -- foreign
   // making clear that fingerprint_hmac is comparable only within one invocation);
   // fingerprint_hmac replaces the old unkeyed fingerprint_sha256 name to be honest about the new
   // keyed-HMAC construction (see stream-parser.mjs's fingerprintAmbientSkillNames).
-  const VALID_SCOPE_ID = '11111111-2222-4333-8444-555555555555';
+  // VALID_SCOPE_ID is now module-scope (see its own comment above baseRun's callers) -- shared with
+  // the sibling schema-v6 describe block.
 
   it('a schema:3 record WITHOUT ambient_skill_profile still validates cleanly -- the field is never required below v4', () => {
     const run = {
@@ -738,30 +765,8 @@ describe('schema v1/v2/v3/v4/v5 dispatch (decision 6, extended for v3 -- foreign
   // Schema v5 (accepted-run-observability PR) = v4 + post_signal_ms, post_signal_tool_calls,
   // policy_denials_before_first_signal, policy_denials_after_first_signal (all {value,reason}
   // nullable metrics), and accepted_audit (a plain nullable structured field, mirroring
-  // ambient_skill_profile's own v4-introduced gate one version up).
-  function v4Base(overrides = {}) {
-    return {
-      ...baseRun({ schema: 4, run_kind: 'calibration', ...overrides }),
-      grading_checks: { value: null, reason: 'not applicable for run_kind calibration' },
-      repetition_index: null,
-      foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
-      ambient_skill_profile: { count: 0, scope_id: VALID_SCOPE_ID, fingerprint_hmac: '0'.repeat(64) },
-      ...overrides,
-    };
-  }
-  const V5_METRIC_NOT_APPLICABLE = { value: null, reason: 'calibration run -- no first-useful-signal predicate applies' };
-  function v5Base(overrides = {}) {
-    return {
-      ...v4Base(overrides),
-      schema: 5,
-      post_signal_ms: V5_METRIC_NOT_APPLICABLE,
-      post_signal_tool_calls: V5_METRIC_NOT_APPLICABLE,
-      policy_denials_before_first_signal: V5_METRIC_NOT_APPLICABLE,
-      policy_denials_after_first_signal: V5_METRIC_NOT_APPLICABLE,
-      accepted_audit: null,
-      ...overrides,
-    };
-  }
+  // ambient_skill_profile's own v4-introduced gate one version up). v4Base/v5Base/
+  // V5_METRIC_NOT_APPLICABLE are now module-scope -- see the comment above baseRun's callers.
 
   it('a schema:4 record WITHOUT any of the 5 new v5 fields still validates cleanly -- none are required below v5', () => {
     const run = v4Base();
@@ -999,6 +1004,631 @@ describe('schema v1/v2/v3/v4/v5 dispatch (decision 6, extended for v3 -- foreign
       checks[0] = { ...checks[0], evidence_event_indices: [-1] };
       const { errors } = validateRun(scenarioRunWith(checks));
       expect(errors.some((e) => e.field.endsWith('.evidence_event_indices'))).toBe(true);
+    });
+  });
+});
+
+// Schema v6 (agentic-eval-runtime-neutral-records-v1): additive over v5 -- every legacy field
+// stays exactly as v5 defined it (proven by reusing v5Base/v4Base/baseRun verbatim below, never a
+// second, independently-typed-out legacy field list), plus exactly four new top-level groups:
+// agent_runtime, execution_profile, skill_observation, usage. No selection is ever inferred from
+// legacy fields -- these four groups are the sole canonical source for runtime/profile/skill/
+// usage identity going forward.
+describe('schema v6 (agentic-eval-runtime-neutral-records-v1) -- agent_runtime/execution_profile/skill_observation/usage', () => {
+  it('SUPPORTED_RUN_SCHEMAS accepts 1 through 6; LATEST_RUN_SCHEMA is 6', () => {
+    expect(SUPPORTED_RUN_SCHEMAS).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(LATEST_RUN_SCHEMA).toBe(6);
+  });
+
+  const VALID_SCOPE_ID_V6 = '22222222-3333-4444-8555-666666666666';
+  const HASH_A = 'a'.repeat(64);
+  const HASH_B = 'b'.repeat(64);
+  const HASH_C = 'c'.repeat(64);
+  const HASH_D = 'd'.repeat(64);
+
+  const NO_SKILL_SKILL_OBSERVATION = Object.freeze({
+    delivery_mode: 'none',
+    availability: { status: 'observed-absent', evidence_kind: 'runtime-catalog' },
+    activation: { status: 'not-observed', evidence_kind: 'runtime-explicit-event' },
+    source_sha: null,
+    treatment_size: {
+      snapshot_sha256: null, snapshot_bytes: null, snapshot_file_count: null,
+      prompt_sha256: HASH_D, prompt_bytes: 55,
+      absent_reason: 'condition-no-skill',
+    },
+  });
+  function currentSkillObservation(overrides = {}) {
+    return {
+      delivery_mode: 'runtime-extension',
+      availability: { status: 'observed-present', evidence_kind: 'runtime-catalog' },
+      activation: { status: 'confirmed', evidence_kind: 'runtime-explicit-event' },
+      source_sha: '0bb958d464ccd4b2f463aa10a4101d726e2154c4',
+      treatment_size: {
+        snapshot_sha256: HASH_C, snapshot_bytes: 234997, snapshot_file_count: 28,
+        prompt_sha256: HASH_D, prompt_bytes: 55,
+        absent_reason: null,
+      },
+      ...overrides,
+    };
+  }
+  const NO_SKILL_USAGE = Object.freeze({
+    source: 'runtime-reported',
+    input: 2, cached_input: 0, cache_write: 0, output: 4, reasoning_output: null,
+    attributable_to_skill_load: {
+      status: 'not-recorded',
+      dimensions: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null },
+      unit: null,
+      reason: 'condition-no-skill',
+    },
+  });
+  function currentSkillUsage(overrides = {}) {
+    return {
+      source: 'runtime-reported',
+      input: 2, cached_input: 0, cache_write: 0, output: 4, reasoning_output: null,
+      attributable_to_skill_load: {
+        status: 'not-recorded',
+        dimensions: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null },
+        unit: null,
+        reason: 'runtime-does-not-report-skill-attribution',
+      },
+      ...overrides,
+    };
+  }
+
+  function v6Base(overrides = {}) {
+    return {
+      ...v5Base(overrides),
+      schema: 6,
+      agent_runtime: {
+        runtime_id: 'claude-code',
+        cli_version: '1.2.3-fake',
+        model_requested: 'claude-sonnet-5',
+        model_resolved: 'claude-sonnet-5',
+        model_vendor_expected: 'anthropic',
+        model_vendor_observed: null,
+      },
+      execution_profile: {
+        id: 'strict-policy-v1',
+        sha256: HASH_A,
+        isolation_kind: 'runtime-policy-hooks',
+        isolation_attestation_sha256: null,
+        network_mode: 'runtime-default',
+      },
+      skill_observation: NO_SKILL_SKILL_OBSERVATION,
+      usage: NO_SKILL_USAGE,
+      ...overrides,
+    };
+  }
+  function v6CurrentSkillBase(overrides = {}) {
+    return v6Base({
+      condition: 'current-skill',
+      skill_source_sha: '0bb958d464ccd4b2f463aa10a4101d726e2154c4',
+      skill_available: { value: true, reason: null },
+      skill_invocation_attempted: { value: true, reason: null },
+      skill_invoked: { value: true, reason: null },
+      skill_invocation_event: { type: 'assistant.tool_use.Skill', index: 3 },
+      skill_observation: currentSkillObservation(),
+      usage: currentSkillUsage(),
+      ...overrides,
+    });
+  }
+
+  it('a fully well-formed schema:6 no-skill calibration record validates cleanly', () => {
+    expect(validateRun(v6Base())).toEqual({ errors: [], warnings: [] });
+  });
+
+  it('a fully well-formed schema:6 current-skill record validates cleanly', () => {
+    expect(validateRun(v6CurrentSkillBase())).toEqual({ errors: [], warnings: [] });
+  });
+
+  it('v1-v5 REJECT all four v6 groups as unrecognized (schema<=5 never carries them)', () => {
+    for (const schema of [1, 2, 3, 4, 5]) {
+      const run = { ...v5Base({ schema }), agent_runtime: v6Base().agent_runtime };
+      const { warnings } = validateRun(run);
+      expect(warnings.some((w) => w.field === 'agent_runtime')).toBe(true);
+    }
+  });
+
+  it('schema:6 REQUIRES all four groups -- each is a missing-field error when absent', () => {
+    for (const group of ['agent_runtime', 'execution_profile', 'skill_observation', 'usage']) {
+      const { [group]: _omit, ...run } = v6Base();
+      const { errors } = validateRun(run);
+      expect(errors.some((e) => e.field === group)).toBe(true);
+    }
+  });
+
+  it('the exact top-level field inventory is v5\'s set plus exactly the 4 new groups, nothing else', () => {
+    const run = v6Base();
+    const keys = new Set(Object.keys(run));
+    for (const g of ['agent_runtime', 'execution_profile', 'skill_observation', 'usage']) expect(keys.has(g)).toBe(true);
+    keys.delete('agent_runtime'); keys.delete('execution_profile'); keys.delete('skill_observation'); keys.delete('usage');
+    const v5Keys = new Set(Object.keys(v5Base()));
+    expect([...keys].sort()).toEqual([...v5Keys].sort());
+  });
+
+  describe('agent_runtime -- exact keys, closed IDs, enums, and hash formats', () => {
+    it('rejects a missing key', () => {
+      for (const key of ['runtime_id', 'cli_version', 'model_requested', 'model_resolved', 'model_vendor_expected', 'model_vendor_observed']) {
+        const agent_runtime = { ...v6Base().agent_runtime };
+        delete agent_runtime[key];
+        const { errors } = validateRun(v6Base({ agent_runtime }));
+        expect(errors.some((e) => e.field.startsWith('agent_runtime'))).toBe(true);
+      }
+    });
+
+    it('rejects an unrecognized extra key', () => {
+      const run = v6Base({ agent_runtime: { ...v6Base().agent_runtime, extra_field: 'nope' } });
+      expect(validateRun(run).errors.some((e) => e.field.startsWith('agent_runtime'))).toBe(true);
+    });
+
+    it('accepts the two v1-permitted runtime ids: claude-code and codex-cli (schema shape only -- the registry independently gates which is actually selectable)', () => {
+      const run = v6Base({ agent_runtime: { ...v6Base().agent_runtime, runtime_id: 'codex-cli' }, execution_profile: { ...v6Base().execution_profile, isolation_attestation_sha256: null } });
+      // codex-cli is a valid SHAPE per schema; claude_code_version must be null for a non-Claude runtime (invariant 3).
+      const withNullClaudeVersion = { ...run, claude_code_version: null };
+      const { errors } = validateRun(withNullClaudeVersion);
+      expect(errors.filter((e) => e.field === 'agent_runtime.runtime_id')).toEqual([]);
+    });
+
+    it('rejects an unknown runtime_id', () => {
+      const run = v6Base({ agent_runtime: { ...v6Base().agent_runtime, runtime_id: 'made-up-runtime' } });
+      expect(validateRun(run).errors.some((e) => e.field === 'agent_runtime.runtime_id')).toBe(true);
+    });
+
+    it('rejects an uppercase runtime_id -- closed lowercase charset', () => {
+      const run = v6Base({ agent_runtime: { ...v6Base().agent_runtime, runtime_id: 'Claude-Code' } });
+      expect(validateRun(run).errors.some((e) => e.field === 'agent_runtime.runtime_id')).toBe(true);
+    });
+
+    it('rejects an empty cli_version', () => {
+      const run = v6Base({ agent_runtime: { ...v6Base().agent_runtime, cli_version: '' } });
+      expect(validateRun(run).errors.some((e) => e.field === 'agent_runtime.cli_version')).toBe(true);
+    });
+
+    it('rejects an empty model_requested', () => {
+      const run = v6Base({ agent_runtime: { ...v6Base().agent_runtime, model_requested: '' } });
+      expect(validateRun(run).errors.some((e) => e.field === 'agent_runtime.model_requested')).toBe(true);
+    });
+
+    it('accepts a null model_resolved but rejects an empty-string one', () => {
+      // Legacy model_resolved must stay in lockstep (invariant 3) -- overridden on BOTH sides so
+      // this test isolates model_resolved's own null/empty-string domain, not the cross-field check.
+      const okRun = v6Base({ model_resolved: null, agent_runtime: { ...v6Base().agent_runtime, model_resolved: null } });
+      expect(validateRun(okRun).errors.filter((e) => e.field === 'agent_runtime.model_resolved')).toEqual([]);
+      const badRun = v6Base({ agent_runtime: { ...v6Base().agent_runtime, model_resolved: '' } });
+      expect(validateRun(badRun).errors.some((e) => e.field === 'agent_runtime.model_resolved')).toBe(true);
+    });
+
+    it('accepts every closed model_vendor_expected value and rejects an unknown one', () => {
+      for (const vendor of ['anthropic', 'openai', 'google', 'microsoft', 'other']) {
+        const run = v6Base({ agent_runtime: { ...v6Base().agent_runtime, model_vendor_expected: vendor } });
+        expect(validateRun(run).errors.filter((e) => e.field === 'agent_runtime.model_vendor_expected')).toEqual([]);
+      }
+      const bad = v6Base({ agent_runtime: { ...v6Base().agent_runtime, model_vendor_expected: 'made-up' } });
+      expect(validateRun(bad).errors.some((e) => e.field === 'agent_runtime.model_vendor_expected')).toBe(true);
+    });
+
+    it('model_vendor_expected accepts null (a runtime that does not declare an expected vendor)', () => {
+      const run = v6Base({ agent_runtime: { ...v6Base().agent_runtime, model_vendor_expected: null } });
+      expect(validateRun(run).errors.filter((e) => e.field === 'agent_runtime.model_vendor_expected')).toEqual([]);
+    });
+
+    it('model_vendor_observed accepts null and a bounded non-empty runtime-reported string, never auto-normalized to model_vendor_expected', () => {
+      const nullRun = v6Base();
+      expect(validateRun(nullRun).errors.filter((e) => e.field === 'agent_runtime.model_vendor_observed')).toEqual([]);
+      const observedRun = v6Base({ agent_runtime: { ...v6Base().agent_runtime, model_vendor_observed: 'Anthropic (observed)' } });
+      expect(validateRun(observedRun).errors.filter((e) => e.field === 'agent_runtime.model_vendor_observed')).toEqual([]);
+    });
+
+    it('rejects an empty-string model_vendor_observed (must be null, never an empty string)', () => {
+      const run = v6Base({ agent_runtime: { ...v6Base().agent_runtime, model_vendor_observed: '' } });
+      expect(validateRun(run).errors.some((e) => e.field === 'agent_runtime.model_vendor_observed')).toBe(true);
+    });
+
+    it('rejects a model_vendor_observed containing a control character', () => {
+      const run = v6Base({ agent_runtime: { ...v6Base().agent_runtime, model_vendor_observed: 'anthropic\n' } });
+      expect(validateRun(run).errors.some((e) => e.field === 'agent_runtime.model_vendor_observed')).toBe(true);
+    });
+
+    // Invariant 3: for runtime_id claude-code, legacy model_requested/model_resolved/
+    // claude_code_version must coincide EXACTLY with agent_runtime's own fields.
+    it('REQUIRES legacy model_requested to exactly equal agent_runtime.model_requested for claude-code', () => {
+      const run = v6Base({ model_requested: 'a-different-model' });
+      expect(validateRun(run).errors.some((e) => e.field === 'agent_runtime.model_requested')).toBe(true);
+    });
+
+    it('REQUIRES legacy model_resolved to exactly equal agent_runtime.model_resolved for claude-code', () => {
+      const run = v6Base({ model_resolved: 'a-different-resolved-model' });
+      expect(validateRun(run).errors.some((e) => e.field === 'agent_runtime.model_resolved')).toBe(true);
+    });
+
+    it('REQUIRES legacy claude_code_version to exactly equal agent_runtime.cli_version for claude-code', () => {
+      const run = v6Base({ claude_code_version: '9.9.9-different' });
+      expect(validateRun(run).errors.some((e) => e.field === 'agent_runtime.cli_version')).toBe(true);
+    });
+
+    // Invariant 3 (non-Claude branch): claude_code_version must be null for any OTHER runtime_id
+    // until a future PR retires the last legacy consumer -- never filled with a non-Claude version.
+    it('REQUIRES legacy claude_code_version to be null for a non-claude-code runtime_id', () => {
+      const run = v6Base({
+        claude_code_version: '1.2.3-fake',
+        agent_runtime: { ...v6Base().agent_runtime, runtime_id: 'codex-cli' },
+      });
+      expect(validateRun(run).errors.some((e) => e.field === 'claude_code_version')).toBe(true);
+    });
+  });
+
+  describe('execution_profile -- exact keys, closed enums, hash format, strict-policy attestation invariant', () => {
+    it('rejects a missing key', () => {
+      for (const key of ['id', 'sha256', 'isolation_kind', 'isolation_attestation_sha256', 'network_mode']) {
+        const execution_profile = { ...v6Base().execution_profile };
+        delete execution_profile[key];
+        const { errors } = validateRun(v6Base({ execution_profile }));
+        expect(errors.some((e) => e.field.startsWith('execution_profile'))).toBe(true);
+      }
+    });
+
+    it('rejects an unrecognized extra key', () => {
+      const run = v6Base({ execution_profile: { ...v6Base().execution_profile, extra: 1 } });
+      expect(validateRun(run).errors.some((e) => e.field.startsWith('execution_profile'))).toBe(true);
+    });
+
+    it('accepts the two v1-permitted profile ids: strict-policy-v1 and sandboxed-unrestricted-v1 (schema shape only -- the registry does not enable the latter yet)', () => {
+      const run = v6Base({ execution_profile: { ...v6Base().execution_profile, id: 'sandboxed-unrestricted-v1' } });
+      expect(validateRun(run).errors.filter((e) => e.field === 'execution_profile.id')).toEqual([]);
+    });
+
+    it('rejects an unknown profile id', () => {
+      const run = v6Base({ execution_profile: { ...v6Base().execution_profile, id: 'made-up-profile' } });
+      expect(validateRun(run).errors.some((e) => e.field === 'execution_profile.id')).toBe(true);
+    });
+
+    it('rejects a malformed sha256 (wrong length / uppercase)', () => {
+      const shortRun = v6Base({ execution_profile: { ...v6Base().execution_profile, sha256: 'a'.repeat(10) } });
+      expect(validateRun(shortRun).errors.some((e) => e.field === 'execution_profile.sha256')).toBe(true);
+      const upperRun = v6Base({ execution_profile: { ...v6Base().execution_profile, sha256: 'A'.repeat(64) } });
+      expect(validateRun(upperRun).errors.some((e) => e.field === 'execution_profile.sha256')).toBe(true);
+    });
+
+    it('accepts every closed isolation_kind value and rejects an unknown one', () => {
+      for (const kind of ['runtime-policy-hooks', 'external-sandbox', 'runtime-native-sandbox']) {
+        const run = v6Base({ execution_profile: { ...v6Base().execution_profile, isolation_kind: kind } });
+        expect(validateRun(run).errors.filter((e) => e.field === 'execution_profile.isolation_kind')).toEqual([]);
+      }
+      const bad = v6Base({ execution_profile: { ...v6Base().execution_profile, isolation_kind: 'made-up' } });
+      expect(validateRun(bad).errors.some((e) => e.field === 'execution_profile.isolation_kind')).toBe(true);
+    });
+
+    it('accepts every closed network_mode value and rejects an unknown one', () => {
+      for (const mode of ['runtime-default', 'restricted', 'disabled']) {
+        const run = v6Base({ execution_profile: { ...v6Base().execution_profile, network_mode: mode } });
+        expect(validateRun(run).errors.filter((e) => e.field === 'execution_profile.network_mode')).toEqual([]);
+      }
+      const bad = v6Base({ execution_profile: { ...v6Base().execution_profile, network_mode: 'made-up' } });
+      expect(validateRun(bad).errors.some((e) => e.field === 'execution_profile.network_mode')).toBe(true);
+    });
+
+    it('isolation_attestation_sha256 accepts null or a well-formed hash, rejects a malformed one', () => {
+      const nullRun = v6Base();
+      expect(validateRun(nullRun).errors.filter((e) => e.field === 'execution_profile.isolation_attestation_sha256')).toEqual([]);
+      const malformed = v6Base({ execution_profile: { ...v6Base().execution_profile, isolation_attestation_sha256: 'not-a-hash' } });
+      expect(validateRun(malformed).errors.some((e) => e.field === 'execution_profile.isolation_attestation_sha256')).toBe(true);
+    });
+
+    // Invariant 4: strict-policy-v1's own frozen semantics (registry: isolation_attestation_required
+    // false) mean every record citing it must carry a null attestation -- never a real hash.
+    it('REQUIRES isolation_attestation_sha256 to be null when id is strict-policy-v1', () => {
+      const run = v6Base({ execution_profile: { ...v6Base().execution_profile, isolation_attestation_sha256: HASH_B } });
+      expect(validateRun(run).errors.some((e) => e.field === 'execution_profile.isolation_attestation_sha256')).toBe(true);
+    });
+  });
+
+  describe('skill_observation -- exact keys, closed enums, no-skill/current-skill treatment_size shapes', () => {
+    it('rejects a missing top-level key', () => {
+      for (const key of ['delivery_mode', 'availability', 'activation', 'source_sha', 'treatment_size']) {
+        const skill_observation = { ...v6Base().skill_observation };
+        delete skill_observation[key];
+        const { errors } = validateRun(v6Base({ skill_observation }));
+        expect(errors.some((e) => e.field.startsWith('skill_observation'))).toBe(true);
+      }
+    });
+
+    it('rejects an unrecognized extra key at the top level', () => {
+      const run = v6Base({ skill_observation: { ...v6Base().skill_observation, extra: 1 } });
+      expect(validateRun(run).errors.some((e) => e.field.startsWith('skill_observation'))).toBe(true);
+    });
+
+    it('accepts every closed delivery_mode value at the enum-domain level', () => {
+      // claude-code's OWN invariant (delivery_mode must be exactly none/runtime-extension for its
+      // two real conditions) is proven separately by the no-skill/current-skill describe blocks
+      // below. This test isolates the SCHEMA-level enum domain itself -- project-instructions/
+      // inline-context are reserved shapes for a future non-Claude runtime, so they are exercised
+      // against a non-claude-code runtime_id, where claude's own delivery_mode invariant does not
+      // apply (invariant 3's non-Claude branch only constrains claude_code_version).
+      expect(validateRun(v6Base()).errors.filter((e) => e.field === 'skill_observation.delivery_mode')).toEqual([]); // 'none'
+      expect(validateRun(v6CurrentSkillBase()).errors.filter((e) => e.field === 'skill_observation.delivery_mode')).toEqual([]); // 'runtime-extension'
+      for (const mode of ['project-instructions', 'inline-context']) {
+        // no-skill's delivery_mode:'none' requirement is universal (not Claude-scoped -- absence of
+        // delivery is a runtime-independent fact), so these two reserved modes are exercised on a
+        // CURRENT-skill condition instead, where the runtime-extension requirement IS Claude-scoped.
+        const run = v6CurrentSkillBase({
+          claude_code_version: null,
+          agent_runtime: { ...v6Base().agent_runtime, runtime_id: 'codex-cli' },
+          skill_observation: currentSkillObservation({ delivery_mode: mode }),
+        });
+        expect(validateRun(run).errors.filter((e) => e.field === 'skill_observation.delivery_mode')).toEqual([]);
+      }
+    });
+
+    it('rejects an unknown delivery_mode', () => {
+      const run = v6Base({ skill_observation: { ...v6Base().skill_observation, delivery_mode: 'made-up' } });
+      expect(validateRun(run).errors.some((e) => e.field === 'skill_observation.delivery_mode')).toBe(true);
+    });
+
+    it('availability.status accepts the 3 closed values and rejects an unknown one', () => {
+      for (const status of ['observed-present', 'observed-absent', 'not-observable']) {
+        const availability = { status, evidence_kind: status === 'not-observable' ? 'not-observable' : 'runtime-catalog' };
+        const run = v6Base({ skill_observation: { ...v6Base().skill_observation, availability } });
+        expect(validateRun(run).errors.filter((e) => e.field === 'skill_observation.availability.status')).toEqual([]);
+      }
+      const bad = v6Base({ skill_observation: { ...v6Base().skill_observation, availability: { status: 'made-up', evidence_kind: 'runtime-catalog' } } });
+      expect(validateRun(bad).errors.some((e) => e.field === 'skill_observation.availability.status')).toBe(true);
+    });
+
+    it('activation.status accepts the 4 closed values and rejects an unknown one', () => {
+      for (const status of ['confirmed', 'indirect', 'not-observed', 'not-observable']) {
+        const activation = {
+          status,
+          evidence_kind: status === 'not-observable' ? 'not-observable' : status === 'indirect' ? 'behavioral-indirect' : 'runtime-explicit-event',
+        };
+        const run = v6Base({ skill_observation: { ...v6Base().skill_observation, activation } });
+        expect(validateRun(run).errors.filter((e) => e.field === 'skill_observation.activation.status')).toEqual([]);
+      }
+      const bad = v6Base({ skill_observation: { ...v6Base().skill_observation, activation: { status: 'made-up', evidence_kind: 'runtime-explicit-event' } } });
+      expect(validateRun(bad).errors.some((e) => e.field === 'skill_observation.activation.status')).toBe(true);
+    });
+
+    // Invariant 7: not-observable REQUIRES evidence_kind not-observable; an OBSERVED status may
+    // never use the not-observable evidence_kind (it would contradict having actually observed it).
+    it('REQUIRES evidence_kind:not-observable when availability.status is not-observable', () => {
+      const run = v6Base({ skill_observation: { ...v6Base().skill_observation, availability: { status: 'not-observable', evidence_kind: 'runtime-catalog' } } });
+      expect(validateRun(run).errors.some((e) => e.field === 'skill_observation.availability.evidence_kind')).toBe(true);
+    });
+
+    it('REJECTS evidence_kind:not-observable when availability.status is an OBSERVED status', () => {
+      const run = v6Base({ skill_observation: { ...v6Base().skill_observation, availability: { status: 'observed-absent', evidence_kind: 'not-observable' } } });
+      expect(validateRun(run).errors.some((e) => e.field === 'skill_observation.availability.evidence_kind')).toBe(true);
+    });
+
+    it('REQUIRES evidence_kind:not-observable when activation.status is not-observable', () => {
+      const run = v6Base({ skill_observation: { ...v6Base().skill_observation, activation: { status: 'not-observable', evidence_kind: 'runtime-explicit-event' } } });
+      expect(validateRun(run).errors.some((e) => e.field === 'skill_observation.activation.evidence_kind')).toBe(true);
+    });
+
+    it('REJECTS evidence_kind:not-observable when activation.status is confirmed/not-observed', () => {
+      const run = v6Base({ skill_observation: { ...v6Base().skill_observation, activation: { status: 'not-observed', evidence_kind: 'not-observable' } } });
+      expect(validateRun(run).errors.some((e) => e.field === 'skill_observation.activation.evidence_kind')).toBe(true);
+    });
+
+    // Claude specifically: availability always runtime-catalog, activation always runtime-explicit-event.
+    it('REQUIRES availability.evidence_kind runtime-catalog for claude-code', () => {
+      const run = v6Base({ skill_observation: { ...v6Base().skill_observation, availability: { status: 'observed-absent', evidence_kind: 'isolated-filesystem' } } });
+      expect(validateRun(run).errors.some((e) => e.field === 'skill_observation.availability.evidence_kind')).toBe(true);
+    });
+
+    it('REQUIRES activation.evidence_kind runtime-explicit-event for claude-code (never behavioral-indirect)', () => {
+      const run = v6Base({ skill_observation: { ...v6Base().skill_observation, activation: { status: 'not-observed', evidence_kind: 'behavioral-indirect' } } });
+      expect(validateRun(run).errors.some((e) => e.field === 'skill_observation.activation.evidence_kind')).toBe(true);
+    });
+
+    // Invariant 5: no-skill's exact closed shape.
+    describe('no-skill treatment_size (invariant 5)', () => {
+      it('a fully well-formed no-skill skill_observation validates cleanly', () => {
+        expect(validateRun(v6Base())).toEqual({ errors: [], warnings: [] });
+      });
+      it('rejects delivery_mode !== none for a no-skill condition\'s skill_observation with source_sha non-null', () => {
+        const run = v6Base({ skill_observation: { ...NO_SKILL_SKILL_OBSERVATION, source_sha: '0bb958d464ccd4b2f463aa10a4101d726e2154c4' } });
+        expect(validateRun(run).errors.some((e) => e.field === 'skill_observation.source_sha')).toBe(true);
+      });
+      it('rejects a non-null snapshot_sha256 when absent_reason is condition-no-skill', () => {
+        const run = v6Base({ skill_observation: { ...v6Base().skill_observation, treatment_size: { ...NO_SKILL_SKILL_OBSERVATION.treatment_size, snapshot_sha256: HASH_A } } });
+        expect(validateRun(run).errors.some((e) => e.field === 'skill_observation.treatment_size.snapshot_sha256')).toBe(true);
+      });
+      it('rejects snapshot_bytes:0 (zero) in place of null for the no-skill case -- never coerce absence to zero', () => {
+        const run = v6Base({ skill_observation: { ...v6Base().skill_observation, treatment_size: { ...NO_SKILL_SKILL_OBSERVATION.treatment_size, snapshot_bytes: 0 } } });
+        expect(validateRun(run).errors.some((e) => e.field === 'skill_observation.treatment_size.snapshot_bytes')).toBe(true);
+      });
+      it('rejects a null absent_reason when snapshot fields are also null but delivery_mode is none (absent_reason is required exactly then)', () => {
+        const run = v6Base({ skill_observation: { ...v6Base().skill_observation, treatment_size: { ...NO_SKILL_SKILL_OBSERVATION.treatment_size, absent_reason: null } } });
+        expect(validateRun(run).errors.some((e) => e.field === 'skill_observation.treatment_size.absent_reason')).toBe(true);
+      });
+    });
+
+    // Invariant 6: current-skill's exact closed shape.
+    describe('current-skill treatment_size (invariant 6)', () => {
+      it('a fully well-formed current-skill skill_observation validates cleanly', () => {
+        expect(validateRun(v6CurrentSkillBase())).toEqual({ errors: [], warnings: [] });
+      });
+      it('REQUIRES source_sha to equal the pin (non-null) for current-skill', () => {
+        const run = v6CurrentSkillBase({ skill_observation: currentSkillObservation({ source_sha: null }) });
+        expect(validateRun(run).errors.some((e) => e.field === 'skill_observation.source_sha')).toBe(true);
+      });
+      it('REQUIRES a real (non-null) snapshot_sha256 for current-skill', () => {
+        const run = v6CurrentSkillBase({ skill_observation: currentSkillObservation({ treatment_size: { ...currentSkillObservation().treatment_size, snapshot_sha256: null } }) });
+        expect(validateRun(run).errors.some((e) => e.field === 'skill_observation.treatment_size.snapshot_sha256')).toBe(true);
+      });
+      it('REQUIRES a positive integer snapshot_bytes for current-skill -- never zero, never null', () => {
+        for (const bad of [0, null, -1]) {
+          const run = v6CurrentSkillBase({ skill_observation: currentSkillObservation({ treatment_size: { ...currentSkillObservation().treatment_size, snapshot_bytes: bad } }) });
+          expect(validateRun(run).errors.some((e) => e.field === 'skill_observation.treatment_size.snapshot_bytes')).toBe(true);
+        }
+      });
+      it('REQUIRES a positive integer snapshot_file_count for current-skill', () => {
+        const run = v6CurrentSkillBase({ skill_observation: currentSkillObservation({ treatment_size: { ...currentSkillObservation().treatment_size, snapshot_file_count: 0 } }) });
+        expect(validateRun(run).errors.some((e) => e.field === 'skill_observation.treatment_size.snapshot_file_count')).toBe(true);
+      });
+      it('REQUIRES absent_reason to be null for current-skill', () => {
+        const run = v6CurrentSkillBase({ skill_observation: currentSkillObservation({ treatment_size: { ...currentSkillObservation().treatment_size, absent_reason: 'condition-no-skill' } }) });
+        expect(validateRun(run).errors.some((e) => e.field === 'skill_observation.treatment_size.absent_reason')).toBe(true);
+      });
+    });
+
+    it('prompt_sha256 is REQUIRED (a real hash) regardless of condition', () => {
+      const run = v6Base({ skill_observation: { ...v6Base().skill_observation, treatment_size: { ...v6Base().skill_observation.treatment_size, prompt_sha256: null } } });
+      expect(validateRun(run).errors.some((e) => e.field === 'skill_observation.treatment_size.prompt_sha256')).toBe(true);
+    });
+
+    it('prompt_bytes is REQUIRED (a non-negative integer) regardless of condition', () => {
+      const run = v6Base({ skill_observation: { ...v6Base().skill_observation, treatment_size: { ...v6Base().skill_observation.treatment_size, prompt_bytes: -1 } } });
+      expect(validateRun(run).errors.some((e) => e.field === 'skill_observation.treatment_size.prompt_bytes')).toBe(true);
+    });
+
+    // Invariant 8: confirmed<->legacy skill_invoked:true; not-observed<->false; indirect/
+    // not-observable never forced to false -- legacy value must be null with a reason instead.
+    describe('activation.status <-> legacy skill_invoked coherence (invariant 8)', () => {
+      it('confirmed REQUIRES legacy skill_invoked.value:true and skill_invocation_attempted.value:true', () => {
+        const run = v6CurrentSkillBase({ skill_invoked: { value: false, reason: null } });
+        expect(validateRun(run).errors.some((e) => e.field === 'skill_invoked' || e.field === 'skill_observation.activation.status')).toBe(true);
+      });
+      it('not-observed REQUIRES legacy skill_invoked.value:false', () => {
+        const run = v6Base({
+          skill_observation: { ...v6Base().skill_observation, activation: { status: 'not-observed', evidence_kind: 'runtime-explicit-event' } },
+          skill_invoked: { value: true, reason: null },
+          skill_invocation_attempted: { value: true, reason: null },
+        });
+        expect(validateRun(run).errors.some((e) => e.field === 'skill_invoked' || e.field === 'skill_observation.activation.status')).toBe(true);
+      });
+      it('indirect/not-observable REQUIRE legacy skill_invoked.value to be null (never forced false)', () => {
+        const run = v6Base({
+          skill_observation: { ...v6Base().skill_observation, activation: { status: 'indirect', evidence_kind: 'behavioral-indirect' } },
+          skill_invoked: { value: false, reason: null },
+        });
+        expect(validateRun(run).errors.some((e) => e.field === 'skill_invoked')).toBe(true);
+      });
+    });
+  });
+
+  describe('usage -- exact keys, source enum, dimension domains, attributable_to_skill_load', () => {
+    it('rejects a missing top-level key', () => {
+      for (const key of ['source', 'input', 'cached_input', 'cache_write', 'output', 'reasoning_output', 'attributable_to_skill_load']) {
+        const usage = { ...v6Base().usage };
+        delete usage[key];
+        const { errors } = validateRun(v6Base({ usage }));
+        expect(errors.some((e) => e.field.startsWith('usage'))).toBe(true);
+      }
+    });
+
+    it('rejects an unrecognized extra key', () => {
+      const run = v6Base({ usage: { ...v6Base().usage, extra: 1 } });
+      expect(validateRun(run).errors.some((e) => e.field.startsWith('usage'))).toBe(true);
+    });
+
+    it('rejects an unknown source value', () => {
+      const run = v6Base({ usage: { ...v6Base().usage, source: 'made-up-source' } });
+      expect(validateRun(run).errors.some((e) => e.field === 'usage.source')).toBe(true);
+    });
+
+    // Invariant 9: runtime-reported requires >=1 real dimension; legacy tokens.* are exact
+    // projections of the 4 Claude-reported values.
+    it('runtime-reported REQUIRES at least one dimension to be a non-negative integer', () => {
+      const run = v6Base({ usage: { ...NO_SKILL_USAGE, input: null, cached_input: null, cache_write: null, output: null } });
+      expect(validateRun(run).errors.some((e) => e.field === 'usage')).toBe(true);
+    });
+
+    it('REQUIRES legacy tokens.input/output/cache_read/cache_creation to be exact projections of usage.input/output/cached_input/cache_write', () => {
+      const run = v6Base({ tokens: { input: { value: 999, reason: null }, output: { value: 4, reason: null }, cache_read: { value: 0, reason: null }, cache_creation: { value: 0, reason: null } } });
+      expect(validateRun(run).errors.some((e) => e.field === 'tokens.input' || e.field === 'usage.input')).toBe(true);
+    });
+
+    // Invariant 10: not-recorded requires ALL dimensions null.
+    it('not-recorded REQUIRES every dimension to be null', () => {
+      const run = v6Base({ usage: { source: 'not-recorded', input: 2, cached_input: null, cache_write: null, output: null, reasoning_output: null, attributable_to_skill_load: NO_SKILL_USAGE.attributable_to_skill_load } });
+      expect(validateRun(run).errors.some((e) => e.field === 'usage.input')).toBe(true);
+    });
+
+    it('not-recorded with all dimensions null validates cleanly for the shape (paired with matching null tokens)', () => {
+      const run = v6Base({
+        usage: { source: 'not-recorded', input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null, attributable_to_skill_load: { status: 'not-recorded', dimensions: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null }, unit: null, reason: 'condition-no-skill' } },
+        tokens: { input: { value: null, reason: 'not recorded' }, output: { value: null, reason: 'not recorded' }, cache_read: { value: null, reason: 'not recorded' }, cache_creation: { value: null, reason: 'not recorded' } },
+      });
+      expect(validateRun(run).errors.filter((e) => e.field.startsWith('usage') || e.field.startsWith('tokens'))).toEqual([]);
+    });
+
+    // Invariant 10 (offline-estimate forward shape): only input may be a non-null integer.
+    it('offline-estimate permits only the input dimension to be non-null; a non-null cached_input/cache_write/output/reasoning_output is rejected', () => {
+      const base = { source: 'offline-estimate', input: 10, cached_input: null, cache_write: null, output: null, reasoning_output: null, attributable_to_skill_load: NO_SKILL_USAGE.attributable_to_skill_load };
+      const okRun = v6Base({ usage: base, tokens: { input: { value: 10, reason: null }, output: { value: null, reason: 'offline estimate only' }, cache_read: { value: null, reason: 'offline estimate only' }, cache_creation: { value: null, reason: 'offline estimate only' } } });
+      expect(validateRun(okRun).errors.filter((e) => e.field.startsWith('usage'))).toEqual([]);
+      const badRun = v6Base({ usage: { ...base, output: 5 } });
+      expect(validateRun(badRun).errors.some((e) => e.field === 'usage.output')).toBe(true);
+    });
+
+    // Invariant 11: reasoning_output is always null for Claude, never zero.
+    it('REQUIRES usage.reasoning_output to be null for claude-code -- rejects zero', () => {
+      const run = v6Base({ usage: { ...NO_SKILL_USAGE, reasoning_output: 0 } });
+      expect(validateRun(run).errors.some((e) => e.field === 'usage.reasoning_output')).toBe(true);
+    });
+
+    // Invariant 12/13: attributable_to_skill_load domains + Claude's fixed reason-per-condition.
+    describe('attributable_to_skill_load (invariants 12/13)', () => {
+      it('runtime-reported REQUIRES at least one dimension, unit tokens, reason null', () => {
+        const run = v6Base({ usage: { ...NO_SKILL_USAGE, attributable_to_skill_load: { status: 'runtime-reported', dimensions: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null }, unit: 'tokens', reason: null } } });
+        // (claude-code also independently rejects status:runtime-reported outright -- see the
+        // dedicated test below; this test isolates the "at least one dimension" shape requirement.)
+        expect(validateRun(run).errors.some((e) => e.field.startsWith('usage.attributable_to_skill_load'))).toBe(true);
+      });
+      it('claude-code NEVER produces attributable_to_skill_load.status runtime-reported in this PR', () => {
+        const run = v6Base({ usage: { ...NO_SKILL_USAGE, attributable_to_skill_load: { status: 'runtime-reported', dimensions: { input: 5, cached_input: null, cache_write: null, output: null, reasoning_output: null }, unit: 'tokens', reason: null } } });
+        expect(validateRun(run).errors.some((e) => e.field === 'usage.attributable_to_skill_load.status')).toBe(true);
+      });
+      it('not-recorded REQUIRES every dimension null, unit null, and a non-empty reason', () => {
+        const run = v6Base({ usage: { ...NO_SKILL_USAGE, attributable_to_skill_load: { status: 'not-recorded', dimensions: { input: 1, cached_input: null, cache_write: null, output: null, reasoning_output: null }, unit: null, reason: 'condition-no-skill' } } });
+        expect(validateRun(run).errors.some((e) => e.field.startsWith('usage.attributable_to_skill_load'))).toBe(true);
+      });
+      it('REQUIRES reason condition-no-skill for a no-skill condition record', () => {
+        const run = v6Base({ usage: { ...NO_SKILL_USAGE, attributable_to_skill_load: { ...NO_SKILL_USAGE.attributable_to_skill_load, reason: 'runtime-does-not-report-skill-attribution' } } });
+        expect(validateRun(run).errors.some((e) => e.field === 'usage.attributable_to_skill_load.reason')).toBe(true);
+      });
+      it('REQUIRES reason runtime-does-not-report-skill-attribution for a current-skill condition record', () => {
+        const run = v6CurrentSkillBase({ usage: currentSkillUsage({ attributable_to_skill_load: { ...currentSkillUsage().attributable_to_skill_load, reason: 'condition-no-skill' } }) });
+        expect(validateRun(run).errors.some((e) => e.field === 'usage.attributable_to_skill_load.reason')).toBe(true);
+      });
+    });
+  });
+
+  // accepted_audit compatibility matrix (Section E): a schema:5 record accepts only a v1/v2
+  // sidecar (frozen); a schema:6+ record accepts only v3 (the version that stamps
+  // run_provenance_sha256). Symmetric with the v1-v5 describe block's own
+  // `it.each([0, 3, -1, '1', 1.5, null])('REJECTS an unsupported sidecar schema (%j)')`, which
+  // already covers the v5-rejects-3 direction as one case among several out-of-range values --
+  // this block makes both directions of the v5/v6 pairing explicit and independently readable.
+  describe('accepted_audit -- v6 requires sidecar schema 3 (never 1 or 2)', () => {
+    function v6ScenarioBase(overrides = {}) {
+      return v6Base({
+        run_kind: 'scenario', benchmark_eligible: true, scenario_id: 'kampkit-android-host-test-discovery',
+        grading_checks: { value: GRADING_CHECK_NAMES.map((name) => ({ name, passed: true, detail: 'ok', evidence_event_indices: [] })), reason: null },
+        repetition_index: 0, run_id: 'scenario-current-skill-abcd1234',
+        ...overrides,
+      });
+    }
+
+    it('ACCEPTS sidecar schema 3 for a schema:6 scenario record', () => {
+      const run = v6ScenarioBase({ accepted_audit: { schema: 3, relative_path: 'audit/scenario-current-skill-abcd1234.json', sha256: 'a'.repeat(64) } });
+      expect(validateRun(run).errors.some((e) => e.field === 'accepted_audit.schema')).toBe(false);
+    });
+
+    it.each([1, 2])('REJECTS sidecar schema %i for a schema:6 scenario record (v6 requires exactly v3)', (schema) => {
+      const run = v6ScenarioBase({ accepted_audit: { schema, relative_path: 'audit/scenario-current-skill-abcd1234.json', sha256: 'a'.repeat(64) } });
+      expect(validateRun(run).errors.some((e) => e.field === 'accepted_audit.schema')).toBe(true);
+    });
+
+    it('REJECTS sidecar schema 3 for a schema:5 scenario record (v5 requires v1 or v2, never v3)', () => {
+      const run = v5Base({
+        run_kind: 'scenario', benchmark_eligible: true, scenario_id: 'kampkit-android-host-test-discovery',
+        grading_checks: { value: GRADING_CHECK_NAMES.map((name) => ({ name, passed: true, detail: 'ok', evidence_event_indices: [] })), reason: null },
+        repetition_index: 0, run_id: 'scenario-current-skill-abcd1234',
+        accepted_audit: { schema: 3, relative_path: 'audit/scenario-current-skill-abcd1234.json', sha256: 'a'.repeat(64) },
+      });
+      expect(validateRun(run).errors.some((e) => e.field === 'accepted_audit.schema')).toBe(true);
     });
   });
 });
@@ -2385,6 +3015,14 @@ describe('buildAggregateGroup -- Fairness Contract as code', () => {
       policy_allowed_gradle_tasks: ['build'],
       policy_allowed_kmptest_subcommands: ['doctor'],
       ambient_skill_profile: { count: 0, scope_id: '00000000-0000-4000-8000-000000000000', fingerprint_hmac: '0'.repeat(64) },
+      // agent_runtime/execution_profile/skill_treatment (Section F): buildAggregateGroup is called
+      // DIRECTLY here, bypassing aggregate.mjs's own withPartitionView() projection step -- a real
+      // caller always pre-projects these 3 onto every record (including a schema<4 one, which gets
+      // the literal "not-recorded" sentinel for each), so this fixture mirrors that exactly rather
+      // than leaving them genuinely undefined (which buildAggregateGroup now correctly refuses).
+      agent_runtime: 'not-recorded',
+      execution_profile: 'not-recorded',
+      skill_treatment: 'not-recorded',
       ...overrides,
     };
   }
@@ -2527,7 +3165,14 @@ describe('buildAggregateGroup -- Fairness Contract as code', () => {
     // skill set between them -- `schema` alone only guards cross-SCHEMA-VERSION mixing, not two
     // same-version runs with genuinely different measured ambient profiles.
     expect(HARD_PARTITION_FIELDS).toContain('ambient_skill_profile');
-    expect(HARD_PARTITION_FIELDS.length).toBe(18);
+    // agent_runtime/execution_profile/skill_treatment (Section F, agentic-eval-runtime-neutral-
+    // records-v1): without these, aggregate could silently fold two runs together across a
+    // different runtime/model/vendor, execution profile, or measured skill treatment -- none of
+    // which any pre-existing field above captures.
+    expect(HARD_PARTITION_FIELDS).toContain('agent_runtime');
+    expect(HARD_PARTITION_FIELDS).toContain('execution_profile');
+    expect(HARD_PARTITION_FIELDS).toContain('skill_treatment');
+    expect(HARD_PARTITION_FIELDS.length).toBe(21);
   });
 
   it('refuses to mix schema within one aggregate group -- a schema:2 record (no foreign_skill_summary) must never fold in with a schema:3 record (has it)', () => {
@@ -2605,11 +3250,11 @@ describe('buildAggregateGroup -- Fairness Contract as code', () => {
     expect(validateAggregateGroupKey(roundTripped)).toEqual([]);
   });
 
-  // group_key's own SHAPE changed (gained ambient_skill_profile) -- CURRENT_AGGREGATE_SCHEMA must
-  // reflect that, mirroring the exact discipline already applied to LATEST_RUN_SCHEMA whenever a
-  // run record's own shape changes.
-  it('CURRENT_AGGREGATE_SCHEMA is 2 -- group_key gained a field (ambient_skill_profile) and must be versioned', () => {
-    expect(CURRENT_AGGREGATE_SCHEMA).toBe(2);
+  // group_key's own SHAPE changed (gained ambient_skill_profile, then agent_runtime/
+  // execution_profile/skill_treatment) -- CURRENT_AGGREGATE_SCHEMA must reflect that, mirroring the
+  // exact discipline already applied to LATEST_RUN_SCHEMA whenever a run record's own shape changes.
+  it('CURRENT_AGGREGATE_SCHEMA is 3 -- group_key gained 3 more fields (agent_runtime/execution_profile/skill_treatment) and must be versioned', () => {
+    expect(CURRENT_AGGREGATE_SCHEMA).toBe(3);
   });
 
   it('refuses to mix policy_allowed_gradle_tasks within one aggregate group (a materially different command policy)', () => {

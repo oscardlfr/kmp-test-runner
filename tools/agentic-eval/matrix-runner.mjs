@@ -30,11 +30,11 @@ import { buildBashDispatchAccounting } from './dispatch-accounting.mjs';
 import { cellTranscriptIntegrityOk } from './cell-integrity.mjs';
 import { tagIncidentPhase } from './durable-journal.mjs';
 import { validateRuntimeAdapter, validateObservation, freezeObservation, selectShellAttempts } from './runtimes/contract.mjs';
-// The one authorized exception (contract.mjs's own doc comment): matrix-runner.mjs may import the
-// Claude singleton as the default runtime while no registry exists. No other core module may
-// import runtimes/claude-code.mjs or any Claude-specific module (stream-parser.mjs,
-// condition-launcher.mjs, auth-preflight.mjs, env-builder.mjs) directly.
-import claudeCodeRuntimeAdapter from './runtimes/claude-code.mjs';
+// registries.mjs is now the ONE module allowed to import runtimes/claude-code.mjs directly
+// (agentic-eval-runtime-neutral-records-v1) -- this module no longer defaults runtimeAdapter to
+// the Claude singleton; every caller must resolve a selection (registries.mjs's resolveSelection)
+// and pass the resulting adapter in explicitly. An omitted adapter is a contract error
+// (validateRuntimeAdapter below rejects `undefined`), never a silent fallback.
 
 /** Prints a single, clearly-labeled WARNING line if `failures` (from a cleanup accumulator's
  * runCleanup()) is non-empty -- never silent, but never escalated into a hard failure either: a
@@ -86,7 +86,7 @@ function createCleanupAccumulator() {
  * @returns {Promise<{settingsPath, shimDir, snapshotDir, gradleUserHome, gradleSnapshotDir,
  *   resetGradleToSnapshot, daemonPolicy, kmpEvalTempHome, sharedEnv, registerCleanup, runCleanup}>}
  */
-export async function acquireSharedEvalResources({ allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, junitEvidenceEnabled = false, runtimeAdapter = claudeCodeRuntimeAdapter }) {
+export async function acquireSharedEvalResources({ allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, junitEvidenceEnabled = false, runtimeAdapter }) {
   // Validated BEFORE any resource below is created (post-review hardening, round 1): the default
   // (claudeCodeRuntimeAdapter) is already validated once, at module load, by defineRuntimeAdapter
   // -- but that guarantee is specific to the DEFAULT instance, not to whatever an individual
@@ -211,7 +211,7 @@ export async function acquireSharedEvalResources({ allowedGradleTasks, allowedKm
  *   acquireSharedEvalResources); the scratch directory's removal is queued on it IMMEDIATELY after
  *   creation, before spawnCondition runs, so a failure anywhere later in this call is still covered.
  */
-export async function runSingleCondition({ condition, materializeFixture, previousFixtureDir, cleanupFixtureOnce, resetGradleToSnapshot, kmpEvalTempHome, sharedEnv, baseArgv, snapshotDir, targetPluginName, targetSkillName, timeoutMs, decisionAttributionEnabled = false, junitEvidenceEnabled = false, evidenceTask = null, allowedInvocations = null, registerCleanup = null, fixtureSetup = null, journal = null, cellOrdinal = null, runtimeAdapter = claudeCodeRuntimeAdapter }) {
+export async function runSingleCondition({ condition, materializeFixture, previousFixtureDir, cleanupFixtureOnce, resetGradleToSnapshot, kmpEvalTempHome, sharedEnv, baseArgv, snapshotDir, targetPluginName, targetSkillName, timeoutMs, decisionAttributionEnabled = false, junitEvidenceEnabled = false, evidenceTask = null, allowedInvocations = null, registerCleanup = null, fixtureSetup = null, journal = null, cellOrdinal = null, runtimeAdapter }) {
   let fixtureDir;
   try {
     const materialized = materializeFixture(previousFixtureDir);
@@ -406,7 +406,7 @@ export function isJunitEvidenceOutcome(outcomeKind) {
   return outcomeKind === 'tests_executed' || outcomeKind === 'tests_failed' || outcomeKind === 'coverage_threshold_exceeded';
 }
 
-export async function runScenarioMatrix({ scenario, repeats, seed, model, allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, materializeFixture, cleanupFixture, targetPluginName, targetSkillName, timeoutMs, journal = null, runtimeAdapter = claudeCodeRuntimeAdapter }) {
+export async function runScenarioMatrix({ scenario, repeats, seed, model, allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, materializeFixture, cleanupFixture, targetPluginName, targetSkillName, timeoutMs, journal = null, runtimeAdapter }) {
   // Decision attribution (allow/deny per Bash attempt) is needed for EVERY scenario regardless of
   // outcome_kind (round-7 fix): a no_applicable_tests condition's denied kmp-test-parallel
   // attempts were previously phantom-counted as real executions (test_invocations_total/retries),
