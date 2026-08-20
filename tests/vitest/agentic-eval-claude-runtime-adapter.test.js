@@ -620,6 +620,61 @@ describe('normalizeObservations -- malformed transcript retains its issues rathe
   });
 });
 
+// PR 4 follow-up (P1 finding): normalizeObservations must derive session.toolProfileMatchesExpected
+// from the ACTUAL resolved execution profile, never accept either compiled permissionMode value
+// unconditionally for every caller. A prior, too-broad revision of hasExpectedToolProfile did
+// exactly that -- silently letting a strict-policy-v1 transcript reporting permissionMode:
+// "bypassPermissions" (the shape a real buildInvocation regression would produce) pass the check.
+describe('normalizeObservations -- session.toolProfileMatchesExpected is execution-profile-aware (P1 fix)', () => {
+  function initOnlyRaw(permissionMode) {
+    const initLine = JSON.stringify({
+      type: 'system', subtype: 'init', cwd: '/x', session_id: 's', tools: ['Bash', 'Skill'],
+      mcp_servers: [], model: 'claude-sonnet-5', permissionMode, plugins: [], skills: [],
+      apiKeySource: 'none', claude_code_version: '2.1.227',
+    });
+    const resultLine = JSON.stringify({ type: 'result', subtype: 'success', is_error: false, duration_ms: 1, num_turns: 1, result: 'x', usage: {} });
+    return `${initLine}\n${resultLine}\n`;
+  }
+
+  function toolProfileFor(permissionMode, executionProfile) {
+    const raw = initOnlyRaw(permissionMode);
+    const process_ = { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 100n };
+    const context = {
+      condition: 'no-skill', targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME,
+      expectedToolNames: new Set(['Bash', 'Skill']),
+    };
+    if (executionProfile !== undefined) context.executionProfile = executionProfile;
+    const observation = normalizeObservations(
+      { process: process_, capture: { primaryText: raw, stderrText: '' }, providerSources: { rawJsonl: raw } },
+      context,
+    );
+    return observation.session.toolProfileMatchesExpected;
+  }
+
+  it('context.executionProfile omitted (calibrate/smoke\'s own callers, which never resolved one for this purpose): dontAsk true, bypassPermissions false -- strict\'s original behavior, unchanged', () => {
+    expect(toolProfileFor('dontAsk', undefined)).toBe(true);
+    expect(toolProfileFor('bypassPermissions', undefined)).toBe(false);
+  });
+
+  it('context.executionProfile:STRICT_PROFILE (policy_mode:"required"): dontAsk true, bypassPermissions false', () => {
+    expect(toolProfileFor('dontAsk', STRICT_PROFILE)).toBe(true);
+    expect(toolProfileFor('bypassPermissions', STRICT_PROFILE)).toBe(false);
+  });
+
+  it('context.executionProfile:UNRESTRICTED_PROFILE (policy_mode:"not_applicable"): bypassPermissions true, dontAsk false', () => {
+    expect(toolProfileFor('bypassPermissions', UNRESTRICTED_PROFILE)).toBe(true);
+    expect(toolProfileFor('dontAsk', UNRESTRICTED_PROFILE)).toBe(false);
+  });
+
+  // The exact P1 reproduction: a strict-shaped transcript that somehow reports the OTHER
+  // profile's own permission mode -- exactly what a real buildInvocation regression would produce
+  // -- must never pass under the profile it was actually run for.
+  it('P1 regression proof: a transcript reporting bypassPermissions never passes under STRICT_PROFILE, and vice versa', () => {
+    expect(toolProfileFor('bypassPermissions', STRICT_PROFILE)).toBe(false);
+    expect(toolProfileFor('dontAsk', UNRESTRICTED_PROFILE)).toBe(false);
+  });
+});
+
 describe('isRecognizedPreDispatchBlock normalization', () => {
   // Migrated here from tests/vitest/agentic-eval-junit-evidence.test.js's own
   // 'resolveDecisions -- recognized pre-dispatch block' it.each precision-matching cases: since

@@ -15,6 +15,7 @@ import {
   findForeignSkillUses,
   classifyForeignSkillUses,
   hasExpectedPluginProfile,
+  hasExpectedToolProfile,
   findBashToolUses,
   findBashToolUsesWithResults,
   findTranscriptStructuralIssues,
@@ -1408,5 +1409,49 @@ describe('fingerprintAmbientSkillNames -- keyed HMAC, never an unkeyed digest', 
     const recorded = fingerprintAmbientSkillNames(new Set(['run']), KEY_A);
     const attackerGuessesUnderWrongKey = ['run', 'review', 'security-review', 'init'].map((c) => fingerprintAmbientSkillNames(new Set([c]), KEY_B));
     expect(attackerGuessesUnderWrongKey).not.toContain(recorded);
+  });
+});
+
+// PR 4 follow-up (P1 finding, agentic-eval-isolated-unrestricted-profile-v1): hasExpectedToolProfile
+// gained a THIRD parameter, expectedPermissionMode, specifically because widening its own
+// permissionMode check to a bare, unconditional "dontAsk OR bypassPermissions" (this PR's own
+// earlier, too-broad fix for the unrestricted-profile happy path) silently disabled the check's
+// real job for the STRICT profile too: a strict-policy-v1 transcript that somehow reported
+// permissionMode:"bypassPermissions" -- exactly the shape a real buildInvocation regression would
+// produce -- would incorrectly pass toolProfileOk. The fix restores per-profile precision: the
+// caller states which ONE value it actually expects (never "either"), defaulting to 'dontAsk' so
+// every pre-existing caller that never passes a 3rd argument keeps strict's own original,
+// unweakened behavior automatically.
+describe('hasExpectedToolProfile -- expectedPermissionMode (P1 fix: profile-aware, never globally either-value)', () => {
+  const ALLOWED = new Set(['Bash', 'Skill']);
+  function initEventWith(permissionMode) {
+    return { tools: ['Bash', 'Skill'], mcp_servers: [], permissionMode };
+  }
+
+  it('default (no 3rd argument): accepts dontAsk -- strict\'s own original, unweakened behavior', () => {
+    expect(hasExpectedToolProfile(initEventWith('dontAsk'), ALLOWED)).toBe(true);
+  });
+
+  it('default (no 3rd argument): rejects bypassPermissions -- the exact P1 regression this fix closes', () => {
+    expect(hasExpectedToolProfile(initEventWith('bypassPermissions'), ALLOWED)).toBe(false);
+  });
+
+  it('explicit expectedPermissionMode:"dontAsk": accepts dontAsk, rejects bypassPermissions', () => {
+    expect(hasExpectedToolProfile(initEventWith('dontAsk'), ALLOWED, 'dontAsk')).toBe(true);
+    expect(hasExpectedToolProfile(initEventWith('bypassPermissions'), ALLOWED, 'dontAsk')).toBe(false);
+  });
+
+  it('explicit expectedPermissionMode:"bypassPermissions": accepts bypassPermissions, rejects dontAsk', () => {
+    expect(hasExpectedToolProfile(initEventWith('bypassPermissions'), ALLOWED, 'bypassPermissions')).toBe(true);
+    expect(hasExpectedToolProfile(initEventWith('dontAsk'), ALLOWED, 'bypassPermissions')).toBe(false);
+  });
+
+  it('rejects a third, never-compiled permissionMode value under either expectation', () => {
+    expect(hasExpectedToolProfile(initEventWith('acceptEdits'), ALLOWED, 'dontAsk')).toBe(false);
+    expect(hasExpectedToolProfile(initEventWith('acceptEdits'), ALLOWED, 'bypassPermissions')).toBe(false);
+  });
+
+  it('throws (caller-contract violation) on an unrecognized expectedPermissionMode -- never silently treated as "accept anything"', () => {
+    expect(() => hasExpectedToolProfile(initEventWith('dontAsk'), ALLOWED, 'not-a-real-mode')).toThrow(/expectedPermissionMode/);
   });
 });

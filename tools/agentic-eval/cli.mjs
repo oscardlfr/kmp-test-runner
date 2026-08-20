@@ -873,6 +873,7 @@ async function runConditionPair({
         sharedEnv: shared.sharedEnv, baseArgv, snapshotDir: shared.snapshotDir,
         targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, timeoutMs,
         junitEvidenceEnabled: false, journal, cellOrdinal, runtimeAdapter: shared.runtimeAdapter,
+        executionProfile,
       });
       fixtureDir = conditionResult.fixtureDir;
       if (policyMode === 'not_applicable') {

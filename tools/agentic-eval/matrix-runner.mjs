@@ -233,7 +233,7 @@ export async function acquireSharedEvalResources({
  *   acquireSharedEvalResources); the scratch directory's removal is queued on it IMMEDIATELY after
  *   creation, before spawnCondition runs, so a failure anywhere later in this call is still covered.
  */
-export async function runSingleCondition({ condition, materializeFixture, previousFixtureDir, cleanupFixtureOnce, resetGradleToSnapshot, kmpEvalTempHome, sharedEnv, baseArgv, snapshotDir, targetPluginName, targetSkillName, timeoutMs, decisionAttributionEnabled = false, junitEvidenceEnabled = false, evidenceTask = null, allowedInvocations = null, registerCleanup = null, fixtureSetup = null, journal = null, cellOrdinal = null, runtimeAdapter }) {
+export async function runSingleCondition({ condition, materializeFixture, previousFixtureDir, cleanupFixtureOnce, resetGradleToSnapshot, kmpEvalTempHome, sharedEnv, baseArgv, snapshotDir, targetPluginName, targetSkillName, timeoutMs, decisionAttributionEnabled = false, junitEvidenceEnabled = false, evidenceTask = null, allowedInvocations = null, registerCleanup = null, fixtureSetup = null, journal = null, cellOrdinal = null, runtimeAdapter, executionProfile = null }) {
   // Validated BEFORE any per-condition resource is created (P1 architectural review): every
   // condition within a matrix reuses the SAME runtimeAdapter acquireSharedEvalResources already
   // validated once upfront, but this function's own materialization work (fixture materialize,
@@ -322,6 +322,7 @@ export async function runSingleCondition({ condition, materializeFixture, previo
     observation = runtimeAdapter.normalizeObservations(sources, {
       condition, targetPluginName, targetSkillName,
       expectedSnapshotDir: condition === 'current-skill' ? snapshotDir : undefined,
+      executionProfile,
     });
     const { ok, errors } = validateObservation(observation);
     if (!ok) {
@@ -525,6 +526,7 @@ export async function runScenarioMatrix({
         journal,
         cellOrdinal: orderIndex,
         runtimeAdapter,
+        executionProfile,
       });
       fixtureDir = conditionResult.fixtureDir;
       let fullConditionResult;

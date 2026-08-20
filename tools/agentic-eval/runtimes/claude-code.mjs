@@ -270,15 +270,27 @@ export async function collectObservationSources(argv, { env, cwd, timeoutMs, onS
  * `normalizeObservations(sources, context)` is the only new place that calls stream-parser.mjs
  * helpers and produces `condition-observation-v1`. Reads process-outcome facts exclusively from
  * `sources.process` (the real spawn envelope); reads classification parameters
- * (condition/targetPluginName/targetSkillName/expectedToolNames/expectedSnapshotDir) from
- * `context`. Never copies raw events into the returned object, never adds a legacy alias.
+ * (condition/targetPluginName/targetSkillName/expectedToolNames/expectedSnapshotDir/
+ * executionProfile) from `context`. Never copies raw events into the returned object, never adds a
+ * legacy alias.
+ *
+ * PR 4 follow-up (P1 finding): `context.executionProfile` -- defaulting to `null`, exactly like
+ * every OTHER executionProfile-aware parameter in this file -- decides which ONE permissionMode
+ * value `session.toolProfileMatchesExpected` requires (`isPolicyNotApplicable(executionProfile)`
+ * -> `'bypassPermissions'`, otherwise `'dontAsk'`), via `hasExpectedToolProfile`'s own
+ * `expectedPermissionMode` parameter. This is the ONE place that derivation happens -- never
+ * guessed independently elsewhere, and never widened back to "accept either value for any
+ * profile" (that was the P1 bug itself: a strict-policy-v1 transcript reporting
+ * `bypassPermissions` -- exactly the shape a real `buildInvocation` regression would produce --
+ * must fail this check, not pass it).
  * @param {{process: object, capture: object, providerSources: {rawJsonl: string, taggedLines?: Array}}} sources
- * @param {{condition: string, targetPluginName: string, targetSkillName: string, expectedToolNames?: Set<string>, expectedSnapshotDir?: string}} context
+ * @param {{condition: string, targetPluginName: string, targetSkillName: string, expectedToolNames?: Set<string>, expectedSnapshotDir?: string, executionProfile?: object|null}} context
  */
 export function normalizeObservations(sources, context) {
-  const { targetPluginName, targetSkillName, expectedSnapshotDir } = context;
+  const { targetPluginName, targetSkillName, expectedSnapshotDir, executionProfile = null } = context;
   const expectedToolNames = context.expectedToolNames ?? EXPECTED_TOOL_NAMES;
   const expectSkillAvailable = context.condition === 'current-skill';
+  const expectedPermissionMode = isPolicyNotApplicable(executionProfile) ? 'bypassPermissions' : 'dontAsk';
   const rawJsonl = sources.providerSources.rawJsonl;
 
   const { events, malformedLines } = parseStreamJsonl(
@@ -293,7 +305,7 @@ export function normalizeObservations(sources, context) {
     modelResolved: init?.model ?? null,
     sessionIdObserved: typeof init?.session_id === 'string' ? init.session_id : null,
     runtimeVersion: init?.claude_code_version ?? null,
-    toolProfileMatchesExpected: hasExpectedToolProfile(init, expectedToolNames),
+    toolProfileMatchesExpected: hasExpectedToolProfile(init, expectedToolNames, expectedPermissionMode),
   };
 
   const usageRaw = extractTokenUsage(result);
