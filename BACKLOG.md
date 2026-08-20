@@ -154,6 +154,27 @@
   of PR #434/#435 evidence are OUT of v1. This backlog entry and its plan authorize no live calls,
   raw reads, pin advance, merge, or implementation by themselves.
 
+- 🔧 **Mixed-profile campaign rejection diagnostics schema** — opened 2026-08-20 during
+  `feature/agentic-eval-multi-profile-campaigns-v1` (adds `run --campaign-design
+  claude-2x2-williams-v1`, the offline multi-profile scenario-campaign planner/runner unblocking
+  Evidence 1's Stage A hard stop). `buildRejectionDiagnostics` (`rejection-diagnostics.mjs`)
+  asserts every record in one batch agrees on `policy_sha256`/`execution_profile.policy_mode`/`.id`
+  — true by construction for the legacy single-execution-profile `run` matrix, never true for a
+  campaign whose fail-fast or hard-gate rejection spans records from BOTH `strict-policy-v1` and
+  `sandboxed-unrestricted-v1` in the same batch (the Williams design interleaves both profiles by
+  construction). Today this throws inside `buildRejectionDiagnostics`; the harness's existing
+  `writeRejectionForensics` try/catch converts it into `diagnosticsWriteError` cleanly, and
+  `cmdRunCampaign` falls back to the SAME `finalizeIncident`/`reportIncident` path calibrate/smoke/
+  run already use for every other unexpected-shape failure — still fail-closed, zero evidence
+  promoted, a specific (not generic) reason, and privacy-safe (proven directly:
+  `agentic-eval-scenario-campaign-run-command.test.js`'s own "missing result crossing the
+  strict->unrestricted boundary" test). Never a rejection-diagnostics schema v3/v4 rejection though
+  — only the leaner incident shape. Fix shape: a new rejection-diagnostics schema variant carrying
+  PER-RECORD `execution_profile`/`policy_sha256` instead of today's batch-wide fields (mirrors how
+  schema v6 run records already went per-record for this same reason). Deliberately NOT done in the
+  campaigns-v1 PR (scope discipline — that PR is offline campaign planning/execution, not a
+  rejection-diagnostics schema PR); user-authorized deferral.
+
 - 🧩 **Agentic-eval post-v1 runtime extensions: Copilot CLI and Google Antigravity CLI** — PARKED
   behind completion of the Claude+Codex v1 contract. Do not implement both together. At promotion,
   refresh a zero-live readiness snapshot and select one by structured-stream stability, skill-state

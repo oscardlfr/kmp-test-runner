@@ -15,6 +15,9 @@
 //                                        [--repeats <n>] [--runtime <id>] [--model <name>]
 //                                        [--execution-profile <id>] [--dry-run]
 //                                        [--private-patterns-file <path>]
+//   node tools/agentic-eval/cli.mjs run --scenario <id> --source-repo-dir <local-clone> --seed <n>
+//                                        --campaign-design claude-2x2-williams-v1
+//                                        --isolation-attestation-file <path> [--dry-run]
 //   node tools/agentic-eval/cli.mjs corpus validate
 //   node tools/agentic-eval/cli.mjs aggregate --runs-dir <dir>
 //   node tools/agentic-eval/cli.mjs analyze --runs-dir <dir>
@@ -46,13 +49,14 @@ import { spawnSync } from 'node:child_process';
 import { LATEST_RUN_SCHEMA, SUPPORTED_RUN_SCHEMAS, validateRun, validateScenario, validateTriggerQueries } from './schemas.mjs';
 import { materializeCalibrationProject, materializeScenarioProject, removeScenarioWorktree, realpath } from './materialize.mjs';
 import { msSinceOrigin, fingerprintNames, canonicalNamesKey, selectShellAttempts } from './runtimes/contract.mjs';
-import { acquireSharedEvalResources, runSingleCondition, runScenarioMatrix, reportCleanupFailures } from './matrix-runner.mjs';
+import { acquireSharedEvalResources, runSingleCondition, runScenarioMatrix, runScenarioCampaign, reportCleanupFailures } from './matrix-runner.mjs';
 import { buildBashDispatchAccounting } from './dispatch-accounting.mjs';
 // resolveSelection is the ONLY way this file ever learns which runtime adapter to use --
 // cli.mjs never imports runtimes/claude-code.mjs directly (registries.mjs is the sole allowed
 // importer of that module; see agentic-eval-runtime-boundary.test.js).
-import { resolveSelection } from './registries.mjs';
+import { resolveSelection, loadRegistries } from './registries.mjs';
 import { loadIsolationAttestation } from './execution-profiles/isolation-attestation.mjs';
+import { resolveScenarioCampaignDesign, buildScenarioCampaignPlan } from './scenario-campaign-plan.mjs';
 // Static treatment-size artifacts (schema v6's skill_observation.treatment_size) -- computed
 // entirely offline, once per command (prompt) / once per invocation before the first session
 // (skill snapshot). See input-artifacts.mjs's own header for why this is measured from Git
@@ -170,6 +174,12 @@ Usage:
                                        [--execution-profile <id>] [--dry-run]
                                        [--private-patterns-file <path>]
                                        [--measurement-scope-file <path>]
+  node tools/agentic-eval/cli.mjs run --scenario <id> --source-repo-dir <local-clone> --seed <n>
+                                       --campaign-design claude-2x2-williams-v1
+                                       --isolation-attestation-file <path> [--dry-run]
+                                       [--runtime <id>] [--model <name>]
+                                       [--private-patterns-file <path>]
+                                       [--measurement-scope-file <path>]
   node tools/agentic-eval/cli.mjs scope init --out <path>
   node tools/agentic-eval/cli.mjs corpus validate
   node tools/agentic-eval/cli.mjs aggregate --runs-dir <dir>
@@ -189,6 +199,14 @@ longitudinal aggregate -- omitting it preserves today's exact per-invocation beh
 README.md's "Measurement scope" section for creation/reuse/rotation/privacy semantics. No
 evidence is committable until
 schema, policy-hash freshness, privacy, and the run-kind's hard acceptance gate all pass.
+
+run --campaign-design <id> expands one scenario into a closed, pre-registered multi-profile
+campaign plan spanning BOTH execution profile and skill condition in one invocation (today: the
+4x4 Williams-style claude-2x2-williams-v1 design, 16 sessions total) -- mutually exclusive with
+--execution-profile/--repeats (the design resolves its own profiles and fixes its own repeat
+count). Requires --isolation-attestation-file <path> whenever the design includes
+sandboxed-unrestricted-v1 cells (claude-2x2-williams-v1 always does); see
+tools/agentic-eval/scenario-campaign-plan.mjs and README.md's "Multi-profile campaigns" section.
 
 analyze reads ONLY already-committed schema-v5 scenario run records + their validated accepted-
 run-audit sidecars under --runs-dir (never a raw transcript, never a live Claude call) and emits a
@@ -259,7 +277,7 @@ function parseArgs(argv) {
 const SUBCOMMAND_SHAPES = {
   calibrate: { flags: ['runtime', 'model', 'execution-profile', 'isolation-attestation-file', 'private-patterns-file', 'measurement-scope-file'], extraPositionals: 0 },
   smoke: { flags: ['runtime', 'model', 'execution-profile', 'isolation-attestation-file', 'source-repo-dir', 'pinned-commit', 'project-alias', 'private-patterns-file', 'measurement-scope-file'], extraPositionals: 0 },
-  run: { flags: ['scenario', 'source-repo-dir', 'seed', 'repeats', 'runtime', 'model', 'execution-profile', 'isolation-attestation-file', 'dry-run', 'private-patterns-file', 'measurement-scope-file'], extraPositionals: 0 },
+  run: { flags: ['scenario', 'source-repo-dir', 'seed', 'repeats', 'runtime', 'model', 'execution-profile', 'campaign-design', 'isolation-attestation-file', 'dry-run', 'private-patterns-file', 'measurement-scope-file'], extraPositionals: 0 },
   corpus: { flags: [], extraPositionals: 1 }, // corpus <validate>
   aggregate: { flags: ['runs-dir'], extraPositionals: 0 },
   analyze: { flags: ['runs-dir'], extraPositionals: 0 },
@@ -1976,6 +1994,45 @@ function findMatrixCompletenessGap(records, repeats) {
 }
 
 /**
+ * Campaign analogue of findMatrixCompletenessGap (agentic-eval-multi-profile-campaigns-v1) --
+ * checks the promoted `records` array against the LITERAL pre-registered `campaignPlan`
+ * (scenario-campaign-plan.mjs's buildScenarioCampaignPlan output) instead of a synthesized
+ * repeats*2 two-condition expectation. A campaign's completeness contract is "matches the
+ * pre-registered plan exactly" (order_index, repetition_index, condition, execution_profile.id all
+ * agree with the plan's own cell at that order_index) -- strictly more precise than the legacy
+ * shape-only check, since a campaign additionally has an execution-profile axis the legacy
+ * two-condition matrix never had. Reads only condition/execution_profile.id/order_index/
+ * repetition_index -- all already-existing schema v6 fields (Data model discipline:
+ * campaign_cell_label/campaign_design_id are the plan's own in-memory labels, never written into
+ * the durable record itself).
+ */
+function findCampaignCompletenessGap(records, campaignPlan) {
+  const expectedCellCount = campaignPlan.cells.length;
+  if (records.length !== expectedCellCount) {
+    return `expected ${expectedCellCount} records (campaign design ${JSON.stringify(campaignPlan.campaign_design_id)}), got ${records.length}`;
+  }
+  const recordByOrderIndex = new Map();
+  for (const r of records) {
+    if (recordByOrderIndex.has(r.order_index)) return `duplicate order_index: ${r.order_index}`;
+    recordByOrderIndex.set(r.order_index, r);
+  }
+  for (const cell of campaignPlan.cells) {
+    const record = recordByOrderIndex.get(cell.order_index);
+    if (record == null) return `missing record for order_index ${cell.order_index} (campaign_cell_label ${cell.campaign_cell_label})`;
+    if (record.repetition_index !== cell.repetition_index) {
+      return `order_index ${cell.order_index}: repetition_index ${record.repetition_index} does not match the pre-registered plan's ${cell.repetition_index}`;
+    }
+    if (record.condition !== cell.condition) {
+      return `order_index ${cell.order_index}: condition ${JSON.stringify(record.condition)} does not match the pre-registered plan's ${JSON.stringify(cell.condition)}`;
+    }
+    if (record.execution_profile == null || record.execution_profile.id !== cell.execution_profile_id) {
+      return `order_index ${cell.order_index}: execution_profile.id does not match the pre-registered plan's ${JSON.stringify(cell.execution_profile_id)}`;
+    }
+  }
+  return null;
+}
+
+/**
  * decision 15's realized-order-balance check: counts, among the records actually written, how
  * many repetitions started `current-skill` first vs `no-skill` first -- purely mechanical, derived
  * from each record's own `order_index`/`condition`, never from repeats/seed directly (a bug in
@@ -2046,6 +2103,14 @@ async function finalizeAndWriteMatrixRecords({
   repeats, buildSidecarsFn = null, matrixComplete = true, plannedCellCount = repeats * 2,
   executedCellCount = records.length, localIntegrityByRunId = null, failFastStop = null, journal = null,
   transcriptsByRunId,
+  // agentic-eval-multi-profile-campaigns-v1: optional injected completeness check, `(records) =>
+  // string|null`, overriding the default `findMatrixCompletenessGap(records, repeats)` call below.
+  // Omitted (the overwhelmingly common case -- every pre-existing caller) preserves today's exact
+  // behavior byte-for-byte; cmdRun's campaign path is the one caller that supplies
+  // `(records) => findCampaignCompletenessGap(records, campaignPlan)`, since a campaign's
+  // completeness contract (matches the pre-registered plan, which also carries an execution-profile
+  // axis) is not representable by the legacy repeats*2-two-conditions shape.
+  completenessCheckFn = null,
 }) {
   // Raw-custody rule: this function never reads raw transcript text off `conditionResults` itself
   // (the observation contract carries no raw/legacy fields) -- the caller (cmdRun) builds this map
@@ -2128,7 +2193,7 @@ async function finalizeAndWriteMatrixRecords({
     return { ok: false, reason: failFastStop?.reason ?? `scenario matrix stopped early after a local per-cell integrity failure (${executedCellCount}/${plannedCellCount} cells executed)`, ...forensics };
   }
 
-  const completenessGap = findMatrixCompletenessGap(records, repeats);
+  const completenessGap = completenessCheckFn != null ? completenessCheckFn(records) : findMatrixCompletenessGap(records, repeats);
   if (completenessGap) {
     return { ok: false, reason: `Matrix is incomplete, refusing to consider it for promotion: ${completenessGap}` };
   }
@@ -3416,7 +3481,312 @@ const MAX_REPEATS = 20;
  * before the plan is ever printed, and a supplied file's non-secret scope_id (never the key) is
  * included in the preview.
  */
+/**
+ * `run --campaign-design <id>` (agentic-eval-multi-profile-campaigns-v1) -- expands one scenario
+ * into a closed, pre-registered multi-profile campaign plan (scenario-campaign-plan.mjs) spanning
+ * BOTH execution profile and skill condition in one invocation, and dispatches it via
+ * runScenarioCampaign (matrix-runner.mjs). Mutually exclusive with --execution-profile/--repeats:
+ * the design resolves its own profile(s) per cell and fixes its own repeat count -- see this
+ * module's own README/HELP text. Mirrors cmdRun's own ordering discipline (private-patterns-file ->
+ * measurement-scope-file -> selection -> isolation-attestation -> scenario load -> --dry-run early
+ * return -> real run) exactly, generalized to N resolved selections instead of one.
+ */
+async function cmdRunCampaign(args, campaignDesignId) {
+  if (args['execution-profile'] != null) {
+    console.error('--campaign-design cannot be combined with --execution-profile -- the campaign design itself resolves an explicit execution profile per cell');
+    return 1;
+  }
+  if (args.repeats != null) {
+    console.error('--campaign-design cannot be combined with --repeats -- the campaign design itself fixes its own repeat count');
+    return 1;
+  }
+
+  const scenarioId = args.scenario;
+  const sourceRepoDir = args['source-repo-dir'];
+  const privatePatternsFile = args['private-patterns-file'] ?? null;
+  const privacyStatus = privatePatternsFile ? 'redacted-private' : 'public';
+  const isDryRun = args['dry-run'] === true;
+
+  if (!scenarioId || !sourceRepoDir) {
+    console.error('run --campaign-design requires --scenario <id> --source-repo-dir <local clone> --seed <n> [--runtime <id>] [--model <name>] --isolation-attestation-file <path> [--dry-run] [--private-patterns-file <path>]');
+    return 1;
+  }
+  if (args.seed == null) {
+    console.error('run requires --seed <integer> -- always explicit, never silently auto-generated, so a run is exactly reproducible from its own recorded evidence and a --dry-run preview can never silently diverge from the real run it previews');
+    return 1;
+  }
+  const seed = Number(args.seed);
+  if (!Number.isInteger(seed)) {
+    console.error(`--seed must be an integer, got: ${args.seed}`);
+    return 1;
+  }
+  const patternsCheck = validatePrivatePatternsFileOrFail(privatePatternsFile);
+  if (!patternsCheck.ok) {
+    console.error(patternsCheck.reason);
+    return 1;
+  }
+  const scopeCheck = resolveMeasurementScopeOrFail(args['measurement-scope-file'] ?? null);
+  if (!scopeCheck.ok) {
+    console.error(scopeCheck.reason);
+    return 1;
+  }
+
+  // Resolved BEFORE any per-profile selection work -- an unknown design id or a registry that
+  // cannot satisfy the design's own required profiles/conditions fails with the clearest possible
+  // message first, exactly like cmdRun's own selection-before-everything-else discipline.
+  const designResolved = resolveScenarioCampaignDesign(campaignDesignId);
+  if (!designResolved.ok) {
+    console.error(designResolved.reason);
+    return 1;
+  }
+  const executionProfileIds = loadRegistries().executionProfiles.filter((p) => p.enabled === true).map((p) => p.id);
+  const planResult = buildScenarioCampaignPlan({ designId: campaignDesignId, repeats: designResolved.design.repeats, executionProfiles: executionProfileIds });
+  if (!planResult.ok) {
+    console.error(planResult.reason);
+    return 1;
+  }
+  const { plan: campaignPlan } = planResult;
+
+  // One (runtime, model, executionProfile, adapter, executionProfileSha256) selection PER DISTINCT
+  // execution profile the plan actually uses -- never a single shared selection (Important note in
+  // the runbook: a multi-profile campaign must not accidentally resolve/attest/execute every cell
+  // against the same profile). --runtime/--model are shared CLI flags (not per-profile), so the
+  // SAME runtimeId/modelId is used for every resolveSelection call here -- only executionProfileId
+  // varies, mirroring resolveSelection's own "runtime/model resolution is independent of execution
+  // profile" contract.
+  const distinctProfileIds = [...new Set(campaignPlan.cells.map((c) => c.execution_profile_id))];
+  const selectionsByProfileId = {};
+  for (const profileId of distinctProfileIds) {
+    const sel = resolveSelection({ executionProfileId: profileId, runtimeId: args.runtime ?? null, modelId: args.model ?? null });
+    if (!sel.ok) {
+      console.error(sel.reason);
+      return 1;
+    }
+    selectionsByProfileId[profileId] = sel.selection;
+  }
+  const { runtime, model: modelEntry } = selectionsByProfileId[distinctProfileIds[0]];
+  const model = modelEntry.model_id;
+
+  // Exactly one shared --isolation-attestation-file flag/value for the WHOLE invocation, validated
+  // against whichever ONE distinct profile in this plan actually requires it (today: always
+  // sandboxed-unrestricted-v1 -- claude-2x2-williams-v1 always includes it) -- resolveIsolationAttestationOrFail's
+  // own "flag present but not required -> reject" direction is deliberately checked against that
+  // SAME profile, never against a strict-policy-v1 cell's profile, which would always spuriously
+  // reject a campaign's legitimately-required attestation file.
+  const profileRequiringAttestation = distinctProfileIds
+    .map((id) => selectionsByProfileId[id].executionProfile)
+    .find((p) => p.isolation_attestation_required === true) ?? null;
+  const attestationProfileForCheck = profileRequiringAttestation ?? selectionsByProfileId[distinctProfileIds[0]].executionProfile;
+  const attestationCheck = resolveIsolationAttestationOrFail(args, { runtime, executionProfile: attestationProfileForCheck });
+  if (!attestationCheck.ok) {
+    console.error(attestationCheck.reason);
+    return 1;
+  }
+  const attestationSha256ByProfileId = {};
+  for (const profileId of distinctProfileIds) {
+    attestationSha256ByProfileId[profileId] = selectionsByProfileId[profileId].executionProfile.isolation_attestation_required === true
+      ? attestationCheck.sha256
+      : null;
+  }
+
+  const loaded = loadScenarioById(scenarioId);
+  if (!loaded.ok) {
+    console.error(loaded.reason);
+    return 1;
+  }
+  const { scenario } = loaded;
+
+  if (isDryRun) {
+    const measurementScope = scopeCheck.source === 'supplied' ? { measurement_scope: { scope_id: scopeCheck.scopeId, source: scopeCheck.source } } : {};
+    const cellsForDryRun = campaignPlan.cells.map((cell) => {
+      const executionProfile = selectionsByProfileId[cell.execution_profile_id].executionProfile;
+      const attestationFields = executionProfile.isolation_attestation_required === true
+        ? {
+            execution_profile_isolation_kind: executionProfile.isolation_kind,
+            execution_profile_network_mode: executionProfile.network_mode,
+            execution_profile_policy_mode: executionProfile.policy_mode,
+            execution_profile_isolation_attestation_sha256: attestationSha256ByProfileId[cell.execution_profile_id],
+          }
+        : {};
+      return {
+        order_index: cell.order_index, repetition_index: cell.repetition_index,
+        campaign_cell_label: cell.campaign_cell_label, condition: cell.condition,
+        execution_profile_id: cell.execution_profile_id,
+        execution_profile_sha256: selectionsByProfileId[cell.execution_profile_id].executionProfileSha256,
+        ...attestationFields,
+      };
+    });
+    console.log(JSON.stringify({
+      dry_run: true, scenario_id: scenario.id, campaign_design_id: campaignDesignId, repeats: campaignPlan.repeats, seed,
+      runtime_id: runtime.runtime_id, model_id: model, model_vendor_expected: modelEntry.model_vendor_expected,
+      planned_sessions: campaignPlan.planned_sessions, policy: scenario.policy, plan: cellsForDryRun, ...measurementScope,
+    }, null, 2));
+    return 0;
+  }
+
+  // Real run from here on -- verify the source repo BEFORE materializing anything from it.
+  const sourceCheck = verifySourceRepoForScenario(sourceRepoDir, scenario);
+  if (!sourceCheck.ok) {
+    console.error(sourceCheck.reason);
+    return 1;
+  }
+
+  const { computePolicySha256 } = await import('./policy-config.mjs');
+  let journal = null;
+  try {
+    journal = createInvocationJournal({ runKind: 'scenario', plannedCellCount: campaignPlan.cells.length, privatePatternsFile });
+  } catch (err) {
+    const incidentResult = finalizeIncident({
+      runKind: 'scenario', journal: null, phase: 'acquiring_shared_resources',
+      reasonText: reasonTextFor(err),
+      provenance: { scenario_id: scenario.id, project_alias: scenario.project_alias, project_commit: scenario.project_commit, seed, model_requested: model },
+      privatePatternsFile,
+    });
+    reportIncident(incidentResult);
+    return 1;
+  }
+  let matrix;
+  try {
+    matrix = await runScenarioCampaign({
+      scenario, campaignPlan, seed, model,
+      allowedGradleTasks: scenario.policy.allowed_gradle_tasks,
+      allowedKmpTestSubcommands: scenario.policy.allowed_kmptest_subcommands,
+      repoRoot: REPO_ROOT, pinnedSkillSha: PINNED_SKILL_SHA, runPluginValidator,
+      materializeFixture: (existingWorktreeDir) => materializeScenarioProject({ sourceRepoDir, pinnedCommit: scenario.project_commit, existingWorktreeDir }),
+      cleanupFixture: (fixtureDir) => removeScenarioWorktree({ sourceRepoDir, worktreeDir: fixtureDir }),
+      targetPluginName: TARGET_PLUGIN_NAME,
+      targetSkillName: TARGET_SKILL_NAME,
+      timeoutMs: 600000,
+      journal,
+      selectionsByProfileId,
+    });
+  } catch (err) {
+    const incidentResult = finalizeIncident({
+      runKind: 'scenario', journal, phase: incidentPhaseOf(err),
+      reasonText: reasonTextFor(err), cellOrdinal: err.agenticEvalCellOrdinal ?? null,
+      rawStdout: err.agenticEvalRawStdout ?? null,
+      provenance: { scenario_id: scenario.id, project_alias: scenario.project_alias, project_commit: scenario.project_commit, seed, model_requested: model },
+      privatePatternsFile,
+    });
+    reportIncident(incidentResult);
+    return 1;
+  }
+  try {
+    const policySha256 = computePolicySha256();
+    const { scopeId: ambientProfileScopeId, key: ambientProfileKey } = scopeCheck;
+    const records = [];
+    const conditionResults = [];
+    const terminalAuthoritativeEventIndices = [];
+    const localIntegrityByRunId = {};
+    const transcriptsByRunId = {};
+    const runPromptArtifact = computePromptArtifact(scenario.prompt);
+    for (const cell of matrix.cellResults) {
+      // Looked up by cell.orderIndex (the journal's own authoritative per-cell ordinal), never by
+      // array position -- matches this file's own established "derive from an authoritative field,
+      // never assume array-position-matches-index" discipline (see e.g. captureOrdinalByRunId
+      // elsewhere in this file). campaignPlan.cells[k].order_index === k by construction
+      // (buildScenarioCampaignPlan assigns order_index sequentially), so this is an exact lookup,
+      // never an approximation.
+      const planCell = campaignPlan.cells[cell.orderIndex];
+      const cellSelection = selectionsByProfileId[planCell.execution_profile_id];
+      const gradeResult = gradeScenarioCondition(cell.conditionResult, scenario);
+      const record = buildRunRecord({
+        conditionResult: cell.conditionResult, condition: cell.conditionResult.condition,
+        runKind: 'scenario', scenarioId: scenario.id, skillSourceSha: PINNED_SKILL_SHA,
+        daemonPolicy: matrix.daemonPolicy, allowedGradleTasks: matrix.allowedGradleTasks,
+        allowedKmpTestSubcommands: matrix.allowedKmpTestSubcommands, policySha256,
+        projectAlias: scenario.project_alias, projectCommit: scenario.project_commit,
+        projectUrl: scenario.project_url, family: scenario.family, modelRequested: model,
+        privacyStatus, seed: cell.seed, orderIndex: cell.orderIndex, repetitionIndex: cell.repetitionIndex,
+        gradeResult, ambientProfileScopeId, ambientProfileKey,
+        selection: cellSelection, promptArtifact: runPromptArtifact, skillSnapshotArtifact: matrix.skillSnapshotArtifact,
+        isolationAttestationSha256: attestationSha256ByProfileId[planCell.execution_profile_id],
+      });
+      records.push(record);
+      conditionResults.push(cell.conditionResult);
+      terminalAuthoritativeEventIndices.push(gradeResult.terminalAuthoritativeEventIndex);
+      localIntegrityByRunId[record.run_id] = cell.localIntegrity;
+      transcriptsByRunId[record.run_id] = readJournalRawFor(cell.conditionResult, journal);
+    }
+    if (!matrix.matrixComplete) {
+      console.error(`RUN: fail-fast stopped the campaign early at order_index ${matrix.failFastStop.orderIndex} (repetition ${matrix.failFastStop.repetitionIndex}, condition ${matrix.failFastStop.condition}) -- ${matrix.executedCellCount}/${matrix.plannedCellCount} cells executed, remaining cells never spawned`);
+    }
+
+    const buildSidecars = (recs, condResults) => {
+      const texts = [];
+      for (const [i, record] of recs.entries()) {
+        const builtSidecar = buildAcceptedRunAuditSidecar({
+          record, conditionResult: condResults[i],
+          terminalAuthoritativeEventIndex: terminalAuthoritativeEventIndices[i],
+        });
+        const sidecarResult = finalizeAcceptedRunAuditSidecar(builtSidecar, { privatePatternsFile });
+        if (!sidecarResult.ok) {
+          return { ok: false, reason: `accepted-run-audit sidecar for record [${i}] (repetition ${record.repetition_index}, ${record.condition}): ${sidecarResult.reason}` };
+        }
+        const expectedSidecarSchema = expectedAcceptedAuditSchemaFor(record);
+        if (builtSidecar.schema !== expectedSidecarSchema) {
+          return { ok: false, reason: `accepted-run-audit sidecar for record [${i}] (repetition ${record.repetition_index}, ${record.condition}): built sidecar schema ${builtSidecar.schema} is not the expected ${expectedSidecarSchema} for this record/profile` };
+        }
+        record.accepted_audit = { schema: builtSidecar.schema, relative_path: acceptedAuditRelativePathFor(record.run_id), sha256: sidecarResult.sha256 };
+        texts.push(sidecarResult.redactedText);
+      }
+      return { ok: true, sidecarTexts: texts };
+    };
+
+    const result = await finalizeAndWriteMatrixRecords({
+      runKind: 'scenario', records, conditionResults, hardGateFn: scenarioHardGate,
+      privatePatternsFile, repeats: campaignPlan.repeats, buildSidecarsFn: buildSidecars,
+      matrixComplete: matrix.matrixComplete, plannedCellCount: matrix.plannedCellCount,
+      executedCellCount: matrix.executedCellCount, localIntegrityByRunId, failFastStop: matrix.failFastStop,
+      journal, transcriptsByRunId,
+      completenessCheckFn: (recs) => findCampaignCompletenessGap(recs, campaignPlan),
+    });
+    if (!result.ok) {
+      if (result.rejectionId == null) {
+        const incidentResult = finalizeIncident({
+          runKind: 'scenario', journal, phase: 'finalizing_matrix', reasonText: result.reason,
+          provenance: { scenario_id: scenario.id, project_alias: scenario.project_alias, project_commit: scenario.project_commit, seed, model_requested: model },
+          privatePatternsFile,
+        });
+        reportIncident(incidentResult);
+      } else {
+        console.error(`RUN FAILED: ${result.reason}`);
+        printRejectionForensicsStderr(result);
+      }
+      discardJournalIfRedundant(journal, result, Object.fromEntries(records.map((r, i) => [r.run_id, conditionResults[i].cellOrdinal])));
+      return 1;
+    }
+    discardJournalIfRedundant(journal, result, Object.fromEntries(records.map((r, i) => [r.run_id, conditionResults[i].cellOrdinal])));
+    console.log(JSON.stringify({ records: result.redactedRecords, evidenceDir: result.redactedOutDir }, null, 2));
+    return 0;
+  } catch (err) {
+    const incidentResult = finalizeIncident({
+      runKind: 'scenario', journal, phase: incidentPhaseOf(err),
+      reasonText: reasonTextFor(err), cellOrdinal: err.agenticEvalCellOrdinal ?? null,
+      rawStdout: err.agenticEvalRawStdout ?? null,
+      provenance: { scenario_id: scenario.id, project_alias: scenario.project_alias, project_commit: scenario.project_commit, seed, model_requested: model },
+      privatePatternsFile,
+    });
+    reportIncident(incidentResult);
+    return 1;
+  } finally {
+    // Mirrors cmdRun's own identical finally (legacy single-profile path) -- matrix is always
+    // defined by this point (the earlier try/catch around runScenarioCampaign returns before ever
+    // reaching here if that call throws, and that call's own internal catch already ran its full
+    // rollback in that case, so there is nothing to double-clean). Runs on every exit from this
+    // block: happy-path promotion, a clean result.ok:false rejection/incident, AND an exception
+    // caught by the catch immediately above -- never skipped.
+    reportCleanupFailures(await matrix.cleanup());
+  }
+}
+
 async function cmdRun(args) {
+  // agentic-eval-multi-profile-campaigns-v1: an explicit, opt-in dispatch -- everything below this
+  // branch (the legacy single-execution-profile/two-skill-condition path) is completely unreached
+  // and unchanged when --campaign-design is absent, by construction.
+  if (args['campaign-design'] != null) {
+    return cmdRunCampaign(args, args['campaign-design']);
+  }
   const selectionResult = resolveSelectionOrFail(args);
   if (!selectionResult.ok) {
     console.error(selectionResult.reason);

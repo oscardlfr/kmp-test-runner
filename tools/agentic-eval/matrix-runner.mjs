@@ -608,3 +608,240 @@ export async function runScenarioMatrix({
     throw err;
   }
 }
+
+/**
+ * Orchestrates a full multi-profile scenario CAMPAIGN (agentic-eval-multi-profile-campaigns-v1):
+ * an already-built, literal, pre-registered `campaignPlan` (scenario-campaign-plan.mjs's
+ * buildScenarioCampaignPlan) whose cells span BOTH execution profile and skill condition, executed
+ * in the plan's own exact order_index sequence -- never grouped/reordered by profile, since the
+ * whole point of a Williams-style design is counterbalancing order effects ACROSS profiles.
+ *
+ * The one thing runScenarioMatrix's own doc comment calls out as unsafe for a multi-profile
+ * campaign -- acquireSharedEvalResources assumes one execution profile -- is handled by acquiring
+ * one INDEPENDENT shared-resource bundle PER DISTINCT execution profile the plan actually uses
+ * (never a single bundle reused across profiles): each cell is dispatched against the bundle
+ * matching its OWN execution_profile_id, so a strict-policy-v1 cell can never observe
+ * sandboxed-unrestricted-v1 resources (shim/Gradle home/settings/env) or vice versa. Every other
+ * per-cell mechanic (spawn, transcript parsing, dispatch accounting, integrity gate, journal
+ * bookkeeping) reuses runSingleCondition/cellTranscriptIntegrityOk/buildBashDispatchAccounting/
+ * attributeCondition verbatim -- the exact same functions runScenarioMatrix itself calls -- so the
+ * actual execution/evaluation logic is never duplicated, only the acquisition and per-cell dispatch
+ * loop are campaign-shaped instead of single-profile-shaped.
+ *
+ * The project fixture (materializeFixture/cleanupFixture) is deliberately campaign-GLOBAL, not
+ * per-profile -- it is the project under test, not a policy/isolation resource, and every cell
+ * already gets a fresh materialize/reset before it runs (the Materialization Principle,
+ * runSingleCondition's own contract) regardless of which profile that cell uses.
+ * @param {object} opts
+ * @param {{prompt: string, expected?: object, fixture_setup?: object}} opts.scenario
+ * @param {object} opts.campaignPlan - buildScenarioCampaignPlan's own return value's `.plan`
+ *   (`{campaign_design_id, repeats, planned_sessions, cells: [{order_index, repetition_index,
+ *   campaign_cell_label, execution_profile_id, condition}, ...]}`), already validated.
+ * @param {number} opts.seed - recorded on every cell result for schema/compatibility parity with
+ *   runScenarioMatrix's own records -- the campaign's own dispatch ORDER never depends on this
+ *   (buildScenarioCampaignPlan never accepts a seed at all); see that module's own doc comment.
+ * @param {string} opts.model
+ * @param {string[]} opts.allowedGradleTasks
+ * @param {string[]} opts.allowedKmpTestSubcommands
+ * @param {string} opts.repoRoot
+ * @param {string} opts.pinnedSkillSha
+ * @param {Function} opts.runPluginValidator
+ * @param {(previousFixtureDir: string|undefined) => {fixtureDir: string}} opts.materializeFixture
+ * @param {(fixtureDir: string) => void|Promise<void>} [opts.cleanupFixture]
+ * @param {string} opts.targetPluginName
+ * @param {string} opts.targetSkillName
+ * @param {number} opts.timeoutMs
+ * @param {object} opts.selectionsByProfileId - `{[execution_profile_id]: {runtimeAdapter,
+ *   executionProfile}}`, one entry per DISTINCT profile the plan uses -- resolved by the caller
+ *   (cli.mjs, via registries.mjs's resolveSelection) exactly once per distinct profile, never
+ *   re-resolved here.
+ * @returns {Promise<{cellResults: Array, skillSnapshotArtifact: object, daemonPolicy: string,
+ *   allowedGradleTasks: string[], allowedKmpTestSubcommands: string[], cleanup: () => Promise<string[]>,
+ *   plannedCellCount: number, executedCellCount: number, matrixComplete: boolean,
+ *   failFastStop: object|null}>}
+ */
+export async function runScenarioCampaign({
+  scenario, campaignPlan, seed, model, allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha,
+  runPluginValidator, materializeFixture, cleanupFixture, targetPluginName, targetSkillName, timeoutMs,
+  journal = null, selectionsByProfileId,
+}) {
+  const decisionAttributionEnabled = true;
+  const junitEvidenceEnabled = isJunitEvidenceOutcome(scenario.expected?.outcome_kind);
+  const evidenceTask = scenario.expected?.gradle?.evidence_task ?? null;
+  const allowedInvocations = scenario.expected?.gradle?.allowed_invocations ?? null;
+  const fixtureSetup = scenario.fixture_setup ?? null;
+
+  // Distinct profiles in first-appearance order (deterministic: the plan's own literal order) --
+  // acquisition order has no behavioral significance (each bundle is fully independent), but a
+  // deterministic order keeps acquisition-failure diagnostics reproducible.
+  const distinctProfileIds = [];
+  for (const cell of campaignPlan.cells) {
+    if (!distinctProfileIds.includes(cell.execution_profile_id)) distinctProfileIds.push(cell.execution_profile_id);
+  }
+
+  // Acquired strictly sequentially (mirrors runScenarioMatrix's own single acquireSharedEvalResources
+  // call -- each acquisition does real materialization/preflight work of its own). Self-contained
+  // try/catch + rollback of EVERY bundle acquired so far -- see acquireSharedEvalResources' own
+  // identical rationale for why this function, not the caller, must own that rollback.
+  const sharedByProfileId = {};
+  const acquiredProfileIds = [];
+  try {
+    for (const profileId of distinctProfileIds) {
+      // resolveSelection's own selection object names this field `adapter` (registries.mjs) --
+      // renamed to `runtimeAdapter` here purely for local naming consistency with every other
+      // runtimeAdapter-named parameter in this file (acquireSharedEvalResources/runSingleCondition
+      // both call it that).
+      const { adapter: runtimeAdapter, executionProfile } = selectionsByProfileId[profileId];
+      // eslint-disable-next-line no-await-in-loop
+      const shared = await acquireSharedEvalResources({
+        allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator,
+        junitEvidenceEnabled, runtimeAdapter, executionProfile,
+      });
+      sharedByProfileId[profileId] = shared;
+      acquiredProfileIds.push(profileId);
+    }
+  } catch (err) {
+    const failures = [];
+    for (const profileId of acquiredProfileIds) failures.push(...await sharedByProfileId[profileId].runCleanup());
+    reportCleanupFailures(failures, 'during campaign acquisition-failure rollback');
+    throw err;
+  }
+
+  // A SECOND, campaign-global accumulator for resources that are NOT execution-profile-scoped (the
+  // project fixture) -- kept separate from each profile's own shared.registerCleanup/runCleanup so
+  // "which bundle owns fixture cleanup" is never an arbitrary choice between two profile bundles.
+  const { registerCleanup: registerCampaignCleanup, runCleanup: runCampaignCleanup } = createCleanupAccumulator();
+
+  try {
+    const baseArgvByProfileId = {};
+    for (const profileId of distinctProfileIds) {
+      const shared = sharedByProfileId[profileId];
+      baseArgvByProfileId[profileId] = shared.runtimeAdapter.buildInvocation({
+        prompt: scenario.prompt, model, settingsPath: shared.settingsPath,
+        executionProfile: selectionsByProfileId[profileId].executionProfile,
+      });
+    }
+
+    let fixtureDir;
+    let fixtureCleanupQueued = false;
+    const cleanupFixtureOnce = (dir) => {
+      if (!fixtureCleanupQueued && cleanupFixture) {
+        fixtureCleanupQueued = true;
+        registerCampaignCleanup(() => cleanupFixture(dir));
+      }
+    };
+
+    const plannedCellCount = campaignPlan.cells.length;
+    const cellResults = [];
+    let failFastStop = null;
+    // The plan's own literal cells order IS the dispatch order -- never grouped/re-sorted by
+    // profile (that would defeat the whole point of a Williams-style counterbalanced design).
+    for (const planCell of campaignPlan.cells) {
+      const { execution_profile_id: profileId, condition, order_index: orderIndex, repetition_index: repetitionIndex } = planCell;
+      const shared = sharedByProfileId[profileId];
+      const { executionProfile } = selectionsByProfileId[profileId];
+      // eslint-disable-next-line no-await-in-loop
+      const conditionResult = await runSingleCondition({
+        condition,
+        materializeFixture,
+        previousFixtureDir: fixtureDir,
+        cleanupFixtureOnce,
+        resetGradleToSnapshot: shared.resetGradleToSnapshot,
+        kmpEvalTempHome: shared.kmpEvalTempHome,
+        sharedEnv: shared.sharedEnv,
+        baseArgv: baseArgvByProfileId[profileId],
+        snapshotDir: shared.snapshotDir,
+        targetPluginName,
+        targetSkillName,
+        timeoutMs,
+        decisionAttributionEnabled,
+        junitEvidenceEnabled,
+        evidenceTask,
+        allowedInvocations,
+        registerCleanup: registerCampaignCleanup,
+        fixtureSetup,
+        journal,
+        cellOrdinal: orderIndex,
+        runtimeAdapter: shared.runtimeAdapter,
+        executionProfile,
+      });
+      fixtureDir = conditionResult.fixtureDir;
+
+      // PR 4's own semantic switch, re-derived PER CELL here (never a single campaign-wide value --
+      // unlike runScenarioMatrix, where one executionProfile applies to the whole matrix, a campaign
+      // genuinely mixes required/not_applicable cells in the same invocation).
+      const policyMode = executionProfile.policy_mode === 'not_applicable' ? 'not_applicable' : 'required';
+      let fullConditionResult;
+      let localIntegrity;
+      try {
+        const shellAttempts = selectShellAttempts(conditionResult.observation.toolAttempts).map((a) => ({
+          id: a.id, command: a.command, index: a.eventIndex, resultFound: a.result.found, preDispatchBlock: a.preDispatchBlock,
+        }));
+        const junitAttribution = decisionAttributionEnabled
+          ? attributeCondition(conditionResult.evidenceDir, scenario, shellAttempts, {
+              terminated: conditionResult.observation.process.terminated,
+              terminationReason: conditionResult.observation.process.terminationReason,
+            }, junitEvidenceEnabled, policyMode)
+          : null;
+        if (conditionResult.evidenceDir) {
+          rmSync(conditionResult.evidenceDir, { recursive: true, force: true });
+        }
+        const dispatchAccounting = junitAttribution
+          ? buildBashDispatchAccounting({
+              bashResults: shellAttempts,
+              hookStats: conditionResult.observation.hookStats,
+              decisionByAttempt: junitAttribution.decisionByAttempt,
+              preDispatchBlockedAttemptIds: junitAttribution.preDispatchBlockedAttemptIds,
+              policyMode,
+            })
+          : null;
+        fullConditionResult = { ...conditionResult, junitAttribution, dispatchAccounting };
+        localIntegrity = cellTranscriptIntegrityOk(fullConditionResult, { targetPluginName, targetSkillName, requireDispatchAccounting: true });
+      } catch (err) {
+        throw tagIncidentPhase(err, 'parsing_or_attributing_cell', orderIndex);
+      }
+      if (journal && conditionResult.didSpawn) {
+        try {
+          journal.recordEvaluated(orderIndex);
+        } catch (err) {
+          throw tagIncidentPhase(err, 'persisting_cell_journal', orderIndex);
+        }
+      }
+      cellResults.push({
+        repetitionIndex, orderIndex, seed, conditionResult: fullConditionResult, localIntegrity,
+        executionProfileId: profileId,
+      });
+      if (!localIntegrity.ok) {
+        failFastStop = { orderIndex, repetitionIndex, condition, reason: localIntegrity.reason };
+        break;
+      }
+    }
+
+    const executedCellCount = cellResults.length;
+    const matrixComplete = executedCellCount === plannedCellCount;
+    // daemonPolicy/skillSnapshotArtifact are both PROVEN execution-profile-independent
+    // (materializeGradleUserHome's daemonPolicy is a hardcoded literal; computeSkillSnapshotArtifact
+    // is a pure function of repoRoot/sha/root alone, identical regardless of which bundle computed
+    // it) -- reading either off any one acquired bundle is exact, never an approximation.
+    const anyShared = sharedByProfileId[distinctProfileIds[0]];
+
+    const runCleanup = async () => {
+      const failures = [];
+      failures.push(...await runCampaignCleanup());
+      for (const profileId of distinctProfileIds) failures.push(...await sharedByProfileId[profileId].runCleanup());
+      return failures;
+    };
+
+    return {
+      cellResults, skillSnapshotArtifact: anyShared.skillSnapshotArtifact, daemonPolicy: anyShared.daemonPolicy,
+      allowedGradleTasks, allowedKmpTestSubcommands, cleanup: runCleanup,
+      plannedCellCount, executedCellCount, matrixComplete, failFastStop,
+    };
+  } catch (err) {
+    const failures = [];
+    failures.push(...await runCampaignCleanup());
+    for (const profileId of acquiredProfileIds) failures.push(...await sharedByProfileId[profileId].runCleanup());
+    reportCleanupFailures(failures, 'during campaign execution rollback');
+    throw err;
+  }
+}
