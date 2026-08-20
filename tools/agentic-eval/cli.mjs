@@ -351,6 +351,20 @@ function currentSkillSnapshotArtifact() {
   return cachedSkillSnapshotArtifact;
 }
 
+/** The ONE fail-closed preflight step cmdCalibrate/cmdSmoke/cmdRun each call exactly once, before
+ * createInvocationJournal and before any spawn -- translates a Git/canonicalization failure inside
+ * currentSkillSnapshotArtifact() into the {ok:false, reason} contract every other preflight check
+ * here already uses (mirrors validatePrivatePatternsFileOrFail/resolveMeasurementScopeOrFail).
+ * Never throws. A failure here must never create a journal, incident, or record -- the caller
+ * returns 1 directly, exactly like every other preflight check's own failure branch. */
+function resolveSkillSnapshotArtifactOrFail() {
+  try {
+    return { ok: true, artifact: currentSkillSnapshotArtifact() };
+  } catch (err) {
+    return { ok: false, reason: `could not resolve the pinned skill-snapshot artifact before starting any session: ${err.message}` };
+  }
+}
+
 function nullableMetric(value, reason = null) {
   return { value, reason: value === null ? (reason ?? 'not recorded') : null };
 }
@@ -2633,6 +2647,15 @@ async function cmdCalibrate(args) {
     console.error(scopeCheck.reason);
     return 1;
   }
+  // Resolved here, before policy-config/journal/any spawn -- a Git or canonicalization failure
+  // must be caught before a live session is ever spent (see resolveSkillSnapshotArtifactOrFail's
+  // own doc comment; Codex round-4 finding).
+  const skillSnapshotCheck = resolveSkillSnapshotArtifactOrFail();
+  if (!skillSnapshotCheck.ok) {
+    console.error(skillSnapshotCheck.reason);
+    return 1;
+  }
+  const skillSnapshotArtifact = skillSnapshotCheck.artifact;
   const { computePolicySha256 } = await import('./policy-config.mjs');
   const templateDir = join(__dirname, 'fixtures', 'calibration-project');
   // Round-7 audit finding: this call sat OUTSIDE the try block below, unguarded -- any exception
@@ -2702,7 +2725,7 @@ async function cmdCalibrate(args) {
     // every command (see currentSkillSnapshotArtifact's own doc comment).
     const common = {
       runKind: 'calibration', scenarioId: 'calibration-explicit-invocation', skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, modelRequested: model, privacyStatus, ambientProfileScopeId, ambientProfileKey,
-      selection: selectionResult.selection, promptArtifact: computePromptArtifact(CALIBRATE_PROMPT), skillSnapshotArtifact: currentSkillSnapshotArtifact(),
+      selection: selectionResult.selection, promptArtifact: computePromptArtifact(CALIBRATE_PROMPT), skillSnapshotArtifact,
     };
 
     // Calibration's job is narrowly to prove invocation MECHANICS under an explicit-invocation
@@ -2947,6 +2970,14 @@ async function cmdSmoke(args) {
   // origin URL of sourceRepoDir (null if it has none, e.g. a purely-local fixture repo).
   const scenarioId = `${projectAlias}-android-host-test-discovery`;
   const projectUrl = resolveGitRemoteUrl(sourceRepoDir);
+  // Resolved here, before policy-config/journal/any spawn -- see cmdCalibrate's identical
+  // rationale comment above resolveSkillSnapshotArtifactOrFail's own call site.
+  const skillSnapshotCheck = resolveSkillSnapshotArtifactOrFail();
+  if (!skillSnapshotCheck.ok) {
+    console.error(skillSnapshotCheck.reason);
+    return 1;
+  }
+  const skillSnapshotArtifact = skillSnapshotCheck.artifact;
   const { computePolicySha256 } = await import('./policy-config.mjs');
   // Round-7 audit finding: see cmdCalibrate's identical rationale -- resource acquisition must
   // never be allowed to throw uncaught past this command's own "FAILED: <reason>" / exit 1
@@ -3009,7 +3040,7 @@ async function cmdSmoke(args) {
     // is called with below -- kept as its own named constant so the two never drift apart.
     const common = {
       runKind: 'smoke', scenarioId, skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, projectAlias, projectCommit: pinnedCommit, projectUrl, family: 'test-only', modelRequested: model, privacyStatus, ambientProfileScopeId, ambientProfileKey,
-      selection: selectionResult.selection, promptArtifact: computePromptArtifact(SMOKE_PROMPT), skillSnapshotArtifact: currentSkillSnapshotArtifact(),
+      selection: selectionResult.selection, promptArtifact: computePromptArtifact(SMOKE_PROMPT), skillSnapshotArtifact,
     };
 
     // Smoke's gate requires EQUIVALENT REAL WORK in both arms -- not just skill availability.
@@ -3323,6 +3354,16 @@ async function cmdRun(args) {
     return 1;
   }
 
+  // Resolved here, before policy-config/journal/any spawn -- see cmdCalibrate's identical
+  // rationale comment above resolveSkillSnapshotArtifactOrFail's own call site. Strictly after
+  // the --dry-run early-return above, so --dry-run never touches Git for this.
+  const skillSnapshotCheck = resolveSkillSnapshotArtifactOrFail();
+  if (!skillSnapshotCheck.ok) {
+    console.error(skillSnapshotCheck.reason);
+    return 1;
+  }
+  const runSkillSnapshotArtifact = skillSnapshotCheck.artifact;
+
   const { computePolicySha256 } = await import('./policy-config.mjs');
   // Created before the first spawn, per invocation -- plan.length (repeats*2, already computed
   // above for the --dry-run preview) is the exact plannedCellCount, known before any spawn. Same
@@ -3400,9 +3441,10 @@ async function cmdRun(args) {
     // position), never from conditionResult itself (the observation contract carries no raw field).
     const transcriptsByRunId = {};
     // Schema v6: computed ONCE for the whole matrix (every cell shares the same scenario prompt
-    // and the same pinned skill snapshot) -- never recomputed per cell.
+    // and the same pinned skill snapshot) -- never recomputed per cell. runSkillSnapshotArtifact
+    // itself was already resolved during preflight, above (before journal/spawn) -- reused here,
+    // never re-resolved.
     const runPromptArtifact = computePromptArtifact(scenario.prompt);
-    const runSkillSnapshotArtifact = currentSkillSnapshotArtifact();
     for (const cell of matrix.cellResults) {
       const gradeResult = gradeScenarioCondition(cell.conditionResult, scenario);
       const record = buildRunRecord({
