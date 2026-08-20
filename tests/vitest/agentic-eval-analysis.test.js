@@ -789,6 +789,27 @@ describe('buildSummary', () => {
     expect(summary.groups[0].target_skill_invoked_rate).toBeNull();
   });
 
+  // P1 architectural review: an unobservable activation (target_skill_invoked:null, e.g. indirect/
+  // not-observable) must be excluded from the RATE'S DENOMINATOR, not merely from its numerator --
+  // leaving it in the denominator silently treats "unknown" as "not invoked", diluting the rate
+  // downward exactly the way this harness refuses to coerce null into zero anywhere else.
+  it('excludes an unobservable (null) target_skill_invoked from both the numerator AND the denominator of target_skill_invoked_rate', () => {
+    const pairs = [
+      pair({ run_id: 'r1' }, { activation_expected: true, target_skill_invoked: true }),
+      pair({ run_id: 'r2' }, { activation_expected: true, target_skill_invoked: false }),
+      pair({ run_id: 'r3' }, { activation_expected: true, target_skill_invoked: null }),
+    ];
+    const summary = buildSummary(pairs);
+    const [group] = summary.groups;
+    expect(group.activation_expected_count).toBe(3);
+    expect(group.target_skill_invoked_observable_count).toBe(2);
+    expect(group.target_skill_invoked_unknown_count).toBe(1);
+    expect(group.target_skill_invoked_count).toBe(1);
+    // The naive (pre-fix) computation would have been 1/3; the correct one excludes the
+    // unobservable entry from the denominator entirely: 1/2.
+    expect(group.target_skill_invoked_rate).toBe(0.5);
+  });
+
   it('builds compact distributions for global ordinal, attempt ordinal, pre-skill, and post-skill-total calls', () => {
     const pairs = [
       pair({ run_id: 'r1' }, { target_skill_invocation_ordinal: 0, target_skill_attempt_ordinal: 1, pre_skill_tool_calls: 0, post_skill_tool_calls_total: 2 }),
@@ -1364,7 +1385,7 @@ describe('buildSummary -- group-level agent_runtime/execution_profile/skill_obse
     return { record, entry };
   }
 
-  it('a schema:6 group reports the real agent_runtime/execution_profile/skill_observation (taken from entries[0], homogeneous by construction) and group_key\'s own NARROWED execution_profile/skill_treatment', () => {
+  it('a schema:6 group reports the real agent_runtime (homogeneous by construction) and the SAME NARROWED execution_profile/skill_treatment as group_key -- never entries[0]\'s own full, potentially-outcome-carrying value (P1 architectural review)', () => {
     const a = pairFor(scenarioRecord6({ run_id: 'scenario-current-skill-v6a' }));
     const b = pairFor(scenarioRecord6({ run_id: 'scenario-current-skill-v6b' }));
     const { groups } = buildSummary([a, b]);
@@ -1372,11 +1393,42 @@ describe('buildSummary -- group-level agent_runtime/execution_profile/skill_obse
     const [group] = groups;
     expect(group.run_count).toBe(2);
     expect(group.agent_runtime).toEqual(scenarioRecord6().agent_runtime);
-    expect(group.execution_profile).toEqual(scenarioRecord6().execution_profile); // FULL, unnarrowed
-    expect(group.skill_observation).toEqual(scenarioRecord6().skill_observation); // FULL, unnarrowed
-    expect(group.group_key.execution_profile).toEqual({ id: 'strict-policy-v1', sha256: 'd'.repeat(64), isolation_kind: 'runtime-policy-hooks', network_mode: 'runtime-default' }); // NARROWED
-    expect(group.group_key.skill_treatment).toEqual({ delivery_mode: 'runtime-extension', source_sha: scenarioRecord6().skill_observation.source_sha, treatment_size: scenarioRecord6().skill_observation.treatment_size }); // NARROWED
+    const narrowedProfile = { id: 'strict-policy-v1', sha256: 'd'.repeat(64), isolation_kind: 'runtime-policy-hooks', network_mode: 'runtime-default' };
+    const narrowedTreatment = { delivery_mode: 'runtime-extension', source_sha: scenarioRecord6().skill_observation.source_sha, treatment_size: scenarioRecord6().skill_observation.treatment_size };
+    expect(group.execution_profile).toEqual(narrowedProfile); // NARROWED -- never isolation_attestation_sha256
+    expect(group.skill_observation).toEqual(narrowedTreatment); // NARROWED -- never availability/activation
+    expect(group.group_key.execution_profile).toEqual(narrowedProfile);
+    expect(group.group_key.skill_treatment).toEqual(narrowedTreatment);
+    // Both entries in this fixture report an identical attestation (null) and activation/
+    // availability status, so the new counts/distributions correctly show full agreement here --
+    // the DISAGREEING case is exercised by the two tests immediately below.
+    expect(group.execution_profile_attestation_recorded_count).toBe(0);
+    expect(group.execution_profile_attestation_missing_count).toBe(2);
+    expect(group.skill_observation_activation_status_distribution).toEqual({ confirmed: 2 });
+    expect(group.skill_observation_availability_status_distribution).toEqual({ 'observed-present': 2 });
   });
+
+  it('two entries in the SAME group with DIFFERENT activation statuses are both reflected in the distribution, never collapsed to entries[0]\'s own single value (P1 architectural review)', () => {
+    const confirmed = pairFor(scenarioRecord6({ run_id: 'scenario-activation-a' }));
+    // sidecarEntries: [] (not the pairFor default of one CONFIRMED target-skill call) --
+    // deriveSkillRelativeFields fails closed when a record reports the target skill as
+    // not-invoked but the sidecar still shows a confirmed target-skill entry, so a genuinely
+    // not-observed activation needs a sidecar that agrees nothing was confirmed.
+    const notObserved = pairFor(scenarioRecord6({
+      run_id: 'scenario-activation-b',
+      skill_observation: { ...scenarioRecord6().skill_observation, activation: { status: 'not-observed', evidence_kind: 'runtime-explicit-event' } },
+      skill_invoked: { value: false, reason: null },
+    }), []);
+    const { groups } = buildSummary([confirmed, notObserved]);
+    expect(groups.length).toBe(1);
+    const [group] = groups;
+    expect(group.run_count).toBe(2);
+    expect(group.skill_observation_activation_status_distribution).toEqual({ confirmed: 1, 'not-observed': 1 });
+    // The narrowed skill_treatment view itself is untouched by activation (excluded from it
+    // entirely), so the group's own skill_observation field is unaffected by the disagreement.
+    expect(group.skill_observation.delivery_mode).toBe('runtime-extension');
+  });
+
 
   it('separates a schema:6 group from a schema:5 group with otherwise-identical fields (agent_runtime differs: real object vs "not-recorded")', () => {
     const v5 = pairFor(scenarioRecord({ run_id: 'scenario-current-skill-v5x', success: { value: true, reason: null }, expected_outcome_matched: { value: true, reason: null } }));

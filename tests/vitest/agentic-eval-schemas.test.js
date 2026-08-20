@@ -17,6 +17,15 @@ import {
   canonicalStructuredValue,
 } from '../../tools/agentic-eval/schemas.mjs';
 import { GRADING_CHECK_NAMES } from '../../tools/agentic-eval/graders.mjs';
+import { canonicalJsonSha256 } from '../../tools/agentic-eval/canonical-json.mjs';
+
+// The real strict-policy-v1 projection computeExecutionProfileSha256 (registries.mjs) hashes --
+// computed here rather than hardcoded, so this fixture can never silently drift from the actual
+// hash algorithm schemas.mjs's own execution_profile validator now recomputes and checks against.
+const STRICT_POLICY_V1_SHA256 = canonicalJsonSha256({
+  id: 'strict-policy-v1', isolation_kind: 'runtime-policy-hooks', network_mode: 'runtime-default',
+  isolation_attestation_required: false, policy_mode: 'required', required_capabilities: ['softPermissionDenial'],
+});
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -1089,10 +1098,13 @@ describe('schema v6 (agentic-eval-runtime-neutral-records-v1) -- agent_runtime/e
       },
       execution_profile: {
         id: 'strict-policy-v1',
-        sha256: HASH_A,
+        sha256: STRICT_POLICY_V1_SHA256,
         isolation_kind: 'runtime-policy-hooks',
         isolation_attestation_sha256: null,
+        isolation_attestation_required: false,
         network_mode: 'runtime-default',
+        policy_mode: 'required',
+        required_capabilities: ['softPermissionDenial'],
       },
       skill_observation: NO_SKILL_SKILL_OBSERVATION,
       usage: NO_SKILL_USAGE,
@@ -1259,7 +1271,7 @@ describe('schema v6 (agentic-eval-runtime-neutral-records-v1) -- agent_runtime/e
 
   describe('execution_profile -- exact keys, closed enums, hash format, strict-policy attestation invariant', () => {
     it('rejects a missing key', () => {
-      for (const key of ['id', 'sha256', 'isolation_kind', 'isolation_attestation_sha256', 'network_mode']) {
+      for (const key of ['id', 'sha256', 'isolation_kind', 'isolation_attestation_sha256', 'isolation_attestation_required', 'network_mode', 'policy_mode', 'required_capabilities']) {
         const execution_profile = { ...v6Base().execution_profile };
         delete execution_profile[key];
         const { errors } = validateRun(v6Base({ execution_profile }));
@@ -1320,6 +1332,86 @@ describe('schema v6 (agentic-eval-runtime-neutral-records-v1) -- agent_runtime/e
       const run = v6Base({ execution_profile: { ...v6Base().execution_profile, isolation_attestation_sha256: HASH_B } });
       expect(validateRun(run).errors.some((e) => e.field === 'execution_profile.isolation_attestation_sha256')).toBe(true);
     });
+
+    // P1 architectural review: the record now carries every field computeExecutionProfileSha256
+    // (registries.mjs) hashes, and this validator recomputes+compares it independently -- never
+    // consulting the live registry -- so a historical record's own execution_profile group stays
+    // self-verifying even if the registry's strict-policy-v1 entry is later edited or removed.
+    describe('self-contained hash verification and isolation_attestation_required (P1 architectural review)', () => {
+      it('accepts a record whose sha256 is the real canonical hash of its own projection', () => {
+        expect(validateRun(v6Base()).errors.filter((e) => e.field === 'execution_profile.sha256')).toEqual([]);
+      });
+
+      it('rejects a sha256 that does not match the recomputed canonical hash of isolation_kind/network_mode/isolation_attestation_required/policy_mode/required_capabilities, even though it is a well-formed 64-hex string', () => {
+        const run = v6Base({ execution_profile: { ...v6Base().execution_profile, sha256: HASH_B } });
+        expect(validateRun(run).errors.some((e) => e.field === 'execution_profile.sha256')).toBe(true);
+      });
+
+      it('the hash is sensitive to EVERY field in the projection -- changing isolation_kind, network_mode, isolation_attestation_required, policy_mode, or required_capabilities alone (while keeping the old sha256) is caught as a mismatch', () => {
+        const changes = [
+          { isolation_kind: 'external-sandbox' },
+          { network_mode: 'restricted' },
+          { isolation_attestation_required: true, isolation_attestation_sha256: HASH_B },
+          { policy_mode: 'not_applicable' },
+          { required_capabilities: [] },
+        ];
+        for (const change of changes) {
+          const run = v6Base({ execution_profile: { ...v6Base().execution_profile, ...change } });
+          expect(validateRun(run).errors.some((e) => e.field === 'execution_profile.sha256')).toBe(true);
+        }
+      });
+
+      it('isolation_attestation_required must be a boolean', () => {
+        const run = v6Base({ execution_profile: { ...v6Base().execution_profile, isolation_attestation_required: 'false' } });
+        expect(validateRun(run).errors.some((e) => e.field === 'execution_profile.isolation_attestation_required')).toBe(true);
+      });
+
+      it('isolation_attestation_required:true REQUIRES a real isolation_attestation_sha256 (never null)', () => {
+        const projection = {
+          id: 'strict-policy-v1', isolation_kind: 'external-sandbox', network_mode: 'restricted',
+          isolation_attestation_required: true, policy_mode: 'required', required_capabilities: [],
+        };
+        const sha256 = canonicalJsonSha256(projection);
+        const withNull = v6Base({ execution_profile: { ...projection, sha256, isolation_attestation_sha256: null } });
+        expect(validateRun(withNull).errors.some((e) => e.field === 'execution_profile.isolation_attestation_sha256')).toBe(true);
+        const withHash = v6Base({ execution_profile: { ...projection, sha256, isolation_attestation_sha256: HASH_B } });
+        expect(validateRun(withHash).errors.filter((e) => e.field === 'execution_profile.isolation_attestation_sha256')).toEqual([]);
+      });
+
+      it('policy_mode accepts the 2 closed values and rejects an unknown one', () => {
+        for (const mode of ['required', 'not_applicable']) {
+          const projection = {
+            id: 'strict-policy-v1', isolation_kind: 'runtime-policy-hooks', network_mode: 'runtime-default',
+            isolation_attestation_required: false, policy_mode: mode, required_capabilities: ['softPermissionDenial'],
+          };
+          const run = v6Base({ execution_profile: { ...projection, sha256: canonicalJsonSha256(projection), isolation_attestation_sha256: null } });
+          expect(validateRun(run).errors.filter((e) => e.field === 'execution_profile.policy_mode')).toEqual([]);
+        }
+        const bad = v6Base({ execution_profile: { ...v6Base().execution_profile, policy_mode: 'made-up' } });
+        expect(validateRun(bad).errors.some((e) => e.field === 'execution_profile.policy_mode')).toBe(true);
+      });
+
+      it('required_capabilities rejects an unknown capability name and a duplicate', () => {
+        const unknown = v6Base({ execution_profile: { ...v6Base().execution_profile, required_capabilities: ['notARealCapability'] } });
+        expect(validateRun(unknown).errors.some((e) => e.field === 'execution_profile.required_capabilities')).toBe(true);
+        const duplicate = v6Base({ execution_profile: { ...v6Base().execution_profile, required_capabilities: ['softPermissionDenial', 'softPermissionDenial'] } });
+        expect(validateRun(duplicate).errors.some((e) => e.field === 'execution_profile.required_capabilities')).toBe(true);
+      });
+
+      // P1 architectural review (Codex round 2): contract.mjs's CAPABILITY_KEYS describes the FULL
+      // adapter capabilities shape -- 3 of its 7 members (observationSources, skillDeliveryModes,
+      // usageDimensions) are array-valued, not a single true/false an execution profile could ever
+      // "require". registries.mjs's own REQUIRABLE_CAPABILITY_KEYS already excludes these 3; schema
+      // v6 must reject them here too, from the SAME shared vocabulary (contract.mjs's
+      // REQUIRED_CAPABILITY_KEYS), not the wider CAPABILITY_KEYS list.
+      it.each(['observationSources', 'skillDeliveryModes', 'usageDimensions'])(
+        'required_capabilities rejects "%s" -- a real CAPABILITY_KEYS member, but not boolean-valued/requirable',
+        (nonBooleanCapability) => {
+          const run = v6Base({ execution_profile: { ...v6Base().execution_profile, required_capabilities: [nonBooleanCapability] } });
+          expect(validateRun(run).errors.some((e) => e.field === 'execution_profile.required_capabilities')).toBe(true);
+        },
+      );
+    });
   });
 
   describe('skill_observation -- exact keys, closed enums, no-skill/current-skill treatment_size shapes', () => {
@@ -1365,9 +1457,16 @@ describe('schema v6 (agentic-eval-runtime-neutral-records-v1) -- agent_runtime/e
     });
 
     it('availability.status accepts the 3 closed values and rejects an unknown one', () => {
+      // Paired with the matching skill_available.value for each status (the new biconditional
+      // invariant requires the two to agree) -- this test's own point is "each status value is
+      // individually accepted", not "any status is accepted regardless of skill_available".
+      const legacyValueFor = { 'observed-present': true, 'observed-absent': false, 'not-observable': null };
       for (const status of ['observed-present', 'observed-absent', 'not-observable']) {
         const availability = { status, evidence_kind: status === 'not-observable' ? 'not-observable' : 'runtime-catalog' };
-        const run = v6Base({ skill_observation: { ...v6Base().skill_observation, availability } });
+        const run = v6Base({
+          skill_observation: { ...v6Base().skill_observation, availability },
+          skill_available: { value: legacyValueFor[status], reason: legacyValueFor[status] === null ? 'not observable' : null },
+        });
         expect(validateRun(run).errors.filter((e) => e.field === 'skill_observation.availability.status')).toEqual([]);
       }
       const bad = v6Base({ skill_observation: { ...v6Base().skill_observation, availability: { status: 'made-up', evidence_kind: 'runtime-catalog' } } });
@@ -1503,6 +1602,42 @@ describe('schema v6 (agentic-eval-runtime-neutral-records-v1) -- agent_runtime/e
           skill_invoked: { value: false, reason: null },
         });
         expect(validateRun(run).errors.some((e) => e.field === 'skill_invoked')).toBe(true);
+      });
+    });
+
+    // P1 architectural review: availability.status and the legacy skill_available.value must never
+    // independently drift -- each of the 3 possible legacy values has EXACTLY one correct status.
+    describe('availability is biconditional with the legacy skill_available.value (P1 architectural review)', () => {
+      it.each([
+        ['observed-present', false], ['observed-present', null],
+        ['observed-absent', true], ['observed-absent', null],
+        ['not-observable', true], ['not-observable', false],
+      ])('rejects status %s when skill_available.value is %s', (status, mismatchedValue) => {
+        const run = v6Base({
+          skill_observation: { ...v6Base().skill_observation, availability: { status, evidence_kind: status === 'not-observable' ? 'not-observable' : 'runtime-catalog' } },
+          skill_available: { value: mismatchedValue, reason: mismatchedValue === null ? 'not observable' : null },
+        });
+        expect(validateRun(run).errors.some((e) => e.field === 'skill_observation.availability.status')).toBe(true);
+      });
+    });
+
+    // P1 architectural review: source_sha and the legacy skill_source_sha must never independently
+    // drift, even when BOTH individually satisfy their own condition-based shape rule.
+    describe('source_sha exactly equals the legacy skill_source_sha (P1 architectural review)', () => {
+      it('rejects source_sha disagreeing with skill_source_sha for condition current-skill (both individually well-shaped, non-empty strings, but different)', () => {
+        const run = v6CurrentSkillBase({
+          skill_observation: { ...v6CurrentSkillBase().skill_observation, source_sha: 'deadbeef00000000000000000000000000000000' },
+        });
+        expect(validateRun(run).errors.some((e) => e.field === 'skill_observation.source_sha')).toBe(true);
+      });
+
+      it('rejects skill_observation.source_sha non-null when the legacy skill_source_sha is null (no-skill)', () => {
+        const run = v6Base({ skill_observation: { ...v6Base().skill_observation, source_sha: 'some-value' } });
+        expect(validateRun(run).errors.some((e) => e.field === 'skill_observation.source_sha')).toBe(true);
+      });
+
+      it('accepts equal, non-empty source_sha/skill_source_sha for condition current-skill', () => {
+        expect(validateRun(v6CurrentSkillBase()).errors.filter((e) => e.field === 'skill_observation.source_sha')).toEqual([]);
       });
     });
   });

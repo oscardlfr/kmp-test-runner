@@ -212,6 +212,19 @@ export async function acquireSharedEvalResources({ allowedGradleTasks, allowedKm
  *   creation, before spawnCondition runs, so a failure anywhere later in this call is still covered.
  */
 export async function runSingleCondition({ condition, materializeFixture, previousFixtureDir, cleanupFixtureOnce, resetGradleToSnapshot, kmpEvalTempHome, sharedEnv, baseArgv, snapshotDir, targetPluginName, targetSkillName, timeoutMs, decisionAttributionEnabled = false, junitEvidenceEnabled = false, evidenceTask = null, allowedInvocations = null, registerCleanup = null, fixtureSetup = null, journal = null, cellOrdinal = null, runtimeAdapter }) {
+  // Validated BEFORE any per-condition resource is created (P1 architectural review): every
+  // condition within a matrix reuses the SAME runtimeAdapter acquireSharedEvalResources already
+  // validated once upfront, but this function's own materialization work (fixture materialize,
+  // Gradle reset-to-snapshot, scratch directories) is exactly the same class of expensive,
+  // hard-to-unwind side effect acquireSharedEvalResources refuses to start before validating -- so
+  // this applies the identical fail-fast discipline locally, rather than trusting a caller never to
+  // regress it. Mirrors acquireSharedEvalResources's own un-tagged throw (line ~98): this happens
+  // before the try block below and before any cleanup accumulator exists for this cell, so there is
+  // nothing yet for tagIncidentPhase's rollback context to describe.
+  const { ok: adapterOk, errors: adapterErrors } = validateRuntimeAdapter(runtimeAdapter);
+  if (!adapterOk) {
+    throw new Error(`invalid runtime adapter: ${adapterErrors.map((e) => `${e.field}:${e.code}`).join(', ')}`);
+  }
   let fixtureDir;
   try {
     const materialized = materializeFixture(previousFixtureDir);

@@ -117,6 +117,7 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
       expect(record.execution_profile).toEqual({
         id: 'strict-policy-v1', sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
         isolation_kind: 'runtime-policy-hooks', isolation_attestation_sha256: null, network_mode: 'runtime-default',
+        isolation_attestation_required: false, policy_mode: 'required', required_capabilities: ['softPermissionDenial'],
       });
       expect(record.skill_observation.delivery_mode).toBe(record.condition === 'current-skill' ? 'runtime-extension' : 'none');
       expect(record.skill_observation.treatment_size.prompt_sha256).toMatch(/^[0-9a-f]{64}$/);
@@ -488,6 +489,7 @@ describe('cli.mjs smoke -- real subprocess against fake claude (no live API cost
       expect(record.execution_profile).toEqual({
         id: 'strict-policy-v1', sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
         isolation_kind: 'runtime-policy-hooks', isolation_attestation_sha256: null, network_mode: 'runtime-default',
+        isolation_attestation_required: false, policy_mode: 'required', required_capabilities: ['softPermissionDenial'],
       });
       expect(record.skill_observation.delivery_mode).toBe(record.condition === 'current-skill' ? 'runtime-extension' : 'none');
       expect(record.skill_observation.treatment_size.prompt_sha256).toMatch(/^[0-9a-f]{64}$/);

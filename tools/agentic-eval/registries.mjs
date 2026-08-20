@@ -23,7 +23,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { CAPABILITY_KEYS, USAGE_DIMENSIONS } from './runtimes/contract.mjs';
+import { USAGE_DIMENSIONS, REQUIRED_CAPABILITY_KEYS, validateRuntimeAdapter } from './runtimes/contract.mjs';
 import { canonicalJsonSha256 } from './canonical-json.mjs';
 import claudeCodeRuntimeAdapter from './runtimes/claude-code.mjs';
 
@@ -31,21 +31,65 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /** The static, hand-written runtime_id -> adapter map -- the ONE place besides
  * runtimes/claude-code.mjs itself where that module's default export is consumed. Never built by
- * interpreting a registry-supplied module path/string. */
-export const ADAPTERS_BY_RUNTIME_ID = Object.freeze({
+ * interpreting a registry-supplied module path/string. Built on a NULL-PROTOTYPE base (never a
+ * bare `{}`) so a bracket lookup can never resolve an inherited Object.prototype member (e.g.
+ * `ADAPTERS_BY_RUNTIME_ID['constructor']`) instead of correctly reporting "absent" -- "constructor"
+ * is the one Object.prototype member name that also happens to be a syntactically valid
+ * lowercase-only runtime id (every other inherited name is camelCase and already fails checkId's
+ * regex). getAdapterForRuntimeId below is the one safe accessor for THIS map and for any
+ * caller-supplied test override, which may not itself be null-prototype. */
+export const ADAPTERS_BY_RUNTIME_ID = Object.freeze(Object.assign(Object.create(null), {
   'claude-code': claudeCodeRuntimeAdapter,
-});
+}));
+
+/** The one own-property-safe accessor for an `adaptersByRuntimeId` map -- used for BOTH the real,
+ * null-prototype `ADAPTERS_BY_RUNTIME_ID` constant and any test-supplied override (which, unlike
+ * the constant, may be an ordinary `{}` literal and so cannot be trusted to reject prototype-chain
+ * lookups on its own). Returns `undefined` for any name that is not the map's own property, even
+ * one inherited from `Object.prototype` -- never resolves `Object.prototype.constructor` (or any
+ * other inherited member) as if it were a registered adapter.
+ *
+ * Codex round 3, Finding 2: an adapter registered under a runtime_id key was previously trusted
+ * verbatim -- neither its own full contract (validateRuntimeAdapter) nor its own self-reported
+ * `.id` matching the key it is registered under was ever checked at the point of lookup (only
+ * `defineRuntimeAdapter`, at module-load time, validated the ONE real default export). A future
+ * wiring bug -- the wrong adapter object registered under a runtime_id -- would otherwise silently
+ * resolve and label a session under a DIFFERENT runtime than the one whose adapter is actually
+ * driving it. Both checks happen HERE, the one shared accessor every lookup site (buildRegistries'
+ * 3 loops, resolveSelection's own lookup) already goes through, so the guarantee applies
+ * everywhere at once rather than needing to be repeated per call site. */
+function getAdapterForRuntimeId(adaptersByRuntimeId, runtimeId) {
+  if (!Object.prototype.hasOwnProperty.call(adaptersByRuntimeId, runtimeId)) return undefined;
+  const adapter = adaptersByRuntimeId[runtimeId];
+  const { ok } = validateRuntimeAdapter(adapter);
+  if (!ok) return undefined;
+  if (adapter.id !== runtimeId) return undefined;
+  return adapter;
+}
+
+/** Calls `adapter[methodName](entry)`, catching ANY exception and treating it as a fail-closed
+ * `false` (Section: "una excepción del adapter falla cerrado con error saneado") -- an adapter's
+ * supportsModelConfiguration/supportsExecutionProfile must never be able to crash registry
+ * validation or selection resolution, and a thrown error's own message/stack (which could carry
+ * adapter-internal content) must never leak into a validation/selection error string. Only a
+ * literal `=== true` return counts as support; any other return value (including a truthy
+ * non-boolean) is treated as unsupported. */
+function callAdapterSupportCheck(adapter, methodName, entry) {
+  try {
+    return adapter[methodName](entry) === true;
+  } catch {
+    return false;
+  }
+}
 
 const ID_RE = /^[a-z0-9][a-z0-9-]*$/;
 
-// Only the BOOLEAN-valued capability keys are ever meaningful as a "required capability" -- an
-// array/object-valued capability (observationSources, skillDeliveryModes, usageDimensions) has no
-// single true/false to require; usageDimensions specifically has its own dedicated model-entry
-// field (usage_dimensions) for exactly that purpose.
-const REQUIRABLE_CAPABILITY_KEYS = Object.freeze(['structuredTranscript', 'correlatedToolResults', 'skillStateEvidence', 'softPermissionDenial']);
-for (const k of REQUIRABLE_CAPABILITY_KEYS) {
-  if (!CAPABILITY_KEYS.includes(k)) throw new Error(`registries.mjs: REQUIRABLE_CAPABILITY_KEYS references unknown capability "${k}"`);
-}
+// P1 architectural review (Codex round 2): was a local copy here, independently duplicated from
+// schemas.mjs's own (differently-scoped, wrongly-permissive) required-capabilities check --
+// REQUIRED_CAPABILITY_KEYS is now the ONE shared vocabulary both modules consume from
+// contract.mjs, so a registry-accepted required_capabilities value and a schema-accepted one can
+// never silently diverge.
+const REQUIRABLE_CAPABILITY_KEYS = REQUIRED_CAPABILITY_KEYS;
 
 const MODEL_VENDOR_VALUES = Object.freeze(['anthropic', 'openai', 'google', 'microsoft', 'other']);
 const ISOLATION_KIND_VALUES = Object.freeze(['runtime-policy-hooks', 'external-sandbox', 'runtime-native-sandbox']);
@@ -278,12 +322,6 @@ export function buildRegistries({ runtimes, models, executionProfiles }, { adapt
       modelDefaultCountByRuntime.set(entry.runtime_id, (modelDefaultCountByRuntime.get(entry.runtime_id) ?? 0) + 1);
     }
   });
-  const modelRuntimeIdsSeen = new Set(models.filter((e) => isPlainObject(e) && typeof e.runtime_id === 'string').map((e) => e.runtime_id));
-  for (const runtimeId of modelRuntimeIdsSeen) {
-    const count = modelDefaultCountByRuntime.get(runtimeId) ?? 0;
-    if (count !== 1) fail(errors, `models: runtime "${runtimeId}" must have exactly one enabled default model, found ${count}`);
-  }
-
   // --- execution profiles ---
   const seenProfileIds = new Set();
   const profileDefaultCountByRuntime = new Map();
@@ -315,22 +353,41 @@ export function buildRegistries({ runtimes, models, executionProfiles }, { adapt
       }
     }
   });
-  const profileRuntimeIdsSeen = new Set();
-  for (const p of executionProfiles) {
-    if (isPlainObject(p) && Array.isArray(p.supported_runtime_ids)) {
-      for (const rid of p.supported_runtime_ids) if (typeof rid === 'string') profileRuntimeIdsSeen.add(rid);
-    }
-  }
-  for (const runtimeId of profileRuntimeIdsSeen) {
-    const count = profileDefaultCountByRuntime.get(runtimeId) ?? 0;
-    if (count !== 1) fail(errors, `executionProfiles: runtime "${runtimeId}" must have exactly one enabled default execution profile, found ${count}`);
+  // Driven by the CANONICAL enabled-runtimes list (the `runtimes` array itself), never by which
+  // runtime_ids merely happen to appear in models/executionProfiles -- an enabled runtime with
+  // zero models or zero execution profiles referencing it at all must still fail here, not pass
+  // for lack of anything to iterate.
+  const enabledRuntimeIds = runtimes
+    .filter((e) => isPlainObject(e) && e.enabled === true && typeof e.runtime_id === 'string')
+    .map((e) => e.runtime_id);
+  for (const runtimeId of enabledRuntimeIds) {
+    const modelCount = modelDefaultCountByRuntime.get(runtimeId) ?? 0;
+    if (modelCount !== 1) fail(errors, `models: runtime "${runtimeId}" must have exactly one enabled default model, found ${modelCount}`);
+    const profileCount = profileDefaultCountByRuntime.get(runtimeId) ?? 0;
+    if (profileCount !== 1) fail(errors, `executionProfiles: runtime "${runtimeId}" must have exactly one enabled default execution profile, found ${profileCount}`);
   }
 
   if (errors.length > 0) throw new Error(`registries.mjs: invalid registries -- ${errors.join('; ')}`);
 
+  // Codex round 3, Finding 4: build + freeze the FINAL candidate structure NOW, before any
+  // adapter predicate ever runs -- an adapter's supportsModelConfiguration/supportsExecutionProfile
+  // implementation must never be able to mutate the entry it was just asked about and have that
+  // mutation silently become what gets published. Every loop below reads (and passes to adapter
+  // predicates) these ALREADY-FROZEN entries; the function's own return value is exactly this same
+  // object, never a second, later-built clone that could reflect a mutation the predicate call
+  // caused on some other, still-mutable copy. A mutation attempt against a frozen object throws
+  // (ES modules are always strict mode) -- callAdapterSupportCheck's existing fail-closed
+  // try/catch already treats that as "does not support", so a misbehaving adapter causes the
+  // offending entry to be rejected, never silently accepted with the mutated value.
+  const candidate = deepFreeze({
+    runtimes: runtimes.map((e) => ({ ...e })),
+    models: models.map((e) => ({ ...e, required_capabilities: [...e.required_capabilities], usage_dimensions: [...e.usage_dimensions] })),
+    executionProfiles: executionProfiles.map((e) => ({ ...e, supported_runtime_ids: [...e.supported_runtime_ids], required_capabilities: [...e.required_capabilities] })),
+  });
+
   // --- cross-validate against the registered adapter (only reachable once every shape check above is clean) ---
-  for (const entry of models) {
-    const adapter = adaptersByRuntimeId[entry.runtime_id];
+  for (const entry of candidate.models) {
+    const adapter = getAdapterForRuntimeId(adaptersByRuntimeId, entry.runtime_id);
     if (adapter == null) {
       fail(errors, `models: runtime "${entry.runtime_id}" has no registered adapter in ADAPTERS_BY_RUNTIME_ID`);
       continue;
@@ -345,10 +402,17 @@ export function buildRegistries({ runtimes, models, executionProfiles }, { adapt
         fail(errors, `models[${entry.runtime_id}/${entry.model_id}]: usage dimension "${dim}" is not declared by the "${entry.runtime_id}" adapter`);
       }
     }
+    // P1 architectural review (Codex round 2): required_capabilities/usage_dimensions being
+    // individually satisfied does NOT mean the adapter actually APPLIES this model's own full
+    // configuration (e.g. default_reasoning_mode) -- only ENABLED entries are checked; a disabled
+    // entry is kept for history without needing to be currently implementable.
+    if (entry.enabled === true && !callAdapterSupportCheck(adapter, 'supportsModelConfiguration', entry)) {
+      fail(errors, `models[${entry.runtime_id}/${entry.model_id}]: the "${entry.runtime_id}" adapter does not support this model's configuration (supportsModelConfiguration returned false)`);
+    }
   }
-  for (const entry of executionProfiles) {
+  for (const entry of candidate.executionProfiles) {
     for (const runtimeId of entry.supported_runtime_ids) {
-      const adapter = adaptersByRuntimeId[runtimeId];
+      const adapter = getAdapterForRuntimeId(adaptersByRuntimeId, runtimeId);
       if (adapter == null) {
         fail(errors, `executionProfiles[${entry.id}]: runtime "${runtimeId}" has no registered adapter in ADAPTERS_BY_RUNTIME_ID`);
         continue;
@@ -358,17 +422,44 @@ export function buildRegistries({ runtimes, models, executionProfiles }, { adapt
           fail(errors, `executionProfiles[${entry.id}]: required capability "${cap}" is not true on the "${runtimeId}" adapter`);
         }
       }
+      // Same discipline as the model check above: capability satisfaction is necessary but not
+      // sufficient -- e.g. sandboxed-unrestricted-v1 can trivially satisfy required_capabilities:[]
+      // while the adapter still never actually establishes the sandbox/network isolation the
+      // profile's own isolation_kind/network_mode claim. Only ENABLED entries are checked.
+      if (entry.enabled === true && !callAdapterSupportCheck(adapter, 'supportsExecutionProfile', entry)) {
+        fail(errors, `executionProfiles[${entry.id}]: the "${runtimeId}" adapter does not support this execution profile's configuration (supportsExecutionProfile returned false)`);
+      }
+    }
+  }
+  // Every ENABLED runtime needs its own adapter, independent of whether it happens to be
+  // referenced by any model or execution profile -- an orphaned enabled runtime with neither must
+  // still be flagged here, not silently accepted for lack of anything else to iterate.
+  for (const runtimeId of enabledRuntimeIds) {
+    if (getAdapterForRuntimeId(adaptersByRuntimeId, runtimeId) == null) {
+      fail(errors, `runtimes: enabled runtime "${runtimeId}" has no registered adapter in ADAPTERS_BY_RUNTIME_ID`);
     }
   }
 
   if (errors.length > 0) throw new Error(`registries.mjs: invalid registries -- ${errors.join('; ')}`);
 
-  return deepFreeze({
-    runtimes: runtimes.map((e) => ({ ...e })),
-    models: models.map((e) => ({ ...e, required_capabilities: [...e.required_capabilities], usage_dimensions: [...e.usage_dimensions] })),
-    executionProfiles: executionProfiles.map((e) => ({ ...e, supported_runtime_ids: [...e.supported_runtime_ids], required_capabilities: [...e.required_capabilities] })),
-  });
+  // Codex round 3, Finding 3: marks this EXACT object as having already passed the full
+  // validation this function performs, so resolveSelection can trust it without redundantly
+  // rebuilding/revalidating it on every call -- see resolveSelection's own doc comment. A WeakSet
+  // (not a property on the object itself) so the marker can never itself be observed, copied, or
+  // spoofed by constructing a look-alike object.
+  VALIDATED_REGISTRIES.add(candidate);
+  return candidate;
 }
+
+// Codex round 3, Finding 3: the ONE marker of "this exact registries object already passed
+// buildRegistries' full validation" -- keyed by object identity (WeakSet), never by a property on
+// the object itself (which a caller could otherwise forge by copying it onto an unvalidated
+// look-alike). Fully module-private -- no export, test-only or otherwise (Codex round 3 audit):
+// the WeakSet is an implementation detail of the fast-path/slow-path equivalence resolveSelection
+// provides, never itself a public contract. Tests verify the OBSERVABLE behavior this exists to
+// support (resolveSelection's own selection output, identical whether the registries object was
+// already validated or gets revalidated inline), not this internal marker's own membership.
+const VALIDATED_REGISTRIES = new WeakSet();
 
 /** Validates one registry JSON file's own top-level container shape -- exactly `{schema: 1,
  * [arrayKey]: [...]}`, no more, no fewer keys. Exported so this exact-top-level-shape contract
@@ -429,6 +520,24 @@ function realRegistries() {
  * @returns {{ok:true, selection:{runtime:object, model:object, executionProfile:object, adapter:object, executionProfileSha256:string}} | {ok:false, reason:string}}
  */
 export function resolveSelection({ runtimeId = null, modelId = null, executionProfileId = null, registries = realRegistries() } = {}) {
+  // Codex round 3, Finding 3: a `registries` object this function has not itself already fully
+  // validated (tracked by VALIDATED_REGISTRIES, set only by buildRegistries' own return) is routed
+  // through buildRegistries NOW -- its full shape/enum/cross-reference/capability/adapter-support
+  // validation, never a second, narrower, independently-drifting partial re-check (the previous
+  // approach here only re-ran the 2 adapter-support predicates, which let a raw registries object
+  // naming an unknown required_capabilities/usage_dimensions value still resolve successfully).
+  // An already-validated object -- the overwhelmingly common real case: every production caller
+  // resolves through loadRegistries -> buildRegistries first -- is used as-is, never redundantly
+  // rebuilt. Always the real ADAPTERS_BY_RUNTIME_ID (this function has never accepted a caller
+  // override for it, matching its own adapter lookup below).
+  if (!VALIDATED_REGISTRIES.has(registries)) {
+    try {
+      registries = buildRegistries({ runtimes: registries.runtimes, models: registries.models, executionProfiles: registries.executionProfiles });
+    } catch (err) {
+      return { ok: false, reason: `registries failed full validation: ${err.message}` };
+    }
+  }
+
   let runtime;
   if (runtimeId != null) {
     runtime = registries.runtimes.find((r) => r.runtime_id === runtimeId);
@@ -464,8 +573,19 @@ export function resolveSelection({ runtimeId = null, modelId = null, executionPr
     [executionProfile] = defaults;
   }
 
-  const adapter = ADAPTERS_BY_RUNTIME_ID[runtime.runtime_id];
+  const adapter = getAdapterForRuntimeId(ADAPTERS_BY_RUNTIME_ID, runtime.runtime_id);
   if (adapter == null) return { ok: false, reason: `no adapter registered for runtime "${runtime.runtime_id}"` };
+
+  // No separate supportsModelConfiguration/supportsExecutionProfile re-check needed here (Codex
+  // round 3, Finding 3 -- superseding the P1 architectural review round-2 partial re-check this
+  // replaced): `registries` is now GUARANTEED to have passed buildRegistries' own full validation
+  // (the routing above either just ran it or trusted a prior VALIDATED_REGISTRIES-tracked result),
+  // which already required EVERY enabled model/execution-profile entry to satisfy these exact
+  // predicates against the adapter registered for its own runtime_id/supported_runtime_ids --
+  // `model`/`executionProfile` here are both confirmed enabled (the resolution branches above
+  // never select a disabled entry) and scoped to this SAME `runtime.runtime_id`, so they were
+  // already checked against this SAME adapter. A second, narrower re-check here would only ever
+  // be a second, independently-drifting notion of the same guarantee.
 
   return {
     ok: true,

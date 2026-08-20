@@ -1039,7 +1039,10 @@ function buildRunRecord({
     // false) -- a future sandboxed-unrestricted-v1 profile would populate this from a real
     // attestation artifact instead, never from this function guessing one.
     isolation_attestation_sha256: null,
+    isolation_attestation_required: selection.executionProfile.isolation_attestation_required,
     network_mode: selection.executionProfile.network_mode,
+    policy_mode: selection.executionProfile.policy_mode,
+    required_capabilities: selection.executionProfile.required_capabilities,
   };
   // skill_observation: delivery/availability/activation come from the SAME observation.skill
   // facts the legacy skill_available/skill_invocation_attempted/skill_invoked fields already read
@@ -2067,30 +2070,38 @@ async function finalizeAndWriteMatrixRecords({
   const eligible = scenarioMatrixIsBenchmarkEligible(records, gate);
   for (const record of records) record.benchmark_eligible = eligible;
 
-  // Accepted-audit sidecar work -- ONLY reached once gate.ok is confirmed true. buildSidecarsFn
-  // builds+finalizes+attaches record.accepted_audit for every record (cmdRun supplies the
-  // closure); a failure here means promotion cannot proceed (the sidecar contract can't be
-  // satisfied), but it is never confused with a gate rejection -- writeRejectedRunDiagnostics is
-  // never called for this failure class, matching how a privacy-check-refusal failure below is
-  // also never treated as a rejection.
-  let sidecarTexts = null;
-  if (buildSidecarsFn != null) {
-    const sidecarBuild = await buildSidecarsFn(records, conditionResults);
-    if (!sidecarBuild.ok) {
-      return { ok: false, reason: `Cannot promote: ${sidecarBuild.reason}` };
-    }
-    sidecarTexts = sidecarBuild.sidecarTexts;
-  }
-
+  // Validate the ORIGINAL, unredacted records FIRST (Codex round 2, Finding 3) -- catches a
+  // producer-generated defect (e.g. an invalid enum value) BEFORE any redaction rule ever touches
+  // it. Without this, a private rule that coincidentally launders an invalid value into a valid
+  // one would silently promote a record attributing a state the producer never actually
+  // generated -- schema validation would only ever see the POST-redaction (laundered) value.
+  // accepted_audit genuinely does not exist yet at this point (buildSidecarsFn has not run) --
+  // validated here against a placeholder that is structurally valid but never the real sidecar
+  // hash (schema/relative_path/sha256 are the only 3 keys validateRun's own shape check inspects;
+  // relative_path is computed for real since it is a pure function of run_id alone), so this pass
+  // can check every OTHER field without a false "accepted_audit missing" rejection that would
+  // otherwise fire on every scenario record, always, regardless of any real defect. The placeholder
+  // is local to this validation call only -- never written anywhere, never mixed into `records`.
   for (const [i, record] of records.entries()) {
-    const { errors } = validateRun(record);
+    const needsPlaceholderAudit = record.schema >= 5 && record.run_kind === 'scenario' && record.accepted_audit == null;
+    const preValidationRecord = needsPlaceholderAudit
+      ? { ...record, accepted_audit: { schema: LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA, relative_path: acceptedAuditRelativePathFor(record.run_id), sha256: '0'.repeat(64) } }
+      : record;
+    const { errors } = validateRun(preValidationRecord);
     if (errors.length > 0) {
-      return { ok: false, reason: `Run record [${i}] (repetition ${record.repetition_index}, ${record.condition}) failed schema validation: ${JSON.stringify(errors)}` };
+      return { ok: false, reason: `Run record [${i}] (repetition ${record.repetition_index}, ${record.condition}) failed pre-redaction schema validation: ${JSON.stringify(errors)}` };
     }
   }
 
-  const redactedRecords = [];
-  const redactedTexts = [];
+  // Redact FIRST -- before any accepted-audit/provenance work ever touches a record (P1
+  // architectural review). A sidecar's run_provenance_sha256 (and every other accepted_audit
+  // field) must be computed from the record that actually gets promoted: the redacted one.
+  // Building the sidecar from the UNREDACTED record, then redacting afterward (the old order),
+  // made final cross-validation structurally impossible to ever pass for a record where a
+  // private-pattern rule happens to touch a provenance-bound field -- the stored hash would
+  // forever disagree with what a re-read of the final, redacted record recomputes.
+  let redactedRecords = [];
+  let redactedTexts = [];
   try {
     for (const record of records) {
       const { redactedObj, redactedText } = assertCleanOrThrowObject(record, { privatePatternsFile });
@@ -2100,22 +2111,65 @@ async function finalizeAndWriteMatrixRecords({
   } catch (err) {
     return { ok: false, reason: `Privacy check refused to clear evidence for writing: ${err.message}` };
   }
+
+  // Accepted-audit sidecar work -- ONLY reached once gate.ok is confirmed true, and now built FROM
+  // the already-redacted records. buildSidecarsFn builds+finalizes+attaches record.accepted_audit
+  // for every record (cmdRun supplies the closure, mutating each redactedRecords[i] in place); a
+  // failure here means promotion cannot proceed (the sidecar contract can't be satisfied), but it
+  // is never confused with a gate rejection -- writeRejectedRunDiagnostics is never called for
+  // this failure class, matching how a privacy-check-refusal failure above is also never treated
+  // as a rejection.
+  let sidecarTexts = null;
+  if (buildSidecarsFn != null) {
+    const sidecarBuild = await buildSidecarsFn(redactedRecords, conditionResults);
+    if (!sidecarBuild.ok) {
+      return { ok: false, reason: `Cannot promote: ${sidecarBuild.reason}` };
+    }
+    sidecarTexts = sidecarBuild.sidecarTexts;
+    // accepted_audit was just attached in place onto each redactedRecords[i] -- re-redact-and-
+    // verify (never merely re-serialize) so redactedTexts keeps the SAME leak-verified guarantee
+    // for the newly-added field, rather than assuming it's safe because it "looks like" only a
+    // schema number/path/hash. accepted_audit's own 3 fields are never provenance-bound (see this
+    // function's own header on why provenance excludes accepted_audit), so this second pass over
+    // an already-redacted object cannot itself perturb anything the sidecar already hashed.
+    //
+    // Codex round 2, Finding 2: BOTH results of this second pass must replace redactedRecords AND
+    // redactedTexts together -- keeping only the fresh redactedText while discarding the fresh
+    // redactedObj (the old bug) left every check below (schema validation, cross-validation)
+    // running against the STALE, pre-second-pass object, while the ACTUAL text about to be written
+    // to disk came from a DIFFERENT, more-redacted object. A private rule that happens to match
+    // something inside accepted_audit itself (e.g. its own relative_path) would then validate one
+    // object while persisting another -- the exact class of bug this reassignment closes.
+    try {
+      const updatedRedactedRecords = [];
+      const updatedRedactedTexts = [];
+      for (const record of redactedRecords) {
+        const { redactedObj, redactedText } = assertCleanOrThrowObject(record, { privatePatternsFile });
+        updatedRedactedRecords.push(redactedObj);
+        updatedRedactedTexts.push(redactedText);
+      }
+      redactedRecords = updatedRedactedRecords;
+      redactedTexts = updatedRedactedTexts;
+    } catch (err) {
+      return { ok: false, reason: `Privacy check refused to clear evidence for writing: ${err.message}` };
+    }
+  }
+
   for (const [i, record] of redactedRecords.entries()) {
     const { errors } = validateRun(record);
     if (errors.length > 0) {
-      return { ok: false, reason: `Redacted run record [${i}] failed schema validation (redaction corrupted a field) -- refusing to write: ${JSON.stringify(errors)}` };
+      return { ok: false, reason: `Run record [${i}] (repetition ${record.repetition_index}, ${record.condition}) failed schema validation: ${JSON.stringify(errors)}` };
     }
   }
   // accepted_audit binding + cross-validation (accepted-run-observability PR, privacy/binding
   // steps 7-8): sidecarTexts[i] is the ALREADY build->redact->hash'd sidecar text buildSidecarsFn
-  // produced above. Here, AFTER the record's own redact+revalidate cycle, re-hash the exact
-  // sidecar text one more time and cross-validate the FINAL redacted record against it -- catches
-  // a redaction pass that somehow touched accepted_audit's own sha256/relative_path (never
-  // expected in practice, since neither is a private-pattern-shaped value, but this is the one
-  // point in the pipeline that can still prove the binding survived intact before anything is
-  // written). This can only ever run on the confirmed gate-passing path now, so a mismatch here
-  // is unambiguously a "cannot promote" failure, never confusable with (or reported instead of) a
-  // gate rejection.
+  // produced above, built from the already-redacted record. Cross-validate the FINAL redacted
+  // record against it -- catches a redaction pass that somehow touched accepted_audit's own
+  // sha256/relative_path (never expected in practice, since neither is a private-pattern-shaped
+  // value, but this is the one point in the pipeline that can still prove the binding survived
+  // intact before anything is written). This can only ever run on the confirmed gate-passing path
+  // now, so a mismatch here is unambiguously a "cannot promote" failure, never confusable with (or
+  // reported instead of) a gate rejection.
   if (sidecarTexts != null) {
     for (const [i, record] of redactedRecords.entries()) {
       const actualSha256 = createHash('sha256').update(sidecarTexts[i], 'utf8').digest('hex');

@@ -14,9 +14,19 @@
 // never raw adapter/observation content (paths, env values, prompts, session IDs, transcript text).
 import { createHmac } from 'node:crypto';
 
+// supportsModelConfiguration/supportsExecutionProfile (P1 architectural review, Codex round 2):
+// registries.mjs previously accepted ANY well-shaped model/execution-profile registry entry
+// (e.g. a sandbox+restricted-network+attestation-required profile, or a model requesting
+// default_reasoning_mode:"max") without ever checking whether the adapter that will actually run
+// it implements that configuration -- buildInvocation only ever receives {prompt, model,
+// settingsPath}, so none of those treatments were ever really applied. Both methods are pure,
+// synchronous, fail-closed predicates: given one registry entry object, they answer "would this
+// adapter genuinely honor this configuration if selected", never performing I/O or throwing for
+// an ordinary malformed/unrecognized entry (an adapter that DOES throw is caught by the caller --
+// buildRegistries/resolveSelection -- and treated as a hard rejection with a sanitized error).
 export const ADAPTER_KEYS = Object.freeze([
-  'id', 'protocolVersion', 'capabilities', 'probeInstallation', 'preflight',
-  'prepareIsolatedHome', 'prepareSkillDelivery', 'buildInvocation',
+  'id', 'protocolVersion', 'capabilities', 'supportsModelConfiguration', 'supportsExecutionProfile',
+  'probeInstallation', 'preflight', 'prepareIsolatedHome', 'prepareSkillDelivery', 'buildInvocation',
   'collectObservationSources', 'normalizeObservations', 'redactRuntimeDiagnostics',
 ]);
 
@@ -24,6 +34,20 @@ export const CAPABILITY_KEYS = Object.freeze([
   'observationSources', 'structuredTranscript', 'correlatedToolResults',
   'skillDeliveryModes', 'skillStateEvidence', 'usageDimensions', 'softPermissionDenial',
 ]);
+
+// The BOOLEAN-valued subset of CAPABILITY_KEYS -- the only members that can ever be meaningfully
+// "required" by a model/execution-profile registry entry's own required_capabilities array. The
+// other 3 CAPABILITY_KEYS members (observationSources, skillDeliveryModes, usageDimensions) are
+// array-valued: an adapter either supports a given VALUE within them (checked separately, e.g.
+// usage_dimensions against capabilities.usageDimensions) or it doesn't, but there is no single
+// true/false a registry entry could require of the whole array. The ONE shared vocabulary:
+// registries.mjs's buildRegistries and schemas.mjs's v6 execution_profile validator both consume
+// this exact constant (never an independently-drifting local copy), so a registry-accepted
+// required_capabilities value and a schema-accepted one can never silently diverge.
+export const REQUIRED_CAPABILITY_KEYS = Object.freeze(['structuredTranscript', 'correlatedToolResults', 'skillStateEvidence', 'softPermissionDenial']);
+for (const k of REQUIRED_CAPABILITY_KEYS) {
+  if (!CAPABILITY_KEYS.includes(k)) throw new Error(`contract.mjs: REQUIRED_CAPABILITY_KEYS references unknown capability "${k}"`);
+}
 
 // The closed, ORDERED universe of usage dimensions -- a capability's own usageDimensions must be
 // an ordered subset of exactly this sequence (never a runtime-specific superset).
@@ -189,7 +213,7 @@ function validateCapabilities(caps, errors) {
 }
 
 /**
- * Validates a runtime adapter object against the closed 11-key contract. Never throws; returns
+ * Validates a runtime adapter object against the closed 13-key contract. Never throws; returns
  * `{ok, errors}` where every error is a closed `{field, code}` pair -- no adapter content
  * (paths/env/prompts/etc.) ever appears in `errors`, since only field NAMES and short codes are
  * recorded, never values.

@@ -335,7 +335,7 @@ describe('runSingleCondition -- raw never rides on the thrown error once persist
     const fixtureDir = mkdtempSync(path.join(os.tmpdir(), 'aemr-normalize-throw-fixture-'));
     const RAW_MARKER = '{"type":"synthetic-marker-that-must-never-leak-onto-the-error-object"}';
 
-    // A minimal, fully-synthetic adapter satisfying the full 11-key contract -- collectObservationSources
+    // A minimal, fully-synthetic adapter satisfying the full 13-key contract -- collectObservationSources
     // returns a real raw capture (so persistSpawnOutcome genuinely persists it), then
     // normalizeObservations deliberately throws, simulating a genuine parse/normalize failure
     // AFTER raw is already safe.
@@ -346,6 +346,8 @@ describe('runSingleCondition -- raw never rides on the thrown error once persist
         observationSources: ['fake'], structuredTranscript: true, correlatedToolResults: true,
         skillDeliveryModes: [], skillStateEvidence: true, usageDimensions: ['input'], softPermissionDenial: true,
       },
+      supportsModelConfiguration() { return true; },
+      supportsExecutionProfile() { return true; },
       async probeInstallation() { return {}; },
       async preflight() { return { ok: true, terminated: false, exitCode: 0, loggedIn: true, reasonCode: null }; },
       async prepareIsolatedHome() { return { sharedEnv: {}, settingsPath: null, cleanupPaths: [] }; },
@@ -438,6 +440,8 @@ describe('acquireSharedEvalResources -- rejects a malformed injected runtimeAdap
         observationSources: ['fake'], structuredTranscript: true, correlatedToolResults: true,
         skillDeliveryModes: [], skillStateEvidence: true, usageDimensions: ['input'], softPermissionDenial: true,
       },
+      supportsModelConfiguration() { return true; },
+      supportsExecutionProfile() { return true; },
       async probeInstallation() { return {}; },
       async preflight() { return { ok: true, terminated: false, exitCode: 0, loggedIn: true, reasonCode: null }; },
       async prepareIsolatedHome() { return { sharedEnv: {}, settingsPath: null, cleanupPaths: [] }; },
@@ -465,6 +469,74 @@ describe('acquireSharedEvalResources -- rejects a malformed injected runtimeAdap
   }, 30000);
 });
 
+// P1 architectural review: runSingleCondition runs once PER CONDITION within a matrix (unlike
+// acquireSharedEvalResources above, validated once per whole matrix/pair) and previously
+// materialized its own fixture, reset Gradle to its snapshot, and wiped/recreated its per-condition
+// KMP_EVAL_TEMP_HOME scratch directory BEFORE ever touching runtimeAdapter -- every one of those is
+// exactly the class of expensive, hard-to-unwind side effect acquireSharedEvalResources already
+// refuses to start before validating. materializeFixture is asserted directly (a call counter on
+// the injected callback) rather than diffing filesystem state, so the proof is deterministic and
+// immune to the concurrent-suite flakiness the tmpdir-diffing approach above was deliberately
+// rewritten away from.
+describe('runSingleCondition -- rejects a malformed injected runtimeAdapter BEFORE materializing the fixture, resetting Gradle, or touching scratch', () => {
+  it('an adapter missing a required method throws immediately, with materializeFixture never called', async () => {
+    const brokenAdapter = {
+      id: 'fake-broken-adapter', protocolVersion: 1,
+      capabilities: {
+        observationSources: ['fake'], structuredTranscript: true, correlatedToolResults: true,
+        skillDeliveryModes: [], skillStateEvidence: true, usageDimensions: ['input'], softPermissionDenial: true,
+      },
+      supportsModelConfiguration() { return true; },
+      supportsExecutionProfile() { return true; },
+      async probeInstallation() { return {}; },
+      async preflight() { return { ok: true, terminated: false, exitCode: 0, loggedIn: true, reasonCode: null }; },
+      async prepareIsolatedHome() { return { sharedEnv: {}, settingsPath: null, cleanupPaths: [] }; },
+      prepareSkillDelivery(baseArgv) { return baseArgv; },
+      buildInvocation() { return []; },
+      async collectObservationSources() { return { process: {}, capture: { primaryText: '', stderrText: '' }, providerSources: {} }; },
+      normalizeObservations() { return {}; },
+      // redactRuntimeDiagnostics deliberately OMITTED -- same broken shape as the
+      // acquireSharedEvalResources test above.
+    };
+
+    let materializeCalls = 0;
+    let resetGradleCalls = 0;
+    const kmpEvalTempHome = mkdtempSync(path.join(os.tmpdir(), 'aemr-invalid-adapter-home-'));
+
+    let caught = null;
+    try {
+      try {
+        await runSingleCondition({
+          condition: 'no-skill',
+          materializeFixture: () => { materializeCalls += 1; return { fixtureDir: kmpEvalTempHome }; },
+          previousFixtureDir: undefined,
+          cleanupFixtureOnce: () => {},
+          resetGradleToSnapshot: () => { resetGradleCalls += 1; },
+          kmpEvalTempHome,
+          sharedEnv: {},
+          baseArgv: [],
+          snapshotDir: null,
+          targetPluginName: 'kmp-test-runner',
+          targetSkillName: 'kmp-test-runner',
+          timeoutMs: 30000,
+          cellOrdinal: 0,
+          runtimeAdapter: brokenAdapter,
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).not.toBeNull();
+      expect(caught.message).toMatch(/invalid runtime adapter/i);
+      expect(caught.message).toMatch(/redactRuntimeDiagnostics|missing_key/);
+      expect(materializeCalls).toBe(0);
+      expect(resetGradleCalls).toBe(0);
+    } finally {
+      rmSync(kmpEvalTempHome, { recursive: true, force: true });
+    }
+  }, 30000);
+});
+
 // Post-review hardening (round 1): normalizeObservations' returned observation carries its OWN
 // self-reported runtime.{id,protocolVersion} (RUNTIME_REF_KEYS, contract.mjs) -- but nothing
 // previously cross-checked that self-reported identity against the runtimeAdapter that actually
@@ -482,6 +554,8 @@ describe('runSingleCondition -- the observation\'s self-reported runtime identit
         observationSources: ['fake'], structuredTranscript: true, correlatedToolResults: true,
         skillDeliveryModes: [], skillStateEvidence: true, usageDimensions: ['input'], softPermissionDenial: true,
       },
+      supportsModelConfiguration() { return true; },
+      supportsExecutionProfile() { return true; },
       async probeInstallation() { return {}; },
       async preflight() { return { ok: true, terminated: false, exitCode: 0, loggedIn: true, reasonCode: null }; },
       async prepareIsolatedHome() { return { sharedEnv: {}, settingsPath: null, cleanupPaths: [] }; },

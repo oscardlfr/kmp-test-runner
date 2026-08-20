@@ -45,6 +45,21 @@ function gitPlumbing(repoRoot, args) {
   return r.stdout;
 }
 
+/** Same contract as gitPlumbing, but returns the RAW stdout Buffer, never pre-decoded as UTF-8 --
+ * required for `git ls-tree -l -z`, whose path field may contain a byte sequence that is not valid
+ * UTF-8. Node's own string decoding on spawn (`encoding: 'utf8'`) would have already silently
+ * substituted U+FFFD for any such byte before this module ever gets a chance to fail closed on it;
+ * this function defers ALL decoding to the caller so it can apply a fatal decoder to exactly the
+ * path bytes of each record. */
+function gitPlumbingBuffer(repoRoot, args) {
+  const r = spawnSync('git', args, { cwd: repoRoot });
+  if (r.error) throw new Error(`git ${args.join(' ')} failed to spawn: ${r.error.message}`);
+  if (r.status !== 0) {
+    throw new Error(`git ${args.join(' ')} failed (exit ${r.status}): ${(r.stderr || Buffer.alloc(0)).toString('utf8').trim()}`);
+  }
+  return r.stdout;
+}
+
 /** UTF-8 byte length + SHA-256 of the exact canonical prompt text, before any adapter wrapping.
  * @param {string} promptText
  * @returns {{prompt_sha256: string, prompt_bytes: number}}
@@ -80,11 +95,17 @@ export function isSafeManifestPath(p) {
   return true;
 }
 
-// git ls-tree -l output, one line per entry: "<mode> <type> <sha>[ <size>]\t<path>" -- the size
-// column is right-padded/aligned by git but always whitespace-separated from the sha; a
-// non-blob (commit/tree) entry reports "-" for size under -l.
-const LS_TREE_LONG_LINE_RE = /^(\d{6}) (\S+) ([0-9a-f]{40})\s+(\S+)\t(.*)$/;
+// git ls-tree -l -z output, one NUL-terminated record per entry: "<mode> <type> <object>
+// <size>TAB<path>NUL" -- the size column is right-padded/aligned by git but always
+// whitespace-separated from the object id; a non-blob (commit/tree) entry reports "-" for size
+// under -l. This regex matches only the metadata PREFIX (before the record's own TAB byte, which
+// this module locates and strips at the byte level -- never with this regex, and never assuming
+// the path itself is free of tabs or newlines). Accepts either a SHA-1 (40 hex chars) or a SHA-256
+// (64 hex chars) object id -- Git's two supported hash algorithms -- never hardcoded to exactly 40.
+const LS_TREE_METADATA_RE = /^(\d{6}) (\S+) ([0-9a-f]{40}|[0-9a-f]{64}) +(\S+)$/;
 const REGULAR_FILE_MODES = new Set(['100644', '100755']);
+const NUL_BYTE = 0x00;
+const TAB_BYTE = 0x09;
 
 /**
  * Resolves the manifest `{path, git_blob_oid, byte_length}[]` for everything recursively under
@@ -95,6 +116,19 @@ const REGULAR_FILE_MODES = new Set(['100644', '100755']);
  * (`120000`), a submodule/gitlink (`160000`, `commit` type), or any other unexpected entry fails
  * closed immediately. Sorted explicitly by code-point path order (never relying on Git's own tree
  * ordering, which sorts as-if directory names carry a trailing separator).
+ *
+ * `-z` NUL-terminates every record and disables Git's own C-style path quoting/escaping outright,
+ * regardless of the repository's `core.quotePath` setting -- without it, a path containing a tab,
+ * a newline, a double quote, or any other "unusual" byte would be rendered as Git's own quoted
+ * escape sequence (e.g. `"has\ttab.md"`, literal backslash-t) rather than the true filename, which
+ * this module would then record as the manifest path VERBATIM, including the surrounding quotes.
+ * Records are split on the raw NUL byte and each record's own TAB byte located directly in the
+ * Buffer -- never with a text-mode regex -- specifically so a path that itself contains a tab or
+ * newline can never be mistaken for a record boundary. The path segment is decoded with a FATAL
+ * UTF-8 decoder (never Node's default lossy `Buffer#toString('utf8')`, which silently substitutes
+ * U+FFFD for an invalid byte): a path Git's object database can represent but which this process's
+ * own filesystem/locale cannot faithfully round-trip as text fails closed immediately, rather than
+ * silently recording a corrupted or colliding path.
  * @returns {{snapshot_sha256: string, snapshot_bytes: number, snapshot_file_count: number}}
  */
 export function computeSkillSnapshotArtifact({ repoRoot, sha, root }) {
@@ -103,16 +137,37 @@ export function computeSkillSnapshotArtifact({ repoRoot, sha, root }) {
   if (typeof root !== 'string' || root.length === 0) throw new TypeError('computeSkillSnapshotArtifact: root must be a non-empty string');
 
   const treeOid = gitPlumbing(repoRoot, ['rev-parse', '--verify', `${sha}:${root}`]).trim();
-  const lsOut = gitPlumbing(repoRoot, ['ls-tree', '-r', '-l', treeOid]);
+  const lsOutBuf = gitPlumbingBuffer(repoRoot, ['ls-tree', '-r', '-l', '-z', treeOid]);
 
   const manifest = [];
   const seenPaths = new Set();
-  for (const rawLine of lsOut.split('\n')) {
-    const line = rawLine.replace(/\r$/, '');
-    if (line.length === 0) continue;
-    const m = LS_TREE_LONG_LINE_RE.exec(line);
-    if (!m) throw new Error(`computeSkillSnapshotArtifact: unrecognized git ls-tree -l output line: ${JSON.stringify(line)}`);
-    const [, mode, , oid, sizeStr, entryPath] = m;
+  const utf8FatalDecoder = new TextDecoder('utf-8', { fatal: true });
+  let recordStart = 0;
+  while (recordStart < lsOutBuf.length) {
+    const nulIndex = lsOutBuf.indexOf(NUL_BYTE, recordStart);
+    const recordEnd = nulIndex === -1 ? lsOutBuf.length : nulIndex;
+    if (recordEnd === recordStart) { recordStart = recordEnd + 1; continue; }
+    const record = lsOutBuf.subarray(recordStart, recordEnd);
+    recordStart = recordEnd + 1;
+
+    const tabIndex = record.indexOf(TAB_BYTE);
+    if (tabIndex === -1) {
+      throw new Error('computeSkillSnapshotArtifact: unrecognized git ls-tree -l -z record (no TAB byte found separating metadata from path)');
+    }
+    // The metadata prefix (mode/type/object/size) is always plain ASCII, produced by Git itself --
+    // safe to decode with a plain (non-fatal) UTF-8 decode.
+    const metadataText = record.subarray(0, tabIndex).toString('utf8');
+    const m = LS_TREE_METADATA_RE.exec(metadataText);
+    if (!m) throw new Error(`computeSkillSnapshotArtifact: unrecognized git ls-tree -l -z metadata: ${JSON.stringify(metadataText)}`);
+    const [, mode, , oid, sizeStr] = m;
+
+    let entryPath;
+    try {
+      entryPath = utf8FatalDecoder.decode(record.subarray(tabIndex + 1));
+    } catch {
+      throw new Error('computeSkillSnapshotArtifact: a manifest path is not valid UTF-8');
+    }
+
     if (!REGULAR_FILE_MODES.has(mode)) {
       throw new Error(`computeSkillSnapshotArtifact: rejected non-regular entry at "${entryPath}" (mode ${mode}) under ${root}@${sha} -- symlinks, submodules, and any other unexpected tree entry are not permitted in a skill snapshot`);
     }

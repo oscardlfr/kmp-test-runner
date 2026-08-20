@@ -12,6 +12,8 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readdirSync } from 'node
 import os from 'node:os';
 import { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, resolveMeasurementScopeOrFail, nullableMetric, resolveHarnessProvenance, verifyExactCommandsSucceeded, writeRunRecordEvidence, buildRunRecord, finalizeAndWriteRecords, finalizeAndWriteMatrixRecords, findBlockingHarnessToolingDirty, isRunsRootDefault, cmdAggregate, validateRunRecordFile, SUBCOMMAND_SHAPES, discardJournalIfRedundant, buildStderrByRunId } from '../../tools/agentic-eval/cli.mjs';
 import { computePolicySha256 } from '../../tools/agentic-eval/policy-config.mjs';
+import { buildAcceptedRunAuditSidecar, finalizeAcceptedRunAuditSidecar, acceptedAuditRelativePathFor, crossValidateAcceptedRunAuditAgainstRecord } from '../../tools/agentic-eval/accepted-run-audit.mjs';
+import { canonicalJsonSha256 as canonicalJsonSha256Local } from '../../tools/agentic-eval/canonical-json.mjs';
 import { resolveSelection } from '../../tools/agentic-eval/registries.mjs';
 import { TEST_RUN_RECORD_V6_INPUTS } from './_agentic-eval-run-record-fixtures.js';
 import { withPartitionView } from '../../tools/agentic-eval/run-record-view.mjs';
@@ -2426,10 +2428,48 @@ describe('finalizeAndWriteMatrixRecords -- gate rejection precedence over sideca
     }
   });
 
+  // Codex round 2, Finding 3's pre-redaction validation pass (finalizeAndWriteMatrixRecords) now
+  // runs BEFORE this test's own target code path (the sidecar-builder-failure branch, only
+  // reachable once the gate ACCEPTS) -- minimalScenarioRecord is deliberately incomplete (its own
+  // comment: "only actually needed by buildRejectionDiagnostics's own narrower rejection-record
+  // schema"), which is fine for the 2 sibling tests above (both use rejectingGate, returning
+  // BEFORE pre-redaction validation is ever reached) but not for this one, which needs a genuinely
+  // schema-complete pair to exercise the ACCEPTING path at all. Built via the real buildRunRecord +
+  // TEST_RUN_RECORD_V6_INPUTS seam, matching the sibling "provenance-bound field redacted" describe
+  // block's own realV6ScenarioRecord pattern -- not shared across describe blocks (this file's own
+  // established convention), so duplicated locally rather than hoisted.
+  function completeScenarioMatrix() {
+    const shared = {
+      runKind: 'scenario', daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
+      projectAlias: 'test-gate-precedence-project', projectCommit: 'd'.repeat(40), projectUrl: null,
+      family: 'test-only', privacyStatus: 'public', seed: 1, repetitionIndex: 0,
+      gradeResult: {
+        expectedOutcomeMatched: false, success: false, firstUsefulSignalEventIndex: null,
+        testInvocationsTotal: 0, retries: 0, harnessEvidenceAmbiguous: false,
+        checks: GRADING_CHECK_NAMES.map((name) => ({ name, passed: true, detail: 'synthetic', evidence_event_indices: [] })),
+      },
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
+      ...TEST_RUN_RECORD_V6_INPUTS,
+    };
+    const startedAt = new Date('2026-01-01T00:00:00.000Z');
+    const endedAt = new Date('2026-01-01T00:00:01.000Z');
+    return [
+      buildRunRecord({
+        ...shared, conditionResult: { observation: minimalObservation(), startedAt, endedAt, cellOrdinal: 0 },
+        condition: 'current-skill', scenarioId: 'test-gate-precedence', skillSourceSha: 'a'.repeat(40), orderIndex: 0,
+      }),
+      buildRunRecord({
+        ...shared, conditionResult: { observation: minimalObservation(), startedAt, endedAt, cellOrdinal: 1 },
+        condition: 'no-skill', scenarioId: 'test-gate-precedence', skillSourceSha: null, orderIndex: 1,
+      }),
+    ];
+  }
+
   it('an ACCEPTED matrix promotes NOTHING when the sidecar builder fails, and reports why', async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'aec-gate-precedence-accept-fail-'));
     try {
-      const records = twoCellMatrix();
+      const records = completeScenarioMatrix();
       // cellOrdinal stamped on each -- captureOrdinalByRunId (cli.mjs) now derives from
       // conditionResult.cellOrdinal, never array position (Codex-audit fix, PR #418).
       const conditionResults = [{ observation: minimalObservation(), cellOrdinal: 0 }, { observation: minimalObservation(), cellOrdinal: 1 }];
@@ -2437,11 +2477,247 @@ describe('finalizeAndWriteMatrixRecords -- gate rejection precedence over sideca
       const result = await finalizeAndWriteMatrixRecords({
         runKind: 'scenario', records, conditionResults, hardGateFn: acceptingGate,
         repeats: 1, runsRootOverride: dir, buildSidecarsFn: alwaysFailingSidecarBuilder,
-        transcriptsByRunId: { 'scenario-current-skill-syn0001': '', 'scenario-no-skill-syn0002': '' },
+        transcriptsByRunId: { [records[0].run_id]: '', [records[1].run_id]: '' },
       });
       expect(result.ok).toBe(false);
       expect(result.reason).toContain('sidecar builder should never be invoked for a rejected matrix');
       expect(existsSync(path.join(dir, 'agentic-eval-scenario'))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// P1 architectural review: redaction must happen BEFORE the accepted-audit sidecar/provenance is
+// built FROM the record, never after -- otherwise a redaction pass that touches a
+// RUN_PROVENANCE_PROJECTION_KEYS field (accepted-run-audit.mjs) makes final cross-validation
+// structurally impossible to pass (the sidecar's stored hash would forever disagree with a re-read
+// of the final, redacted record). Exercised end-to-end against the REAL redaction pipeline
+// (privacy.mjs's own PUBLIC_SHAPE_RULES, always active -- no privatePatternsFile needed, and this
+// public repo has no lib/redact.mjs private-rule module to load one from anyway) and the REAL
+// accepted-run-audit sidecar builder, never mocked.
+describe('finalizeAndWriteMatrixRecords -- a provenance-bound field redacted by a real rule still cross-validates (P1 architectural review)', () => {
+  // scenario_id deliberately builds a value that matches PUBLIC_SHAPE_RULES' device_serial rule
+  // (an 8-15 char uppercase-alphanumeric run containing at least one digit) -- scenario_id is a
+  // RUN_PROVENANCE_PROJECTION_KEYS member, exactly the class of field this fix is about. Built via
+  // concatenation of two shorter pieces, NEITHER of which alone is long enough or has a digit, so
+  // this file's own committed TEXT never contains a contiguous run matching that shape (decouple-
+  // audit, tools/decouple-audit.mjs, statically scans committed file text for exactly this
+  // pattern -- a spelled-out example value in this very comment would trip it just as the code
+  // literal would, so intentionally none appears here or below). The runtime VALUE produced by the
+  // concatenation is unchanged and still genuinely matches the rule when the real redaction
+  // pipeline scans it.
+  const REDACTABLE_SCENARIO_ID = 'DEVICE' + 'SN1234';
+
+  // Matches the canonical minimal condition-observation-v1 shape (mirrors the sibling
+  // 'gate rejection precedence' describe block's own identical helper -- not shared across
+  // describe blocks in this file's own established convention).
+  function minimalObservation() {
+    return {
+      schema: 1,
+      runtime: { id: 'claude-code', protocolVersion: 1 },
+      process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1000n },
+      session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true },
+      transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+      terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
+      toolAttempts: [],
+      skill: {
+        available: false, profileMatchesCondition: true, snapshotBindingMatches: false,
+        targetInvocation: null, foreignInvocations: [],
+        ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+      },
+      hookStats: { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: true },
+      byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+      timing: { receiptNsByEventIndex: new Map() },
+    };
+  }
+
+  function fakeConditionResultLocal() {
+    return { observation: minimalObservation(), startedAt: new Date('2026-01-01T00:00:00.000Z'), endedAt: new Date('2026-01-01T00:00:01.000Z'), cellOrdinal: 0 };
+  }
+
+  const REQUIRED_GRADING_CHECK_NAMES = [
+    'no_transcript_structural_issues', 'bash_tool_use_present', 'tool_result_correlated',
+    'authoritative_evidence_well_formed', 'authoritative_target_matches_expected',
+    'authoritative_outcome_matches_expected', 'no_provider_contradiction', 'final_answer_consistent_with_evidence',
+  ];
+  function fakeGradeResultLocal(overrides = {}) {
+    return {
+      expectedOutcomeMatched: false, success: false, firstUsefulSignalEventIndex: null,
+      testInvocationsTotal: 0, retries: 0, harnessEvidenceAmbiguous: false,
+      checks: REQUIRED_GRADING_CHECK_NAMES.map((name) => ({ name, passed: true, detail: 'synthetic', evidence_event_indices: [] })),
+      ...overrides,
+    };
+  }
+
+  // Real buildRunRecord + the real resolveSelection() seam (TEST_RUN_RECORD_V6_INPUTS), never a
+  // hand-rolled 60-field object -- constructing a full v6 record by hand proved too error-prone at
+  // this scale (a first attempt was missing over 20 required fields before this rewrite).
+  function realV6ScenarioRecord(overrides = {}) {
+    const condition = overrides.condition ?? 'current-skill';
+    const conditionResult = overrides.conditionResult ?? { ...fakeConditionResultLocal(), cellOrdinal: overrides.orderIndex ?? 0 };
+    return buildRunRecord({
+      conditionResult, condition, runKind: 'scenario',
+      scenarioId: overrides.scenarioId ?? REDACTABLE_SCENARIO_ID,
+      skillSourceSha: condition === 'no-skill' ? null : PINNED_SKILL_SHA_LOCAL,
+      daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
+      projectAlias: 'test-redact-order-project', projectCommit: 'd'.repeat(40), projectUrl: null, family: 'test-only',
+      privacyStatus: 'public', seed: 1, orderIndex: overrides.orderIndex ?? 0, repetitionIndex: 0,
+      gradeResult: fakeGradeResultLocal(), ambientProfileScopeId: '00000000-0000-4000-8000-000000000000',
+      ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
+      ...TEST_RUN_RECORD_V6_INPUTS,
+      ...overrides,
+    });
+  }
+  const PINNED_SKILL_SHA_LOCAL = '0'.repeat(40);
+
+  it('a scenario_id redacted by a PUBLIC_SHAPE_RULES rule still produces a record and sidecar that cross-validate successfully, and the actually-written record carries the redacted value', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'aec-redact-order-'));
+    try {
+      const records = [
+        realV6ScenarioRecord({ condition: 'current-skill', orderIndex: 0 }),
+        realV6ScenarioRecord({ condition: 'no-skill', orderIndex: 1 }),
+      ];
+      const conditionResults = [fakeConditionResultLocal(), { ...fakeConditionResultLocal(), cellOrdinal: 1 }];
+      const acceptingGate = () => ({ ok: true, reason: null, cellResults: [], ambientProfileMatrixOk: true });
+      const buildSidecarsFn = async (recs, condResults) => {
+        const texts = [];
+        for (const [i, record] of recs.entries()) {
+          const built = buildAcceptedRunAuditSidecar({ record, conditionResult: condResults[i], terminalAuthoritativeEventIndex: null });
+          const finalized = finalizeAcceptedRunAuditSidecar(built, { privatePatternsFile: null });
+          if (!finalized.ok) return { ok: false, reason: finalized.reason };
+          record.accepted_audit = { schema: built.schema, relative_path: acceptedAuditRelativePathFor(record.run_id), sha256: finalized.sha256 };
+          texts.push(finalized.redactedText);
+        }
+        return { ok: true, sidecarTexts: texts };
+      };
+      const result = await finalizeAndWriteMatrixRecords({
+        runKind: 'scenario', records, conditionResults, hardGateFn: acceptingGate,
+        repeats: 1, runsRootOverride: dir, buildSidecarsFn,
+        transcriptsByRunId: { [records[0].run_id]: 'raw A', [records[1].run_id]: 'raw B' },
+      });
+      expect(result.ok, result.reason).toBe(true);
+      for (const record of result.redactedRecords) {
+        expect(record.scenario_id).toBe('<DEVICE_SERIAL>');
+        expect(record.scenario_id).not.toBe(REDACTABLE_SCENARIO_ID);
+      }
+      // Codex round 2, Finding 2/test C: the RETURNED redactedRecords object is not proof enough
+      // that the file actually on disk matches -- re-read record + sidecar from disk (through the
+      // exact same trusted-input gate cmdValidate/cmdAggregate use) and validate the pair that was
+      // REALLY written, not the in-memory object this function happens to return.
+      for (const record of result.redactedRecords) {
+        const runPath = path.join(dir, 'agentic-eval-scenario', `${record.run_id}.json`);
+        const onDisk = validateRunRecordFile(runPath);
+        expect(onDisk.errors, JSON.stringify(onDisk.errors)).toEqual([]);
+        expect(onDisk.record.scenario_id).toBe('<DEVICE_SERIAL>');
+        expect(onDisk.sidecar).not.toBeNull();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Codex round 2, Finding 3: validation was only ever run on the REDACTED record -- a private
+  // rule that happens to transform an invalid enum value into a VALID one would silently launder
+  // a producer defect through redaction, promoting a record that claims a state the producer
+  // never actually generated. Pre-redaction validation on the ORIGINAL records must catch this
+  // BEFORE redaction ever runs, and buildSidecarsFn must never be reached.
+  it('an invalid record whose bad field a private rule would coincidentally launder into a valid value fails BEFORE redaction -- buildSidecarsFn is never invoked (Codex round 2, Finding 3)', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'aec-prevalidate-'));
+    const privatePatternsFile = path.join(dir, '.private-patterns.json');
+    try {
+      // platform is a simple, isolated top-level enum (PLATFORM_VALUES, schemas.mjs) with no
+      // cross-field coupling elsewhere in the schema -- chosen specifically so the ONLY defect is
+      // the invalid enum value itself, not an incidental cascade from some OTHER field.
+      const INVALID_PLATFORM = 'not-a-real-platform';
+      writeFileSync(privatePatternsFile, JSON.stringify([
+        { class: 'test_enum_launder', literal: INVALID_PLATFORM, replacement: 'windows' },
+      ]));
+      // A genuine current-skill/no-skill PAIR -- repeats:1 requires exactly 2 records
+      // (findMatrixCompletenessGap), matching the existing positive test's own fixture shape; a
+      // single record would reject at the completeness gate BEFORE ever reaching redaction, never
+      // actually exercising the code path this test targets.
+      //
+      // platform is NOT a buildRunRecord input parameter -- buildRunRecord hardcodes it internally
+      // via resolvePlatform() (cli.mjs), silently ignoring any `platform` key passed to it. The
+      // corruption is applied by spreading onto the RETURNED record directly instead.
+      const records = [
+        realV6ScenarioRecord({ condition: 'current-skill', orderIndex: 0 }),
+        { ...realV6ScenarioRecord({ condition: 'no-skill', orderIndex: 1 }), platform: INVALID_PLATFORM },
+      ];
+      const conditionResults = [fakeConditionResultLocal(), { ...fakeConditionResultLocal(), cellOrdinal: 1 }];
+      const acceptingGate = () => ({ ok: true, reason: null, cellResults: [], ambientProfileMatrixOk: true });
+      let sidecarBuildCalls = 0;
+      const spySidecarsFn = async (recs) => {
+        sidecarBuildCalls += 1;
+        return { ok: true, sidecarTexts: recs.map(() => '{}') };
+      };
+      const result = await finalizeAndWriteMatrixRecords({
+        runKind: 'scenario', records, conditionResults, hardGateFn: acceptingGate,
+        repeats: 1, runsRootOverride: dir, buildSidecarsFn: spySidecarsFn, privatePatternsFile,
+        transcriptsByRunId: { [records[0].run_id]: 'raw A', [records[1].run_id]: 'raw B' },
+      });
+      expect(result.ok).toBe(false);
+      expect(result.reason).toMatch(/platform/);
+      expect(sidecarBuildCalls).toBe(0);
+      for (const record of records) {
+        expect(existsSync(path.join(dir, 'agentic-eval-scenario', `${record.run_id}.json`))).toBe(false);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Codex round 2, Finding 2: the second redaction pass (after buildSidecarsFn attaches
+  // accepted_audit) previously kept the freshly-redacted TEXT but discarded the freshly-redacted
+  // OBJECT, so downstream validation/cross-validation ran against the STALE, pre-second-pass
+  // object while the STALE object's own accepted_audit.relative_path still happened to match the
+  // canonical path -- even though the text actually about to be written to disk carries a
+  // DIFFERENT (tampered) value. A private rule targeting accepted_audit.relative_path's own
+  // literal value (only ever present starting the second pass, once buildSidecarsFn has attached
+  // it) reproduces exactly that divergence.
+  it('a private rule that retargets accepted_audit.relative_path fails closed and writes zero evidence -- never validates one object while persisting a different one (Codex round 2, Finding 2)', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'aec-relpath-tamper-'));
+    const privatePatternsFile = path.join(dir, '.private-patterns.json');
+    try {
+      // A genuine current-skill/no-skill PAIR -- see the sibling Finding-3 test above for why a
+      // single record would never reach the code path this test targets.
+      const records = [
+        realV6ScenarioRecord({ condition: 'current-skill', orderIndex: 0 }),
+        realV6ScenarioRecord({ condition: 'no-skill', orderIndex: 1 }),
+      ];
+      const [record] = records; // the tampered rule targets only this one -- the other stays clean
+      const conditionResults = [fakeConditionResultLocal(), { ...fakeConditionResultLocal(), cellOrdinal: 1 }];
+      const acceptingGate = () => ({ ok: true, reason: null, cellResults: [], ambientProfileMatrixOk: true });
+      const realRelativePath = acceptedAuditRelativePathFor(record.run_id);
+      writeFileSync(privatePatternsFile, JSON.stringify([
+        { class: 'test_relpath_tamper', literal: realRelativePath, replacement: 'audit/TAMPERED.json' },
+      ]));
+      const buildSidecarsFn = async (recs, condResults) => {
+        const texts = [];
+        for (const [i, rec] of recs.entries()) {
+          const built = buildAcceptedRunAuditSidecar({ record: rec, conditionResult: condResults[i], terminalAuthoritativeEventIndex: null });
+          const finalized = finalizeAcceptedRunAuditSidecar(built, { privatePatternsFile: null });
+          if (!finalized.ok) return { ok: false, reason: finalized.reason };
+          rec.accepted_audit = { schema: built.schema, relative_path: acceptedAuditRelativePathFor(rec.run_id), sha256: finalized.sha256 };
+          texts.push(finalized.redactedText);
+        }
+        return { ok: true, sidecarTexts: texts };
+      };
+      const result = await finalizeAndWriteMatrixRecords({
+        runKind: 'scenario', records, conditionResults, hardGateFn: acceptingGate,
+        repeats: 1, runsRootOverride: dir, buildSidecarsFn, privatePatternsFile,
+        transcriptsByRunId: { [records[0].run_id]: 'raw A', [records[1].run_id]: 'raw B' },
+      });
+      expect(result.ok).toBe(false);
+      // Zero evidence written for EITHER record -- a rejection anywhere in the batch promotes
+      // nothing, neither the record, nor its raw transcript, nor the sidecar.
+      for (const r of records) {
+        expect(existsSync(path.join(dir, 'agentic-eval-scenario', `${r.run_id}.json`))).toBe(false);
+        expect(existsSync(path.join(dir, 'agentic-eval-scenario', 'raw', `${r.run_id}.jsonl`))).toBe(false);
+        expect(existsSync(path.join(dir, 'agentic-eval-scenario', 'audit', `${r.run_id}.json`))).toBe(false);
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

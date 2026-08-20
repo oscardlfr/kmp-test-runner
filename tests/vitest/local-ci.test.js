@@ -63,13 +63,29 @@ describe('local CI cost gate', () => {
     // npm's OWN lifecycle-script execution (e.g. esbuild's postinstall) is routed through
     // PowerShell instead of cmd.exe -- on hosts where a child cmd.exe process inherits an empty
     // PATH regardless of the caller's own environment, that lifecycle-script execution breaks.
-    expect(gate).toContain("Set-ScopedEnvVar -Name 'npm_config_script_shell' -Value (Get-Command powershell -ErrorAction Stop).Source");
+    expect(gate).toContain("Set-ScopedEnvVar -Name 'npm_config_script_shell' -Value $npmScriptShell");
     // TaskActionTest's Windows shim gets a pre-validated node.exe path instead of shelling out to
     // `cmd.exe /c where node` itself.
     expect(gate).toContain("Set-ScopedEnvVar -Name 'KMP_LOCAL_CI_NODE_EXE' -Value (Resolve-Path $node24).Path");
     // Both are restored via the same scoped-restore primitive, not left set after the gate exits.
     expect(gate).toContain('Restore-ScopedEnvVar -Saved $npmScriptShellScope');
     expect(gate).toContain('Restore-ScopedEnvVar -Saved $nodeExeScope');
+  });
+
+  it('passes --script-shell explicitly to both npm ci invocations -- the env var alone is not a guaranteed way to reach a dependency postinstall during npm ci', () => {
+    const gate = read('tools/local-ci/windows-gate.ps1');
+    // The env var alone is a defense for any OTHER npm process this gate spawns indirectly, not the
+    // guarantee: npm's own script-shell config is an install-time preference, not a contract every
+    // version is required to propagate down into a dependency's own postinstall lifecycle script
+    // during `npm ci`. The explicit --script-shell flag is verified directly on the child process's
+    // own argv instead. A single resolved path feeds both the env var and the explicit flag, so the
+    // two can never independently drift.
+    expect(gate).toContain('$npmScriptShell = (Get-Command powershell.exe -ErrorAction Stop).Source');
+    // Exactly 2: one per npm ci call (Node 24, Node 18) -- not just "at least one".
+    const explicitFlag = gate.match(/"--script-shell=\$npmScriptShell"/g);
+    expect(explicitFlag?.length).toBe(2);
+    expect(gate).toContain(`@('ci', "--script-shell=$npmScriptShell") 'npm ci (Node 24)'`);
+    expect(gate).toContain(`@('ci', "--script-shell=$npmScriptShell") 'npm ci (Node 18)'`);
   });
 
   it('mounts source read-only and forwards no host environment wholesale', () => {

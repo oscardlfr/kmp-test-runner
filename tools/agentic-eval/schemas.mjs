@@ -22,7 +22,8 @@ import { classifyExitCode, EXIT } from '../../lib/envelope/exit-codes.js';
 // canonicalStructuredValue moved to canonical-json.mjs (this PR) -- re-exported here verbatim so
 // every existing caller/test importing it from schemas.mjs is unaffected. canonical-json.mjs is
 // the ONE canonicalizer in the repo; this file never re-implements object-key sorting itself.
-import { canonicalStructuredValue } from './canonical-json.mjs';
+import { canonicalStructuredValue, canonicalJsonSha256 } from './canonical-json.mjs';
+import { REQUIRED_CAPABILITY_KEYS } from './runtimes/contract.mjs';
 
 export { canonicalStructuredValue };
 
@@ -152,9 +153,22 @@ const USAGE_SOURCE_VALUES = ['runtime-reported', 'offline-estimate', 'not-record
 const USAGE_DIMENSION_KEYS_V6 = ['input', 'cached_input', 'cache_write', 'output', 'reasoning_output'];
 const ATTRIBUTION_STATUS_VALUES = ['runtime-reported', 'not-recorded'];
 const ATTRIBUTION_REASON_VALUES = ['condition-no-skill', 'runtime-does-not-report-skill-attribution', 'runtime-attribution-unavailable'];
+// Mirrors registries.mjs's own POLICY_MODE_VALUES exactly -- duplicated deliberately rather than
+// imported, since schemas.mjs's v6 validators must never import registries.mjs at all (a record's
+// own embedded execution_profile metadata is self-contained and verifiable without ever consulting
+// the live, mutable registry -- see this section's own header comment on invariant 4).
+const POLICY_MODE_VALUES = ['required', 'not_applicable'];
 
 const AGENT_RUNTIME_KEYS = ['runtime_id', 'cli_version', 'model_requested', 'model_resolved', 'model_vendor_expected', 'model_vendor_observed'];
-const EXECUTION_PROFILE_RECORD_KEYS = ['id', 'sha256', 'isolation_kind', 'isolation_attestation_sha256', 'network_mode'];
+const EXECUTION_PROFILE_RECORD_KEYS = [
+  'id', 'sha256', 'isolation_kind', 'isolation_attestation_sha256', 'isolation_attestation_required',
+  'network_mode', 'policy_mode', 'required_capabilities',
+];
+// The EXACT projection computeExecutionProfileSha256 (registries.mjs) hashes -- same field names,
+// same order. Duplicated here (not imported) for the same self-containment reason as
+// POLICY_MODE_VALUES above; canonicalJsonSha256 is the one shared low-level primitive both this
+// module and registries.mjs already build on, so this is the only piece that needs to agree.
+const EXECUTION_PROFILE_HASH_KEYS = ['id', 'isolation_kind', 'network_mode', 'isolation_attestation_required', 'policy_mode', 'required_capabilities'];
 const SKILL_OBSERVATION_KEYS = ['delivery_mode', 'availability', 'activation', 'source_sha', 'treatment_size'];
 const AVAILABILITY_KEYS_V6 = ['status', 'evidence_kind'];
 const ACTIVATION_KEYS_V6 = ['status', 'evidence_kind'];
@@ -191,6 +205,38 @@ function checkExactObjectKeysV6(obj, allowedKeys, field, errors) {
     if (!allowedKeys.includes(k)) errors.push({ field: `${field}.${k}`, message: `unrecognized field -- only ${allowedKeys.join(', ')} allowed on ${field}` });
   }
   return true;
+}
+
+/** Shape-checks execution_profile.required_capabilities: an array of unique strings, each a member
+ * of contract.mjs's REQUIRED_CAPABILITY_KEYS (the boolean-valued subset of the full CAPABILITY_KEYS
+ * -- P1 architectural review: observationSources/skillDeliveryModes/usageDimensions are array-valued
+ * and were previously wrongly accepted here), listed in that canonical relative order -- so two
+ * semantically-equal arrays never differ once fed to canonicalJsonSha256. The SAME shared constant
+ * registries.mjs's own buildRegistries validates required_capabilities against (this module never
+ * imports registries.mjs itself -- contract.mjs is the shared, registry-independent home for this
+ * vocabulary). Pushes onto `errors` and returns nothing; callers proceed regardless (the
+ * hash-recomputation check below fails closed on its own if this array turns out malformed). */
+function checkRequiredCapabilitiesV6(value, field, errors) {
+  if (!Array.isArray(value)) {
+    errors.push({ field, message: 'must be an array' });
+    return;
+  }
+  const seen = new Set();
+  let lastIdx = -1;
+  for (const v of value) {
+    if (typeof v !== 'string' || !REQUIRED_CAPABILITY_KEYS.includes(v)) {
+      errors.push({ field, message: `unknown capability ${JSON.stringify(v)} -- must be one of ${REQUIRED_CAPABILITY_KEYS.join('|')}` });
+      continue;
+    }
+    if (seen.has(v)) {
+      errors.push({ field, message: `duplicate capability "${v}"` });
+      continue;
+    }
+    seen.add(v);
+    const idx = REQUIRED_CAPABILITY_KEYS.indexOf(v);
+    if (idx < lastIdx) errors.push({ field, message: `capability "${v}" is out of canonical order` });
+    lastIdx = idx;
+  }
 }
 
 /** agent_runtime -- invariants 1-3 (Section D). Cross-field checks against the record's own
@@ -240,13 +286,18 @@ function validateAgentRuntime(ar, run, errors) {
   }
 }
 
-/** execution_profile -- invariant 4. `sha256` is validated only for SHAPE here (a real lowercase
- * 64-hex string); recomputing and comparing it against the registry's own canonical hash is a
- * cross-validation concern outside a single record's own internal consistency, not this
- * function's job. strict-policy-v1's own frozen registry semantics (isolation_attestation_required:
- * false) are hardcoded as a schema-level invariant because that ID's semantics can never change in
- * place (ADR-6: a semantic change requires a new ID) -- sandboxed-unrestricted-v1 carries no such
- * hardcoded rule here since it is not implemented in this PR. */
+/** execution_profile -- invariant 4. Self-contained and independently verifiable WITHOUT ever
+ * consulting the live, mutable registry: the record carries every field
+ * computeExecutionProfileSha256 (registries.mjs) hashes -- isolation_kind, network_mode,
+ * isolation_attestation_required, policy_mode, required_capabilities -- and this function
+ * recomputes that exact same canonical hash from the record's OWN copy of those fields and
+ * requires it to equal the record's own sha256. A future registry change to strict-policy-v1 (or
+ * any other profile) can never retroactively invalidate -- or silently reinterpret -- a historical
+ * record's own execution_profile group, because nothing here ever re-resolves through the
+ * registry. isolation_attestation_required drives isolation_attestation_sha256's own presence/
+ * absence directly (never a hardcoded per-ID rule): false requires null, true requires a real
+ * hash -- this supersedes the old strict-policy-v1-specific hardcoded rule, which assumed
+ * knowledge of that one ID's registry semantics instead of reading it from the record itself. */
 function validateExecutionProfileV6(ep, errors) {
   if (!checkExactObjectKeysV6(ep, EXECUTION_PROFILE_RECORD_KEYS, 'execution_profile', errors)) return;
   if (!EXECUTION_PROFILE_ID_VALUES.includes(ep.id)) {
@@ -259,11 +310,35 @@ function validateExecutionProfileV6(ep, errors) {
   if (!NETWORK_MODE_VALUES.includes(ep.network_mode)) {
     errors.push({ field: 'execution_profile.network_mode', message: `must be one of ${NETWORK_MODE_VALUES.join('|')}` });
   }
+  if (typeof ep.isolation_attestation_required !== 'boolean') {
+    errors.push({ field: 'execution_profile.isolation_attestation_required', message: 'must be a boolean' });
+  }
+  if (!POLICY_MODE_VALUES.includes(ep.policy_mode)) {
+    errors.push({ field: 'execution_profile.policy_mode', message: `must be one of ${POLICY_MODE_VALUES.join('|')}` });
+  }
+  checkRequiredCapabilitiesV6(ep.required_capabilities, 'execution_profile.required_capabilities', errors);
   if (ep.isolation_attestation_sha256 !== null && !isHex64(ep.isolation_attestation_sha256)) {
     errors.push({ field: 'execution_profile.isolation_attestation_sha256', message: 'must be null or a lowercase 64-char hex string' });
   }
-  if (ep.id === 'strict-policy-v1' && ep.isolation_attestation_sha256 !== null) {
-    errors.push({ field: 'execution_profile.isolation_attestation_sha256', message: 'must be null for strict-policy-v1 -- its frozen registry semantics never require attestation' });
+  if (ep.isolation_attestation_required === false && ep.isolation_attestation_sha256 !== null) {
+    errors.push({ field: 'execution_profile.isolation_attestation_sha256', message: 'must be null when isolation_attestation_required is false' });
+  }
+  if (ep.isolation_attestation_required === true && ep.isolation_attestation_sha256 === null) {
+    errors.push({ field: 'execution_profile.isolation_attestation_sha256', message: 'must be a real hash when isolation_attestation_required is true' });
+  }
+  if (isHex64(ep.sha256) && typeof ep.isolation_attestation_required === 'boolean'
+    && POLICY_MODE_VALUES.includes(ep.policy_mode) && Array.isArray(ep.required_capabilities)) {
+    let expectedSha256;
+    try {
+      const projection = {};
+      for (const k of EXECUTION_PROFILE_HASH_KEYS) projection[k] = ep[k];
+      expectedSha256 = canonicalJsonSha256(projection);
+    } catch {
+      expectedSha256 = null;
+    }
+    if (expectedSha256 !== null && ep.sha256 !== expectedSha256) {
+      errors.push({ field: 'execution_profile.sha256', message: 'does not match the canonical hash of this record\'s own id/isolation_kind/network_mode/isolation_attestation_required/policy_mode/required_capabilities' });
+    }
   }
 }
 
@@ -332,9 +407,30 @@ function validateSkillObservationV6(so, run, errors) {
   if ('availability' in so) validateAvailabilityV6(so.availability, errors);
   if ('activation' in so) validateActivationV6(so.activation, errors);
 
+  // Bicondtional with the record's own legacy skill_available.value -- the two must never
+  // independently drift, regardless of runtime or condition: observed-present <=> true,
+  // observed-absent <=> false, not-observable <=> null. Only checked once availability's own shape
+  // is already known-good (isPlainObjectLike guard mirrors the "'availability' in so" gate above).
+  if (isPlainObjectLike(so.availability) && AVAILABILITY_STATUS_VALUES.includes(so.availability.status) && isPlainObjectLike(run.skill_available)) {
+    const legacyValue = run.skill_available.value;
+    const expectedStatus = legacyValue === true ? 'observed-present' : legacyValue === false ? 'observed-absent' : legacyValue === null ? 'not-observable' : undefined;
+    if (expectedStatus !== undefined && so.availability.status !== expectedStatus) {
+      errors.push({ field: 'skill_observation.availability.status', message: `must be "${expectedStatus}" to agree with the record's own legacy skill_available.value (${JSON.stringify(legacyValue)})` });
+    }
+  }
+
   const isNoSkill = run.condition === 'no-skill';
   const isCurrentSkill = run.condition === 'current-skill';
   const isClaudeCode = isPlainObjectLike(run.agent_runtime) && run.agent_runtime.runtime_id === 'claude-code';
+
+  // Exact equality with the record's own legacy skill_source_sha -- unconditional, both for the
+  // no-skill case (both null) and the current-skill case (both the same non-empty pin). The two
+  // condition-specific shape checks below stay as clearer, field-scoped error messages when only
+  // ONE side disagrees with condition; this catches the case where BOTH sides independently
+  // satisfy their own shape rule yet still disagree with each other.
+  if (so.source_sha !== run.skill_source_sha) {
+    errors.push({ field: 'skill_observation.source_sha', message: `must exactly equal the record's own legacy skill_source_sha (${JSON.stringify(run.skill_source_sha)})` });
+  }
 
   if (isNoSkill) {
     if (so.delivery_mode !== 'none') errors.push({ field: 'skill_observation.delivery_mode', message: 'must be none for condition no-skill' });
@@ -1695,17 +1791,31 @@ export function buildAggregateGroup(runs) {
   if (ineligible.length > 0) {
     errors.push({ field: 'benchmark_eligible', message: `${ineligible.length} run(s) are benchmark_eligible:false and cannot be folded into a publishable aggregate` });
   }
-  // claude_code_version being merely PRESENT (validateRun's job) isn't the same as it being a
-  // concrete, known value -- run.claude_code_version can legitimately be null (buildRunRecord's
-  // own `init?.claude_code_version ?? null` fallback) for a genuinely degraded capture that's
-  // still a valid, WRITABLE run record. Two such runs both carrying null would otherwise match
-  // as "the same partition key" in the mixing check below (null === null), silently permitting
-  // exactly the cross-CLI-release averaging this field exists to prevent -- unlike every other
-  // HARD_PARTITION_FIELDS entry, an unknown value here can't be trusted to genuinely agree with
-  // another unknown value, so aggregation eligibility requires a concrete, non-empty string.
-  const unknownClaudeVersion = runs.filter((r) => typeof r.claude_code_version !== 'string' || r.claude_code_version.length === 0);
+  // The canonical CLI-version identity being merely PRESENT (validateRun's job) isn't the same as
+  // it being a concrete, known value -- it can legitimately be null for a genuinely degraded
+  // capture that's still a valid, WRITABLE run record. Two such runs both carrying null would
+  // otherwise match as "the same partition key" in the mixing check below (null === null), silently
+  // permitting exactly the cross-CLI-release averaging this field exists to prevent -- an unknown
+  // value here can't be trusted to genuinely agree with another unknown value, so aggregation
+  // eligibility requires a concrete, non-empty string.
+  //
+  // P1 architectural review: the canonical version comes from agent_runtime.cli_version for a
+  // schema:6+ record (required on EVERY runtime_id, unlike the legacy field), never from the
+  // legacy claude_code_version alone -- that field is correctly null for a non-claude-code
+  // runtime_id (schema invariant 3), so gating aggregation eligibility on it exclusively made
+  // every valid non-Claude v6 record permanently ineligible, regardless of how well-formed its own
+  // agent_runtime group was. For runtime_id:claude-code the two are already required to agree
+  // exactly (same invariant), so this is never a second, independently-drifting notion of "the
+  // version" for that runtime -- purely a wider read for the runtimes claude_code_version was
+  // never able to describe in the first place.
+  const unknownClaudeVersion = runs.filter((r) => {
+    const version = typeof r.schema === 'number' && r.schema >= 6 && isPlainObjectLike(r.agent_runtime)
+      ? r.agent_runtime.cli_version
+      : r.claude_code_version;
+    return typeof version !== 'string' || version.length === 0;
+  });
   if (unknownClaudeVersion.length > 0) {
-    errors.push({ field: 'claude_code_version', message: `${unknownClaudeVersion.length} run(s) have a missing/empty claude_code_version and cannot be folded into a publishable aggregate -- an unknown CLI version can't be trusted to match another unknown value` });
+    errors.push({ field: 'claude_code_version', message: `${unknownClaudeVersion.length} run(s) have a missing/empty canonical CLI version and cannot be folded into a publishable aggregate -- an unknown CLI version can't be trusted to match another unknown value` });
   }
   // A further completeness matrix, scoped narrowly to run_kind:'scenario' + benchmark_eligible:
   // true -- the only combination this Fairness Contract ever expects to reach real, publishable

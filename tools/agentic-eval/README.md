@@ -195,7 +195,7 @@ matrix is rejected anyway.
   `benchmark_eligible`-capable unless even (see below) — the cap exists because each repetition
   spawns 2 live Claude sessions once `run` is pointed at a real `claude` binary, so an unbounded
   value would let a single typo (`--repeats 100` for `--repeats 10`) silently authorize hundreds
-  of live sessions; `--dry-run`'s own output states `total_live_claude_sessions` explicitly.
+  of live sessions; `--dry-run`'s own output states `total_live_sessions` explicitly.
   `--dry-run` prints the fully resolved execution plan and returns before touching
   `--source-repo-dir` or spawning Claude. Without `--measurement-scope-file`, this is a genuine
   zero-subprocess preview; if that flag IS supplied, `--dry-run` does invoke `git` subprocesses —
@@ -1256,8 +1256,24 @@ resolution is scoped to whichever runtime was already resolved); an unknown, dis
 cross-runtime-incompatible id fails closed with a clear reason before any auth/materialize/spawn
 ever happens — never a fuzzy match, never a silent fallback. Today's registries carry exactly one
 enabled entry per axis (`claude-code` / `claude-sonnet-5` / `strict-policy-v1`), so omitting all
-three flags reproduces the pre-registry default exactly; the registries exist to make adding a
-model or execution profile a registry-only change plus validation tests, not a code change.
+three flags reproduces the pre-registry default exactly.
+
+**Adding a model or execution profile is a registry-only change ONLY when the adapter actually
+supports the new entry's configuration** — every runtime adapter now implements two additional
+gating methods, `supportsModelConfiguration(modelEntry)` and `supportsExecutionProfile(profileEntry)`
+(`runtimes/contract.mjs`'s `ADAPTER_KEYS`), and `buildRegistries`/`resolveSelection` reject any
+ENABLED entry the adapter itself reports `false` for. This closes a real gap: `buildInvocation`
+only ever receives `{prompt, model, settingsPath}`, so a registry could previously describe a
+model/profile configuration (e.g. `default_reasoning_mode:"max"`, or a profile requiring a
+sandbox/restricted network/attestation) that was never actually applied, while a resulting record
+still carried it as if it had been. Claude Code's own adapter accepts an additional model only
+when `default_reasoning_mode` is `null` (`model_id` itself is genuinely registry-only — it is
+passed literally to the CLI); it accepts exactly `strict-policy-v1`'s current shape as an
+execution profile and rejects everything else, including a mutation of that same id and
+`sandboxed-unrestricted-v1` — until a later PR adds real runtime-specific implementation for a
+second profile and this adapter is deliberately widened, a differently-isolated profile can
+describe its shape in the JSON registry (`enabled:false`, kept for history/future work) but is
+never selectable.
 `aggregate`/`analyze`/`validate`/`corpus`/`scope` never accept these flags — selection is a
 per-run-command concern, not a reporting one.
 

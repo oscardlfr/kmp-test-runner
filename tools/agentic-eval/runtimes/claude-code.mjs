@@ -128,6 +128,60 @@ export async function prepareIsolatedHome({ shimDir, gradleUserHome, kmpEvalTemp
   return { sharedEnv, settingsPath, cleanupPaths: [settingsDir] };
 }
 
+function isPlainObjectLike(v) {
+  return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
+/** The ONE execution-profile configuration this adapter actually implements today -- exactly
+ * strict-policy-v1's current real semantics (registries.mjs's real registry entry). Any OTHER id,
+ * or a mutation of this same id's own isolation/network/attestation/policy/capability fields, is
+ * rejected: buildInvocation only ever receives {prompt, model, settingsPath}, so a profile
+ * requiring e.g. an external sandbox or a restricted network mode would otherwise be silently
+ * unenforced while the resulting record still claimed it. sandboxed-unrestricted-v1 (or any future
+ * profile) becomes selectable only once a later PR adds real runtime-specific implementation work
+ * for it and this reference is deliberately widened -- never by loosening this check itself. */
+const SUPPORTED_EXECUTION_PROFILE = Object.freeze({
+  id: 'strict-policy-v1',
+  isolation_kind: 'runtime-policy-hooks',
+  network_mode: 'runtime-default',
+  isolation_attestation_required: false,
+  policy_mode: 'required',
+  required_capabilities: Object.freeze(['softPermissionDenial']),
+});
+
+function sameStringArray(a, b) {
+  return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
+/** `supportsModelConfiguration(modelEntry)`: pure, fail-closed. Claude Code accepts an additional
+ * model only when it genuinely IS a Claude Code / Anthropic model with default_reasoning_mode
+ * null -- model_id itself is registry-only (it is passed literally to the CLI via
+ * buildInvocation's own `model` argument), but a non-null reasoning mode has no corresponding
+ * argv/config wiring anywhere in this adapter, so selecting such a model would silently ignore
+ * the very configuration the record claims was applied. Codex round 3, Finding 3: runtime_id and
+ * model_vendor_expected are ALSO bound here, not left to the caller's own bookkeeping -- a model
+ * entry claiming runtime_id:'claude-code' but model_vendor_expected:'openai' (or vice versa) is
+ * nonsensical and must be rejected by the one adapter that would actually be asked to serve it. */
+export function supportsModelConfiguration(modelEntry) {
+  return isPlainObjectLike(modelEntry)
+    && modelEntry.runtime_id === 'claude-code'
+    && modelEntry.model_vendor_expected === 'anthropic'
+    && modelEntry.default_reasoning_mode === null;
+}
+
+/** `supportsExecutionProfile(profileEntry)`: pure, fail-closed. See SUPPORTED_EXECUTION_PROFILE's
+ * own doc comment -- exact structural equality against the one profile shape this adapter's
+ * buildInvocation/prepareIsolatedHome pipeline actually enforces today. */
+export function supportsExecutionProfile(profileEntry) {
+  return isPlainObjectLike(profileEntry)
+    && profileEntry.id === SUPPORTED_EXECUTION_PROFILE.id
+    && profileEntry.isolation_kind === SUPPORTED_EXECUTION_PROFILE.isolation_kind
+    && profileEntry.network_mode === SUPPORTED_EXECUTION_PROFILE.network_mode
+    && profileEntry.isolation_attestation_required === SUPPORTED_EXECUTION_PROFILE.isolation_attestation_required
+    && profileEntry.policy_mode === SUPPORTED_EXECUTION_PROFILE.policy_mode
+    && sameStringArray(profileEntry.required_capabilities, SUPPORTED_EXECUTION_PROFILE.required_capabilities);
+}
+
 /** `prepareSkillDelivery(argv, condition, snapshotDir)` delegates exactly to buildConditionArgv:
  * no-skill adds nothing; current-skill appends only `--plugin-dir <snapshotDir>` at the end. */
 export function prepareSkillDelivery(argv, condition, snapshotDir) {
@@ -334,6 +388,8 @@ export const claudeCodeRuntimeAdapter = defineRuntimeAdapter({
     usageDimensions: ['input', 'cached_input', 'cache_write', 'output'],
     softPermissionDenial: true,
   },
+  supportsModelConfiguration,
+  supportsExecutionProfile,
   probeInstallation,
   preflight,
   prepareIsolatedHome,

@@ -58,11 +58,18 @@ $bodySucceeded = $false
 try {
     # On hosts where a child cmd.exe process inherits an empty PATH regardless of the caller's own
     # environment, npm's own cmd.exe-routed lifecycle-script execution breaks (e.g. esbuild's
-    # postinstall fails to find `node`). Routing npm's lifecycle scripts through PowerShell instead
-    # avoids that hop entirely. Set-ScopedEnvVar/Restore-ScopedEnvVar (environment-utils.ps1)
-    # capture/restore exactly -- present vs. absent, not just value -- so a caller's own
-    # environment is never permanently altered by running this gate.
-    $npmScriptShellScope = Set-ScopedEnvVar -Name 'npm_config_script_shell' -Value (Get-Command powershell -ErrorAction Stop).Source
+    # postinstall fails to find `node`). npm_config_script_shell below is set as a defense for any
+    # OTHER npm process this gate spawns indirectly, but it is not the guarantee for the two `npm
+    # ci` calls that matter most: npm's own script-shell config is an install-time preference, not a
+    # contract every version is required to propagate down into a dependency's own postinstall
+    # lifecycle script during `npm ci` -- so this gate never depends on that propagation for the
+    # calls that matter. The explicit `--script-shell=<path>` argument passed to each `npm ci`
+    # invocation below is the actual guarantee, verified directly on the child process's own
+    # argv rather than inferred from the parent environment. Set-ScopedEnvVar/Restore-ScopedEnvVar
+    # (environment-utils.ps1) capture/restore exactly -- present vs. absent, not just value -- so a
+    # caller's own environment is never permanently altered by running this gate.
+    $npmScriptShell = (Get-Command powershell.exe -ErrorAction Stop).Source
+    $npmScriptShellScope = Set-ScopedEnvVar -Name 'npm_config_script_shell' -Value $npmScriptShell
     $sensitiveEnvironment = Suspend-SensitiveEnvironment
     Push-Location $RepoRoot
     $pushedLocation = $true
@@ -82,7 +89,7 @@ try {
     # no cmd.exe, when run standalone without this variable set).
     $nodeExeScope = Set-ScopedEnvVar -Name 'KMP_LOCAL_CI_NODE_EXE' -Value (Resolve-Path $node24).Path
 
-    Invoke-NativeChecked (Join-Path $Node24Home 'npm.cmd') @('ci') 'npm ci (Node 24)'
+    Invoke-NativeChecked (Join-Path $Node24Home 'npm.cmd') @('ci', "--script-shell=$npmScriptShell") 'npm ci (Node 24)'
     Invoke-NativeChecked $node24 @('tools/check-line-endings.mjs') 'line-ending audit'
     Invoke-NativeChecked $node24 @('tools/check-executable-fixtures.mjs') 'fixture executable-bit audit'
     Invoke-NativeChecked (Join-Path $Node24Home 'npm.cmd') @('audit', '--omit=dev', '--audit-level=high') 'production dependency audit'
@@ -131,7 +138,7 @@ try {
     if ($node18Arch -ne 'x64') {
         throw "expected x64 Node 18 under $Node18Home; found $node18Arch"
     }
-    Invoke-NativeChecked (Join-Path $Node18Home 'npm.cmd') @('ci') 'npm ci (Node 18)'
+    Invoke-NativeChecked (Join-Path $Node18Home 'npm.cmd') @('ci', "--script-shell=$npmScriptShell") 'npm ci (Node 18)'
     Invoke-NativeChecked (Join-Path $Node18Home 'npx.cmd') @('vitest', 'run') 'Vitest (Node 18)'
 
     Write-Host '[local-ci] Windows Node 24/18, Pester, and Gradle lane passed' -ForegroundColor Green

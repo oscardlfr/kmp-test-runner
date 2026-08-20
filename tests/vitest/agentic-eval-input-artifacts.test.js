@@ -13,6 +13,7 @@ import { resolveBash } from '../../tools/agentic-eval/resolve-bash.mjs';
 import {
   computePromptArtifact, computeSkillSnapshotArtifact, isSafeManifestPath,
 } from '../../tools/agentic-eval/input-artifacts.mjs';
+import { canonicalJsonSha256 } from '../../tools/agentic-eval/canonical-json.mjs';
 
 // Local mirror of the established test convention (agentic-eval-materialize.test.js) -- all git
 // setup calls route through `bash -c` with POSIX-style paths, matching this harness's own proven
@@ -55,6 +56,36 @@ function commitAll(repoDir, message) {
   gitViaBash(['add', '-A'], repoDir);
   gitViaBash(['commit', '-q', '-m', message], repoDir);
   return gitViaBash(['rev-parse', 'HEAD'], repoDir).trim();
+}
+
+// For a caller that already staged its own change directly (e.g. `git update-index --chmod`) and
+// must NOT have `commitAll`'s own `git add -A` re-read the working tree afterward -- on Linux, `git
+// add -A` re-reads the physical file mode, which would silently revert an index-only mode change
+// still sitting on disk as 644 and leave the index identical to HEAD (a "nothing to commit" exit 1).
+function commitStaged(repoDir, message) {
+  gitViaBash(['commit', '-q', '-m', message], repoDir);
+  return gitViaBash(['rev-parse', 'HEAD'], repoDir).trim();
+}
+
+/** Builds one flat tree object via `git mktree -z`, entirely through STDIN -- never a command-line
+ * argument -- so an entry `name` may contain ANY byte except NUL (a literal tab, newline, double
+ * quote, or a genuinely invalid UTF-8 byte sequence), which `git update-index --add --cacheinfo`'s
+ * own path argument validation refuses outright regardless of shell quoting (confirmed live:
+ * "error: Invalid path" for tab/newline/quote). `name` may be a string or a raw Buffer. Returns the
+ * new tree's OID (trimmed). */
+function mktreeZ(repoDir, entries) {
+  const parts = entries.map((e) => {
+    const nameBuf = Buffer.isBuffer(e.name) ? e.name : Buffer.from(e.name, 'utf8');
+    return Buffer.concat([Buffer.from(`${e.mode} ${e.type} ${e.oid}\t`, 'utf8'), nameBuf, Buffer.from([0])]);
+  });
+  const input = Buffer.concat(parts);
+  const r = spawnSync(resolveBash(), ['-c', 'git mktree -z'], { cwd: repoDir, input, encoding: 'utf8' });
+  if (r.status !== 0) throw new Error(`git mktree -z failed (exit ${r.status}): ${r.stderr}`);
+  return r.stdout.trim();
+}
+
+function commitTreeRoot(repoDir, treeOid, message) {
+  return gitViaBash(['commit-tree', treeOid, '-m', message], repoDir).trim();
 }
 
 describe('computePromptArtifact -- UTF-8 byte measurement, never JS string length', () => {
@@ -126,6 +157,10 @@ describe('isSafeManifestPath -- defense-in-depth path-shape guard', () => {
 });
 
 describe('computeSkillSnapshotArtifact -- measured entirely from Git objects', () => {
+  // Codex round 2, Finding 7: integration tests spawning several real Git subprocesses -- two
+  // real timeouts of 6035/5253ms observed under Windows coverage instrumentation stacked on top
+  // of Lane All's own resource contention (they run isolated in ~1s otherwise). 15s is scoped to
+  // ONLY these two tests, not a global timeout change.
   it('produces a manifest-derived file count and positive byte total for a real committed skill root', () => {
     const repo = freshRepo('aeia-basic-');
     writeSkillFile(repo, 'SKILL.md', '# skill\ncontent one\n');
@@ -135,7 +170,7 @@ describe('computeSkillSnapshotArtifact -- measured entirely from Git objects', (
     expect(artifact.snapshot_file_count).toBe(2);
     expect(artifact.snapshot_bytes).toBeGreaterThan(0);
     expect(artifact.snapshot_sha256).toMatch(/^[0-9a-f]{64}$/);
-  });
+  }, 15_000);
 
   it('snapshot_bytes equals the exact sum of the committed blobs\' own byte sizes', () => {
     const repo = freshRepo('aeia-bytesum-');
@@ -158,6 +193,8 @@ describe('computeSkillSnapshotArtifact -- measured entirely from Git objects', (
     expect(first).toEqual(second);
   });
 
+  // Codex round 2, Finding 7: see the sibling test above -- same class of real, several-Git-
+  // subprocess integration test, same observed Windows-coverage-under-Lane-All timeout pressure.
   it('creation order of files does not change the hash -- two independent repos with the same final content produce the same manifest hash', () => {
     const repoA = freshRepo('aeia-order-a-');
     writeSkillFile(repoA, 'SKILL.md', 'alpha\n');
@@ -178,7 +215,7 @@ describe('computeSkillSnapshotArtifact -- measured entirely from Git objects', (
     expect(artifactA.snapshot_sha256).toBe(artifactB.snapshot_sha256);
     expect(artifactA.snapshot_file_count).toBe(artifactB.snapshot_file_count);
     expect(artifactA.snapshot_bytes).toBe(artifactB.snapshot_bytes);
-  });
+  }, 15_000);
 
   it('changing one file\'s path changes the hash', () => {
     const repo = freshRepo('aeia-path-change-');
@@ -220,7 +257,7 @@ describe('computeSkillSnapshotArtifact -- measured entirely from Git objects', (
     const sha1 = commitAll(repo, 'non-executable');
     const artifact1 = computeSkillSnapshotArtifact({ repoRoot: repo, sha: sha1, root: '.skills/kmp-test-runner' });
     gitViaBash(['update-index', '--chmod=+x', '.skills/kmp-test-runner/scripts/run.sh'], repo);
-    const sha2 = commitAll(repo, 'now executable, same bytes');
+    const sha2 = commitStaged(repo, 'now executable, same bytes');
     const artifact2 = computeSkillSnapshotArtifact({ repoRoot: repo, sha: sha2, root: '.skills/kmp-test-runner' });
     // The mode really did change on disk between the two commits (sanity-check the fixture itself
     // exercises what it claims to).
@@ -295,5 +332,63 @@ describe('computeSkillSnapshotArtifact -- measured entirely from Git objects', (
     writeSkillFile(repo, 'SKILL.md', 'x\n');
     commitAll(repo, 'one commit');
     expect(() => computeSkillSnapshotArtifact({ repoRoot: repo, sha: 'deadbeef00000000000000000000000000000000', root: '.skills/kmp-test-runner' })).toThrow();
+  });
+
+  // Constructed via `git mktree -z` (see its own doc comment above) -- never via `writeFileSync`
+  // (NTFS forbids tab/newline/double-quote in a real filename outright) and never via
+  // `update-index --add --cacheinfo` (confirmed live: it refuses the same 3 characters in its own
+  // path argument regardless of shell quoting). This is exactly what computeSkillSnapshotArtifact
+  // itself claims to depend on: Git's object database, never the working-tree filesystem
+  // (P1 architectural review).
+  it('an -l -z ls-tree parse correctly captures paths containing a tab, a newline, a double quote, and non-ASCII Unicode -- never Git\'s own C-style quoted/escaped representation of them', () => {
+    const repo = freshRepo('aeia-weird-names-');
+    const blobSha = spawnSync(resolveBash(), ['-c', 'printf x | git hash-object -w --stdin'], { cwd: repo, encoding: 'utf8' }).stdout.trim();
+    const weirdNames = ['has\ttab.md', 'has\nnewline.md', 'has"quote.md', 'héllo-ünïcode-🎉.md'];
+    const kmpTestRunnerTree = mktreeZ(repo, weirdNames.map((name) => ({ mode: '100644', type: 'blob', oid: blobSha, name })));
+    const skillsTree = mktreeZ(repo, [{ mode: '040000', type: 'tree', oid: kmpTestRunnerTree, name: 'kmp-test-runner' }]);
+    const rootTree = mktreeZ(repo, [{ mode: '040000', type: 'tree', oid: skillsTree, name: '.skills' }]);
+    const sha = commitTreeRoot(repo, rootTree, 'weird filenames');
+    const artifact = computeSkillSnapshotArtifact({ repoRoot: repo, sha, root: '.skills/kmp-test-runner' });
+    expect(artifact.snapshot_file_count).toBe(weirdNames.length);
+    // Read the raw manifest back out by recomputing the same canonical hash over the exact names
+    // this test expects -- computeSkillSnapshotArtifact does not itself expose the manifest array,
+    // so the strongest available proof is: an independent recomputation from a manually-built
+    // manifest with these EXACT literal name strings (never a quoted/escaped variant) produces the
+    // identical hash -- this can only be true if the real manifest's own path strings are the true,
+    // unescaped values.
+    const expectedManifest = weirdNames
+      .map((name) => ({ path: name, git_blob_oid: blobSha, byte_length: 1 }))
+      .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    expect(artifact.snapshot_sha256).toBe(canonicalJsonSha256(expectedManifest));
+  });
+
+  it('a path that cannot be faithfully decoded as UTF-8 fails closed (throws), never silently substitutes U+FFFD', () => {
+    const repo = freshRepo('aeia-invalid-utf8-');
+    const blobSha = spawnSync(resolveBash(), ['-c', 'printf x | git hash-object -w --stdin'], { cwd: repo, encoding: 'utf8' }).stdout.trim();
+    // 0xFF is not a valid UTF-8 lead byte under any continuation -- an isolated 0xFF byte can never
+    // be part of a well-formed UTF-8 sequence. Built as a raw Buffer (never a JS string, which
+    // cannot represent an invalid byte sequence in the first place) so this reaches Git's tree
+    // object -- and this function's own parsing -- as a genuinely invalid-UTF-8 path.
+    const badName = Buffer.concat([Buffer.from('bad-', 'utf8'), Buffer.from([0xFF]), Buffer.from('-byte.md', 'utf8')]);
+    const kmpTestRunnerTree = mktreeZ(repo, [{ mode: '100644', type: 'blob', oid: blobSha, name: badName }]);
+    const skillsTree = mktreeZ(repo, [{ mode: '040000', type: 'tree', oid: kmpTestRunnerTree, name: 'kmp-test-runner' }]);
+    const rootTree = mktreeZ(repo, [{ mode: '040000', type: 'tree', oid: skillsTree, name: '.skills' }]);
+    const sha = commitTreeRoot(repo, rootTree, 'invalid utf-8 path');
+    expect(() => computeSkillSnapshotArtifact({ repoRoot: repo, sha, root: '.skills/kmp-test-runner' })).toThrow();
+  });
+
+  it('accepts a real SHA-256 repository\'s own 64-hex-char blob OIDs -- never hardcoded to exactly 40 (SHA-1) characters', () => {
+    const repo = mkdtempSync(path.join(os.tmpdir(), 'aeia-sha256-'));
+    cleanupDirs.push(repo);
+    gitViaBash(['init', '-q', '--object-format=sha256'], repo);
+    gitViaBash(['config', 'user.email', 'test@example.com'], repo);
+    gitViaBash(['config', 'user.name', 'Test'], repo);
+    gitViaBash(['config', 'core.autocrlf', 'false'], repo);
+    writeSkillFile(repo, 'SKILL.md', 'sha256 repo content\n');
+    const sha = commitAll(repo, 'sha256 commit');
+    const artifact = computeSkillSnapshotArtifact({ repoRoot: repo, sha, root: '.skills/kmp-test-runner' });
+    expect(artifact.snapshot_file_count).toBe(1);
+    const oid = gitViaBash(['rev-parse', `${sha}:.skills/kmp-test-runner/SKILL.md`], repo).trim();
+    expect(oid).toMatch(/^[0-9a-f]{64}$/);
   });
 });
