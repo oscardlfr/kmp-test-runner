@@ -397,23 +397,47 @@ export function findUnexpectedToolUses(events, allowedToolNames) {
   return out;
 }
 
+// PR 4 follow-up (P1 finding): the closed set of permission-mode values this harness ever
+// compiles for ANY profile. hasExpectedToolProfile's own `expectedPermissionMode` parameter must
+// be exactly one of these -- never a looser "anything goes" check, and never silently widened to
+// "either value, for any caller" (that was the P1 bug this fix closes: accepting both literals
+// unconditionally, for every profile, silently disabled the check's real job for whichever
+// profile DIDN'T get compiled with the observed value).
+export const PERMISSION_MODE_VALUES = Object.freeze(['dontAsk', 'bypassPermissions']);
+
 /**
  * True only if the init event's OWN declared profile exactly matches what this harness actually
  * launches with -- `--tools "Bash,Skill"` (as a SET, not proving anything about order), zero MCP
- * servers, `--permission-mode dontAsk`. Closes a real gap: a hard gate that only checks
- * `init != null` can't distinguish a genuinely narrow session from one that regressed to a wider
- * tool/MCP/permission profile (e.g. Read accidentally re-added to buildBaseArgv's --tools, or a
- * stray MCP server configured in the environment) -- the gate would still pass as long as the
- * expected Bash calls also happened to succeed, since nothing inspects the init event's own
- * fields beyond its mere existence.
+ * servers, `--permission-mode` EXACTLY `expectedPermissionMode` (never "either of this harness's
+ * two possible values" -- that would silently accept a strict-policy-v1 transcript reporting
+ * `bypassPermissions`, exactly the shape a real `buildInvocation` regression would produce, and is
+ * the P1 gap a prior revision of this function introduced). `expectedPermissionMode` defaults to
+ * `'dontAsk'` so every caller that predates this parameter (or otherwise never resolves an
+ * execution profile) keeps strict's own original, unweakened behavior automatically -- see
+ * runtimes/claude-code.mjs's `normalizeObservations`, the ONE real caller, which derives the
+ * correct value from `context.executionProfile` (`isPolicyNotApplicable` -> `'bypassPermissions'`,
+ * otherwise `'dontAsk'`) rather than ever guessing independently of what was actually compiled.
+ * Closes a real gap: a hard gate that only checks `init != null` can't distinguish a genuinely
+ * narrow session from one that regressed to a wider tool/MCP/permission profile (e.g. Read
+ * accidentally re-added to buildBaseArgv's --tools, or a stray MCP server configured in the
+ * environment) -- the gate would still pass as long as the expected Bash calls also happened to
+ * succeed, since nothing inspects the init event's own fields beyond its mere existence.
+ * @param {object} initEvent
+ * @param {Set<string>} allowedToolNames
+ * @param {string} [expectedPermissionMode] - one of PERMISSION_MODE_VALUES; a caller-contract
+ *   violation (never a data-quality issue) if it isn't -- throws rather than returning false, so a
+ *   typo can never be silently read as "this session never matches anything."
  */
-export function hasExpectedToolProfile(initEvent, allowedToolNames) {
+export function hasExpectedToolProfile(initEvent, allowedToolNames, expectedPermissionMode = 'dontAsk') {
+  if (!PERMISSION_MODE_VALUES.includes(expectedPermissionMode)) {
+    throw new Error(`hasExpectedToolProfile: expectedPermissionMode must be one of ${PERMISSION_MODE_VALUES.join('|')}, got ${JSON.stringify(expectedPermissionMode)}`);
+  }
   if (initEvent == null || !Array.isArray(initEvent.tools)) return false;
   const toolSet = new Set(initEvent.tools);
   if (toolSet.size !== allowedToolNames.size) return false;
   for (const t of allowedToolNames) if (!toolSet.has(t)) return false;
   if (!Array.isArray(initEvent.mcp_servers) || initEvent.mcp_servers.length !== 0) return false;
-  if (initEvent.permissionMode !== 'dontAsk') return false;
+  if (initEvent.permissionMode !== expectedPermissionMode) return false;
   return true;
 }
 

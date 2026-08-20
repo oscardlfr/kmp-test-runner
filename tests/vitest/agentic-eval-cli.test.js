@@ -237,6 +237,30 @@ describe('validateSubcommandArgs', () => {
     expect(validateSubcommandArgs('calibrate', args)).toEqual([]);
   });
 
+  // --isolation-attestation-file (PR 4, sandboxed-unrestricted-v1): accepted for calibrate/smoke/run
+  // -- the three commands that resolve an execution profile and can spend a live session -- exactly
+  // like --runtime/--execution-profile's own scope above. Whether the flag is REQUIRED/FORBIDDEN for
+  // a given resolved profile is resolveIsolationAttestationOrFail's own concern (a semantic check),
+  // never this shape-only allowlist's.
+  it('accepts --isolation-attestation-file for calibrate/smoke/run', () => {
+    for (const sub of ['calibrate', 'smoke', 'run']) {
+      expect(SUBCOMMAND_SHAPES[sub].flags).toContain('isolation-attestation-file');
+    }
+    const args = parseArgs(['calibrate', '--isolation-attestation-file', 'attestation.json']);
+    expect(validateSubcommandArgs('calibrate', args)).toEqual([]);
+  });
+
+  it('duplicating --isolation-attestation-file is still a hard parseArgs error', () => {
+    const args = parseArgs(['calibrate', '--isolation-attestation-file', 'a.json', '--isolation-attestation-file', 'b.json']);
+    expect(args.errors.some((e) => e.includes('--isolation-attestation-file') && e.includes('more than once'))).toBe(true);
+  });
+
+  it('rejects --isolation-attestation-file for subcommands that never spend a live session', () => {
+    for (const sub of ['aggregate', 'analyze', 'validate', 'corpus', 'scope']) {
+      expect(SUBCOMMAND_SHAPES[sub].flags).not.toContain('isolation-attestation-file');
+    }
+  });
+
   it('rejects --runtime for a subcommand that never spends a session', () => {
     const args = parseArgs(['validate', '--run', 'x.json', '--runtime', 'claude-code']);
     const errors = validateSubcommandArgs('validate', args);
@@ -1297,6 +1321,152 @@ describe('buildRunRecord -- retries reflects "not tracked", never a hardcoded ze
       ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
     });
     expect(record.retries).toEqual({ value: null, reason: 'not tracked for smoke runs' });
+  });
+});
+
+// PR 4 (agentic-eval-isolated-unrestricted-profile-v1): buildRunRecord's own schema6 no-policy
+// branch. selection comes from the REAL, public resolveSelection() seam (never a hand-typed
+// registry entry -- see _agentic-eval-run-record-fixtures.js's own identical rationale), so this
+// suite can never silently drift from what the registry actually contains.
+describe('buildRunRecord -- policy_mode:not_applicable (sandboxed-unrestricted-v1) emits exact nulls, never fabricated zeros/empty arrays/allow (PR 4)', () => {
+  function fakeConditionResult(overrides = {}) {
+    return {
+      observation: {
+        schema: 1,
+        runtime: { id: 'claude-code', protocolVersion: 1 },
+        process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1000n },
+        session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true },
+        transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+        terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
+        toolAttempts: [],
+        skill: {
+          available: false, profileMatchesCondition: true, snapshotBindingMatches: false,
+          targetInvocation: null, foreignInvocations: [],
+          ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+        },
+        hookStats: { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: true },
+        byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+        timing: { receiptNsByEventIndex: new Map() },
+      },
+      startedAt: new Date('2026-01-01T00:00:00.000Z'),
+      endedAt: new Date('2026-01-01T00:00:01.000Z'),
+      ...overrides,
+    };
+  }
+
+  function unrestrictedSelection() {
+    const result = resolveSelection({ executionProfileId: 'sandboxed-unrestricted-v1' });
+    if (!result.ok) throw new Error(`test setup: resolveSelection(sandboxed-unrestricted-v1) failed: ${result.reason}`);
+    return result.selection;
+  }
+
+  const FAKE_ATTESTATION_SHA256 = 'e'.repeat(64);
+
+  function unrestrictedRunRecord(overrides = {}) {
+    const selection = unrestrictedSelection();
+    return buildRunRecord({
+      conditionResult: fakeConditionResult(), condition: 'no-skill', runKind: 'calibration', scenarioId: 'test-not-applicable-policy',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: ['build'], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
+      modelRequested: selection.model.model_id,
+      selection, promptArtifact: TEST_RUN_RECORD_V6_INPUTS.promptArtifact, skillSnapshotArtifact: TEST_RUN_RECORD_V6_INPUTS.skillSnapshotArtifact,
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
+      isolationAttestationSha256: FAKE_ATTESTATION_SHA256,
+      ...overrides,
+    });
+  }
+
+  it('execution_profile carries the real attestation hash, isolation_attestation_required:true, policy_mode:not_applicable', () => {
+    const record = unrestrictedRunRecord();
+    expect(record.execution_profile.isolation_attestation_sha256).toBe(FAKE_ATTESTATION_SHA256);
+    expect(record.execution_profile.isolation_attestation_required).toBe(true);
+    expect(record.execution_profile.policy_mode).toBe('not_applicable');
+    expect(record.execution_profile.id).toBe('sandboxed-unrestricted-v1');
+  });
+
+  it('permission_mode_used is exactly bypassPermissions', () => {
+    expect(unrestrictedRunRecord().permission_mode_used).toBe('bypassPermissions');
+  });
+
+  it('policy_allowed_gradle_tasks/policy_allowed_kmptest_subcommands are exactly null -- never the real arrays, never empty arrays', () => {
+    const record = unrestrictedRunRecord();
+    expect(record.policy_allowed_gradle_tasks).toBeNull();
+    expect(record.policy_allowed_kmptest_subcommands).toBeNull();
+  });
+
+  it('policy_sha256 is exactly null -- never the real policy-hook.mjs hash', () => {
+    expect(unrestrictedRunRecord().policy_sha256).toBeNull();
+  });
+
+  it('hook_call_count/hook_deny_count are exactly null -- never 0, even though the fake observation genuinely has zero hook events', () => {
+    const record = unrestrictedRunRecord();
+    expect(record.hook_call_count).toBeNull();
+    expect(record.hook_deny_count).toBeNull();
+  });
+
+  it('policy_denials_before_first_signal/after_first_signal are null with reason "execution-profile-policy-not-applicable", for a non-scenario run', () => {
+    const record = unrestrictedRunRecord();
+    expect(record.policy_denials_before_first_signal).toEqual({ value: null, reason: 'execution-profile-policy-not-applicable' });
+    expect(record.policy_denials_after_first_signal).toEqual({ value: null, reason: 'execution-profile-policy-not-applicable' });
+  });
+
+  it('post_signal_ms/post_signal_tool_calls use the ORDINARY runKind-based reason, never the policy-not-applicable one -- their own condition is independent of policy_mode', () => {
+    const record = unrestrictedRunRecord();
+    expect(record.post_signal_ms).toEqual({ value: null, reason: 'calibration run -- no scenario grader applies' });
+    expect(record.post_signal_tool_calls).toEqual({ value: null, reason: 'calibration run -- no scenario grader applies' });
+  });
+
+  it('policy_denials_before/after_first_signal use the not-applicable reason even for a scenario run with NO signal boundary -- takes priority over the ordinary no-boundary reason; post_signal_ms stays on the ordinary no-boundary reason', () => {
+    const gradeResult = {
+      expectedOutcomeMatched: true, success: true, checks: [], firstUsefulSignalEventIndex: null,
+      testInvocationsTotal: 1, retries: 0,
+      harnessEvidenceAmbiguous: false, parallelEvidenceMalformed: false, changedEvidenceMalformed: false, gradleJunitEvidenceUnreliable: false,
+    };
+    const record = unrestrictedRunRecord({ runKind: 'scenario', gradeResult, seed: 1, orderIndex: 0, repetitionIndex: 0 });
+    expect(record.policy_denials_before_first_signal).toEqual({ value: null, reason: 'execution-profile-policy-not-applicable' });
+    expect(record.policy_denials_after_first_signal).toEqual({ value: null, reason: 'execution-profile-policy-not-applicable' });
+    expect(record.post_signal_ms.reason).toBe('no first useful signal boundary');
+  });
+
+  it('the resulting record validates clean against schemas.mjs\'s own validateRun', () => {
+    const record = unrestrictedRunRecord();
+    expect(validateRun(record).errors).toEqual([]);
+  });
+
+  it('throws if isolationAttestationSha256 is omitted/null for a policy_mode:not_applicable selection', () => {
+    expect(() => unrestrictedRunRecord({ isolationAttestationSha256: null })).toThrow();
+  });
+
+  it('throws if isolationAttestationSha256 is malformed (not 64-hex) for a policy_mode:not_applicable selection', () => {
+    expect(() => unrestrictedRunRecord({ isolationAttestationSha256: 'not-a-hash' })).toThrow();
+  });
+
+  it('strict (policy_mode:required) rejects a non-null isolationAttestationSha256 -- never silently accepted', () => {
+    expect(() => buildRunRecord({
+      conditionResult: fakeConditionResult(), condition: 'no-skill', runKind: 'calibration', scenarioId: 'test-strict-rejects-attestation',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
+      ...TEST_RUN_RECORD_V6_INPUTS,
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
+      isolationAttestationSha256: FAKE_ATTESTATION_SHA256,
+    })).toThrow();
+  });
+
+  it('strict (omitting isolationAttestationSha256 entirely) stays byte-identical to before this parameter existed -- null attestation hash, dontAsk, real policy metrics', () => {
+    const record = buildRunRecord({
+      conditionResult: fakeConditionResult(), condition: 'no-skill', runKind: 'calibration', scenarioId: 'test-strict-default',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: ['build'], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
+      ...TEST_RUN_RECORD_V6_INPUTS,
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
+    });
+    expect(record.execution_profile.isolation_attestation_sha256).toBeNull();
+    expect(record.permission_mode_used).toBe('dontAsk');
+    expect(record.policy_allowed_gradle_tasks).toEqual(['build']);
+    expect(record.policy_allowed_kmptest_subcommands).toEqual(['doctor']);
+    expect(record.policy_sha256).toBe(computePolicySha256());
+    expect(record.hook_call_count).toBe(0);
+    expect(record.hook_deny_count).toBe(0);
   });
 });
 

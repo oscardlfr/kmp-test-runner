@@ -88,7 +88,10 @@ function createCleanupAccumulator() {
  *   gradleSnapshotDir, resetGradleToSnapshot, daemonPolicy, kmpEvalTempHome, sharedEnv,
  *   registerCleanup, runCleanup}>}
  */
-export async function acquireSharedEvalResources({ allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, junitEvidenceEnabled = false, runtimeAdapter }) {
+export async function acquireSharedEvalResources({
+  allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator,
+  junitEvidenceEnabled = false, runtimeAdapter, executionProfile = null,
+}) {
   // Validated BEFORE any resource below is created (post-review hardening, round 1): the default
   // (claudeCodeRuntimeAdapter) is already validated once, at module load, by defineRuntimeAdapter
   // -- but that guarantee is specific to the DEFAULT instance, not to whatever an individual
@@ -140,7 +143,7 @@ export async function acquireSharedEvalResources({ allowedGradleTasks, allowedKm
     const { sharedEnv, settingsPath, cleanupPaths } = await runtimeAdapter.prepareIsolatedHome({
       shimDir, gradleUserHome, kmpEvalTempHome,
       expectedFixtureRoot: null, // set per-condition once the fixture dir is materialized
-      allowedGradleTasks, allowedKmpTestSubcommands, junitEvidenceEnabled,
+      allowedGradleTasks, allowedKmpTestSubcommands, junitEvidenceEnabled, executionProfile,
     });
     for (const p of cleanupPaths) registerCleanup(() => rmSync(p, { recursive: true, force: true }));
 
@@ -230,7 +233,7 @@ export async function acquireSharedEvalResources({ allowedGradleTasks, allowedKm
  *   acquireSharedEvalResources); the scratch directory's removal is queued on it IMMEDIATELY after
  *   creation, before spawnCondition runs, so a failure anywhere later in this call is still covered.
  */
-export async function runSingleCondition({ condition, materializeFixture, previousFixtureDir, cleanupFixtureOnce, resetGradleToSnapshot, kmpEvalTempHome, sharedEnv, baseArgv, snapshotDir, targetPluginName, targetSkillName, timeoutMs, decisionAttributionEnabled = false, junitEvidenceEnabled = false, evidenceTask = null, allowedInvocations = null, registerCleanup = null, fixtureSetup = null, journal = null, cellOrdinal = null, runtimeAdapter }) {
+export async function runSingleCondition({ condition, materializeFixture, previousFixtureDir, cleanupFixtureOnce, resetGradleToSnapshot, kmpEvalTempHome, sharedEnv, baseArgv, snapshotDir, targetPluginName, targetSkillName, timeoutMs, decisionAttributionEnabled = false, junitEvidenceEnabled = false, evidenceTask = null, allowedInvocations = null, registerCleanup = null, fixtureSetup = null, journal = null, cellOrdinal = null, runtimeAdapter, executionProfile = null }) {
   // Validated BEFORE any per-condition resource is created (P1 architectural review): every
   // condition within a matrix reuses the SAME runtimeAdapter acquireSharedEvalResources already
   // validated once upfront, but this function's own materialization work (fixture materialize,
@@ -319,6 +322,7 @@ export async function runSingleCondition({ condition, materializeFixture, previo
     observation = runtimeAdapter.normalizeObservations(sources, {
       condition, targetPluginName, targetSkillName,
       expectedSnapshotDir: condition === 'current-skill' ? snapshotDir : undefined,
+      executionProfile,
     });
     const { ok, errors } = validateObservation(observation);
     if (!ok) {
@@ -438,7 +442,11 @@ export function isJunitEvidenceOutcome(outcomeKind) {
   return outcomeKind === 'tests_executed' || outcomeKind === 'tests_failed' || outcomeKind === 'coverage_threshold_exceeded';
 }
 
-export async function runScenarioMatrix({ scenario, repeats, seed, model, allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, materializeFixture, cleanupFixture, targetPluginName, targetSkillName, timeoutMs, journal = null, runtimeAdapter }) {
+export async function runScenarioMatrix({
+  scenario, repeats, seed, model, allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha,
+  runPluginValidator, materializeFixture, cleanupFixture, targetPluginName, targetSkillName, timeoutMs,
+  journal = null, runtimeAdapter, executionProfile = null,
+}) {
   // Decision attribution (allow/deny per Bash attempt) is needed for EVERY scenario regardless of
   // outcome_kind (round-7 fix): a no_applicable_tests condition's denied kmp-test-parallel
   // attempts were previously phantom-counted as real executions (test_invocations_total/retries),
@@ -450,10 +458,14 @@ export async function runScenarioMatrix({ scenario, repeats, seed, model, allowe
   // Gradle-specific env vars unset for that outcome_kind, not merely inert internally).
   const decisionAttributionEnabled = true;
   const junitEvidenceEnabled = isJunitEvidenceOutcome(scenario.expected?.outcome_kind);
+  // PR 4: the ONE semantic switch dispatch-accounting/junit-evidence classification keys off for
+  // every cell in this matrix -- matches runtimes/claude-code.mjs's own isPolicyNotApplicable
+  // exactly (duplicated, not imported: only registries.mjs may import that adapter directly).
+  const policyMode = executionProfile != null && executionProfile.policy_mode === 'not_applicable' ? 'not_applicable' : 'required';
   const evidenceTask = scenario.expected?.gradle?.evidence_task ?? null;
   const allowedInvocations = scenario.expected?.gradle?.allowed_invocations ?? null;
   const fixtureSetup = scenario.fixture_setup ?? null;
-  const shared = await acquireSharedEvalResources({ allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, junitEvidenceEnabled, runtimeAdapter });
+  const shared = await acquireSharedEvalResources({ allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, junitEvidenceEnabled, runtimeAdapter, executionProfile });
   const { registerCleanup, runCleanup } = shared;
 
   try {
@@ -462,7 +474,7 @@ export async function runScenarioMatrix({ scenario, repeats, seed, model, allowe
     // repetition index runs at each time-slot (see this function's own doc comment).
     const repetitionSlots = buildRunMatrix([scenario.id], ['trial'], repeats, seed);
     const conditionOrders = buildConditionOrders(repeats, seed);
-    const baseArgv = runtimeAdapter.buildInvocation({ prompt: scenario.prompt, model, settingsPath: shared.settingsPath });
+    const baseArgv = runtimeAdapter.buildInvocation({ prompt: scenario.prompt, model, settingsPath: shared.settingsPath, executionProfile });
 
     let fixtureDir;
     let fixtureCleanupQueued = false;
@@ -514,6 +526,7 @@ export async function runScenarioMatrix({ scenario, repeats, seed, model, allowe
         journal,
         cellOrdinal: orderIndex,
         runtimeAdapter,
+        executionProfile,
       });
       fixtureDir = conditionResult.fixtureDir;
       let fullConditionResult;
@@ -530,7 +543,7 @@ export async function runScenarioMatrix({ scenario, repeats, seed, model, allowe
           ? attributeCondition(conditionResult.evidenceDir, scenario, shellAttempts, {
               terminated: conditionResult.observation.process.terminated,
               terminationReason: conditionResult.observation.process.terminationReason,
-            }, junitEvidenceEnabled)
+            }, junitEvidenceEnabled, policyMode)
           : null;
         // The scratch directory has now been fully consumed by attributeCondition -- eagerly
         // remove it right away (a safe no-op if already gone) rather than leaving it until the
@@ -550,6 +563,7 @@ export async function runScenarioMatrix({ scenario, repeats, seed, model, allowe
               hookStats: conditionResult.observation.hookStats,
               decisionByAttempt: junitAttribution.decisionByAttempt,
               preDispatchBlockedAttemptIds: junitAttribution.preDispatchBlockedAttemptIds,
+              policyMode,
             })
           : null;
         fullConditionResult = { ...conditionResult, junitAttribution, dispatchAccounting };

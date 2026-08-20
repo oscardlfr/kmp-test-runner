@@ -96,8 +96,31 @@
 
 ### 📋 QUEUED follow-ups (next sessions)
 
-- 🧭 **Agentic-eval multi-runtime foundation v1: Claude Code + Codex CLI, with a safely isolated no-policy profile** —
-  APPROVED DIRECTION 2026-08-17; implementation not started. Detailed, ordered plan:
+- ✅ **Agentic-eval multi-runtime foundation v1 — Claude-side phases 1-4 SHIPPED** (2026-08-20,
+  `feature/agentic-eval-isolated-unrestricted-profile-v1`; earlier phases already on `develop` as
+  `5c0e38b`/#436, `988f417`, `da19f6e`/#438). Execution order followed exactly as planned: freeze
+  Claude behavior (#436) → extract the Claude adapter behind `runtimes/contract.mjs` (`988f417`) →
+  schema v6 + registry + partitioned reporting (#438) → **isolated unrestricted Claude profile**
+  (this PR). The 4th phase adds `sandboxed-unrestricted-v1` as a real, non-default execution
+  profile in `execution-profiles/registry.json` (`policy_mode:"not_applicable"`,
+  `isolation_attestation_required:true`), a closed-shape isolation-attestation loader
+  (`execution-profiles/isolation-attestation.mjs` — validates an operator-authored local JSON
+  declaration bound by SHA-256, never a technical proof of containment), per-profile argv/settings/
+  env compilation (`--permission-mode bypassPermissions`, no `PreToolUse:Bash` hook wired, strict
+  stays byte-identical), a new `RESULT_CORRELATED_NO_POLICY` dispatch-accounting classification
+  (`dispatch-accounting.mjs`) for the no-policy Bash-attempt case, schema v6's honest-null
+  no-policy fields (`policy_allowed_gradle_tasks`/`policy_allowed_kmptest_subcommands`/
+  `policy_sha256`/`hook_call_count`/`hook_deny_count`/`policy_denials_before|after_first_signal`
+  all `null` with reason `execution-profile-policy-not-applicable` when policy doesn't apply), a
+  new accepted-run-audit sidecar schema 4 (`accepted-run-audit.mjs` — v1/v2/v3 frozen), and —
+  found and fixed in-session by the fake-E2E suite, not deferred — a matching
+  rejection-diagnostics schema 4 (`rejection-diagnostics.mjs` — v2/v3 frozen; a
+  `policy_mode:"not_applicable"` rejection batch previously forced a real `policy_sha256` hash it
+  could never honestly have, silently downgrading a specific "RUN FAILED: `<reason>`" rejection
+  into a generic incident report). Zero live sessions, zero real prompts, zero `bypassPermissions`
+  ever invoked on a normal host — every test uses fake bash-script `claude` subprocesses on `PATH`.
+  Not yet done: the focused Claude 2x2 pilot (a separately-authorized "Evidence 1" phase requiring
+  real external containment) and the Codex side of the plan. Detailed, ordered plan:
   [`docs/audits/agentic-eval-claude-codex-v1-plan.md`](docs/audits/agentic-eval-claude-codex-v1-plan.md).
   Runtime capability audit, including future-candidate screening for Copilot, Google, and Microsoft:
   [`docs/audits/agentic-eval-runtime-capability-audit-2026-08-17.md`](docs/audits/agentic-eval-runtime-capability-audit-2026-08-17.md).

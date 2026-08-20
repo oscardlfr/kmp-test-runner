@@ -27,6 +27,15 @@ const STRICT_POLICY_V1_SHA256 = canonicalJsonSha256({
   isolation_attestation_required: false, policy_mode: 'required', required_capabilities: ['softPermissionDenial'],
 });
 
+// PR 4: the real sandboxed-unrestricted-v1 projection, computed the identical way -- never
+// hardcoded, so this fixture can never silently drift from the real hash algorithm either.
+const UNRESTRICTED_POLICY_V1_SHA256 = canonicalJsonSha256({
+  id: 'sandboxed-unrestricted-v1', isolation_kind: 'external-sandbox', network_mode: 'restricted',
+  isolation_attestation_required: true, policy_mode: 'not_applicable',
+  required_capabilities: ['structuredTranscript', 'correlatedToolResults', 'skillStateEvidence'],
+});
+const FAKE_ATTESTATION_SHA256 = 'f'.repeat(64);
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
@@ -1125,8 +1134,65 @@ describe('schema v6 (agentic-eval-runtime-neutral-records-v1) -- agent_runtime/e
     });
   }
 
+  // PR 4 (agentic-eval-isolated-unrestricted-profile-v1): the ONE well-formed policy_mode:
+  // "not_applicable" shape -- sandboxed-unrestricted-v1's real projection/hash, a real-looking
+  // attestation hash, bypassPermissions, and every one of the 5 policy-metric top-level fields
+  // (hook_call_count/hook_deny_count/policy_allowed_gradle_tasks/policy_allowed_kmptest_subcommands/
+  // policy_sha256) set to null -- no policy hook ever governs this profile's Bash dispatch.
+  function v6UnrestrictedBase(overrides = {}) {
+    return v6Base({
+      execution_profile: {
+        id: 'sandboxed-unrestricted-v1', sha256: UNRESTRICTED_POLICY_V1_SHA256,
+        isolation_kind: 'external-sandbox', isolation_attestation_sha256: FAKE_ATTESTATION_SHA256,
+        isolation_attestation_required: true, network_mode: 'restricted', policy_mode: 'not_applicable',
+        required_capabilities: ['structuredTranscript', 'correlatedToolResults', 'skillStateEvidence'],
+      },
+      permission_mode_used: 'bypassPermissions',
+      policy_allowed_gradle_tasks: null,
+      policy_allowed_kmptest_subcommands: null,
+      policy_sha256: null,
+      hook_call_count: null,
+      hook_deny_count: null,
+      ...overrides,
+    });
+  }
+
   it('a fully well-formed schema:6 no-skill calibration record validates cleanly', () => {
     expect(validateRun(v6Base())).toEqual({ errors: [], warnings: [] });
+  });
+
+  describe('schema:6 policy_mode:"not_applicable" (sandboxed-unrestricted-v1) -- 5 policy-metric fields must be exactly null, never a real/fabricated value (PR 4)', () => {
+    it('a fully well-formed not_applicable record validates cleanly', () => {
+      expect(validateRun(v6UnrestrictedBase())).toEqual({ errors: [], warnings: [] });
+    });
+
+    const REAL_VALUE_BY_FIELD = {
+      hook_call_count: 0, hook_deny_count: 0, policy_allowed_gradle_tasks: [],
+      policy_allowed_kmptest_subcommands: [], policy_sha256: 'a'.repeat(64),
+    };
+    for (const field of Object.keys(REAL_VALUE_BY_FIELD)) {
+      it(`rejects a REAL (non-null) ${field} under policy_mode:"not_applicable" -- fabricating policy evidence that was never produced`, () => {
+        const run = v6UnrestrictedBase({ [field]: REAL_VALUE_BY_FIELD[field] });
+        expect(validateRun(run).errors.some((e) => e.field === field)).toBe(true);
+      });
+    }
+
+    for (const field of Object.keys(REAL_VALUE_BY_FIELD)) {
+      it(`rejects a null ${field} under policy_mode:"required" (strict) -- these 5 fields stay mandatory real values for schema6 strict, unchanged from before this PR`, () => {
+        const run = v6Base({ [field]: null });
+        expect(validateRun(run).errors.some((e) => e.field === field)).toBe(true);
+      });
+    }
+
+    it('an empty array is NOT the same as null -- policy_allowed_gradle_tasks:[] under not_applicable is still rejected', () => {
+      const run = v6UnrestrictedBase({ policy_allowed_gradle_tasks: [] });
+      expect(validateRun(run).errors.some((e) => e.field === 'policy_allowed_gradle_tasks')).toBe(true);
+    });
+
+    it('schema<6 is completely unaffected by this branch -- schema:1 still requires real top-level policy values regardless of execution_profile-shaped content', () => {
+      const run = baseRun({ hook_call_count: null });
+      expect(validateRun(run).errors.some((e) => e.field === 'hook_call_count')).toBe(true);
+    });
   });
 
   it('a fully well-formed schema:6 current-skill record validates cleanly', () => {

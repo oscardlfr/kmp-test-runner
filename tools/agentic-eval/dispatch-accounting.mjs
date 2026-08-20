@@ -26,14 +26,21 @@
 const DISPATCH_STATUS = Object.freeze({
   HOOK_EVALUATED: 'hook_evaluated',
   PRE_DISPATCH_BLOCKED: 'pre_dispatch_blocked',
+  // PR 4 (agentic-eval-isolated-unrestricted-profile-v1): the ONE new status, exclusive to
+  // policyMode:"not_applicable" -- a Bash attempt with a correlated tool_result, where no policy
+  // hook ever existed to evaluate it. Never emitted under policyMode:"required".
+  RESULT_CORRELATED_NO_POLICY: 'result_correlated_no_policy',
   UNACCOUNTED: 'unaccounted',
 });
 
 export const DISPATCH_STATUS_VALUES = Object.freeze([
   DISPATCH_STATUS.HOOK_EVALUATED,
   DISPATCH_STATUS.PRE_DISPATCH_BLOCKED,
+  DISPATCH_STATUS.RESULT_CORRELATED_NO_POLICY,
   DISPATCH_STATUS.UNACCOUNTED,
 ]);
+
+export const POLICY_MODE_VALUES = Object.freeze(['required', 'not_applicable']);
 
 /**
  * Classifies every Bash attempt in one condition and decides whether the whole condition's Bash
@@ -43,18 +50,43 @@ export const DISPATCH_STATUS_VALUES = Object.freeze([
  * @param {object} hookStats - countHookEvents() output (needs hookPairingOk / hookCallCount /
  *   hookResponseCount / hookAllowCount / hookDenyCount). Never re-parsed here.
  * @param {Map<string, string|null>} decisionByAttempt - resolveDecisions() output, keyed by
- *   tool_use_id: 'allow' | 'deny' | null.
+ *   tool_use_id: 'allow' | 'deny' | null. Ignored entirely when policyMode is "not_applicable"
+ *   (no policy hook ever produces a decision under that profile) -- a caller may pass an empty Map.
  * @param {Set<string>} preDispatchBlockedAttemptIds - the ids the STRICT transcript matcher
- *   recognized, computed once in resolveDecisions. Never re-derived downstream.
+ *   recognized. Profile-independent (Claude Code's own tool-layer rejection, never gated on
+ *   whether a policy hook exists) -- computed once, upstream, either by resolveDecisions
+ *   (policyMode:"required") or directly from each attempt's own `preDispatchBlock.recognized`
+ *   (policyMode:"not_applicable" callers that never invoke junit-evidence.mjs's machinery at all,
+ *   e.g. cli.mjs's runConditionPair for calibrate/smoke).
+ * @param {'required'|'not_applicable'} [policyMode] - default 'required' preserves this function's
+ *   exact pre-existing behavior/return shape for every caller that predates this parameter.
+ *   "required": byte-for-byte the pre-existing classification (hook_evaluated/pre_dispatch_blocked/
+ *   unaccounted, driven by decisionByAttempt). "not_applicable": every attempt is classified from
+ *   `bashResults[].resultFound` instead -- a correlated tool_result means real, observed execution
+ *   even though no policy hook ever evaluated it; decisionByAttempt is never consulted. A caller
+ *   that forgets to pass "not_applicable" for an actually-not_applicable condition still fails
+ *   CLOSED, never open: under the "required" branch, decisionByAttempt is empty (no policy hook
+ *   ever ran), so every non-pre-dispatch-blocked attempt becomes unaccounted and
+ *   everyCallAccountedFor is false -- the caller-level "no silent default" guarantee Decision G
+ *   actually mandates lives one layer up, at cellTranscriptIntegrityOk's own
+ *   requireDispatchAccounting parameter (still REQUIRED there, unchanged).
  * @returns {{dispatchStatusByAttempt: Map<string,string>, hookEvaluatedCount: number,
- *   preDispatchBlockedCount: number, unaccountedCount: number, everyCallAccountedFor: boolean}}
+ *   preDispatchBlockedCount: number, resultCorrelatedNoPolicyCount: number, unaccountedCount: number,
+ *   everyCallAccountedFor: boolean}}
  */
-export function buildBashDispatchAccounting({ bashResults, hookStats, decisionByAttempt, preDispatchBlockedAttemptIds }) {
+export function buildBashDispatchAccounting({ bashResults, hookStats, decisionByAttempt, preDispatchBlockedAttemptIds, policyMode = 'required' }) {
+  if (policyMode !== 'required' && policyMode !== 'not_applicable') {
+    throw new Error(`buildBashDispatchAccounting: policyMode must be "required" or "not_applicable" -- got ${JSON.stringify(policyMode)}`);
+  }
   const calls = Array.isArray(bashResults) ? bashResults : [];
   const decisions = decisionByAttempt instanceof Map ? decisionByAttempt : new Map();
   const recognized = preDispatchBlockedAttemptIds instanceof Set ? preDispatchBlockedAttemptIds : new Set();
+  const callsById = new Map();
+  for (const call of calls) {
+    if (typeof call?.id === 'string' && call.id.length > 0) callsById.set(call.id, call);
+  }
 
-  // ---- identity invariants -------------------------------------------------------------------
+  // ---- identity invariants (shared by both policy modes) -----------------------------------
   // A Map silently collapses duplicate keys, so "every call got a status" cannot be proven by the
   // map's own size alone. Establish the id set's own integrity first, and let any violation force
   // everyCallAccountedFor:false rather than throwing (this runs on the fail-fast path, where a
@@ -73,8 +105,51 @@ export function buildBashDispatchAccounting({ bashResults, hookStats, decisionBy
     if (!seenIds.has(id)) identityOk = false;
   }
 
-  // ---- per-attempt classification -------------------------------------------------------------
   const dispatchStatusByAttempt = new Map();
+
+  if (policyMode === 'not_applicable') {
+    // ---- no-policy per-attempt classification -----------------------------------------------
+    // No decisionByAttempt/hookStats cross-check at all -- there is no policy hook whose
+    // allow/deny/pairing counts could ever be meaningful here (every one of them is genuinely
+    // zero, always, since PreToolUse:Bash was never wired for this profile -- see
+    // runtimes/claude-code.mjs's prepareIsolatedHome). Every attempt is real, observed data or it
+    // is unaccounted; there is no third "policy said no" outcome under this profile.
+    let preDispatchBlockedCount = 0;
+    let resultCorrelatedNoPolicyCount = 0;
+    let unaccountedCount = 0;
+    for (const id of seenIds) {
+      const isRecognizedBlock = recognized.has(id);
+      const call = callsById.get(id);
+      let status;
+      if (isRecognizedBlock) {
+        status = DISPATCH_STATUS.PRE_DISPATCH_BLOCKED;
+        preDispatchBlockedCount += 1;
+      } else if (call?.resultFound === true) {
+        status = DISPATCH_STATUS.RESULT_CORRELATED_NO_POLICY;
+        resultCorrelatedNoPolicyCount += 1;
+      } else {
+        status = DISPATCH_STATUS.UNACCOUNTED;
+        unaccountedCount += 1;
+      }
+      dispatchStatusByAttempt.set(id, status);
+    }
+    const everyCallAccountedFor = identityOk
+      && dispatchStatusByAttempt.size === calls.length
+      && calls.length === preDispatchBlockedCount + resultCorrelatedNoPolicyCount + unaccountedCount
+      // An empty array is valid ONLY when there really were no Bash attempts -- calls.length===0
+      // makes this trivially true, never masking attempts this function was never shown.
+      && unaccountedCount === 0;
+    return {
+      dispatchStatusByAttempt,
+      hookEvaluatedCount: 0,
+      preDispatchBlockedCount,
+      resultCorrelatedNoPolicyCount,
+      unaccountedCount,
+      everyCallAccountedFor,
+    };
+  }
+
+  // ---- policyMode:"required" -- byte-for-byte the pre-existing implementation ------------------
   let hookEvaluatedCount = 0;
   let preDispatchBlockedCount = 0;
   let unaccountedCount = 0;
@@ -124,6 +199,7 @@ export function buildBashDispatchAccounting({ bashResults, hookStats, decisionBy
     dispatchStatusByAttempt,
     hookEvaluatedCount,
     preDispatchBlockedCount,
+    resultCorrelatedNoPolicyCount: 0,
     unaccountedCount,
     everyCallAccountedFor,
   };

@@ -14,6 +14,9 @@ import { fileURLToPath } from 'node:url';
 import {
   LATEST_REJECTION_DIAGNOSTICS_SCHEMA,
   SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS,
+  REJECTION_DIAGNOSTICS_SCHEMA_V2,
+  REJECTION_DIAGNOSTICS_SCHEMA_V3,
+  REJECTION_DIAGNOSTICS_SCHEMA_V4,
   buildRejectionDiagnostics,
   validateRejectionRow,
   validateRejectionLocalRow,
@@ -114,15 +117,48 @@ function scenarioRecord(overrides = {}) {
   });
 }
 
-// Schema 2 -> 3 (preserve rejected matrix forensics): the row gained per-cell
-// unexpected_tool_uses_count + top-level matrix_complete/planned_cell_count/executed_cell_count/
-// raw_transcripts_persisted. Unlike every PRIOR bump in this module, this one is a genuine
-// version DISPATCH (SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS = [2, 3]), not a plain constant bump
-// -- two real diagnostic files from a live 2026-08 canary rejection are schema:2 and are declared
-// incident evidence that must keep validating. The builder only ever emits the latest schema.
-it('LATEST_REJECTION_DIAGNOSTICS_SCHEMA is 3, and the validator still supports 2', () => {
-  expect(LATEST_REJECTION_DIAGNOSTICS_SCHEMA).toBe(3);
-  expect(SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS).toEqual([2, 3]);
+// A genuine schema:6, execution_profile.policy_mode:"not_applicable" execution_profile group
+// (sandboxed-unrestricted-v1) -- matches buildRunRecord's own real projection shape exactly
+// (id/policy_mode/isolation_attestation_sha256 are the only 3 fields rejection-diagnostics.mjs
+// ever reads off it). `overrides` lets a specific test deliberately vary one field (e.g. a
+// different isolation_attestation_sha256) to prove the batch-disagreement checks.
+function unrestrictedProfile(overrides = {}) {
+  return {
+    id: 'sandboxed-unrestricted-v1',
+    policy_mode: 'not_applicable',
+    isolation_attestation_sha256: 'e'.repeat(64),
+    ...overrides,
+  };
+}
+// A genuine schema:6, policy_mode:"not_applicable" calibration record -- policy_sha256 is
+// honestly null (buildRunRecord's own policyApplies-conditioned assignment), never the real hash
+// bare record() carries. Building on record() (never a parallel, independently-maintained base)
+// so every OTHER field stays identical to the policy-required shape.
+function unrestrictedRecord(overrides = {}) {
+  return record({ schema: 6, execution_profile: unrestrictedProfile(), policy_sha256: null, ...overrides });
+}
+// The scenario-run_kind analogue -- schema:6/execution_profile/policy_sha256:null layered onto
+// scenarioRecord()'s own real project_alias/project_commit/seed/repetition_index/order_index shape.
+function unrestrictedScenarioRecord(overrides = {}) {
+  return scenarioRecord({ schema: 6, execution_profile: unrestrictedProfile(), policy_sha256: null, ...overrides });
+}
+
+// Schema 2 -> 3 -> 4 (preserve rejected matrix forensics; sandboxed-unrestricted-v1 support): v2
+// gained per-cell unexpected_tool_uses_count + top-level matrix_complete/planned_cell_count/
+// executed_cell_count/raw_transcripts_persisted going to v3; v3 gained execution_profile_id/
+// policy_mode/isolation_attestation_sha256 going to v4, EXCLUSIVE to a policy_mode:"not_applicable"
+// batch (policy_sha256 becomes exactly null there, instead of a real hash). All three are a genuine
+// version DISPATCH (SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS = [2, 3, 4]), never a plain constant
+// bump -- two real diagnostic files from a live 2026-08 canary rejection are schema:2 and are
+// declared incident evidence that must keep validating, and v2/v3 stay frozen forever (their own
+// field sets, and policy_sha256's own real-hex64 requirement, never change again). The builder
+// picks v3 or v4 per batch (see buildRejectionDiagnostics' own dispatch) -- never emits v2.
+it('LATEST_REJECTION_DIAGNOSTICS_SCHEMA is 4, and the validator still supports 2 and 3', () => {
+  expect(REJECTION_DIAGNOSTICS_SCHEMA_V2).toBe(2);
+  expect(REJECTION_DIAGNOSTICS_SCHEMA_V3).toBe(3);
+  expect(REJECTION_DIAGNOSTICS_SCHEMA_V4).toBe(4);
+  expect(LATEST_REJECTION_DIAGNOSTICS_SCHEMA).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V4);
+  expect(SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS).toEqual([REJECTION_DIAGNOSTICS_SCHEMA_V2, REJECTION_DIAGNOSTICS_SCHEMA_V3, REJECTION_DIAGNOSTICS_SCHEMA_V4]);
 });
 
 describe('buildRejectionDiagnostics -- pure construction', () => {
@@ -135,7 +171,10 @@ describe('buildRejectionDiagnostics -- pure construction', () => {
       failedChecksByRunId: { [recordA.run_id]: ['skillSelectionOk'], [recordB.run_id]: [] },
       foreignSkillNamesByRunId: { [recordA.run_id]: ['some-other-skill'], [recordB.run_id]: [] },
     });
-    expect(committed.schema).toBe(LATEST_REJECTION_DIAGNOSTICS_SCHEMA);
+    // record() carries no execution_profile (a real, policy-required calibration record) --
+    // schema 3, never the current LATEST (which now means something else: schema 4, exclusive to
+    // a policy_mode:"not_applicable" batch neither recordA nor recordB is).
+    expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V3);
     expect(committed.run_kind).toBe('calibration');
     expect(committed.run_ids).toEqual([recordA.run_id, recordB.run_id]);
     expect(committed.cells.length).toBe(2);
@@ -343,7 +382,10 @@ describe('validateRejectionRow -- schema validation', () => {
     const cellA = { run_id: 'r1', condition: 'no-skill', repetition_index: null, order_index: null, skill_source_sha: null, model_resolved: 'claude-sonnet-5-fake-resolved', claude_code_version: '1.2.3-fake', failed_checks: ['skillSelectionOk'], foreign_skill_summary: { rejected: 0, confirmed: 1, incomplete: 0 }, ambient_skill_profile: AMBIENT_PROFILE_FIXTURE, unexpected_tool_uses_count: 0 };
     const cellB = { run_id: 'r2', condition: 'current-skill', repetition_index: null, order_index: null, skill_source_sha: 'a'.repeat(40), model_resolved: 'claude-sonnet-5-fake-resolved', claude_code_version: '1.2.3-fake', failed_checks: [], foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 }, ambient_skill_profile: AMBIENT_PROFILE_FIXTURE, unexpected_tool_uses_count: 0 };
     return {
-      schema: LATEST_REJECTION_DIAGNOSTICS_SCHEMA,
+      // Explicitly v3 (a real policy_sha256 below, no execution_profile) -- never
+      // LATEST_REJECTION_DIAGNOSTICS_SCHEMA, which now means schema 4 and requires
+      // policy_sha256:null instead.
+      schema: REJECTION_DIAGNOSTICS_SCHEMA_V3,
       rejection_id: '11111111-1111-1111-1111-111111111111',
       timestamp: '2026-07-21T00:00:00.000Z',
       run_kind: 'calibration',
@@ -1072,7 +1114,8 @@ describe('validateRejectionRow -- schema-3-only fields (preserve rejected matrix
     const cellA = { run_id: 'r1', condition: 'no-skill', repetition_index: null, order_index: null, skill_source_sha: null, model_resolved: 'claude-sonnet-5-fake-resolved', claude_code_version: '1.2.3-fake', failed_checks: ['skillSelectionOk'], foreign_skill_summary: { rejected: 0, confirmed: 1, incomplete: 0 }, ambient_skill_profile: AMBIENT_PROFILE_FIXTURE, unexpected_tool_uses_count: 0 };
     const cellB = { run_id: 'r2', condition: 'current-skill', repetition_index: null, order_index: null, skill_source_sha: 'a'.repeat(40), model_resolved: 'claude-sonnet-5-fake-resolved', claude_code_version: '1.2.3-fake', failed_checks: [], foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 }, ambient_skill_profile: AMBIENT_PROFILE_FIXTURE, unexpected_tool_uses_count: 0 };
     return {
-      schema: LATEST_REJECTION_DIAGNOSTICS_SCHEMA,
+      // Explicitly v3, same rationale as the sibling validRow() above.
+      schema: REJECTION_DIAGNOSTICS_SCHEMA_V3,
       rejection_id: '11111111-1111-1111-1111-111111111111',
       timestamp: '2026-07-21T00:00:00.000Z',
       run_kind: 'calibration',
@@ -1225,7 +1268,7 @@ describe('validateRejectionRow -- schema-3-only fields (preserve rejected matrix
   });
 });
 
-describe('schema v2 backward compatibility -- the validator DISPATCHES (2 and 3), the builder only ever emits 3 (B.6)', () => {
+describe('schema v2 backward compatibility -- the validator DISPATCHES (2, 3, and 4), the builder only ever emits 3 or 4, never 2 (B.6)', () => {
   // Constructed from the DOCUMENTED v2 shape (CELL_CANONICAL_FIELDS_V2/REJECTION_DIAGNOSTICS_
   // CANONICAL_FIELDS_V2's own frozen field lists in rejection-diagnostics.mjs) -- never copied
   // from the two real, preserved 2026-08 incident diagnostic files themselves (those remain
@@ -1648,6 +1691,271 @@ describe('buildRejectionDiagnostics -- schema-3 fields (preserve rejected matrix
       runKind: 'calibration', records: [r], failedChecksByRunId: { [r.run_id]: ['noUnexpectedToolsOk'] },
       unexpectedToolUsesCountByRunId: { [r.run_id]: 2 }, unexpectedToolsByRunId: { [r.run_id]: [{ name: 'Read', event_index: 0 }] },
     })).toThrow(/unexpected-tool tiers disagree/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rejection-diagnostics schema 4 (sandboxed-unrestricted-v1 support). Authorized scope expansion,
+// mid-session, after the fake E2E suite (agentic-eval-unrestricted-profile-e2e.test.js) proved a
+// genuine rejection under the new execution profile was silently misclassified: policy_sha256 is
+// honestly null for a policy_mode:"not_applicable" batch (Decision F/G, PR 4's own established
+// pattern), but the pre-existing validator unconditionally required a real hex64 hash, so
+// writeRejectedRunDiagnostics() threw internally on every such rejection and cli.mjs's own
+// `result.rejectionId == null` branch silently fell back to a generic "finalizing_matrix" incident
+// instead of the clean "RUN FAILED: <specific reason>" strict already produces. Schema 4 reports
+// the real facts instead: execution_profile_id/policy_mode/isolation_attestation_sha256, and an
+// honestly-null policy_sha256 -- v2 and v3 stay frozen exactly as they were (their own field sets
+// unchanged, policy_sha256 still a required real hex64 for either).
+// ---------------------------------------------------------------------------
+describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mode:"not_applicable") support', () => {
+  describe('v2 and v3 stay frozen -- policy_sha256 is still a required real hex64 hash for either', () => {
+    it('a v3 row with policy_sha256:null is rejected -- v3 never adopts v4\'s honest-null rule', () => {
+      const cellA = { run_id: 'r1', condition: 'no-skill', repetition_index: null, order_index: null, skill_source_sha: null, model_resolved: 'claude-sonnet-5-fake-resolved', claude_code_version: '1.2.3-fake', failed_checks: ['skillSelectionOk'], foreign_skill_summary: { rejected: 0, confirmed: 1, incomplete: 0 }, ambient_skill_profile: { count: 0, scope_id: '00000000-0000-4000-8000-000000000000', fingerprint_hmac: '0'.repeat(64) }, unexpected_tool_uses_count: 0 };
+      const cellB = { run_id: 'r2', condition: 'current-skill', repetition_index: null, order_index: null, skill_source_sha: 'a'.repeat(40), model_resolved: 'claude-sonnet-5-fake-resolved', claude_code_version: '1.2.3-fake', failed_checks: [], foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 }, ambient_skill_profile: { count: 0, scope_id: '00000000-0000-4000-8000-000000000000', fingerprint_hmac: '0'.repeat(64) }, unexpected_tool_uses_count: 0 };
+      const row = {
+        schema: REJECTION_DIAGNOSTICS_SCHEMA_V3, rejection_id: '11111111-1111-1111-1111-111111111111',
+        timestamp: '2026-07-21T00:00:00.000Z', run_kind: 'calibration', run_ids: ['r1', 'r2'],
+        model_requested: 'fake-model-x', repo_commit: 'c'.repeat(40), scenario_id: 'calibration-explicit-invocation',
+        project_alias: 'calibration-project', project_commit: null, seed: null,
+        policy_sha256: null, platform: 'linux', privacy_status: 'public', cells: [cellA, cellB],
+        foreign_skill_summary: { rejected: 0, confirmed: 1, incomplete: 0 }, ambient_profile_matrix_ok: null,
+        matrix_complete: true, planned_cell_count: 2, executed_cell_count: 2, raw_transcripts_persisted: true,
+      };
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'policy_sha256')).toBe(true);
+    });
+
+    it('a genuine schema:2 row is completely unaffected by the schema-4 addition', () => {
+      const ambientProfile = { count: 0, scope_id: '00000000-0000-4000-8000-000000000000', fingerprint_hmac: '0'.repeat(64) };
+      const v2Row = {
+        schema: REJECTION_DIAGNOSTICS_SCHEMA_V2, rejection_id: '22222222-2222-2222-2222-222222222222',
+        timestamp: '2026-08-10T12:00:00.000Z', run_kind: 'scenario', run_ids: ['run-a'],
+        model_requested: 'claude-sonnet-5', repo_commit: 'e'.repeat(40), scenario_id: 'changed-module-verification',
+        project_alias: 'some-project', project_commit: 'f'.repeat(40), seed: 42, policy_sha256: 'b'.repeat(64),
+        platform: 'windows', privacy_status: 'public',
+        cells: [{ run_id: 'run-a', condition: 'no-skill', repetition_index: 0, order_index: 0, skill_source_sha: null, model_resolved: 'claude-sonnet-5-fake-resolved', claude_code_version: '1.2.3-fake', failed_checks: ['noUnexpectedToolsOk'], foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 }, ambient_skill_profile: ambientProfile }],
+        foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 }, ambient_profile_matrix_ok: true,
+      };
+      expect(validateRejectionRow(v2Row).errors).toEqual([]);
+    });
+  });
+
+  describe('buildRejectionDiagnostics -- dispatches to v3 or v4, never via LATEST_REJECTION_DIAGNOSTICS_SCHEMA', () => {
+    it('a policy-required (schema<6, or no execution_profile) batch still builds v3, byte-identical to before this addition', () => {
+      const r = record();
+      const { committed } = buildDiag({ runKind: 'calibration', records: [r], failedChecksByRunId: { [r.run_id]: [] } });
+      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V3);
+      expect(committed.policy_sha256).toBe('a'.repeat(64));
+      expect('execution_profile_id' in committed).toBe(false);
+      expect('policy_mode' in committed).toBe(false);
+      expect('isolation_attestation_sha256' in committed).toBe(false);
+    });
+
+    it('a policy_mode:"not_applicable" batch builds v4, with policy_sha256 honestly null and the 3 new fields populated from records[].execution_profile', () => {
+      const r = unrestrictedRecord();
+      const { committed } = buildDiag({ runKind: 'calibration', records: [r], failedChecksByRunId: { [r.run_id]: ['skillSelectionOk'] } });
+      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V4);
+      expect(committed.policy_sha256).toBeNull();
+      expect(committed.execution_profile_id).toBe('sandboxed-unrestricted-v1');
+      expect(committed.policy_mode).toBe('not_applicable');
+      expect(committed.isolation_attestation_sha256).toBe('e'.repeat(64));
+      expect(validateRejectionRow(committed).errors).toEqual([]);
+    });
+
+    it('a not_applicable scenario batch (2 cells) also builds v4 cleanly, matching the real fail-fast-rejection shape', () => {
+      const r1 = unrestrictedScenarioRecord();
+      const r2 = unrestrictedScenarioRecord({ run_id: 'kampkit-current-skill-bbbb2222', condition: 'current-skill', skill_source_sha: 'a'.repeat(40), repetition_index: 0, order_index: 1 });
+      const { committed } = buildDiag({
+        runKind: 'scenario', records: [r1, r2],
+        failedChecksByRunId: { [r1.run_id]: [], [r2.run_id]: ['noUnexpectedToolsOk'] },
+        unexpectedToolUsesCountByRunId: { [r1.run_id]: 0, [r2.run_id]: 1 },
+        unexpectedToolsByRunId: { [r1.run_id]: [], [r2.run_id]: [{ name: 'Read', event_index: 3 }] },
+        plannedCellCount: 4, executedCellCount: 2, ambientProfileMatrixOk: null,
+      });
+      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V4);
+      expect(committed.matrix_complete).toBe(false);
+      expect(committed.policy_sha256).toBeNull();
+      expect(committed.execution_profile_id).toBe('sandboxed-unrestricted-v1');
+      expect(validateRejectionRow(committed).errors).toEqual([]);
+    });
+
+    it('throws a specific, closed reason when records disagree on execution_profile.policy_mode (a caller-assembled inconsistency, never a real production shape)', () => {
+      const r1 = unrestrictedRecord();
+      // Deliberately agrees with r1 on policy_sha256:null (so the PRE-EXISTING BATCH_WIDE_FIELDS
+      // check, which runs earlier and would otherwise catch a policy_sha256 mismatch first, stays
+      // silent here) but is schema>=6 with execution_profile.policy_mode:"required" -- a shape
+      // buildRunRecord itself can never actually produce (policy_sha256 and policy_mode are always
+      // coupled 1:1 there), exercised here specifically to isolate THIS function's own agreement
+      // check rather than accidentally re-proving the pre-existing, unrelated one.
+      const r2 = record({
+        run_id: 'other-run', condition: 'current-skill', skill_source_sha: 'a'.repeat(40), policy_sha256: null,
+        schema: 6, execution_profile: { id: 'strict-policy-v1', policy_mode: 'required', isolation_attestation_sha256: null },
+      });
+      expect(() => buildDiag({ runKind: 'calibration', records: [r1, r2], failedChecksByRunId: { [r1.run_id]: ['skillSelectionOk'], [r2.run_id]: [] } }))
+        .toThrow(/records disagree on execution_profile\.policy_mode/);
+    });
+
+    it('throws when a schema<6 record is mixed with a schema>=6 not_applicable record -- the pre-v6/post-v6 mix is caught by the SAME agreement check', () => {
+      const r1 = unrestrictedRecord();
+      // record() never sets schema at all (schema<6 sentinel) -- policy_sha256:null explicitly
+      // added so this exercises the schema<6-vs->=6 mix specifically, not a rediscovery of the
+      // pre-existing policy_sha256 batch-wide check (same isolation rationale as the test above).
+      const r2 = record({ run_id: 'other-run', condition: 'current-skill', skill_source_sha: 'a'.repeat(40), policy_sha256: null });
+      expect(() => buildDiag({ runKind: 'calibration', records: [r1, r2], failedChecksByRunId: { [r1.run_id]: ['skillSelectionOk'], [r2.run_id]: [] } }))
+        .toThrow(/records disagree on execution_profile\.policy_mode/);
+    });
+
+    it('throws a specific reason when records disagree on execution_profile.id within a not_applicable batch', () => {
+      const r1 = unrestrictedRecord();
+      const r2 = unrestrictedRecord({ run_id: 'other-run', condition: 'current-skill', skill_source_sha: 'a'.repeat(40), execution_profile: unrestrictedProfile({ id: 'some-other-profile-v1' }) });
+      expect(() => buildDiag({ runKind: 'calibration', records: [r1, r2], failedChecksByRunId: { [r1.run_id]: [], [r2.run_id]: [] } }))
+        .toThrow(/records disagree on execution_profile\.id/);
+    });
+
+    it('throws a specific reason when records disagree on execution_profile.isolation_attestation_sha256 within a not_applicable batch', () => {
+      const r1 = unrestrictedRecord();
+      const r2 = unrestrictedRecord({ run_id: 'other-run', condition: 'current-skill', skill_source_sha: 'a'.repeat(40), execution_profile: unrestrictedProfile({ isolation_attestation_sha256: 'f'.repeat(64) }) });
+      expect(() => buildDiag({ runKind: 'calibration', records: [r1, r2], failedChecksByRunId: { [r1.run_id]: [], [r2.run_id]: [] } }))
+        .toThrow(/records disagree on execution_profile\.isolation_attestation_sha256/);
+    });
+
+    it('throws when the (agreeing) isolation_attestation_sha256 is not a real hex64 string -- never silently accepted, never a synthetic fallback hash', () => {
+      const r = unrestrictedRecord({ execution_profile: unrestrictedProfile({ isolation_attestation_sha256: 'not-a-real-hash' }) });
+      expect(() => buildDiag({ runKind: 'calibration', records: [r], failedChecksByRunId: { [r.run_id]: [] } }))
+        .toThrow(/isolation_attestation_sha256 must be a real 64-hex-char string/);
+    });
+
+    it('v4\'s 3 new fields are copied EXCLUSIVELY from records[].execution_profile -- there is no caller-supplied parameter that could override or bypass them', () => {
+      const r = unrestrictedRecord();
+      // Not a real buildRejectionDiagnostics param -- confirms the function signature has no
+      // parallel, independently-controllable channel for these facts (an extra key here is simply
+      // ignored, exactly like passing any other unrecognized option to a destructured-params
+      // function would be).
+      const { committed } = buildDiag({ runKind: 'calibration', records: [r], failedChecksByRunId: { [r.run_id]: [] }, executionProfileId: 'attacker-controlled-id', policyMode: 'required' });
+      expect(committed.execution_profile_id).toBe('sandboxed-unrestricted-v1');
+      expect(committed.policy_mode).toBe('not_applicable');
+    });
+  });
+
+  describe('validateRejectionRow -- schema-4-only fields', () => {
+    function unrestrictedValidRow(overrides = {}) {
+      const cellA = { run_id: 'r1', condition: 'no-skill', repetition_index: null, order_index: null, skill_source_sha: null, model_resolved: 'claude-sonnet-5-fake-resolved', claude_code_version: '1.2.3-fake', failed_checks: ['skillSelectionOk'], foreign_skill_summary: { rejected: 0, confirmed: 1, incomplete: 0 }, ambient_skill_profile: { count: 0, scope_id: '00000000-0000-4000-8000-000000000000', fingerprint_hmac: '0'.repeat(64) }, unexpected_tool_uses_count: 0 };
+      const cellB = { run_id: 'r2', condition: 'current-skill', repetition_index: null, order_index: null, skill_source_sha: 'a'.repeat(40), model_resolved: 'claude-sonnet-5-fake-resolved', claude_code_version: '1.2.3-fake', failed_checks: [], foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 }, ambient_skill_profile: { count: 0, scope_id: '00000000-0000-4000-8000-000000000000', fingerprint_hmac: '0'.repeat(64) }, unexpected_tool_uses_count: 0 };
+      return {
+        schema: REJECTION_DIAGNOSTICS_SCHEMA_V4,
+        rejection_id: '11111111-1111-1111-1111-111111111111',
+        timestamp: '2026-07-21T00:00:00.000Z',
+        run_kind: 'calibration',
+        run_ids: ['r1', 'r2'],
+        model_requested: 'fake-model-x',
+        repo_commit: 'c'.repeat(40),
+        scenario_id: 'calibration-explicit-invocation',
+        project_alias: 'calibration-project',
+        project_commit: null,
+        seed: null,
+        policy_sha256: null,
+        execution_profile_id: 'sandboxed-unrestricted-v1',
+        policy_mode: 'not_applicable',
+        isolation_attestation_sha256: 'e'.repeat(64),
+        platform: 'linux',
+        privacy_status: 'public',
+        cells: [cellA, cellB],
+        foreign_skill_summary: { rejected: 0, confirmed: 1, incomplete: 0 },
+        ambient_profile_matrix_ok: null,
+        matrix_complete: true,
+        planned_cell_count: 2,
+        executed_cell_count: 2,
+        raw_transcripts_persisted: true,
+        ...overrides,
+      };
+    }
+
+    it('accepts a well-formed schema-4 row cleanly', () => {
+      expect(validateRejectionRow(unrestrictedValidRow()).errors).toEqual([]);
+    });
+
+    it('rejects a non-empty but non-slug execution_profile_id', () => {
+      const { errors } = validateRejectionRow(unrestrictedValidRow({ execution_profile_id: 'Sandboxed-Unrestricted-V1' }));
+      expect(errors.some((e) => e.field === 'execution_profile_id')).toBe(true);
+    });
+
+    it('rejects an empty execution_profile_id', () => {
+      const { errors } = validateRejectionRow(unrestrictedValidRow({ execution_profile_id: '' }));
+      expect(errors.some((e) => e.field === 'execution_profile_id')).toBe(true);
+    });
+
+    it('rejects policy_mode !== "not_applicable" -- required (or any other value) is never valid on schema 4', () => {
+      const { errors } = validateRejectionRow(unrestrictedValidRow({ policy_mode: 'required' }));
+      expect(errors.some((e) => e.field === 'policy_mode')).toBe(true);
+    });
+
+    it('rejects a missing isolation_attestation_sha256 (null -- the required-policy shape\'s own value)', () => {
+      const { errors } = validateRejectionRow(unrestrictedValidRow({ isolation_attestation_sha256: null }));
+      expect(errors.some((e) => e.field === 'isolation_attestation_sha256')).toBe(true);
+    });
+
+    it('rejects a malformed (non-hex64) isolation_attestation_sha256', () => {
+      const { errors } = validateRejectionRow(unrestrictedValidRow({ isolation_attestation_sha256: 'not-a-real-hash' }));
+      expect(errors.some((e) => e.field === 'isolation_attestation_sha256')).toBe(true);
+    });
+
+    it('rejects a schema-4 row whose policy_sha256 is a real hash instead of null', () => {
+      const { errors } = validateRejectionRow(unrestrictedValidRow({ policy_sha256: 'a'.repeat(64) }));
+      expect(errors.some((e) => e.field === 'policy_sha256')).toBe(true);
+    });
+
+    it('rejects a schema-4 row carrying extra, unrecognized fields', () => {
+      const { errors } = validateRejectionRow({ ...unrestrictedValidRow(), extra_field: 'nope' });
+      expect(errors.some((e) => e.field === 'extra_field' && e.message === 'unrecognized field')).toBe(true);
+    });
+
+    it('rejects a schema-3 row that ALSO carries the schema-4-only fields -- v3 and v4 field sets are disjoint at the top level, never merged', () => {
+      const v3WithV4Fields = { ...unrestrictedValidRow(), schema: REJECTION_DIAGNOSTICS_SCHEMA_V3, policy_sha256: 'a'.repeat(64) };
+      const { errors } = validateRejectionRow(v3WithV4Fields);
+      expect(errors.some((e) => e.field === 'execution_profile_id' && e.message === 'unrecognized field')).toBe(true);
+      expect(errors.some((e) => e.field === 'policy_mode' && e.message === 'unrecognized field')).toBe(true);
+      expect(errors.some((e) => e.field === 'isolation_attestation_sha256' && e.message === 'unrecognized field')).toBe(true);
+    });
+
+    it('rejects a schema-4 row missing the schema-4-only fields entirely', () => {
+      const row = unrestrictedValidRow();
+      delete row.execution_profile_id;
+      delete row.policy_mode;
+      delete row.isolation_attestation_sha256;
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'execution_profile_id' && e.message === 'missing required field')).toBe(true);
+      expect(errors.some((e) => e.field === 'policy_mode' && e.message === 'missing required field')).toBe(true);
+      expect(errors.some((e) => e.field === 'isolation_attestation_sha256' && e.message === 'missing required field')).toBe(true);
+    });
+
+    // Schema 4 inherits the whole matrix_complete/planned_cell_count/executed_cell_count/
+    // raw_transcripts_persisted contract from v3 unchanged -- fail-fast partial-matrix support is
+    // orthogonal to policy_mode. One representative test per already-covered v3 rule, proving the
+    // widened isV3||isV4 gate actually applies to schema 4, not just schema 3.
+    it('still enforces matrix_complete as a real boolean on schema 4', () => {
+      const { errors } = validateRejectionRow(unrestrictedValidRow({ matrix_complete: 'true' }));
+      expect(errors.some((e) => e.field === 'matrix_complete')).toBe(true);
+    });
+
+    it('still enforces the noUnexpectedToolsOk <-> unexpected_tool_uses_count biconditional per cell on schema 4', () => {
+      const row = unrestrictedValidRow();
+      row.cells[0].failed_checks = ['noUnexpectedToolsOk'];
+      row.cells[0].unexpected_tool_uses_count = 0;
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'cells[0].unexpected_tool_uses_count')).toBe(true);
+    });
+
+    it('still requires ambient_profile_matrix_ok:null on an incomplete (fail-fast-stopped) schema-4 scenario matrix', () => {
+      const row = unrestrictedValidRow({
+        run_kind: 'scenario', scenario_id: 'kampkit-android-host-test-discovery',
+        project_alias: 'kampkit', project_commit: 'd'.repeat(40), seed: 5,
+        matrix_complete: false, planned_cell_count: 4, executed_cell_count: 2,
+        ambient_profile_matrix_ok: true,
+      });
+      row.cells = row.cells.map((c) => ({ ...c, repetition_index: 0, order_index: 0 }));
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'ambient_profile_matrix_ok')).toBe(true);
+    });
   });
 });
 

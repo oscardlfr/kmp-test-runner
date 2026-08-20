@@ -52,14 +52,28 @@ import { canonicalJsonSha256 } from './canonical-json.mjs';
  */
 export const ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1 = 1;
 export const ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2 = 2;
-export const LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA = 3;
-export const SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS = Object.freeze([1, 2, 3]);
+export const ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3 = 3;
+// PR 4 (agentic-eval-isolated-unrestricted-profile-v1): v4 -- the ONE new sidecar version, exclusive
+// to a schema:6 record whose execution_profile.policy_mode is "not_applicable". v1/v2/v3 stay
+// FROZEN (Section E's own historical contract, now joined by v3's own runtime-neutral-records
+// contract): none of their field lists/enums/validators are widened by this PR. See
+// expectedAcceptedAuditSchemaFor's own doc comment for the explicit per-record/profile dispatch --
+// deliberately never `schema === LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA` as a selector anywhere in
+// this module (bumping LATEST to 4 must never silently redirect strict/policy-required schema:6
+// records away from v3).
+export const ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4 = 4;
+export const LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA = 4;
+export const SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS = Object.freeze([1, 2, 3, 4]);
 
 const SIDECAR_TOP_FIELDS_V1V2 = [
   'schema', 'run_id', 'run_schema', 'run_kind', 'condition', 'scenario_id',
   'first_useful_signal_event', 'terminal_authoritative_event', 'tool_calls', 'summary',
 ];
 const SIDECAR_TOP_FIELDS_V3 = [...SIDECAR_TOP_FIELDS_V1V2, 'run_provenance_sha256'];
+// v4 extends v3 with EXACTLY these 3 new top-level fields (Decision H) -- never inside a nested
+// execution_profile object (that would duplicate the record's own group under a different key,
+// exactly the ambiguity the runbook's own dry-run rule warns against elsewhere).
+const SIDECAR_TOP_FIELDS_V4 = [...SIDECAR_TOP_FIELDS_V3, 'execution_profile_id', 'policy_mode', 'isolation_attestation_sha256'];
 const TOOL_CALL_FIELDS_V1 = [
   'ordinal', 'tool_use_event_index', 'tool_result_event_index', 'tool_kind', 'operation',
   'plan_only', 'policy_decision', 'result_status', 'phase',
@@ -71,6 +85,26 @@ const SUMMARY_FIELDS_V1 = [
   'policy_decisions_missing',
 ];
 const SUMMARY_FIELDS_V2 = [...SUMMARY_FIELDS_V1, 'pre_dispatch_blocked_total'];
+// v4 adds EXACTLY dispatch_unaccounted_total (Decision H) -- the real acceptance-gate counter under
+// not_applicable, where policy_decisions_missing is trivially always 0 (no Bash entry ever carries
+// policy_decision:"missing" under this profile, so that field can no longer serve as the gate).
+const SUMMARY_FIELDS_V4 = [...SUMMARY_FIELDS_V2, 'dispatch_unaccounted_total'];
+
+/**
+ * The ONE explicit per-record/profile dispatch (Decision H: "introduce un helper de dispatch
+ * explicito"). Never `record.schema >= 6 ? LATEST : V2` -- that pattern silently breaks the moment
+ * LATEST advances (exactly what happened here: LATEST is now 4, but a policy-required schema:6
+ * record must still get v3, byte-identically to before this PR). schema<6 always gets v2 (the only
+ * sidecar version a v5 scenario record's own accepted_audit.schema may point at); schema:6+ gets v4
+ * only when the record's own execution_profile.policy_mode is genuinely "not_applicable", v3
+ * otherwise (including when execution_profile is missing/malformed -- fails toward the existing,
+ * more-constrained v3 contract, never toward the newer v4 one).
+ */
+export function expectedAcceptedAuditSchemaFor(record) {
+  if (!(record?.schema >= 6)) return ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2;
+  if (record.execution_profile?.policy_mode === 'not_applicable') return ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4;
+  return ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3;
+}
 
 // The exact canonical projection of a run record that identity-binds a v3 sidecar to it
 // (Section E) -- excludes accepted_audit itself (the record's own pointer back to this sidecar) to
@@ -99,26 +133,28 @@ export function computeRunProvenanceSha256(record) {
  * silently borrow another version's field list. v3 reuses v2's tool_calls/summary shape verbatim
  * (Section E: "V3 conserva tool calls y summary de v2"). */
 function topFieldsFor(schema) {
+  if (schema === 4) return SIDECAR_TOP_FIELDS_V4;
   if (schema === 3) return SIDECAR_TOP_FIELDS_V3;
   return SIDECAR_TOP_FIELDS_V1V2;
 }
 function toolCallFieldsFor(schema) {
   if (schema === 1) return TOOL_CALL_FIELDS_V1;
-  if (schema === 2 || schema === 3) return TOOL_CALL_FIELDS_V2;
+  if (schema === 2 || schema === 3 || schema === 4) return TOOL_CALL_FIELDS_V2;
   return null;
 }
 function summaryFieldsFor(schema) {
   if (schema === 1) return SUMMARY_FIELDS_V1;
   if (schema === 2 || schema === 3) return SUMMARY_FIELDS_V2;
+  if (schema === 4) return SUMMARY_FIELDS_V4;
   return null;
 }
 /** The run record schema a given sidecar schema requires literally (Section E's exact
- * compatibility matrix) -- v1/v2 require exactly 5 (frozen); v3 requires exactly 6. An unknown
+ * compatibility matrix) -- v1/v2 require exactly 5 (frozen); v3/v4 require exactly 6. An unknown
  * sidecar schema has no required run_schema of its own (validated separately as an unknown
  * version). */
 function requiredRunSchemaFor(sidecarSchema) {
   if (sidecarSchema === 1 || sidecarSchema === 2) return 5;
-  if (sidecarSchema === 3) return 6;
+  if (sidecarSchema === 3 || sidecarSchema === 4) return 6;
   return null;
 }
 
@@ -164,7 +200,7 @@ function rejectUnrecognizedKeys(obj, allowedKeys, field, errors) {
  * agree?), reading the runtime adapter's already-computed verdict rather than re-running the strict
  * transcript matcher itself -- which can only ever reject, never assign.
  */
-function classifyToolCall(a, { allowedGradleTasks, allowedKmpTestSubcommands, decisionByAttempt, dispatchStatusByAttempt, firstUsefulSignalEventIndex }) {
+function classifyToolCall(a, { allowedGradleTasks, allowedKmpTestSubcommands, decisionByAttempt, dispatchStatusByAttempt, firstUsefulSignalEventIndex, policyMode }) {
   let toolKind;
   let operation = null;
   let planOnly = null;
@@ -206,7 +242,16 @@ function classifyToolCall(a, { allowedGradleTasks, allowedKmpTestSubcommands, de
     if (dispatchStatus === 'pre_dispatch_blocked' && a.preDispatchBlock?.recognized !== true) {
       throw new Error(`accepted-run-audit: dispatch accounting claims pre_dispatch_blocked for tool_use ordinal at event index ${a.eventIndex}, but the observation's own preDispatchBlock does not agree it was recognized`);
     }
-    if (decision === 'allow') policyDecision = 'allow';
+    // PR 4: under policyMode:"not_applicable", policy_decision is ALWAYS "not-applicable" for
+    // every Bash entry, REGARDLESS of decisionByAttempt's own value -- decisionByAttempt may carry
+    // a synthesized 'allow' under this profile (junit-evidence.mjs's resolveDecisions, driving
+    // graders.mjs's own unrelated inclusion logic), which must never leak into this sidecar's
+    // policy_decision field as if it were a real policy-hook decision (Decision G/H: "policy no
+    // aplicable no puede convertir accounting ausente en aceptable" / "no-policy Bash:
+    // policy_decision:not-applicable").
+    if (policyMode === 'not_applicable') {
+      policyDecision = 'not-applicable';
+    } else if (decision === 'allow') policyDecision = 'allow';
     else if (decision === 'deny') policyDecision = 'deny';
     // A recognized pre-dispatch block has no policy decision to report, and calling it 'missing'
     // would be false: nothing went missing -- the hook was never reached, so no decision was ever
@@ -272,38 +317,47 @@ export function buildAcceptedRunAuditSidecar({ record, conditionResult, terminal
   const dispatchStatusByAttempt = conditionResult.dispatchAccounting?.dispatchStatusByAttempt ?? new Map();
   const firstUsefulSignalEventIndex = record.first_useful_signal_event?.index ?? null;
   const allToolAttempts = observation.toolAttempts ?? [];
+  // PR 4: the ONE semantic switch classifyToolCall's own policy_decision derivation keys off.
+  const policyMode = record.execution_profile?.policy_mode === 'not_applicable' ? 'not_applicable' : 'required';
 
   const toolCalls = allToolAttempts.map((a, ordinal) => ({
     ordinal,
     ...classifyToolCall(a, {
       allowedGradleTasks: record.policy_allowed_gradle_tasks ?? [],
       allowedKmpTestSubcommands: record.policy_allowed_kmptest_subcommands ?? [],
-      decisionByAttempt, dispatchStatusByAttempt, firstUsefulSignalEventIndex,
+      decisionByAttempt, dispatchStatusByAttempt, firstUsefulSignalEventIndex, policyMode,
     }),
   }));
 
   const isBashKind = (tc) => BASH_FAMILY_TOOL_KINDS.has(tc.tool_kind);
   const shellCommandsTotal = toolCalls.filter(isBashKind).length;
-  const policyDenialsTotal = toolCalls.filter((tc) => isBashKind(tc) && tc.policy_decision === 'deny').length;
-  // Counts ONLY genuinely unaccounted Bash calls. A recognized pre-dispatch block is deliberately
-  // excluded: no decision was ever due for it, so counting it here would report a capture failure
-  // that did not happen -- and would keep the accepted-sidecar invariant (must be exactly 0) firing
-  // on a run whose dispatch is in fact fully accounted for.
-  const policyDecisionsMissing = toolCalls.filter((tc) => isBashKind(tc) && tc.dispatch_status === 'unaccounted').length;
   const preDispatchBlockedTotal = toolCalls.filter((tc) => isBashKind(tc) && tc.dispatch_status === 'pre_dispatch_blocked').length;
+  // dispatch_unaccounted_total (v4 only, but always computed -- cheap, and keeps this one true
+  // source of the count regardless of which sidecar version ends up using it): exact cardinality of
+  // genuinely unaccounted Bash calls, the real acceptance-gate under not_applicable (Decision H).
+  const dispatchUnaccountedTotal = toolCalls.filter((tc) => isBashKind(tc) && tc.dispatch_status === 'unaccounted').length;
 
   const hasBoundary = firstUsefulSignalEventIndex != null;
   const postSignalMs = hasBoundary ? msSinceOrigin(observation.process.endedHrtimeNs, observation.timing.receiptNsByEventIndex.get(firstUsefulSignalEventIndex)) : null;
   const postSignalToolCalls = hasBoundary ? toolCalls.filter((tc) => tc.tool_use_event_index > firstUsefulSignalEventIndex).length : null;
-  const policyDenialsBefore = hasBoundary ? toolCalls.filter((tc) => isBashKind(tc) && tc.policy_decision === 'deny' && tc.tool_use_event_index <= firstUsefulSignalEventIndex).length : null;
-  const policyDenialsAfter = hasBoundary ? toolCalls.filter((tc) => isBashKind(tc) && tc.policy_decision === 'deny' && tc.tool_use_event_index > firstUsefulSignalEventIndex).length : null;
 
-  // Schema-aware (Section E): a schema:6+ record gets a v3 sidecar (LATEST); every earlier record
-  // (v5, still the only other schema a real accepted-run scenario record ever carries) gets v2 --
-  // the version that record's own accepted_audit.schema pointer actually requires. tool_calls/
-  // summary are computed identically either way (v3 conserves v2's shape verbatim); only the
-  // schema stamp and the presence of run_provenance_sha256 differ.
-  const sidecarSchema = record.schema >= 6 ? LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA : ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2;
+  // Decision H: no-policy carries policy_denials_total/policy_denials_before_first_signal/
+  // policy_denials_after_first_signal/policy_decisions_missing as null, never a trivially-zero real
+  // count (a Bash entry's policy_decision is always exactly "not-applicable" under not_applicable,
+  // so "deny"/"missing" can never occur -- a real 0 would misleadingly claim these were genuinely
+  // evaluated and found clean, rather than never evaluated at all).
+  const sidecarSchema = expectedAcceptedAuditSchemaFor(record);
+  const policyApplies = sidecarSchema !== ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4;
+  const policyDenialsTotal = policyApplies ? toolCalls.filter((tc) => isBashKind(tc) && tc.policy_decision === 'deny').length : null;
+  // Counts ONLY genuinely unaccounted Bash calls under policyApplies (v1-v3's own historical
+  // meaning). A recognized pre-dispatch block is deliberately excluded: no decision was ever due
+  // for it, so counting it here would report a capture failure that did not happen -- and would
+  // keep the accepted-sidecar invariant (must be exactly 0) firing on a run whose dispatch is in
+  // fact fully accounted for.
+  const policyDecisionsMissing = policyApplies ? toolCalls.filter((tc) => isBashKind(tc) && tc.dispatch_status === 'unaccounted').length : null;
+  const policyDenialsBefore = policyApplies && hasBoundary ? toolCalls.filter((tc) => isBashKind(tc) && tc.policy_decision === 'deny' && tc.tool_use_event_index <= firstUsefulSignalEventIndex).length : null;
+  const policyDenialsAfter = policyApplies && hasBoundary ? toolCalls.filter((tc) => isBashKind(tc) && tc.policy_decision === 'deny' && tc.tool_use_event_index > firstUsefulSignalEventIndex).length : null;
+
   const built = {
     schema: sidecarSchema,
     run_id: record.run_id,
@@ -324,10 +378,19 @@ export function buildAcceptedRunAuditSidecar({ record, conditionResult, terminal
       policy_denials_after_first_signal: policyDenialsAfter,
       policy_decisions_missing: policyDecisionsMissing,
       pre_dispatch_blocked_total: preDispatchBlockedTotal,
+      ...(sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4 ? { dispatch_unaccounted_total: dispatchUnaccountedTotal } : {}),
     },
   };
-  if (sidecarSchema === LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA) {
+  // Decision H: provenance SHA is recomputed for BOTH schema 3 and 4 -- never gated on
+  // `sidecarSchema === LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA` (LATEST is now 4; that comparison
+  // would silently stop stamping it on every v3/strict sidecar the moment LATEST advanced).
+  if (sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3 || sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4) {
     built.run_provenance_sha256 = computeRunProvenanceSha256(record);
+  }
+  if (sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4) {
+    built.execution_profile_id = record.execution_profile.id;
+    built.policy_mode = record.execution_profile.policy_mode;
+    built.isolation_attestation_sha256 = record.execution_profile.isolation_attestation_sha256;
   }
   return built;
 }
@@ -397,17 +460,34 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
 
   const toolCallFields = toolCallFieldsFor(schema) ?? TOOL_CALL_FIELDS_V1;
   const summaryFields = summaryFieldsFor(schema) ?? SUMMARY_FIELDS_V1;
-  // v2 AND v3 both carry the dispatch_status shape (v3 conserves v2's tool_calls/summary verbatim).
-  const hasDispatchStatusShape = schema === 2 || schema === 3;
-  const isV3 = schema === 3;
+  // v2, v3, AND v4 all carry the dispatch_status shape (v3/v4 both conserve v2's tool_calls shape
+  // verbatim -- only the vocabulary each Bash entry may actually use differs, checked below).
+  const hasDispatchStatusShape = schema === 2 || schema === 3 || schema === 4;
+  const hasProvenanceHash = schema === 3 || schema === 4;
+  const isV4 = schema === 4;
   if (typeof sidecar.run_id !== 'string' || sidecar.run_id.length === 0) errors.push({ field: 'run_id', message: 'must be a non-empty string' });
   const requiredRunSchema = requiredRunSchemaFor(schema);
   if (requiredRunSchema != null && sidecar.run_schema !== requiredRunSchema) {
     errors.push({ field: 'run_schema', message: `must be exactly ${requiredRunSchema} for sidecar schema ${schema}` });
   }
-  if (isV3) {
+  if (hasProvenanceHash) {
     if (!/^[0-9a-f]{64}$/.test(sidecar.run_provenance_sha256)) {
       errors.push({ field: 'run_provenance_sha256', message: 'must be a lowercase 64-char hex SHA-256 string' });
+    }
+  }
+  // v4-only top-level fields (Decision H). policy_mode is a closed LITERAL here (not merely one of
+  // the 2 registry-level enum values) -- v4 exists exclusively for "not_applicable"; a v4 sidecar
+  // claiming "required" would be a self-contradiction (schema6+policy_mode:required always selects
+  // v3, never v4 -- see expectedAcceptedAuditSchemaFor).
+  if (isV4) {
+    if (typeof sidecar.execution_profile_id !== 'string' || !/^[a-z0-9][a-z0-9-]*$/.test(sidecar.execution_profile_id)) {
+      errors.push({ field: 'execution_profile_id', message: 'must be a lowercase-slug execution profile id' });
+    }
+    if (sidecar.policy_mode !== 'not_applicable') {
+      errors.push({ field: 'policy_mode', message: 'must be exactly "not_applicable" for sidecar schema 4' });
+    }
+    if (!/^[0-9a-f]{64}$/.test(sidecar.isolation_attestation_sha256)) {
+      errors.push({ field: 'isolation_attestation_sha256', message: 'must be a lowercase 64-char hex SHA-256 string -- never null for a v4 sidecar' });
     }
   }
   if (sidecar.run_kind !== 'scenario') errors.push({ field: 'run_kind', message: 'must be exactly "scenario" -- a sidecar only ever exists for a scenario record' });
@@ -454,7 +534,18 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
           errors.push({ field: `${label}.dispatch_status`, message: `must be one of ${DISPATCH_STATUS_VALUES.join('|')}` });
         } else if (isBash) {
           if (tc.dispatch_status === 'not_applicable') {
-            errors.push({ field: `${label}.dispatch_status`, message: 'not_applicable is only for non-Bash tools -- a Bash entry is hook_evaluated, pre_dispatch_blocked, or unaccounted' });
+            errors.push({ field: `${label}.dispatch_status`, message: 'not_applicable is only for non-Bash tools -- a Bash entry is hook_evaluated, pre_dispatch_blocked, result_correlated_no_policy, or unaccounted' });
+          }
+          // PR 4: result_correlated_no_policy is exclusive to v4 (policyMode:"not_applicable") --
+          // never reachable for v1/v2/v3, whose only Bash dispatch statuses remain exactly
+          // hook_evaluated/pre_dispatch_blocked/unaccounted (frozen, unchanged).
+          if (tc.dispatch_status === 'result_correlated_no_policy' && !isV4) {
+            errors.push({ field: `${label}.dispatch_status`, message: 'result_correlated_no_policy is only valid on a schema-4 sidecar' });
+          }
+          // hook_evaluated (a real policy-hook decision) can never appear on a v4 sidecar -- no
+          // PreToolUse:Bash hook is ever wired for policyMode:"not_applicable".
+          if (tc.dispatch_status === 'hook_evaluated' && isV4) {
+            errors.push({ field: `${label}.dispatch_status`, message: 'hook_evaluated can never appear on a schema-4 (not_applicable) sidecar' });
           }
           const decisionIsAllowDeny = tc.policy_decision === 'allow' || tc.policy_decision === 'deny';
           if (tc.dispatch_status === 'hook_evaluated' && !decisionIsAllowDeny) {
@@ -467,8 +558,19 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
             if (tc.policy_decision !== 'not-applicable') errors.push({ field: `${label}.policy_decision`, message: 'must be not-applicable when dispatch_status is pre_dispatch_blocked -- no policy decision was ever due' });
             if (tc.result_status !== 'error') errors.push({ field: `${label}.result_status`, message: 'must be error when dispatch_status is pre_dispatch_blocked' });
           }
-          if (tc.dispatch_status === 'unaccounted' && tc.policy_decision !== 'missing') {
-            errors.push({ field: `${label}.policy_decision`, message: 'must be missing when dispatch_status is unaccounted' });
+          if (tc.dispatch_status === 'result_correlated_no_policy') {
+            if (tc.policy_decision !== 'not-applicable') errors.push({ field: `${label}.policy_decision`, message: 'must be not-applicable when dispatch_status is result_correlated_no_policy -- no policy hook ever evaluated it' });
+            if (tc.result_status === 'missing') errors.push({ field: `${label}.result_status`, message: 'must not be missing when dispatch_status is result_correlated_no_policy -- this status means a correlated result WAS found' });
+          }
+          // unaccounted's own required policy_decision is schema-aware: v1/v2/v3 (policyMode:
+          // "required") pair it with "missing" (a real decision was due and never arrived); v4
+          // (policyMode:"not_applicable") pairs it with "not-applicable" (no decision was ever due
+          // in the first place) -- see classifyToolCall's own identical branch.
+          if (tc.dispatch_status === 'unaccounted') {
+            const expectedMissingDecision = isV4 ? 'not-applicable' : 'missing';
+            if (tc.policy_decision !== expectedMissingDecision) {
+              errors.push({ field: `${label}.policy_decision`, message: `must be ${expectedMissingDecision} when dispatch_status is unaccounted on a schema-${schema} sidecar` });
+            }
           }
         } else if (tc.dispatch_status !== 'not_applicable') {
           errors.push({ field: `${label}.dispatch_status`, message: 'must be not_applicable for a Skill/unexpected-tool tool_kind' });
@@ -480,9 +582,13 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
         // v1: a Bash entry always had a real decision category. v2 adds exactly one narrow
         // exception -- a recognized pre-dispatch block, where no decision was ever due -- and that
         // exception is admissible ONLY together with dispatch_status pre_dispatch_blocked, checked
-        // above. A normal Bash call still can never be not-applicable.
-        const preDispatchExempt = hasDispatchStatusShape && tc.dispatch_status === 'pre_dispatch_blocked';
-        if (tc.policy_decision === 'not-applicable' && !preDispatchExempt) errors.push({ field: `${label}.policy_decision`, message: 'a Bash-family entry must have a real decision category (allow/deny/missing), never not-applicable' });
+        // above. A normal Bash call still can never be not-applicable UNDER POLICY-REQUIRED (v1/v2/
+        // v3). PR 4: on a v4 sidecar, EVERY Bash entry legitimately carries policy_decision:
+        // not-applicable regardless of dispatch_status (result_correlated_no_policy/
+        // pre_dispatch_blocked/unaccounted alike) -- no policy hook ever existed to produce a real
+        // allow/deny/missing category under that profile.
+        const notApplicableExempt = isV4 || (hasDispatchStatusShape && tc.dispatch_status === 'pre_dispatch_blocked');
+        if (tc.policy_decision === 'not-applicable' && !notApplicableExempt) errors.push({ field: `${label}.policy_decision`, message: 'a Bash-family entry must have a real decision category (allow/deny/missing), never not-applicable' });
         // Per-tool_kind operation domain (review finding 1b/1c/1d) -- previously unchecked for
         // EVERY Bash-family entry, so an arbitrary or contradictory operation string (or even a
         // non-string value) silently passed. kmp-test's FULL domain (its own value must be "other"
@@ -529,10 +635,17 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
       if (summary.tool_calls_total !== toolCalls.length) errors.push({ field: 'summary.tool_calls_total', message: 'must equal the actual number of tool_calls[] entries' });
       const bashEntries = toolCalls.filter(isBash);
       if (summary.shell_commands_total !== bashEntries.length) errors.push({ field: 'summary.shell_commands_total', message: 'must equal the number of Bash-family tool_calls[] entries' });
-      const deniedCount = bashEntries.filter((tc) => tc.policy_decision === 'deny').length;
-      if (summary.policy_denials_total !== deniedCount) errors.push({ field: 'summary.policy_denials_total', message: 'must equal the number of Bash-family entries with policy_decision:deny' });
-      const missingCount = bashEntries.filter((tc) => tc.policy_decision === 'missing').length;
-      if (summary.policy_decisions_missing !== missingCount) errors.push({ field: 'summary.policy_decisions_missing', message: 'must equal the number of Bash-family entries with policy_decision:missing' });
+      // PR 4: policy_denials_total/policy_decisions_missing are only meaningful (real counts) when
+      // policy applies -- a v4 sidecar carries both as null instead (checked separately, below),
+      // never a trivially-zero real count (no Bash entry can ever have policy_decision:deny/missing
+      // under not_applicable, so a real 0 here would misleadingly claim these were genuinely
+      // evaluated and found clean).
+      if (!isV4) {
+        const deniedCount = bashEntries.filter((tc) => tc.policy_decision === 'deny').length;
+        if (summary.policy_denials_total !== deniedCount) errors.push({ field: 'summary.policy_denials_total', message: 'must equal the number of Bash-family entries with policy_decision:deny' });
+        const missingCount = bashEntries.filter((tc) => tc.policy_decision === 'missing').length;
+        if (summary.policy_decisions_missing !== missingCount) errors.push({ field: 'summary.policy_decisions_missing', message: 'must equal the number of Bash-family entries with policy_decision:missing' });
+      }
       if (hasDispatchStatusShape) {
         // Exact cardinality against tool_calls[], the same discipline every other summary counter
         // gets -- a standalone total nobody cross-checks is a number that can quietly go wrong.
@@ -540,6 +653,25 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
         if (summary.pre_dispatch_blocked_total !== preDispatchCount) {
           errors.push({ field: 'summary.pre_dispatch_blocked_total', message: 'must equal the number of Bash-family entries with dispatch_status:pre_dispatch_blocked' });
         }
+      }
+      if (isV4) {
+        // dispatch_unaccounted_total (Decision H): exact cardinality of genuinely unaccounted
+        // Bash-family entries -- the REAL acceptance-gate counter under not_applicable, where
+        // policy_decisions_missing can no longer serve that role (it is unconditionally null).
+        const unaccountedCount = bashEntries.filter((tc) => tc.dispatch_status === 'unaccounted').length;
+        if (summary.dispatch_unaccounted_total !== unaccountedCount) {
+          errors.push({ field: 'summary.dispatch_unaccounted_total', message: 'must equal the number of Bash-family entries with dispatch_status:unaccounted' });
+        }
+      }
+    }
+    if (isV4) {
+      for (const f of ['policy_denials_total', 'policy_decisions_missing', 'policy_denials_before_first_signal', 'policy_denials_after_first_signal']) {
+        if (summary[f] !== null) {
+          errors.push({ field: `summary.${f}`, message: 'must be exactly null on a schema-4 sidecar -- no policy hook ever evaluated this run' });
+        }
+      }
+      if (!(Number.isInteger(summary.dispatch_unaccounted_total) && summary.dispatch_unaccounted_total >= 0)) {
+        errors.push({ field: 'summary.dispatch_unaccounted_total', message: 'must be a non-negative integer -- never null, this is the real acceptance-gate counter for a schema-4 sidecar' });
       }
     }
     const hasBoundary = sidecar.first_useful_signal_event != null;
@@ -579,6 +711,12 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
   if (summaryIsObject && Number.isInteger(summary.policy_decisions_missing) && summary.policy_decisions_missing !== 0) {
     errors.push({ field: 'summary.policy_decisions_missing', message: 'must be exactly 0 -- a sidecar only ever accompanies an accepted run, so every Bash-family policy decision must have resolved to allow or deny' });
   }
+  // PR 4: the identical acceptance-gate, for a schema-4 sidecar's own real counter -- Decision H:
+  // "dispatch_unaccounted_total ... debe ser 0 en todo sidecar aceptado, strict o no-policy". A
+  // missing result must never be accepted just because policy does not apply.
+  if (isV4 && Number.isInteger(summary.dispatch_unaccounted_total) && summary.dispatch_unaccounted_total !== 0) {
+    errors.push({ field: 'summary.dispatch_unaccounted_total', message: 'must be exactly 0 -- a sidecar only ever accompanies an accepted run, so every Bash-family attempt must have a correlated result or a recognized pre-dispatch block' });
+  }
 
   // Phase correctness + post-signal summary recompute (review finding 1e/1f) -- previously only
   // the NULL-when-no-boundary direction was checked; neither each entry's own claimed `phase` nor
@@ -612,14 +750,19 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
       if (summary.post_signal_tool_calls !== expectedPostSignalToolCalls) {
         errors.push({ field: 'summary.post_signal_tool_calls', message: `must equal the number of tool_calls[] entries with tool_use_event_index > ${firstSignalIndex} (expected ${expectedPostSignalToolCalls}, got ${JSON.stringify(summary.post_signal_tool_calls)})` });
       }
-      const bashEntries = toolCalls.filter(isBashKind);
-      const expectedBefore = bashEntries.filter((tc) => tc.policy_decision === 'deny' && Number.isInteger(tc.tool_use_event_index) && tc.tool_use_event_index <= firstSignalIndex).length;
-      if (summary.policy_denials_before_first_signal !== expectedBefore) {
-        errors.push({ field: 'summary.policy_denials_before_first_signal', message: `must equal the number of denied Bash-family entries at or before the boundary (expected ${expectedBefore}, got ${JSON.stringify(summary.policy_denials_before_first_signal)})` });
-      }
-      const expectedAfter = bashEntries.filter((tc) => tc.policy_decision === 'deny' && Number.isInteger(tc.tool_use_event_index) && tc.tool_use_event_index > firstSignalIndex).length;
-      if (summary.policy_denials_after_first_signal !== expectedAfter) {
-        errors.push({ field: 'summary.policy_denials_after_first_signal', message: `must equal the number of denied Bash-family entries after the boundary (expected ${expectedAfter}, got ${JSON.stringify(summary.policy_denials_after_first_signal)})` });
+      // PR 4: skipped for a schema-4 sidecar -- policy_denials_before/after_first_signal are
+      // unconditionally null there (checked separately, above), so there is nothing to recompute
+      // against; no Bash entry can ever have policy_decision:deny under not_applicable.
+      if (!isV4) {
+        const bashEntries = toolCalls.filter(isBashKind);
+        const expectedBefore = bashEntries.filter((tc) => tc.policy_decision === 'deny' && Number.isInteger(tc.tool_use_event_index) && tc.tool_use_event_index <= firstSignalIndex).length;
+        if (summary.policy_denials_before_first_signal !== expectedBefore) {
+          errors.push({ field: 'summary.policy_denials_before_first_signal', message: `must equal the number of denied Bash-family entries at or before the boundary (expected ${expectedBefore}, got ${JSON.stringify(summary.policy_denials_before_first_signal)})` });
+        }
+        const expectedAfter = bashEntries.filter((tc) => tc.policy_decision === 'deny' && Number.isInteger(tc.tool_use_event_index) && tc.tool_use_event_index > firstSignalIndex).length;
+        if (summary.policy_denials_after_first_signal !== expectedAfter) {
+          errors.push({ field: 'summary.policy_denials_after_first_signal', message: `must equal the number of denied Bash-family entries after the boundary (expected ${expectedAfter}, got ${JSON.stringify(summary.policy_denials_after_first_signal)})` });
+        }
       }
     }
   }
@@ -678,14 +821,34 @@ export function crossValidateAcceptedRunAuditAgainstRecord(sidecar, record) {
     errors.push({ field: 'summary.policy_denials_total', message: `sidecar summary.policy_denials_total (${sidecar.summary?.policy_denials_total}) does not match record hook_deny_count (${record.hook_deny_count})` });
   }
 
-  // run_provenance_sha256 (v3 only) -- recomputed from the RE-READ record and required to match
-  // exactly, so a v3 sidecar can never be self-consistent while pointing at a different record's
-  // provenance (the same identity-binding role sha256/blob hashes play elsewhere in this repo).
-  // Only checked for schema 3: a v1/v2 sidecar carries no such field at all.
-  if (sidecar.schema === LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA) {
+  // run_provenance_sha256 (v3 AND v4, Decision H: "provenance SHA se recomputa para schema 3 y 4")
+  // -- recomputed from the RE-READ record and required to match exactly, so neither sidecar version
+  // can ever be self-consistent while pointing at a different record's provenance (the same
+  // identity-binding role sha256/blob hashes play elsewhere in this repo). Deliberately never
+  // `sidecar.schema === LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA` -- LATEST is 4, and that comparison
+  // would stop checking v3 sidecars entirely. Only checked for schema 3/4: a v1/v2 sidecar carries
+  // no such field at all.
+  if (sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3 || sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4) {
     const expected = computeRunProvenanceSha256(record);
     if (sidecar.run_provenance_sha256 !== expected) {
       errors.push({ field: 'run_provenance_sha256', message: `sidecar run_provenance_sha256 (${sidecar.run_provenance_sha256}) does not match recomputed value from record (${expected})` });
+    }
+  }
+
+  // v4-only: execution_profile_id/policy_mode/isolation_attestation_sha256 cross-validate against
+  // the record's OWN execution_profile group (Decision H) -- a v4 sidecar can never be
+  // self-consistent while claiming a DIFFERENT profile identity/attestation than the record it was
+  // built from actually carries.
+  if (sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4) {
+    const ep = record.execution_profile ?? {};
+    if (sidecar.execution_profile_id !== ep.id) {
+      errors.push({ field: 'execution_profile_id', message: `sidecar execution_profile_id (${sidecar.execution_profile_id}) does not match record execution_profile.id (${ep.id})` });
+    }
+    if (sidecar.policy_mode !== ep.policy_mode) {
+      errors.push({ field: 'policy_mode', message: `sidecar policy_mode (${sidecar.policy_mode}) does not match record execution_profile.policy_mode (${ep.policy_mode})` });
+    }
+    if (sidecar.isolation_attestation_sha256 !== ep.isolation_attestation_sha256) {
+      errors.push({ field: 'isolation_attestation_sha256', message: 'sidecar isolation_attestation_sha256 does not match record execution_profile.isolation_attestation_sha256' });
     }
   }
 

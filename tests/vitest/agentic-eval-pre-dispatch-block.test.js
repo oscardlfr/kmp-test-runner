@@ -235,6 +235,7 @@ describe('buildBashDispatchAccounting -- canonical per-attempt classification', 
       'everyCallAccountedFor',
       'hookEvaluatedCount',
       'preDispatchBlockedCount',
+      'resultCorrelatedNoPolicyCount',
       'unaccountedCount',
     ]);
   });
@@ -390,7 +391,12 @@ describe('buildBashDispatchAccounting -- canonical per-attempt classification', 
 // rejected by the validator in the other.
 describe('dispatch_status vocabulary has one source of truth', () => {
   it('every Bash dispatch status the accounting can emit is accepted by the sidecar validator', () => {
-    for (const status of DISPATCH_STATUS_VALUES) {
+    // PR 4 (agentic-eval-isolated-unrestricted-profile-v1): result_correlated_no_policy is
+    // deliberately excluded from this loop -- it is a genuinely NEW status the accounting module
+    // now emits (policyMode:"not_applicable"), but sidecar v1/v2/v3 (this test's own schema:2
+    // fixture) stay frozen and never accept it; only the new v4 validator does (Stage 6's own
+    // dedicated coverage in agentic-eval-accepted-run-audit.test.js).
+    for (const status of DISPATCH_STATUS_VALUES.filter((s) => s !== 'result_correlated_no_policy')) {
       const sidecar = {
         schema: 2, run_id: 'scenario-current-skill-abcd1234', run_schema: 5, run_kind: 'scenario',
         condition: 'current-skill', scenario_id: 's', first_useful_signal_event: null,
@@ -439,8 +445,11 @@ describe('dispatch_status vocabulary has one source of truth', () => {
     expect(validateAcceptedRunAuditSidecar(sidecar).errors.map((e) => e.field)).toContain('summary.policy_decisions_missing');
   });
 
-  it('the accounting vocabulary is exactly the Bash statuses -- not_applicable is sidecar-only', () => {
-    expect([...DISPATCH_STATUS_VALUES].sort()).toEqual(['hook_evaluated', 'pre_dispatch_blocked', 'unaccounted']);
+  // PR 4: result_correlated_no_policy added -- the ONE new status, exclusive to
+  // policyMode:"not_applicable" (never emitted under "required"). "not_applicable" itself (the
+  // POLICY_DECISION value, distinct from a dispatch STATUS) remains sidecar-only, as before.
+  it('the accounting vocabulary is exactly the Bash statuses -- not_applicable (the policy_decision value) is sidecar-only', () => {
+    expect([...DISPATCH_STATUS_VALUES].sort()).toEqual(['hook_evaluated', 'pre_dispatch_blocked', 'result_correlated_no_policy', 'unaccounted']);
   });
 });
 
@@ -574,5 +583,101 @@ describe('requireDispatchAccounting is mandatory, never defaulted', () => {
   it('explicit false preserves the calibrate/smoke aggregate proof', () => {
     expect(cellTranscriptIntegrityOk({ ...BASE, dispatchAccounting: null }, { ...IDS, requireDispatchAccounting: false }).checksByName.hookAccountingOk).toBe(true);
     expect(cellTranscriptIntegrityOk({ ...BASE, observation: { ...BASE.observation, hookStats: { everyCallHooked: false } } }, { ...IDS, requireDispatchAccounting: false }).checksByName.hookAccountingOk).toBe(false);
+  });
+});
+
+// PR 4 (agentic-eval-isolated-unrestricted-profile-v1): buildBashDispatchAccounting's
+// policyMode:"not_applicable" discriminant table (the runbook's own Stage 5 table) -- classifies
+// purely from bashResults[].resultFound and preDispatchBlockedAttemptIds, NEVER from
+// decisionByAttempt/hookStats (both genuinely all-zero/empty under this profile, since no
+// PreToolUse:Bash hook is ever wired for it).
+describe('buildBashDispatchAccounting -- policyMode:"not_applicable" (PR 4)', () => {
+  const ZERO_HOOK_STATS = { hookCallCount: 0, hookResponseCount: 0, hookAllowCount: 0, hookDenyCount: 0, hookPairingOk: true, everyCallHooked: false };
+
+  function accounting(bashResults, preDispatchBlockedIds = []) {
+    return buildBashDispatchAccounting({
+      bashResults,
+      hookStats: ZERO_HOOK_STATS,
+      // Deliberately non-empty, to prove it is genuinely IGNORED under not_applicable -- a caller
+      // that mistakenly threads a real decisionByAttempt through must never let a hook-allow
+      // classification leak into a no-policy accounting.
+      decisionByAttempt: new Map(bashResults.map((b) => [b.id, 'allow'])),
+      preDispatchBlockedAttemptIds: new Set(preDispatchBlockedIds),
+      policyMode: 'not_applicable',
+    });
+  }
+
+  it('a correlated result -> result_correlated_no_policy, policy_decision never derived from decisionByAttempt (accepted)', () => {
+    const out = accounting([{ id: 't1', resultFound: true }]);
+    expect(out.dispatchStatusByAttempt.get('t1')).toBe('result_correlated_no_policy');
+    expect(out.resultCorrelatedNoPolicyCount).toBe(1);
+    expect(out.hookEvaluatedCount).toBe(0);
+    expect(out.everyCallAccountedFor).toBe(true);
+  });
+
+  it('a recognized pre-dispatch block -> pre_dispatch_blocked (accepted), even though decisionByAttempt claims allow', () => {
+    const out = accounting([{ id: 't1', resultFound: false }], ['t1']);
+    expect(out.dispatchStatusByAttempt.get('t1')).toBe('pre_dispatch_blocked');
+    expect(out.preDispatchBlockedCount).toBe(1);
+    expect(out.resultCorrelatedNoPolicyCount).toBe(0);
+    expect(out.everyCallAccountedFor).toBe(true);
+  });
+
+  it('a missing result (not pre-dispatch-blocked) -> unaccounted (REJECTED, everyCallAccountedFor:false) -- missing result never passes just because policy does not apply', () => {
+    const out = accounting([{ id: 't1', resultFound: false }]);
+    expect(out.dispatchStatusByAttempt.get('t1')).toBe('unaccounted');
+    expect(out.unaccountedCount).toBe(1);
+    expect(out.everyCallAccountedFor).toBe(false);
+  });
+
+  it('hook_evaluated is NEVER emitted under not_applicable, regardless of what decisionByAttempt claims', () => {
+    const out = accounting([{ id: 't1', resultFound: true }, { id: 't2', resultFound: false }], ['t2']);
+    expect([...out.dispatchStatusByAttempt.values()]).not.toContain('hook_evaluated');
+    expect(out.hookEvaluatedCount).toBe(0);
+  });
+
+  it('a mix of correlated, blocked, and missing attempts: accepted iff zero unaccounted', () => {
+    const acceptedOut = accounting([{ id: 't1', resultFound: true }, { id: 't2', resultFound: false }], ['t2']);
+    expect(acceptedOut.everyCallAccountedFor).toBe(true);
+    const rejectedOut = accounting([{ id: 't1', resultFound: true }, { id: 't2', resultFound: false }, { id: 't3', resultFound: false }], ['t2']);
+    expect(rejectedOut.dispatchStatusByAttempt.get('t3')).toBe('unaccounted');
+    expect(rejectedOut.everyCallAccountedFor).toBe(false);
+  });
+
+  it('zero Bash attempts is a valid, accepted, empty accounting -- never hides attempts this function was never shown', () => {
+    const out = accounting([]);
+    expect(out.dispatchStatusByAttempt.size).toBe(0);
+    expect(out.everyCallAccountedFor).toBe(true);
+  });
+
+  it('duplicate ids fail closed identically to the required-policy path (shared identity invariant)', () => {
+    const out = accounting([{ id: 'dup', resultFound: true }, { id: 'dup', resultFound: true }]);
+    expect(out.everyCallAccountedFor).toBe(false);
+  });
+
+  it('an omitted policyMode defaults to "required" -- byte-identical to the pre-existing behavior for every caller that predates this parameter', () => {
+    const withDefault = buildBashDispatchAccounting({
+      bashResults: [{ id: 't1', resultFound: true }],
+      hookStats: { hookCallCount: 1, hookResponseCount: 1, hookAllowCount: 1, hookDenyCount: 0, hookPairingOk: true, everyCallHooked: true },
+      decisionByAttempt: new Map([['t1', 'allow']]),
+      preDispatchBlockedAttemptIds: new Set(),
+    });
+    const withExplicitRequired = buildBashDispatchAccounting({
+      bashResults: [{ id: 't1', resultFound: true }],
+      hookStats: { hookCallCount: 1, hookResponseCount: 1, hookAllowCount: 1, hookDenyCount: 0, hookPairingOk: true, everyCallHooked: true },
+      decisionByAttempt: new Map([['t1', 'allow']]),
+      preDispatchBlockedAttemptIds: new Set(),
+      policyMode: 'required',
+    });
+    expect(withDefault).toEqual(withExplicitRequired);
+    expect(withDefault.dispatchStatusByAttempt.get('t1')).toBe('hook_evaluated');
+    expect(withDefault.resultCorrelatedNoPolicyCount).toBe(0);
+  });
+
+  it('rejects an unrecognized policyMode value -- no silent fallback to either strategy', () => {
+    expect(() => buildBashDispatchAccounting({
+      bashResults: [], hookStats: ZERO_HOOK_STATS, decisionByAttempt: new Map(), preDispatchBlockedAttemptIds: new Set(),
+      policyMode: 'bogus',
+    })).toThrow();
   });
 });

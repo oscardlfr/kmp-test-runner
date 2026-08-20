@@ -1202,3 +1202,61 @@ describe('resolveDecisions -- recognized pre-dispatch block does not contaminate
     }
   });
 });
+
+// PR 4 (agentic-eval-isolated-unrestricted-profile-v1): resolveDecisions'
+// policyMode:"not_applicable" branch -- never reads the decisions/anomalies sidecar directories at
+// all (no PreToolUse:Bash hook is ever wired for this profile), classifies purely from each
+// attempt's own resultFound/preDispatchBlock. Uses a real, non-existent evidenceDir path throughout
+// (never even mkdir'd) to prove the branch genuinely never touches the filesystem for this profile.
+describe('resolveDecisions -- policyMode:"not_applicable" (PR 4)', () => {
+  const NEVER_CREATED_DIR = '/definitely/does/not/exist/no-policy-evidence-dir';
+
+  it('a correlated result synthesizes decision:"allow" (drives graders.mjs inclusion), no captureIncomplete', () => {
+    const result = resolveDecisions(NEVER_CREATED_DIR, [
+      { id: 't1', command: 'kmp-test parallel --json', index: 0, resultFound: true, preDispatchBlock: { recognized: false, signature: null } },
+    ], {}, 'not_applicable');
+    expect(result.decisionByAttempt.get('t1')).toBe('allow');
+    expect(result.captureIncomplete).toBe(false);
+    expect(result.preDispatchBlockedAttemptIds.size).toBe(0);
+  });
+
+  it('a missing result (no correlated tool_result) synthesizes decision:null, still no captureIncomplete -- there is no capture mechanism to have failed under this profile', () => {
+    const result = resolveDecisions(NEVER_CREATED_DIR, [
+      { id: 't1', command: 'kmp-test parallel --json', index: 0, resultFound: false, preDispatchBlock: { recognized: false, signature: null } },
+    ], {}, 'not_applicable');
+    expect(result.decisionByAttempt.get('t1')).toBeNull();
+    expect(result.captureIncomplete).toBe(false);
+  });
+
+  it('a recognized pre-dispatch block is unchanged -- decision:null, tracked in preDispatchBlockedAttemptIds, profile-independent', () => {
+    const result = resolveDecisions(NEVER_CREATED_DIR, [
+      { id: 'tblocked', command: 'sleep 60', index: 0, resultFound: false, preDispatchBlock: { recognized: true, signature: 'claude-code/bash-pre-dispatch-block/v1' } },
+    ], {}, 'not_applicable');
+    expect(result.decisionByAttempt.get('tblocked')).toBeNull();
+    expect(result.preDispatchBlockedAttemptIds.has('tblocked')).toBe(true);
+    expect(result.captureIncomplete).toBe(false);
+  });
+
+  it('an empty bashResults array is valid and inert', () => {
+    const result = resolveDecisions(NEVER_CREATED_DIR, [], {}, 'not_applicable');
+    expect(result.decisionByAttempt.size).toBe(0);
+    expect(result.captureIncomplete).toBe(false);
+  });
+
+  it('rejects an unrecognized policyMode value', () => {
+    expect(() => resolveDecisions(NEVER_CREATED_DIR, [], {}, 'bogus')).toThrow();
+  });
+
+  it('omitting policyMode defaults to "required" -- byte-identical to the pre-existing behavior (reads real sidecars)', () => {
+    const dir = makeEvidenceDir();
+    try {
+      writeDecision(dir, 't1', 'allow', 'kmp-test parallel --json');
+      const withDefault = resolveDecisions(dir, [{ id: 't1', command: 'kmp-test parallel --json', index: 0, resultFound: true, preDispatchBlock: { recognized: false, signature: null } }]);
+      const withExplicit = resolveDecisions(dir, [{ id: 't1', command: 'kmp-test parallel --json', index: 0, resultFound: true, preDispatchBlock: { recognized: false, signature: null } }], {}, 'required');
+      expect(withDefault).toEqual(withExplicit);
+      expect(withDefault.decisionByAttempt.get('t1')).toBe('allow');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

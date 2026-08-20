@@ -450,6 +450,13 @@ describe('calibrationHardGate', () => {
     expect(reason).toContain('noUnexpectedToolsOk:true');
   });
 
+  // PR 4 follow-up (P1 finding): restored to 'bypassPermissions' -- passRunResult's own
+  // hasExpectedToolProfile(init, EXPECTED_TOOL_NAMES) call (line ~123, above) uses the function's
+  // now-restored, profile-aware default (expectedPermissionMode:'dontAsk'), so 'bypassPermissions'
+  // is once again genuinely wrong here, and is the single most direct regression proof: a
+  // strict-shaped transcript reporting the OTHER profile's own permission mode must fail
+  // toolProfileOk, not be silently accepted (the exact P1 gap a prior, too-broad revision of
+  // hasExpectedToolProfile introduced by accepting either value unconditionally, for every caller).
   it('isolates toolProfileOk -- B\'s init event has permissionMode !== dontAsk', () => {
     const runB = passRunResult({ init: { ...passRunResult().init, permissionMode: 'bypassPermissions' } });
     const { ok, reason } = callCalibrationHardGate(passA(), passB(), passRunResult(), runB);

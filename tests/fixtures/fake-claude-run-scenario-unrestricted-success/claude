@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Auth-status short-circuit -- ALWAYS the first check, before any branching below -- must never
+# consume an invocation-counter slot (mirrors every other fake-claude-* fixture's own convention).
+if [ "$1" = "auth" ] && [ "$2" = "status" ] && [ "$3" = "--json" ]; then
+  echo '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":null,"subscriptionType":null}'
+  exit 0
+fi
+# tests/fixtures/fake-claude-run-scenario-unrestricted-success/claude -- deterministic stand-in for
+# the real `claude` CLI, used by tests/vitest/agentic-eval-unrestricted-profile-e2e.test.js (PR 4)
+# to exercise cmdRun's own scenario-matrix orchestration end-to-end under
+# --execution-profile sandboxed-unrestricted-v1. Mirrors fake-claude-run-scenario-success/claude's
+# own KMP_ENVELOPE/FINAL_ANSWER shape exactly (same :fakemod no_applicable_tests outcome) but
+# DELIBERATELY never emits a PreToolUse hook_started/hook_response pair and never writes a
+# decisions/ sidecar -- a policy_mode:"not_applicable" profile never wires a PreToolUse:Bash hook
+# at all (runtimes/claude-code.mjs's prepareIsolatedHome), so a real claude session under this
+# profile's compiled settings genuinely never produces those events either. This is what proves
+# the harness's own no-policy accounting (dispatch-accounting.mjs's result_correlated_no_policy
+# classification) end to end, not a strict transcript happening to validate anyway.
+HAS_PLUGIN_DIR=0
+PLUGIN_DIR_VALUE=""
+PREV_ARG=""
+for arg in "$@"; do
+  if [ "$PREV_ARG" = "--plugin-dir" ]; then HAS_PLUGIN_DIR=1; PLUGIN_DIR_VALUE="$arg"; fi
+  PREV_ARG="$arg"
+done
+
+if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+  PLUGIN_DIR_JSON=$(printf '%s' "$PLUGIN_DIR_VALUE" | sed 's/\\/\\\\/g')
+  PLUGINS="[{\"name\":\"kmp-test-runner\",\"path\":\"$PLUGIN_DIR_JSON\",\"source\":\"fake\"}]"
+  SKILLS='["kmp-test-runner"]'
+else
+  PLUGINS='[]'
+  SKILLS='[]'
+fi
+
+echo "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"/fake\",\"session_id\":\"fake-sess-unrestricted-0001\",\"tools\":[\"Bash\",\"Skill\"],\"mcp_servers\":[],\"model\":\"claude-sonnet-5-fake-resolved\",\"permissionMode\":\"bypassPermissions\",\"plugins\":$PLUGINS,\"skills\":$SKILLS,\"apiKeySource\":\"none\",\"claude_code_version\":\"fake\"}"
+
+if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+  echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakeskill1","name":"Skill","input":{"skill":"kmp-test-runner"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+  echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"[fake skill body]","tool_use_id":"toolu_fakeskill1"}]}}'
+else
+  echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakeskill1","name":"Skill","input":{"skill":"kmp-test-runner"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+  echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"<tool_use_error>Unknown skill: kmp-test-runner</tool_use_error>","is_error":true,"tool_use_id":"toolu_fakeskill1"}]}}'
+fi
+
+# The one Bash call -- NO PreToolUse hook_started/hook_response pair, NO decisions/ sidecar (see
+# this file's own header comment for why: no PreToolUse:Bash hook exists under this profile).
+echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakebash1","name":"Bash","input":{"command":"kmp-test parallel --module-filter :fakemod --json","description":"fake"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+
+KMP_ENVELOPE='{"tool":"kmp-test","schema_version":2,"subcommand":"parallel","version":"0.14.0","project_root":"/fake","exit_code":2,"duration_ms":21,"tests":{"total":0,"passed":0,"failed":0,"skipped":0,"individual_total":0},"modules":[],"skipped":[{"module":"fakemod","reason":"no test source set"}],"coverage":{"tool":"auto","missed_lines":null,"modules_with_kover_plugin":[],"modules_with_jacoco_plugin":[]},"errors":[{"code":"no_test_modules","message":"No modules found matching filter: :fakemod","test_type":"","caused_by_filter":true}],"warnings":[],"isolated":{"enabled":false,"cache_dir":null,"kept":false,"locked":true}}'
+node -e "console.log(JSON.stringify({type:'user',message:{role:'user',content:[{type:'tool_result',content:process.argv[1],tool_use_id:'toolu_fakebash1'}]}}))" "$KMP_ENVELOPE"
+
+FINAL_ANSWER='The :fakemod module has no applicable unit tests -- kmp-test reported no test modules matching that filter.
+
+KMP_EVAL_RESULT
+{"module": ":fakemod", "outcome_kind": "no_applicable_tests"}
+KMP_EVAL_RESULT_END'
+node -e "console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,duration_ms:10,num_turns:1,result:process.argv[1],permission_denials:[],usage:{input_tokens:2,output_tokens:2,cache_read_input_tokens:0,cache_creation_input_tokens:0}}))" "$FINAL_ANSWER"
+exit 0

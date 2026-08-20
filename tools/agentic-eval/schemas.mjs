@@ -16,7 +16,8 @@ import { normalizeModuleName } from './command-classify.mjs';
 import {
   ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1,
   ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2,
-  LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA,
+  ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3,
+  ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4,
 } from './accepted-run-audit.mjs';
 import { classifyExitCode, EXIT } from '../../lib/envelope/exit-codes.js';
 // canonicalStructuredValue moved to canonical-json.mjs (this PR) -- re-exported here verbatim so
@@ -880,14 +881,18 @@ export function validateRun(run) {
         // A SET keyed off the RECORD's own schema, not a flat pinned constant: a schema:5 record
         // must point at a v1 or v2 sidecar (the 92 v1 + 64 v2 historical records; both still
         // require literally run_schema:5 on the sidecar side, checked independently by
-        // crossValidateAcceptedRunAuditAgainstRecord), while a schema:6+ record must point at
-        // exactly v3 (the only sidecar version that stamps run_provenance_sha256 and requires
-        // literally run_schema:6). Accepting v3 for a v5 record (or v1/v2 for a v6 record) would
-        // let a record and its sidecar silently disagree about which run schema produced it --
-        // the whole point of requiredRunSchemaFor's own dedicated check on the sidecar side.
+        // crossValidateAcceptedRunAuditAgainstRecord), while a schema:6+ record must point at v3
+        // OR v4 (PR 4: v4 is the new policy_mode:"not_applicable" sidecar -- both stamp
+        // run_provenance_sha256 and both require literally run_schema:6; which ONE a given record
+        // actually produces is accepted-run-audit.mjs's own expectedAcceptedAuditSchemaFor,
+        // cross-validated independently, never re-decided here). Accepting v3/v4 for a v5 record
+        // (or v1/v2 for a v6 record) would let a record and its sidecar silently disagree about
+        // which run schema produced it -- the whole point of requiredRunSchemaFor's own dedicated
+        // check on the sidecar side. Deliberately never a single LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA
+        // selector here (that would exclude v3 the moment LATEST advances past it).
         const compatibleSidecarSchemas = run.schema === 5
           ? [ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2]
-          : [LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA];
+          : [ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4];
         if (!compatibleSidecarSchemas.includes(audit.schema)) {
           errors.push({ field: 'accepted_audit.schema', message: `must be one of ${compatibleSidecarSchemas.join('|')} for a schema:${run.schema} record (got ${JSON.stringify(audit.schema)})` });
         }
@@ -969,22 +974,43 @@ export function validateRun(run) {
   // this PAIR when BOTH were non-null, which meant e.g. hook_call_count:"bad" alongside
   // hook_deny_count:null produced ZERO errors (the outer `!= null` guard on hook_deny_count was
   // false, so the whole block -- including hook_call_count's own check -- was skipped entirely).
-  const hookCallCountOk = Number.isInteger(run.hook_call_count) && run.hook_call_count >= 0;
-  if (!hookCallCountOk) errors.push({ field: 'hook_call_count', message: 'must be a non-negative integer' });
-  const hookDenyCountOk = Number.isInteger(run.hook_deny_count) && run.hook_deny_count >= 0;
-  if (!hookDenyCountOk) errors.push({ field: 'hook_deny_count', message: 'must be a non-negative integer' });
-  if (hookCallCountOk && hookDenyCountOk && run.hook_deny_count > run.hook_call_count) {
-    errors.push({ field: 'hook_deny_count', message: 'cannot exceed hook_call_count' });
-  }
-  for (const field of ['policy_allowed_gradle_tasks', 'policy_allowed_kmptest_subcommands']) {
-    if (!Array.isArray(run[field])) {
-      errors.push({ field, message: 'must be an array' });
-    } else if (run[field].some((entry) => typeof entry !== 'string' || entry.length === 0)) {
-      errors.push({ field, message: 'every entry must be a non-empty string' });
+  // PR 4 (agentic-eval-isolated-unrestricted-profile-v1): hook_call_count/hook_deny_count/
+  // policy_allowed_gradle_tasks/policy_allowed_kmptest_subcommands/policy_sha256 are ALWAYS real
+  // values, exactly as before -- EXCEPT for the one new schema6 case where
+  // execution_profile.policy_mode is "not_applicable" (no policy hook governs this profile's Bash
+  // dispatch at all), where every one of these 5 fields must be exactly null instead. A real value
+  // there would fabricate evidence of policy machinery that never ran; null must never be
+  // convertible to zero/empty-array by any downstream reader. isPlainObjectLike(run.execution_profile)
+  // re-guards defensively -- a malformed/absent execution_profile already produced its own error
+  // above (or this is schema<6, where execution_profile does not exist at all), and this block must
+  // not ALSO misreport these 5 fields as wrongly-typed on top of that; both cases fall through to
+  // the unchanged, pre-existing "always real values" branch.
+  const policyNotApplicable = run.schema >= 6 && isPlainObjectLike(run.execution_profile) && run.execution_profile.policy_mode === 'not_applicable';
+  if (policyNotApplicable) {
+    if (run.hook_call_count !== null) errors.push({ field: 'hook_call_count', message: 'must be null when execution_profile.policy_mode is "not_applicable" -- no policy hook ran' });
+    if (run.hook_deny_count !== null) errors.push({ field: 'hook_deny_count', message: 'must be null when execution_profile.policy_mode is "not_applicable" -- no policy hook ran' });
+    for (const field of ['policy_allowed_gradle_tasks', 'policy_allowed_kmptest_subcommands']) {
+      if (run[field] !== null) errors.push({ field, message: 'must be null when execution_profile.policy_mode is "not_applicable" -- never the real allowlist, never an empty array' });
     }
-  }
-  if (typeof run.policy_sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(run.policy_sha256)) {
-    errors.push({ field: 'policy_sha256', message: 'must be a lowercase 64-char hex SHA-256 string' });
+    if (run.policy_sha256 !== null) errors.push({ field: 'policy_sha256', message: 'must be null when execution_profile.policy_mode is "not_applicable" -- no policy-hook.mjs governed this run' });
+  } else {
+    const hookCallCountOk = Number.isInteger(run.hook_call_count) && run.hook_call_count >= 0;
+    if (!hookCallCountOk) errors.push({ field: 'hook_call_count', message: 'must be a non-negative integer' });
+    const hookDenyCountOk = Number.isInteger(run.hook_deny_count) && run.hook_deny_count >= 0;
+    if (!hookDenyCountOk) errors.push({ field: 'hook_deny_count', message: 'must be a non-negative integer' });
+    if (hookCallCountOk && hookDenyCountOk && run.hook_deny_count > run.hook_call_count) {
+      errors.push({ field: 'hook_deny_count', message: 'cannot exceed hook_call_count' });
+    }
+    for (const field of ['policy_allowed_gradle_tasks', 'policy_allowed_kmptest_subcommands']) {
+      if (!Array.isArray(run[field])) {
+        errors.push({ field, message: 'must be an array' });
+      } else if (run[field].some((entry) => typeof entry !== 'string' || entry.length === 0)) {
+        errors.push({ field, message: 'every entry must be a non-empty string' });
+      }
+    }
+    if (typeof run.policy_sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(run.policy_sha256)) {
+      errors.push({ field: 'policy_sha256', message: 'must be a lowercase 64-char hex SHA-256 string' });
+    }
   }
   if (!Array.isArray(run.errors)) {
     errors.push({ field: 'errors', message: 'must be an array' });

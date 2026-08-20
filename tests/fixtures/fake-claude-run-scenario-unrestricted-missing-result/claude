@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Auth-status short-circuit -- ALWAYS the first check, before any branching below -- must never
+# consume an invocation-counter slot (mirrors every other fake-claude-* fixture's own convention).
+if [ "$1" = "auth" ] && [ "$2" = "status" ] && [ "$3" = "--json" ]; then
+  echo '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":null,"subscriptionType":null}'
+  exit 0
+fi
+# tests/fixtures/fake-claude-run-scenario-unrestricted-missing-result/claude -- deterministic
+# stand-in for the real `claude` CLI, used by tests/vitest/agentic-eval-unrestricted-profile-e2e.test.js
+# (PR 4) to prove a genuinely missing tool_result fails the WHOLE matrix closed under
+# policyMode:"not_applicable", exactly as it already does under strict (this fixture's own defect
+# is orthogonal to policy: the ONE Bash tool_use dispatched below never gets ANY correlated
+# tool_result at all -- the transcript ends straight from tool_use to a terminal result event, a
+# genuine transcript-completeness defect that dispatch-accounting.mjs's own not_applicable branch
+# classifies as UNACCOUNTED (recognized:false, resultFound:false), driving
+# everyCallAccountedFor:false -- but observation.transcript's own effectiveIncompleteToolResults
+# check (profile-independent) is expected to catch this first, exactly as it would for strict).
+HAS_PLUGIN_DIR=0
+PREV_ARG=""
+for arg in "$@"; do
+  if [ "$PREV_ARG" = "--plugin-dir" ]; then HAS_PLUGIN_DIR=1; fi
+  PREV_ARG="$arg"
+done
+
+if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+  PLUGINS='[{"name":"kmp-test-runner","path":"fake","source":"fake"}]'
+  SKILLS='["kmp-test-runner"]'
+else
+  PLUGINS='[]'
+  SKILLS='[]'
+fi
+
+echo "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"/fake\",\"session_id\":\"fake-sess-unrestricted-missing-0001\",\"tools\":[\"Bash\",\"Skill\"],\"mcp_servers\":[],\"model\":\"claude-sonnet-5-fake-resolved\",\"permissionMode\":\"bypassPermissions\",\"plugins\":$PLUGINS,\"skills\":$SKILLS,\"apiKeySource\":\"none\",\"claude_code_version\":\"fake\"}"
+
+if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+  echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakeskill1","name":"Skill","input":{"skill":"kmp-test-runner"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+  echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"[fake skill body]","tool_use_id":"toolu_fakeskill1"}]}}'
+else
+  echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakeskill1","name":"Skill","input":{"skill":"kmp-test-runner"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+  echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"<tool_use_error>Unknown skill: kmp-test-runner</tool_use_error>","is_error":true,"tool_use_id":"toolu_fakeskill1"}]}}'
+fi
+
+# The one Bash call -- dispatched, but DELIBERATELY never followed by any tool_result at all (no
+# hook events either, matching this profile). The transcript jumps straight to a terminal event.
+echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakebash1","name":"Bash","input":{"command":"kmp-test parallel --module-filter :fakemod --json","description":"fake"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"result":"lost the tool result somehow","permission_denials":[],"usage":{"input_tokens":2,"output_tokens":2,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}'
+exit 0

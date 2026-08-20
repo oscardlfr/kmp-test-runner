@@ -31,6 +31,22 @@ const NO_SKILL_RAW = readFileSync(join(FIXTURES_DIR, 'agentic-eval-stream-no-ski
 const TARGET_PLUGIN_NAME = 'kmp-test-runner';
 const TARGET_SKILL_NAME = 'kmp-test-runner';
 
+// PR 4: the two real execution-profile shapes, mirrored from registries.mjs's own shipped
+// registry.json literals (frozen, matching how resolveSelection actually returns them -- proves
+// buildInvocation/prepareIsolatedHome never need to mutate what they receive).
+const STRICT_PROFILE = Object.freeze({
+  id: 'strict-policy-v1', enabled: true, default: true, supported_runtime_ids: Object.freeze(['claude-code']),
+  isolation_kind: 'runtime-policy-hooks', network_mode: 'runtime-default',
+  isolation_attestation_required: false, policy_mode: 'required',
+  required_capabilities: Object.freeze(['softPermissionDenial']),
+});
+const UNRESTRICTED_PROFILE = Object.freeze({
+  id: 'sandboxed-unrestricted-v1', enabled: true, default: false, supported_runtime_ids: Object.freeze(['claude-code']),
+  isolation_kind: 'external-sandbox', network_mode: 'restricted',
+  isolation_attestation_required: true, policy_mode: 'not_applicable',
+  required_capabilities: Object.freeze(['structuredTranscript', 'correlatedToolResults', 'skillStateEvidence']),
+});
+
 function receiptMap(eventCount) {
   // Mirrors parseStreamJsonl's own fallback (no taggedLines supplied): receiptNs = BigInt(line
   // index) per event, and every line in both fixtures parses cleanly (malformedLineCount:0), so
@@ -143,6 +159,115 @@ describe('buildInvocation -- byte-identical to condition-launcher.mjs\'s buildBa
       '--permission-mode', 'dontAsk',
       '--max-budget-usd', '1.25',
     ]);
+  });
+});
+
+describe('buildInvocation -- executionProfile-aware permission mode (PR 4)', () => {
+  it('omitting executionProfile still defaults to dontAsk -- byte-identical to the pre-existing frozen argv (strict, unchanged)', () => {
+    const withDefault = buildInvocation({ prompt: 'PROMPT', settingsPath: 'SETTINGS' });
+    expect(withDefault[withDefault.indexOf('--permission-mode') + 1]).toBe('dontAsk');
+  });
+
+  it('executionProfile:strict-policy-v1 (policy_mode:required) produces the SAME byte-identical argv as omitting it entirely', () => {
+    const withDefault = buildInvocation({ prompt: 'PROMPT', settingsPath: 'SETTINGS' });
+    const withStrict = buildInvocation({ prompt: 'PROMPT', settingsPath: 'SETTINGS', executionProfile: STRICT_PROFILE });
+    expect(withStrict).toEqual(withDefault);
+  });
+
+  it('executionProfile:sandboxed-unrestricted-v1 (policy_mode:not_applicable) produces the identical argv shape/order with ONLY --permission-mode swapped to bypassPermissions', () => {
+    const strict = buildInvocation({ prompt: 'PROMPT', settingsPath: 'SETTINGS' });
+    const unrestricted = buildInvocation({ prompt: 'PROMPT', settingsPath: 'SETTINGS', executionProfile: UNRESTRICTED_PROFILE });
+    expect(unrestricted.length).toBe(strict.length);
+    const idx = strict.indexOf('--permission-mode');
+    expect(unrestricted.slice(0, idx)).toEqual(strict.slice(0, idx));
+    expect(unrestricted.slice(idx + 2)).toEqual(strict.slice(idx + 2));
+    expect(unrestricted[idx + 1]).toBe('bypassPermissions');
+  });
+
+  it('never contains --dangerously-skip-permissions -- only --permission-mode bypassPermissions is ever compiled', () => {
+    const unrestricted = buildInvocation({ prompt: 'PROMPT', settingsPath: 'SETTINGS', executionProfile: UNRESTRICTED_PROFILE });
+    expect(unrestricted.join(' ')).not.toContain('dangerously-skip-permissions');
+  });
+
+  it('the SAME Bash,Skill --tools value and model/budget appear for both profiles', () => {
+    const strict = buildInvocation({
+      prompt: 'p', settingsPath: 's', model: 'M', maxBudgetUsd: 2, executionProfile: STRICT_PROFILE,
+    });
+    const unrestricted = buildInvocation({
+      prompt: 'p', settingsPath: 's', model: 'M', maxBudgetUsd: 2, executionProfile: UNRESTRICTED_PROFILE,
+    });
+    expect(strict[strict.indexOf('--tools') + 1]).toBe('Bash,Skill');
+    expect(unrestricted[unrestricted.indexOf('--tools') + 1]).toBe('Bash,Skill');
+    expect(strict[strict.indexOf('--model') + 1]).toBe('M');
+    expect(unrestricted[unrestricted.indexOf('--model') + 1]).toBe('M');
+    expect(strict[strict.indexOf('--max-budget-usd') + 1]).toBe('2');
+    expect(unrestricted[unrestricted.indexOf('--max-budget-usd') + 1]).toBe('2');
+  });
+
+  it('a frozen executionProfile object (exactly as resolveSelection returns) works fine -- buildInvocation never attempts to mutate it', () => {
+    expect(() => buildInvocation({ prompt: 'p', settingsPath: 's', executionProfile: UNRESTRICTED_PROFILE })).not.toThrow();
+  });
+});
+
+describe('prepareIsolatedHome -- executionProfile-aware settings/env compilation (PR 4)', () => {
+  const baseOpts = {
+    shimDir: 'C:\\shim', gradleUserHome: 'C:\\gradle-home', kmpEvalTempHome: 'C:\\kmp-home',
+    expectedFixtureRoot: 'C:\\fixture', allowedGradleTasks: ['build'], allowedKmpTestSubcommands: ['doctor'],
+  };
+
+  it('omitting executionProfile still produces settings WITH the PreToolUse policy hook and env WITH the policy allowlist keys -- strict\'s pre-existing shape, unchanged', async () => {
+    const { sharedEnv, settingsPath, cleanupPaths } = await prepareIsolatedHome(baseOpts);
+    try {
+      const content = JSON.parse(readFileSync(settingsPath, 'utf8'));
+      expect(content.hooks.PreToolUse[0].hooks[0].command).toContain('policy-hook.mjs');
+      expect(JSON.parse(sharedEnv.KMP_EVAL_ALLOWED_GRADLE_TASKS)).toEqual(['build']);
+    } finally {
+      for (const p of cleanupPaths) rmSync(p, { recursive: true, force: true });
+    }
+  });
+
+  it('executionProfile:strict-policy-v1 produces the identical shape as omitting it', async () => {
+    const omitted = await prepareIsolatedHome(baseOpts);
+    const explicitStrict = await prepareIsolatedHome({ ...baseOpts, executionProfile: STRICT_PROFILE });
+    try {
+      expect(JSON.parse(readFileSync(explicitStrict.settingsPath, 'utf8'))).toEqual(JSON.parse(readFileSync(omitted.settingsPath, 'utf8')));
+      expect(explicitStrict.sharedEnv).toEqual(omitted.sharedEnv);
+    } finally {
+      for (const p of omitted.cleanupPaths) rmSync(p, { recursive: true, force: true });
+      for (const p of explicitStrict.cleanupPaths) rmSync(p, { recursive: true, force: true });
+    }
+  });
+
+  it('executionProfile:sandboxed-unrestricted-v1 produces settings with NO PreToolUse key and env with NO policy allowlist keys at all', async () => {
+    const { sharedEnv, settingsPath, cleanupPaths } = await prepareIsolatedHome({ ...baseOpts, executionProfile: UNRESTRICTED_PROFILE });
+    try {
+      const content = JSON.parse(readFileSync(settingsPath, 'utf8'));
+      expect(content.hooks.PreToolUse).toBeUndefined();
+      expect(sharedEnv).not.toHaveProperty('KMP_EVAL_ALLOWED_GRADLE_TASKS');
+      expect(sharedEnv).not.toHaveProperty('KMP_EVAL_ALLOWED_KMPTEST_SUBCOMMANDS');
+      expect(sharedEnv.KMP_EVAL_EXPECTED_FIXTURE_ROOT).toBe('C:\\fixture');
+      expect(sharedEnv.PATH.startsWith('C:\\shim')).toBe(true);
+    } finally {
+      for (const p of cleanupPaths) rmSync(p, { recursive: true, force: true });
+    }
+  });
+
+  it('executionProfile:sandboxed-unrestricted-v1 + junitEvidenceEnabled:true still wires the JUnit PostToolUse/PostToolUseFailure hooks', async () => {
+    const { settingsPath, cleanupPaths } = await prepareIsolatedHome({
+      ...baseOpts, executionProfile: UNRESTRICTED_PROFILE, junitEvidenceEnabled: true,
+    });
+    try {
+      const content = JSON.parse(readFileSync(settingsPath, 'utf8'));
+      expect(Object.keys(content.hooks).sort()).toEqual(['PostToolUse', 'PostToolUseFailure']);
+    } finally {
+      for (const p of cleanupPaths) rmSync(p, { recursive: true, force: true });
+    }
+  });
+
+  it('unrestricted still rejects invalid policy grammar -- allowedGradleTasks/allowedKmpTestSubcommands are scenario config, validated regardless of profile', async () => {
+    await expect(prepareIsolatedHome({
+      ...baseOpts, executionProfile: UNRESTRICTED_PROFILE, allowedGradleTasks: ['build; rm -rf /'],
+    })).rejects.toThrow(/Invalid policy configuration/);
   });
 });
 
@@ -492,6 +617,61 @@ describe('normalizeObservations -- malformed transcript retains its issues rathe
     expect(observation.transcript.malformedLineCount).toBe(1);
     const result = validateObservation(observation);
     expect(result.ok).toBe(true); // malformed lines are a reported FACT, not a contract violation
+  });
+});
+
+// PR 4 follow-up (P1 finding): normalizeObservations must derive session.toolProfileMatchesExpected
+// from the ACTUAL resolved execution profile, never accept either compiled permissionMode value
+// unconditionally for every caller. A prior, too-broad revision of hasExpectedToolProfile did
+// exactly that -- silently letting a strict-policy-v1 transcript reporting permissionMode:
+// "bypassPermissions" (the shape a real buildInvocation regression would produce) pass the check.
+describe('normalizeObservations -- session.toolProfileMatchesExpected is execution-profile-aware (P1 fix)', () => {
+  function initOnlyRaw(permissionMode) {
+    const initLine = JSON.stringify({
+      type: 'system', subtype: 'init', cwd: '/x', session_id: 's', tools: ['Bash', 'Skill'],
+      mcp_servers: [], model: 'claude-sonnet-5', permissionMode, plugins: [], skills: [],
+      apiKeySource: 'none', claude_code_version: '2.1.227',
+    });
+    const resultLine = JSON.stringify({ type: 'result', subtype: 'success', is_error: false, duration_ms: 1, num_turns: 1, result: 'x', usage: {} });
+    return `${initLine}\n${resultLine}\n`;
+  }
+
+  function toolProfileFor(permissionMode, executionProfile) {
+    const raw = initOnlyRaw(permissionMode);
+    const process_ = { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 100n };
+    const context = {
+      condition: 'no-skill', targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME,
+      expectedToolNames: new Set(['Bash', 'Skill']),
+    };
+    if (executionProfile !== undefined) context.executionProfile = executionProfile;
+    const observation = normalizeObservations(
+      { process: process_, capture: { primaryText: raw, stderrText: '' }, providerSources: { rawJsonl: raw } },
+      context,
+    );
+    return observation.session.toolProfileMatchesExpected;
+  }
+
+  it('context.executionProfile omitted (calibrate/smoke\'s own callers, which never resolved one for this purpose): dontAsk true, bypassPermissions false -- strict\'s original behavior, unchanged', () => {
+    expect(toolProfileFor('dontAsk', undefined)).toBe(true);
+    expect(toolProfileFor('bypassPermissions', undefined)).toBe(false);
+  });
+
+  it('context.executionProfile:STRICT_PROFILE (policy_mode:"required"): dontAsk true, bypassPermissions false', () => {
+    expect(toolProfileFor('dontAsk', STRICT_PROFILE)).toBe(true);
+    expect(toolProfileFor('bypassPermissions', STRICT_PROFILE)).toBe(false);
+  });
+
+  it('context.executionProfile:UNRESTRICTED_PROFILE (policy_mode:"not_applicable"): bypassPermissions true, dontAsk false', () => {
+    expect(toolProfileFor('bypassPermissions', UNRESTRICTED_PROFILE)).toBe(true);
+    expect(toolProfileFor('dontAsk', UNRESTRICTED_PROFILE)).toBe(false);
+  });
+
+  // The exact P1 reproduction: a strict-shaped transcript that somehow reports the OTHER
+  // profile's own permission mode -- exactly what a real buildInvocation regression would produce
+  // -- must never pass under the profile it was actually run for.
+  it('P1 regression proof: a transcript reporting bypassPermissions never passes under STRICT_PROFILE, and vice versa', () => {
+    expect(toolProfileFor('bypassPermissions', STRICT_PROFILE)).toBe(false);
+    expect(toolProfileFor('dontAsk', UNRESTRICTED_PROFILE)).toBe(false);
   });
 });
 

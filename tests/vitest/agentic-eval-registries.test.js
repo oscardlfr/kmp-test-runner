@@ -26,13 +26,21 @@ function realModels() {
     required_capabilities: [], usage_dimensions: ['input', 'cached_input', 'cache_write', 'output'],
   }];
 }
+function realUnrestrictedProfile() {
+  return {
+    id: 'sandboxed-unrestricted-v1', enabled: true, default: false, supported_runtime_ids: ['claude-code'],
+    isolation_kind: 'external-sandbox', network_mode: 'restricted',
+    isolation_attestation_required: true, policy_mode: 'not_applicable',
+    required_capabilities: ['structuredTranscript', 'correlatedToolResults', 'skillStateEvidence'],
+  };
+}
 function realProfiles() {
   return [{
     id: 'strict-policy-v1', enabled: true, default: true, supported_runtime_ids: ['claude-code'],
     isolation_kind: 'runtime-policy-hooks', network_mode: 'runtime-default',
     isolation_attestation_required: false, policy_mode: 'required',
     required_capabilities: ['softPermissionDenial'],
-  }];
+  }, realUnrestrictedProfile()];
 }
 function realFixture() {
   return { runtimes: realRuntimes(), models: realModels(), executionProfiles: realProfiles() };
@@ -673,29 +681,38 @@ describe('buildRegistries/resolveSelection -- an enabled model/execution-profile
     expect(() => buildRegistries(fixture)).toThrow(/strict-policy-v1/);
   });
 
-  it('an enabled sandboxed-unrestricted-v1 profile is rejected even though its required_capabilities are satisfied by the adapter -- capability satisfaction alone is not the same as the adapter actually implementing the profile', () => {
+  it('an enabled but unsupported sandbox-shaped profile (a DIFFERENT id from the real sandboxed-unrestricted-v1) is rejected even though its required_capabilities are satisfied by the adapter -- capability satisfaction alone is not the same as the adapter actually implementing the profile', () => {
+    // PR 4: the real registry now ships an entry literally named "sandboxed-unrestricted-v1" (see
+    // the dedicated describe block below) -- this synthetic id is deliberately DIFFERENT so this
+    // test keeps proving rejection is genuinely from supportsExecutionProfile's shape check
+    // (isolation_kind:'runtime-native-sandbox' is not either supported shape), never incidentally
+    // from the unrelated duplicate-id check that colliding with the real entry would now trigger.
     const fixture = realFixture();
     fixture.executionProfiles.push({
-      id: 'sandboxed-unrestricted-v1', enabled: true, default: false, supported_runtime_ids: ['claude-code'],
+      id: 'unsupported-sandbox-v1', enabled: true, default: false, supported_runtime_ids: ['claude-code'],
       isolation_kind: 'runtime-native-sandbox', network_mode: 'restricted',
       isolation_attestation_required: false, policy_mode: 'not_applicable', required_capabilities: [],
     });
     // The capability cross-check alone would pass (required_capabilities:[] trivially satisfied) --
     // proving the NEW rejection is genuinely from supportsExecutionProfile, not incidentally from
     // the pre-existing capability check.
-    expect(() => buildRegistries(fixture)).toThrow(/sandboxed-unrestricted-v1/);
+    expect(() => buildRegistries(fixture)).toThrow(/unsupported-sandbox-v1/);
   });
 
   it('the same unsupported profile, disabled, can still remain in the registry (kept for history) but is never selectable', () => {
     const fixture = realFixture();
     fixture.executionProfiles.push({
-      id: 'sandboxed-unrestricted-v1', enabled: false, default: false, supported_runtime_ids: ['claude-code'],
+      id: 'unsupported-sandbox-v1', enabled: false, default: false, supported_runtime_ids: ['claude-code'],
+      // isolation_attestation_required:true (not false) -- must independently satisfy the
+      // policy_mode:not_applicable structural invariant (checked unconditionally, disabled or not)
+      // so this test keeps proving its OWN point (adapter-unsupported, disabled, kept for history)
+      // rather than incidentally tripping the unrelated attestation invariant.
       isolation_kind: 'runtime-native-sandbox', network_mode: 'restricted',
-      isolation_attestation_required: false, policy_mode: 'not_applicable', required_capabilities: [],
+      isolation_attestation_required: true, policy_mode: 'not_applicable', required_capabilities: [],
     });
     expect(() => buildRegistries(fixture)).not.toThrow();
     const registries = buildRegistries(fixture);
-    const result = resolveSelection({ registries, executionProfileId: 'sandboxed-unrestricted-v1' });
+    const result = resolveSelection({ registries, executionProfileId: 'unsupported-sandbox-v1' });
     expect(result.ok).toBe(false);
   });
 
@@ -966,8 +983,243 @@ describe('buildRegistries -- an adapter cannot mutate an entry after it has been
     const readOnlyAdapter = {
       ...claudeCodeRuntimeAdapter,
       supportsModelConfiguration(entry) { return entry.default_reasoning_mode === null; },
-      supportsExecutionProfile(entry) { return entry.id === 'strict-policy-v1'; },
+      supportsExecutionProfile(entry) { return entry.id === 'strict-policy-v1' || entry.id === 'sandboxed-unrestricted-v1'; },
     };
     expect(() => buildRegistries(fixture, { adaptersByRuntimeId: { 'claude-code': readOnlyAdapter } })).not.toThrow();
+  });
+});
+
+// PR 4 (agentic-eval multi-runtime v1): adds sandboxed-unrestricted-v1 as a second, non-default
+// execution profile for claude-code. strict-policy-v1 remains first, unique default, and
+// byte-identical to its pre-existing shape -- see the dedicated test below. Every test in this
+// section is additive: it proves the NEW profile's own registry-level invariants without touching
+// strict's own coverage above (which continues to pass unmodified, still indexed at [0]).
+describe('the real on-disk execution-profiles registry adds sandboxed-unrestricted-v1 as a non-default profile (PR 4)', () => {
+  it('strict-policy-v1 remains first, unique default, byte-identical to its pre-existing shape', () => {
+    const profilesJson = JSON.parse(readFileSync(join(AGENTIC_DIR, 'execution-profiles', 'registry.json'), 'utf8'));
+    expect(profilesJson.execution_profiles[0]).toEqual({
+      id: 'strict-policy-v1', enabled: true, default: true, supported_runtime_ids: ['claude-code'],
+      isolation_kind: 'runtime-policy-hooks', network_mode: 'runtime-default',
+      isolation_attestation_required: false, policy_mode: 'required',
+      required_capabilities: ['softPermissionDenial'],
+    });
+  });
+
+  it('sandboxed-unrestricted-v1 is present, enabled, non-default, claude-code only, exactly the Decision-A shape', () => {
+    const profilesJson = JSON.parse(readFileSync(join(AGENTIC_DIR, 'execution-profiles', 'registry.json'), 'utf8'));
+    expect(profilesJson.execution_profiles[1]).toEqual(realUnrestrictedProfile());
+  });
+
+  it('required_capabilities is in canonical REQUIRED_CAPABILITY_KEYS relative order and omits softPermissionDenial', async () => {
+    const { REQUIRED_CAPABILITY_KEYS } = await import('../../tools/agentic-eval/runtimes/contract.mjs');
+    const caps = realUnrestrictedProfile().required_capabilities;
+    expect(caps).not.toContain('softPermissionDenial');
+    const canonicalIdx = caps.map((c) => REQUIRED_CAPABILITY_KEYS.indexOf(c));
+    expect(canonicalIdx.every((i) => i >= 0)).toBe(true);
+    expect(canonicalIdx).toEqual([...canonicalIdx].sort((a, b) => a - b));
+  });
+
+  it('exactly one enabled default execution profile still exists for claude-code (strict-policy-v1)', () => {
+    const registries = loadRegistries();
+    const defaults = registries.executionProfiles.filter((p) => p.supported_runtime_ids.includes('claude-code') && p.enabled === true && p.default === true);
+    expect(defaults).toHaveLength(1);
+    expect(defaults[0].id).toBe('strict-policy-v1');
+  });
+
+  it('the real on-disk registries load and cross-validate cleanly against the real adapter (both profiles)', () => {
+    expect(() => loadRegistries()).not.toThrow();
+  });
+
+  it('resolveSelection with no flags resolves strict-policy-v1, deep-equal to its pre-existing literal shape (omitting flags conserves strict exactly)', () => {
+    const result = resolveSelection({ registries: loadRegistries() });
+    expect(result.ok).toBe(true);
+    expect(result.selection.executionProfile).toEqual({
+      id: 'strict-policy-v1', enabled: true, default: true, supported_runtime_ids: ['claude-code'],
+      isolation_kind: 'runtime-policy-hooks', network_mode: 'runtime-default',
+      isolation_attestation_required: false, policy_mode: 'required',
+      required_capabilities: ['softPermissionDenial'],
+    });
+  });
+
+  it('resolveSelection can explicitly select sandboxed-unrestricted-v1 by id against the real on-disk registry', () => {
+    const result = resolveSelection({ registries: loadRegistries(), executionProfileId: 'sandboxed-unrestricted-v1' });
+    expect(result.ok).toBe(true);
+    expect(result.selection.executionProfile.id).toBe('sandboxed-unrestricted-v1');
+    expect(result.selection.executionProfile.policy_mode).toBe('not_applicable');
+    expect(result.selection.adapter).toBe(claudeCodeRuntimeAdapter);
+  });
+
+  it('a profile valid for another runtime but not supporting claude-code fails closed with no fallback when requested against claude-code', () => {
+    const fixture = realFixture();
+    fixture.runtimes.push({ runtime_id: 'other-runtime', enabled: true, default: false });
+    fixture.models.push({
+      runtime_id: 'other-runtime', model_id: 'other-model', enabled: true, default: true,
+      model_vendor_expected: 'other', default_reasoning_mode: null, required_capabilities: [], usage_dimensions: [],
+    });
+    fixture.executionProfiles.push({
+      id: 'other-runtime-profile', enabled: true, default: true, supported_runtime_ids: ['other-runtime'],
+      isolation_kind: 'runtime-policy-hooks', network_mode: 'runtime-default',
+      isolation_attestation_required: false, policy_mode: 'required', required_capabilities: [],
+    });
+    const permissiveAdapter = { ...claudeCodeRuntimeAdapter, id: 'other-runtime', supportsModelConfiguration: () => true, supportsExecutionProfile: () => true };
+    const registries = buildRegistries(fixture, { adaptersByRuntimeId: { ...ADAPTERS_BY_RUNTIME_ID, 'other-runtime': permissiveAdapter } });
+    const result = resolveSelection({ registries, runtimeId: 'claude-code', executionProfileId: 'other-runtime-profile' });
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe('buildRegistries -- sandboxed-unrestricted-v1: every field mutation is rejected (Decision A/D closed shape)', () => {
+  // realFixture() already includes the real sandboxed-unrestricted-v1 entry at index [1] (see the
+  // updated realProfiles() above) -- mutate it in place rather than pushing a second copy, which
+  // would instead trip the unrelated duplicate-id check.
+  function fixtureWithUnrestricted() {
+    return realFixture();
+  }
+
+  it('the real shape (unmutated) is accepted', () => {
+    expect(() => buildRegistries(fixtureWithUnrestricted())).not.toThrow();
+  });
+
+  it('mutating isolation_kind is rejected', () => {
+    const fixture = fixtureWithUnrestricted();
+    fixture.executionProfiles[1].isolation_kind = 'runtime-policy-hooks';
+    expect(() => buildRegistries(fixture)).toThrow(/sandboxed-unrestricted-v1/);
+  });
+
+  it('mutating network_mode is rejected', () => {
+    const fixture = fixtureWithUnrestricted();
+    fixture.executionProfiles[1].network_mode = 'runtime-default';
+    expect(() => buildRegistries(fixture)).toThrow(/sandboxed-unrestricted-v1/);
+  });
+
+  it('mutating isolation_attestation_required to false is rejected', () => {
+    const fixture = fixtureWithUnrestricted();
+    fixture.executionProfiles[1].isolation_attestation_required = false;
+    expect(() => buildRegistries(fixture)).toThrow(/sandboxed-unrestricted-v1/);
+  });
+
+  it('mutating policy_mode to required is rejected', () => {
+    const fixture = fixtureWithUnrestricted();
+    fixture.executionProfiles[1].policy_mode = 'required';
+    expect(() => buildRegistries(fixture)).toThrow(/sandboxed-unrestricted-v1/);
+  });
+
+  it('mutating required_capabilities (dropping one) is rejected', () => {
+    const fixture = fixtureWithUnrestricted();
+    fixture.executionProfiles[1].required_capabilities = ['structuredTranscript', 'correlatedToolResults'];
+    expect(() => buildRegistries(fixture)).toThrow(/sandboxed-unrestricted-v1/);
+  });
+
+  it('adding softPermissionDenial to required_capabilities is rejected by the not_applicable structural invariant, independent of the adapter', () => {
+    const fixture = fixtureWithUnrestricted();
+    fixture.executionProfiles[1].required_capabilities = ['structuredTranscript', 'correlatedToolResults', 'skillStateEvidence', 'softPermissionDenial'];
+    expect(() => buildRegistries(fixture)).toThrow(/softPermissionDenial/);
+  });
+
+  it('an ID-only match (same id, otherwise the OLD strict shape) is rejected -- proves the check is full-structural, not id-keyed', () => {
+    const fixture = fixtureWithUnrestricted();
+    fixture.executionProfiles[1] = {
+      id: 'sandboxed-unrestricted-v1', enabled: true, default: false, supported_runtime_ids: ['claude-code'],
+      isolation_kind: 'runtime-policy-hooks', network_mode: 'runtime-default',
+      isolation_attestation_required: false, policy_mode: 'required', required_capabilities: ['softPermissionDenial'],
+    };
+    expect(() => buildRegistries(fixture)).toThrow(/sandboxed-unrestricted-v1/);
+  });
+});
+
+// Decision A: "policy_mode:not_applicable exige attestation, aislamiento externo o nativo real, y no
+// puede requerir softPermissionDenial" -- a general registry-level invariant about what
+// policy_mode:not_applicable itself MEANS, independent of which adapter (if any) ever accepts a
+// given profile id. Verified here against a hypothetical id so it is provably NOT the same check as
+// claude-code's own supportsExecutionProfile (Decision A/D closed-shape rejection, tested above).
+describe('buildRegistries -- policy_mode:not_applicable structural invariant (Decision A, prospective for ANY future profile)', () => {
+  function notApplicableProfile(overrides = {}) {
+    return {
+      id: 'hypothetical-not-applicable-v1', enabled: false, default: false, supported_runtime_ids: ['claude-code'],
+      isolation_kind: 'external-sandbox', network_mode: 'restricted',
+      isolation_attestation_required: true, policy_mode: 'not_applicable', required_capabilities: [],
+      ...overrides,
+    };
+  }
+
+  it('a well-formed not_applicable profile (real isolation, attestation required, no softPermissionDenial) passes the structural invariant (kept disabled so it never reaches the adapter cross-check)', () => {
+    const fixture = realFixture();
+    fixture.executionProfiles.push(notApplicableProfile());
+    expect(() => buildRegistries(fixture)).not.toThrow();
+  });
+
+  it('not_applicable with isolation_attestation_required:false is rejected', () => {
+    const fixture = realFixture();
+    fixture.executionProfiles.push(notApplicableProfile({ isolation_attestation_required: false }));
+    expect(() => buildRegistries(fixture)).toThrow(/isolation_attestation_required/);
+  });
+
+  it('not_applicable with isolation_kind:runtime-policy-hooks (not a real isolation boundary) is rejected', () => {
+    const fixture = realFixture();
+    fixture.executionProfiles.push(notApplicableProfile({ isolation_kind: 'runtime-policy-hooks' }));
+    expect(() => buildRegistries(fixture)).toThrow(/isolation_kind/);
+  });
+
+  it('not_applicable requiring softPermissionDenial is rejected', () => {
+    const fixture = realFixture();
+    fixture.executionProfiles.push(notApplicableProfile({ required_capabilities: ['softPermissionDenial'] }));
+    expect(() => buildRegistries(fixture)).toThrow(/softPermissionDenial/);
+  });
+
+  it('not_applicable with isolation_kind:runtime-native-sandbox (the OTHER real isolation kind) passes the structural invariant', () => {
+    const fixture = realFixture();
+    fixture.executionProfiles.push(notApplicableProfile({ isolation_kind: 'runtime-native-sandbox' }));
+    expect(() => buildRegistries(fixture)).not.toThrow();
+  });
+
+  it('this invariant applies even to a DISABLED entry (a structural shape defect, not merely an active-selection concern)', () => {
+    const fixture = realFixture();
+    fixture.executionProfiles.push(notApplicableProfile({ enabled: false, isolation_attestation_required: false }));
+    expect(() => buildRegistries(fixture)).toThrow(/isolation_attestation_required/);
+  });
+
+  it('policy_mode:required is completely unaffected by this invariant, even with a "sandbox-shaped" isolation_kind', () => {
+    const fixture = realFixture();
+    fixture.executionProfiles.push({
+      id: 'hypothetical-required-sandboxed-v1', enabled: false, default: false, supported_runtime_ids: ['claude-code'],
+      isolation_kind: 'external-sandbox', network_mode: 'restricted',
+      isolation_attestation_required: false, policy_mode: 'required', required_capabilities: [],
+    });
+    expect(() => buildRegistries(fixture)).not.toThrow();
+  });
+});
+
+describe('computeExecutionProfileSha256 -- sandboxed-unrestricted-v1 is deterministic and distinct from strict-policy-v1', () => {
+  it('hashes to a stable value, distinct from strict-policy-v1\'s hash', () => {
+    const strictHash = computeExecutionProfileSha256(realProfiles()[0]);
+    const unrestrictedHash = computeExecutionProfileSha256(realUnrestrictedProfile());
+    expect(unrestrictedHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(unrestrictedHash).not.toBe(strictHash);
+  });
+
+  it('is stable across repeated computation and independent of enabled/default/supported_runtime_ids', () => {
+    const profile = realUnrestrictedProfile();
+    const h1 = computeExecutionProfileSha256(profile);
+    const h2 = computeExecutionProfileSha256({ ...profile, enabled: false, default: true, supported_runtime_ids: ['claude-code', 'codex-cli'] });
+    expect(h1).toBe(h2);
+  });
+
+  for (const field of ['id', 'isolation_kind', 'network_mode', 'isolation_attestation_required', 'policy_mode']) {
+    it(`changes when ${field} changes`, () => {
+      const profile = realUnrestrictedProfile();
+      const changed = { ...profile, [field]: typeof profile[field] === 'boolean' ? !profile[field] : `${profile[field]}-changed` };
+      expect(computeExecutionProfileSha256(profile)).not.toBe(computeExecutionProfileSha256(changed));
+    });
+  }
+
+  it('changes when required_capabilities changes', () => {
+    const profile = realUnrestrictedProfile();
+    expect(computeExecutionProfileSha256(profile)).not.toBe(computeExecutionProfileSha256({ ...profile, required_capabilities: [] }));
+  });
+
+  it('resolveSelection against the real on-disk registry reports a hash matching direct computation', () => {
+    const result = resolveSelection({ registries: loadRegistries(), executionProfileId: 'sandboxed-unrestricted-v1' });
+    expect(result.ok).toBe(true);
+    expect(result.selection.executionProfileSha256).toBe(computeExecutionProfileSha256(realUnrestrictedProfile()));
   });
 });

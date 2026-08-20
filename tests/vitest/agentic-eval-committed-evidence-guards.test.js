@@ -160,10 +160,11 @@ describe('offline sidecar validation accepts v1 and v2, and rejects a version mi
     expect(fields).toContain('summary.pre_dispatch_blocked_total');
   });
 
-  // 3 is deliberately excluded from this list: it is sidecar schema v3's own real, supported
-  // number since agentic-eval-runtime-neutral-records-v1 (see agentic-eval-accepted-run-audit.test.js
-  // for its dedicated coverage) -- asserting it here would contradict SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS.
-  it.each([0, 4, 99, null, '2'])('an unsupported sidecar schema (%j) fails closed', (schema) => {
+  // 3 AND 4 are deliberately excluded from this list: they are sidecar schema v3's and v4's own
+  // real, supported numbers (v3 since agentic-eval-runtime-neutral-records-v1, v4 since PR 4 --
+  // see agentic-eval-accepted-run-audit.test.js for both versions' dedicated coverage) --
+  // asserting either here would contradict SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS.
+  it.each([0, 5, 99, null, '2'])('an unsupported sidecar schema (%j) fails closed', (schema) => {
     expect(validateAcceptedRunAuditSidecar(sidecarFor(schema)).errors.map((e) => e.field)).toContain('schema');
   });
 });
