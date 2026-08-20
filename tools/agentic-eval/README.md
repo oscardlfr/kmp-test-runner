@@ -1694,6 +1694,82 @@ otherwise-safe destination is also rejected. Every malformed-file class (missing
 unparseable JSON, wrong schema value, invalid `scope_id`, non-canonical or wrong-length
 `hmac_key_base64`, an unsafe path) fails closed before any Claude session spawns.
 
+## Multi-profile campaigns
+
+`run --campaign-design <id>` expands one scenario into a closed, pre-registered campaign plan
+spanning **both** execution profile and skill condition in a single invocation — the offline
+planning/execution machinery `scenario-campaign-plan.mjs` (a pure, dependency-free module) and
+`matrix-runner.mjs`'s `runScenarioCampaign` add on top of the existing single-profile
+`--execution-profile` matrix (`run --execution-profile <id>` keeps working completely unchanged;
+see "Isolation" above for the profile registry itself).
+
+The only supported design today is `claude-2x2-williams-v1`: a genuine 2×2 (execution profile ×
+skill condition) design, 4 repetitions, 16 sessions total, expanded via a literal, pre-registered
+4×4 Williams-style counterbalanced order — never shuffled, never dependent on `--seed` (the flag
+is still required and recorded on every resulting record, for compatibility, but the campaign's
+own dispatch order is fixed at design time):
+
+```text
+cell A = strict-policy-v1           / no-skill
+cell B = strict-policy-v1           / current-skill
+cell C = sandboxed-unrestricted-v1  / no-skill
+cell D = sandboxed-unrestricted-v1  / current-skill
+
+rep 0: A B D C
+rep 1: B C A D
+rep 2: C D B A
+rep 3: D A C B
+```
+
+```bash
+node tools/agentic-eval/cli.mjs run --scenario <id> --source-repo-dir <local-clone> --seed <n> \
+  --campaign-design claude-2x2-williams-v1 \
+  --isolation-attestation-file <path> \
+  --dry-run
+```
+
+`--dry-run` prints all 16 planned cells (`order_index`, `repetition_index`, `campaign_cell_label`,
+`condition`, `execution_profile_id`, plus each cell's own resolved `execution_profile_sha256` and,
+for unrestricted cells, the same isolation-attestation fields a bare `--execution-profile
+sandboxed-unrestricted-v1 --dry-run` already shows) and never spawns a live runtime/Claude session
+— but, unlike the legacy path's bare (no-`--measurement-scope-file`) `--dry-run`, this is **not** a
+zero-subprocess preview: because `claude-2x2-williams-v1` always includes
+`sandboxed-unrestricted-v1` cells, isolation-attestation resolution always runs
+`resolveHarnessProvenance()`'s real `git rev-parse HEAD` — exactly like a bare `--execution-profile
+sandboxed-unrestricted-v1 --dry-run` already does today (see "Isolation" above) — plus the same
+`git` subprocesses the legacy path's own scope-file validation invokes if `--measurement-scope-file`
+is also supplied. `--campaign-design` is mutually exclusive with both
+`--execution-profile` (the design resolves its own per-cell profiles) and `--repeats` (the design
+fixes its own repeat count; `--repeats` is rejected outright when combined, even the "correct"
+value). Because `claude-2x2-williams-v1` always includes `sandboxed-unrestricted-v1` cells,
+`--isolation-attestation-file <path>` is always required — the identical attestation file used for
+a bare unrestricted `run` (see "Isolation"), validated once and shared by every unrestricted cell
+in the campaign; strict cells never consult it.
+
+Execution acquires one independent shared-resource bundle (shim/skill-snapshot/Gradle-home/
+settings/env) **per distinct execution profile** the plan uses, never one bundle reused across
+profiles — a strict cell can never observe unrestricted resources or vice versa. Every per-cell
+mechanic beyond that (spawn, transcript parsing, dispatch accounting, the integrity gate, journal
+bookkeeping) reuses the exact same functions the legacy single-profile matrix already calls
+(`runSingleCondition`, `cellTranscriptIntegrityOk`, `buildBashDispatchAccounting`,
+`attributeCondition`) — never a second, independently-drifting execution path. A fail-fast stop
+(any cell's own local integrity check fails) aborts the whole campaign immediately, in literal
+dispatch order, exactly like the legacy matrix's own fail-fast — remaining cells are never spawned.
+
+**Known limitation:** a campaign rejection (fail-fast or whole-matrix hard-gate) whose executed
+cells span *both* execution profiles cannot yet produce a rich, structured rejection-diagnostics
+file — `buildRejectionDiagnostics` (`rejection-diagnostics.mjs`) still assumes one execution
+profile per whole batch (true by construction for the legacy matrix, not for a campaign). The
+harness still fails closed with zero evidence promoted and a specific, privacy-safe reason — it
+falls back to the same `finalizeIncident`/`reportIncident` path calibrate/smoke/run already use for
+every other unexpected-shape failure, just without the richer schema-v3/v4 rejection shape. See
+`BACKLOG.md`'s "Mixed-profile campaign rejection diagnostics schema" entry.
+
+This machinery is offline-only: no live Claude Code invocation, no `tools/runs/**` evidence, no
+raw transcript access outside fake test fixtures. It exists to unblock a future, separately
+authorized live pilot (see `docs/audits/agentic-eval-claude-codex-v1-plan.md`'s "Evidence 1"
+section) — shipping it does not itself constitute running that pilot.
+
 ## Explicit limitations
 
 - No full benchmark is executed by this PR; no performance claim is made — `run` itself is never

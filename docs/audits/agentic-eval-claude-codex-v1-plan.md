@@ -789,6 +789,16 @@ hash before any live session is spent. The sequence may not be reinterpreted,
 reordered, or re-derived once results are observed; a departure from it is
 recorded as a deviation, never absorbed into the design.
 
+The offline planning/execution machinery for exactly this design (design id
+`claude-2x2-williams-v1`) shipped as a separate, offline, zero-live-session PR
+(`feature/agentic-eval-multi-profile-campaigns-v1`,
+`tools/agentic-eval/scenario-campaign-plan.mjs` + `run --campaign-design`) --
+it can plan and dry-run print this exact 16-cell sequence and, given real
+Claude Code auth, execute and promote it, but does not itself constitute
+Evidence 1 or any live session. This resolves the two-condition-only dry-run
+limitation the Stage A hard stop identified; the focused pilot above remains a
+separately authorized live run.
+
 This design controls order; it does not make the pilot causal. At four
 repetitions the remaining requirements in ADR-7 -- enough independent units
 and a reported uncertainty estimate -- are still unmet, so this pilot's

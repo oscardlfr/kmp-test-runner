@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# Auth-status short-circuit -- ALWAYS the first check, before any PROBE_LOG/invocation-counter
+# logic below -- must never consume an invocation-counter slot.
+if [ "$1" = "auth" ] && [ "$2" = "status" ] && [ "$3" = "--json" ]; then
+  echo '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":null,"subscriptionType":null}'
+  exit 0
+fi
+# tests/fixtures/fake-claude-campaign-failfast-mid/claude -- proves runScenarioCampaign's own
+# fail-fast stops the WHOLE 16-cell campaign, across BOTH execution profiles, after exactly the
+# first cell whose local cellTranscriptIntegrityOk check fails -- never spawning any remaining
+# planned cell, strict or unrestricted. Adaptive on --permission-mode exactly like
+# fake-claude-campaign-success/claude (see that fixture's own header comment) for every invocation
+# EXCEPT the third: claude-2x2-williams-v1's own pre-registered order (rep 0: A B D C) means
+# invocations 1-2 are order_index 0 (A, strict-policy-v1) and order_index 1 (B, strict-policy-v1),
+# both clean successes -- invocation 3 is order_index 2 (D, sandboxed-unrestricted-v1), which
+# DELIBERATELY never gets a tool_result for its one Bash tool_use, deliberately crossing the
+# strict->unrestricted profile boundary mid-campaign. Uses the same invocation-counter/PROBE_LOG
+# pattern as fake-claude-run-failfast-first-cell/claude and fake-claude-run-failfast-last-cell/claude
+# (see either's own header comment for the full "why a probe log, not an env var" rationale --
+# buildEvalEnv's narrow allowlist drops any custom env var before it reaches this process).
+PROBE_DIR="${TMPDIR:-${TMP:-$TEMP}}"
+if [ -z "$PROBE_DIR" ]; then
+  echo "fake-claude-campaign-failfast-mid: TMPDIR/TMP/TEMP are all unset -- refusing to write the invocation probe log to an unresolved location" >&2
+  exit 1
+fi
+PROBE_LOG="$PROBE_DIR/campaign-failfast-mid-invocations.log"
+if [ -f "$PROBE_LOG" ]; then
+  INVOCATION=$(( $(wc -l < "$PROBE_LOG") + 1 ))
+else
+  INVOCATION=1
+fi
+echo "$INVOCATION" >> "$PROBE_LOG"
+
+write_sidecar() {
+  local kind="$1" toolUseId="$2" recordJson="$3"
+  node -e '
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+const [kind, toolUseId, recordJson] = process.argv.slice(1);
+const idHash = crypto.createHash("sha256").update(toolUseId).digest("hex");
+const dir = path.join(process.env.KMP_EVAL_JUNIT_EVIDENCE_DIR, kind);
+fs.mkdirSync(dir, { recursive: true });
+fs.writeFileSync(path.join(dir, idHash + ".json"), recordJson);
+' -- "$kind" "$toolUseId" "$recordJson"
+}
+
+HAS_PLUGIN_DIR=0
+PLUGIN_DIR_VALUE=""
+PERMISSION_MODE=""
+PREV_ARG=""
+for arg in "$@"; do
+  if [ "$PREV_ARG" = "--plugin-dir" ]; then HAS_PLUGIN_DIR=1; PLUGIN_DIR_VALUE="$arg"; fi
+  if [ "$PREV_ARG" = "--permission-mode" ]; then PERMISSION_MODE="$arg"; fi
+  PREV_ARG="$arg"
+done
+if [ "$PERMISSION_MODE" != "dontAsk" ] && [ "$PERMISSION_MODE" != "bypassPermissions" ]; then
+  echo "fake-claude-campaign-failfast-mid: expected --permission-mode dontAsk|bypassPermissions, got: $PERMISSION_MODE" >&2
+  exit 1
+fi
+
+if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+  PLUGIN_DIR_JSON=$(printf '%s' "$PLUGIN_DIR_VALUE" | sed 's/\\/\\\\/g')
+  PLUGINS="[{\"name\":\"kmp-test-runner\",\"path\":\"$PLUGIN_DIR_JSON\",\"source\":\"fake\"}]"
+  SKILLS='["kmp-test-runner"]'
+else
+  PLUGINS='[]'
+  SKILLS='[]'
+fi
+
+echo "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"/fake\",\"session_id\":\"fake-sess-campaign-failfast-0001\",\"tools\":[\"Bash\",\"Skill\"],\"mcp_servers\":[],\"model\":\"claude-sonnet-5-fake-resolved\",\"permissionMode\":\"$PERMISSION_MODE\",\"plugins\":$PLUGINS,\"skills\":$SKILLS,\"apiKeySource\":\"none\",\"claude_code_version\":\"fake\"}"
+
+if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+  echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakeskill1","name":"Skill","input":{"skill":"kmp-test-runner"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+  echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"[fake skill body]","tool_use_id":"toolu_fakeskill1"}]}}'
+else
+  echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakeskill1","name":"Skill","input":{"skill":"kmp-test-runner"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+  echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"<tool_use_error>Unknown skill: kmp-test-runner</tool_use_error>","is_error":true,"tool_use_id":"toolu_fakeskill1"}]}}'
+fi
+
+echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakebash1","name":"Bash","input":{"command":"kmp-test parallel --module-filter :fakemod --json","description":"fake"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
+
+if [ "$INVOCATION" = "3" ]; then
+  # order_index 2 (label D, sandboxed-unrestricted-v1, current-skill) -- the ONE Bash tool_use
+  # dispatched above never gets ANY correlated tool_result: the transcript jumps straight from
+  # tool_use to a terminal result event, a genuine transcript-completeness defect (mirrors
+  # fake-claude-run-scenario-unrestricted-missing-result/claude's own identical shape).
+  echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"result":"lost the tool result somehow","permission_denials":[],"usage":{"input_tokens":2,"output_tokens":2,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}'
+  exit 0
+fi
+
+if [ "$PERMISSION_MODE" = "dontAsk" ]; then
+  echo '{"type":"system","subtype":"hook_started","hook_id":"fake-hook-1","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse"}'
+  echo '{"type":"system","subtype":"hook_response","hook_id":"fake-hook-1","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse","output":"{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"permissionDecisionReason\":\"fake\"}}","exit_code":0,"outcome":"success"}'
+  write_sidecar decisions toolu_fakebash1 '{"decision":"allow","command":"kmp-test parallel --module-filter :fakemod --json"}'
+fi
+
+KMP_ENVELOPE='{"tool":"kmp-test","schema_version":2,"subcommand":"parallel","version":"0.14.0","project_root":"/fake","exit_code":2,"duration_ms":21,"tests":{"total":0,"passed":0,"failed":0,"skipped":0,"individual_total":0},"modules":[],"skipped":[{"module":"fakemod","reason":"no test source set"}],"coverage":{"tool":"auto","missed_lines":null,"modules_with_kover_plugin":[],"modules_with_jacoco_plugin":[]},"errors":[{"code":"no_test_modules","message":"No modules found matching filter: :fakemod","test_type":"","caused_by_filter":true}],"warnings":[],"isolated":{"enabled":false,"cache_dir":null,"kept":false,"locked":true}}'
+node -e "console.log(JSON.stringify({type:'user',message:{role:'user',content:[{type:'tool_result',content:process.argv[1],tool_use_id:'toolu_fakebash1'}]}}))" "$KMP_ENVELOPE"
+
+FINAL_ANSWER='The :fakemod module has no applicable unit tests -- kmp-test reported no test modules matching that filter.
+
+KMP_EVAL_RESULT
+{"module": ":fakemod", "outcome_kind": "no_applicable_tests"}
+KMP_EVAL_RESULT_END'
+node -e "console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,duration_ms:10,num_turns:1,result:process.argv[1],permission_denials:[],usage:{input_tokens:2,output_tokens:2,cache_read_input_tokens:0,cache_creation_input_tokens:0}}))" "$FINAL_ANSWER"
+exit 0
