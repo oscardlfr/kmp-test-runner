@@ -56,7 +56,7 @@ import { resolveSelection } from './registries.mjs';
 // (skill snapshot). See input-artifacts.mjs's own header for why this is measured from Git
 // objects, never checkout bytes, and why it is never a second notion of "the skill" beyond what
 // materializeSkillSnapshot already delivers.
-import { computePromptArtifact, computeSkillSnapshotArtifact } from './input-artifacts.mjs';
+import { computePromptArtifact } from './input-artifacts.mjs';
 import { cellTranscriptIntegrityOk, summarizeUnexpectedToolUses, evaluateNamedChecks } from './cell-integrity.mjs';
 import { gradeScenarioCondition } from './graders.mjs';
 import { buildRunMatrix, buildConditionOrders } from './randomizer.mjs';
@@ -335,34 +335,6 @@ function resolveSelectionOrFail(args) {
     modelId: args.model ?? null,
     executionProfileId: args['execution-profile'] ?? null,
   });
-}
-
-// The exact (repoRoot, sha, root) triple materializeSkillSnapshot itself archives from (a superset
-// -- that function also archives .claude-plugin) -- see input-artifacts.mjs's own header for why
-// this must never become a second, independently-scoped notion of "the skill". Computed once per
-// invocation, before the first session, and cached for the remainder of THIS process only (never
-// across separate CLI invocations) -- the sha/root pair is a fixed constant, so there is nothing
-// to invalidate.
-let cachedSkillSnapshotArtifact = null;
-function currentSkillSnapshotArtifact() {
-  if (cachedSkillSnapshotArtifact == null) {
-    cachedSkillSnapshotArtifact = computeSkillSnapshotArtifact({ repoRoot: REPO_ROOT, sha: PINNED_SKILL_SHA, root: '.skills/kmp-test-runner' });
-  }
-  return cachedSkillSnapshotArtifact;
-}
-
-/** The ONE fail-closed preflight step cmdCalibrate/cmdSmoke/cmdRun each call exactly once, before
- * createInvocationJournal and before any spawn -- translates a Git/canonicalization failure inside
- * currentSkillSnapshotArtifact() into the {ok:false, reason} contract every other preflight check
- * here already uses (mirrors validatePrivatePatternsFileOrFail/resolveMeasurementScopeOrFail).
- * Never throws. A failure here must never create a journal, incident, or record -- the caller
- * returns 1 directly, exactly like every other preflight check's own failure branch. */
-function resolveSkillSnapshotArtifactOrFail() {
-  try {
-    return { ok: true, artifact: currentSkillSnapshotArtifact() };
-  } catch (err) {
-    return { ok: false, reason: `could not resolve the pinned skill-snapshot artifact before starting any session: ${err.message}` };
-  }
 }
 
 function nullableMetric(value, reason = null) {
@@ -869,7 +841,8 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
     }
     if (!integrityB.ok) {
       return {
-        runA: null, runB, snapshotDir: shared.snapshotDir, daemonPolicy: shared.daemonPolicy,
+        runA: null, runB, snapshotDir: shared.snapshotDir, skillSnapshotArtifact: shared.skillSnapshotArtifact,
+        daemonPolicy: shared.daemonPolicy,
         allowedGradleTasks, allowedKmpTestSubcommands, cleanup: runCleanup,
         plannedCellCount: 2, executedCellCount: 1, matrixComplete: false,
         failFastStop: {
@@ -900,7 +873,8 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
     }
 
     return {
-      runA, runB, snapshotDir: shared.snapshotDir, daemonPolicy: shared.daemonPolicy,
+      runA, runB, snapshotDir: shared.snapshotDir, skillSnapshotArtifact: shared.skillSnapshotArtifact,
+      daemonPolicy: shared.daemonPolicy,
       allowedGradleTasks, allowedKmpTestSubcommands, cleanup: runCleanup,
       plannedCellCount: 2, executedCellCount: 2, matrixComplete: true, failFastStop: null,
     };
@@ -2647,15 +2621,6 @@ async function cmdCalibrate(args) {
     console.error(scopeCheck.reason);
     return 1;
   }
-  // Resolved here, before policy-config/journal/any spawn -- a Git or canonicalization failure
-  // must be caught before a live session is ever spent (see resolveSkillSnapshotArtifactOrFail's
-  // own doc comment; Codex round-4 finding).
-  const skillSnapshotCheck = resolveSkillSnapshotArtifactOrFail();
-  if (!skillSnapshotCheck.ok) {
-    console.error(skillSnapshotCheck.reason);
-    return 1;
-  }
-  const skillSnapshotArtifact = skillSnapshotCheck.artifact;
   const { computePolicySha256 } = await import('./policy-config.mjs');
   const templateDir = join(__dirname, 'fixtures', 'calibration-project');
   // Round-7 audit finding: this call sat OUTSIDE the try block below, unguarded -- any exception
@@ -2713,7 +2678,7 @@ async function cmdCalibrate(args) {
     return 1;
   }
   try {
-    const { runA, runB, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, matrixComplete: pairComplete, plannedCellCount, executedCellCount, failFastStop } = conditionPair;
+    const { runA, runB, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, matrixComplete: pairComplete, plannedCellCount, executedCellCount, failFastStop, skillSnapshotArtifact } = conditionPair;
     const policySha256 = computePolicySha256();
     // One HMAC key + opaque scope id for this ENTIRE calibrate invocation (correction 2) --
     // shared by both A and B so they remain comparable to each other, never persisted. Ephemeral
@@ -2721,8 +2686,10 @@ async function cmdCalibrate(args) {
     // above, before any spawn -- see resolveMeasurementScopeOrFail's own doc comment).
     const { scopeId: ambientProfileScopeId, key: ambientProfileKey } = scopeCheck;
     // Schema v6: promptArtifact is computed ONCE from the exact literal prompt text runConditionPair
-    // was called with above; skillSnapshotArtifact is the one process-cached computation shared by
-    // every command (see currentSkillSnapshotArtifact's own doc comment).
+    // was called with above; skillSnapshotArtifact is resolved exactly once during resource
+    // acquisition (acquireSharedEvalResources, AFTER materializeSkillSnapshot has backfilled the
+    // pinned commit into a shallow CI checkout -- see matrix-runner.mjs's own doc comment) and
+    // propagated back here on conditionPair, never recomputed by this command.
     const common = {
       runKind: 'calibration', scenarioId: 'calibration-explicit-invocation', skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, modelRequested: model, privacyStatus, ambientProfileScopeId, ambientProfileKey,
       selection: selectionResult.selection, promptArtifact: computePromptArtifact(CALIBRATE_PROMPT), skillSnapshotArtifact,
@@ -2970,14 +2937,6 @@ async function cmdSmoke(args) {
   // origin URL of sourceRepoDir (null if it has none, e.g. a purely-local fixture repo).
   const scenarioId = `${projectAlias}-android-host-test-discovery`;
   const projectUrl = resolveGitRemoteUrl(sourceRepoDir);
-  // Resolved here, before policy-config/journal/any spawn -- see cmdCalibrate's identical
-  // rationale comment above resolveSkillSnapshotArtifactOrFail's own call site.
-  const skillSnapshotCheck = resolveSkillSnapshotArtifactOrFail();
-  if (!skillSnapshotCheck.ok) {
-    console.error(skillSnapshotCheck.reason);
-    return 1;
-  }
-  const skillSnapshotArtifact = skillSnapshotCheck.artifact;
   const { computePolicySha256 } = await import('./policy-config.mjs');
   // Round-7 audit finding: see cmdCalibrate's identical rationale -- resource acquisition must
   // never be allowed to throw uncaught past this command's own "FAILED: <reason>" / exit 1
@@ -3029,7 +2988,7 @@ async function cmdSmoke(args) {
     return 1;
   }
   try {
-    const { runA, runB, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, matrixComplete: pairComplete, plannedCellCount, executedCellCount, failFastStop } = conditionPair;
+    const { runA, runB, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, matrixComplete: pairComplete, plannedCellCount, executedCellCount, failFastStop, skillSnapshotArtifact } = conditionPair;
     const policySha256 = computePolicySha256();
     // One HMAC key + opaque scope id for this ENTIRE smoke invocation (correction 2) -- shared by
     // both A and B so they remain comparable to each other, never persisted. Ephemeral (freshly
@@ -3354,16 +3313,6 @@ async function cmdRun(args) {
     return 1;
   }
 
-  // Resolved here, before policy-config/journal/any spawn -- see cmdCalibrate's identical
-  // rationale comment above resolveSkillSnapshotArtifactOrFail's own call site. Strictly after
-  // the --dry-run early-return above, so --dry-run never touches Git for this.
-  const skillSnapshotCheck = resolveSkillSnapshotArtifactOrFail();
-  if (!skillSnapshotCheck.ok) {
-    console.error(skillSnapshotCheck.reason);
-    return 1;
-  }
-  const runSkillSnapshotArtifact = skillSnapshotCheck.artifact;
-
   const { computePolicySha256 } = await import('./policy-config.mjs');
   // Created before the first spawn, per invocation -- plan.length (repeats*2, already computed
   // above for the --dry-run preview) is the exact plannedCellCount, known before any spawn. Same
@@ -3441,8 +3390,10 @@ async function cmdRun(args) {
     // position), never from conditionResult itself (the observation contract carries no raw field).
     const transcriptsByRunId = {};
     // Schema v6: computed ONCE for the whole matrix (every cell shares the same scenario prompt
-    // and the same pinned skill snapshot) -- never recomputed per cell. runSkillSnapshotArtifact
-    // itself was already resolved during preflight, above (before journal/spawn) -- reused here,
+    // and the same pinned skill snapshot) -- never recomputed per cell. matrix.skillSnapshotArtifact
+    // was resolved exactly once during resource acquisition (acquireSharedEvalResources, AFTER
+    // materializeSkillSnapshot backfilled the pinned commit into a shallow CI checkout -- see
+    // matrix-runner.mjs's own doc comment) and propagated back on `matrix` -- reused here directly,
     // never re-resolved.
     const runPromptArtifact = computePromptArtifact(scenario.prompt);
     for (const cell of matrix.cellResults) {
@@ -3456,7 +3407,7 @@ async function cmdRun(args) {
         projectUrl: scenario.project_url, family: scenario.family, modelRequested: model,
         privacyStatus, seed: cell.seed, orderIndex: cell.orderIndex, repetitionIndex: cell.repetitionIndex,
         gradeResult, ambientProfileScopeId, ambientProfileKey,
-        selection: selectionResult.selection, promptArtifact: runPromptArtifact, skillSnapshotArtifact: runSkillSnapshotArtifact,
+        selection: selectionResult.selection, promptArtifact: runPromptArtifact, skillSnapshotArtifact: matrix.skillSnapshotArtifact,
       });
       records.push(record);
       conditionResults.push(cell.conditionResult);

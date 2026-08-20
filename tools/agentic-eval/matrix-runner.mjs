@@ -24,6 +24,7 @@ import { join } from 'node:path';
 
 import { buildPathShim } from './path-shim.mjs';
 import { materializeSkillSnapshot, materializeGradleUserHome, realpath, applyFixtureSetup } from './materialize.mjs';
+import { computeSkillSnapshotArtifact } from './input-artifacts.mjs';
 import { buildRunMatrix, buildConditionOrders } from './randomizer.mjs';
 import { attributeCondition } from './junit-evidence.mjs';
 import { buildBashDispatchAccounting } from './dispatch-accounting.mjs';
@@ -83,8 +84,9 @@ function createCleanupAccumulator() {
  * @param {boolean} [junitEvidenceEnabled] - threaded straight into buildPolicySettingsFile(); false
  *   (the default) produces byte-for-byte the same settings.json this function has always produced
  *   -- calibrate/smoke never pass true, so their behavior is completely unaffected.
- * @returns {Promise<{settingsPath, shimDir, snapshotDir, gradleUserHome, gradleSnapshotDir,
- *   resetGradleToSnapshot, daemonPolicy, kmpEvalTempHome, sharedEnv, registerCleanup, runCleanup}>}
+ * @returns {Promise<{settingsPath, shimDir, snapshotDir, skillSnapshotArtifact, gradleUserHome,
+ *   gradleSnapshotDir, resetGradleToSnapshot, daemonPolicy, kmpEvalTempHome, sharedEnv,
+ *   registerCleanup, runCleanup}>}
  */
 export async function acquireSharedEvalResources({ allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, junitEvidenceEnabled = false, runtimeAdapter }) {
   // Validated BEFORE any resource below is created (post-review hardening, round 1): the default
@@ -103,6 +105,23 @@ export async function acquireSharedEvalResources({ allowedGradleTasks, allowedKm
     registerCleanup(() => rmSync(shimDir, { recursive: true, force: true }));
     const { snapshotDir } = await materializeSkillSnapshot({ repoRoot, sha: pinnedSkillSha, validateFn: runPluginValidator });
     registerCleanup(() => rmSync(snapshotDir, { recursive: true, force: true }));
+    // Computed here, immediately after materialization and its cleanup registration, and before
+    // any adapter/spawn work below -- a Git or canonicalization failure must fail closed before
+    // any live session starts, but this must run AFTER materializeSkillSnapshot, never before:
+    // that call's own ensureCommitAvailable (materialize.mjs) is the ONE mechanism that backfills
+    // the pinned commit into a shallow CI checkout (`git fetch --depth 1 origin <sha>`) when it
+    // isn't already present locally -- computing the artifact any earlier would race a shallow
+    // clone that hasn't been backfilled yet (the real CI failure mode
+    // agentic-eval-materialize.test.js's own "backfills a commit missing from a shallow clone"
+    // test guards). Explicitly phase-tagged, mirroring the auth-preflight throw below: an untagged
+    // throw here would default to incidentPhaseOf's own 'finalizing_matrix' fallback, misclassifying
+    // a resource-acquisition failure as something that happened at the very end of a whole matrix.
+    let skillSnapshotArtifact;
+    try {
+      skillSnapshotArtifact = computeSkillSnapshotArtifact({ repoRoot, sha: pinnedSkillSha, root: '.skills/kmp-test-runner' });
+    } catch (err) {
+      throw tagIncidentPhase(err, 'acquiring_shared_resources');
+    }
     // materializeGradleUserHome creates TWO temp directories (gradleUserHome itself, plus its own
     // internal snapshotDir it resets from) -- gradleSnapshotDir here is deliberately distinctly
     // named from the skill snapshot's `snapshotDir` above; conflating the two previously meant the
@@ -140,7 +159,7 @@ export async function acquireSharedEvalResources({ allowedGradleTasks, allowedKm
     }
 
     return {
-      settingsPath, shimDir, snapshotDir, gradleUserHome, gradleSnapshotDir,
+      settingsPath, shimDir, snapshotDir, skillSnapshotArtifact, gradleUserHome, gradleSnapshotDir,
       resetGradleToSnapshot: resetToSnapshot, daemonPolicy, kmpEvalTempHome, sharedEnv,
       registerCleanup, runCleanup,
       // The RESOLVED adapter instance (default or test-injected) -- returned so a caller outside
@@ -565,7 +584,8 @@ export async function runScenarioMatrix({ scenario, repeats, seed, model, allowe
     const matrixComplete = executedCellCount === plannedCellCount;
 
     return {
-      cellResults, snapshotDir: shared.snapshotDir, daemonPolicy: shared.daemonPolicy,
+      cellResults, snapshotDir: shared.snapshotDir, skillSnapshotArtifact: shared.skillSnapshotArtifact,
+      daemonPolicy: shared.daemonPolicy,
       allowedGradleTasks, allowedKmpTestSubcommands, cleanup: runCleanup,
       plannedCellCount, executedCellCount, matrixComplete, failFastStop,
     };

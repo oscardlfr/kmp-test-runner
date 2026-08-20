@@ -157,10 +157,11 @@ describe('isSafeManifestPath -- defense-in-depth path-shape guard', () => {
 });
 
 describe('computeSkillSnapshotArtifact -- measured entirely from Git objects', () => {
-  // Codex round 2, Finding 7: integration tests spawning several real Git subprocesses -- two
-  // real timeouts of 6035/5253ms observed under Windows coverage instrumentation stacked on top
-  // of Lane All's own resource contention (they run isolated in ~1s otherwise). 15s is scoped to
-  // ONLY these two tests, not a global timeout change.
+  // Codex round 2, Finding 7 (+ round-5 Lane All finding): integration tests spawning several real
+  // Git subprocesses -- real timeouts of 6035/5253ms, and later exactly the 5000ms default limit
+  // itself, observed under Windows coverage instrumentation stacked on top of Lane All's own
+  // resource contention (they run isolated in ~1s otherwise). 15s is scoped to ONLY these three
+  // tests, not a global timeout change.
   it('produces a manifest-derived file count and positive byte total for a real committed skill root', () => {
     const repo = freshRepo('aeia-basic-');
     writeSkillFile(repo, 'SKILL.md', '# skill\ncontent one\n');
@@ -182,7 +183,7 @@ describe('computeSkillSnapshotArtifact -- measured entirely from Git objects', (
     const artifact = computeSkillSnapshotArtifact({ repoRoot: repo, sha, root: '.skills/kmp-test-runner' });
     expect(artifact.snapshot_bytes).toBe(Buffer.byteLength(a, 'utf8') + Buffer.byteLength(b, 'utf8'));
     expect(artifact.snapshot_file_count).toBe(2);
-  });
+  }, 15_000);
 
   it('is deterministic: recomputing the identical (repo, sha, root) twice gives the same hash', () => {
     const repo = freshRepo('aeia-det-');
