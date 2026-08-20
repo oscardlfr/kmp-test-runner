@@ -346,7 +346,30 @@ export function buildRegistries({ runtimes, models, executionProfiles }, { adapt
     checkEnum(entry.network_mode, NETWORK_MODE_VALUES, `${label}.network_mode`, errors);
     checkBoolean(entry.isolation_attestation_required, `${label}.isolation_attestation_required`, errors);
     checkEnum(entry.policy_mode, POLICY_MODE_VALUES, `${label}.policy_mode`, errors);
-    checkRequiredCapabilities(entry.required_capabilities, `${label}.required_capabilities`, errors);
+    const requiredCapsOk = checkRequiredCapabilities(entry.required_capabilities, `${label}.required_capabilities`, errors) != null;
+    // Decision A: policy_mode:"not_applicable" is a claim that no runtime-policy-hook mechanism
+    // governs this profile's Bash dispatch -- that claim is only coherent when paired with a REAL,
+    // externally-verified isolation boundary. Structural (registry-shape) invariant, independent of
+    // which adapter (if any) ever accepts a given profile id, and independent of `enabled` (a
+    // disabled entry with an incoherent not_applicable shape is still a shape defect worth catching
+    // now, not only if it is ever re-enabled) -- mirrors every other check in this loop, all of
+    // which run unconditionally.
+    if (entry.policy_mode === 'not_applicable') {
+      // Mirrors the adapter-rejection message below (`executionProfiles[${entry.id}]: ...`), not
+      // the numeric-index `label` this loop otherwise uses -- so a caller matching on the profile's
+      // own id (as every other rejection reason in this codebase's own test suite already does)
+      // gets a consistent message regardless of which specific check actually fired first.
+      const idLabel = `executionProfiles[${entry.id}]`;
+      if (entry.isolation_attestation_required !== true) {
+        fail(errors, `${idLabel}: policy_mode "not_applicable" requires isolation_attestation_required:true`);
+      }
+      if (entry.isolation_kind === 'runtime-policy-hooks') {
+        fail(errors, `${idLabel}: policy_mode "not_applicable" requires a real isolation boundary -- isolation_kind must not be "runtime-policy-hooks"`);
+      }
+      if (requiredCapsOk && entry.required_capabilities.includes('softPermissionDenial')) {
+        fail(errors, `${idLabel}: policy_mode "not_applicable" must not require "softPermissionDenial" -- no policy hook governs this profile`);
+      }
+    }
     if (supportedOk && entry.default === true && entry.enabled === true) {
       for (const rid of entry.supported_runtime_ids) {
         profileDefaultCountByRuntime.set(rid, (profileDefaultCountByRuntime.get(rid) ?? 0) + 1);

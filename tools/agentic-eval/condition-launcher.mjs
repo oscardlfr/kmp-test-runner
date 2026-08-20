@@ -43,11 +43,22 @@ const shQuote = (arg) => `'${String(arg).replace(/'/g, `'\\''`)}'`;
  * Claude Code never spawns the new hook subprocess at all for those paths, so there is no extra
  * per-Bash-call process spawn, no extra hook_started/hook_response transcript lines, and no
  * stream_json_bytes/timing drift for those run kinds to explain away.
+ *
+ * `policyHookEnabled` (default true) additionally gates the sole `PreToolUse` entry itself --
+ * PR 4 (sandboxed-unrestricted-v1): a policy_mode:"not_applicable" profile compiles settings with
+ * NO PreToolUse hook at all, since no policy governs that profile's Bash dispatch. Default true
+ * preserves this function's pre-existing byte-for-byte output for every existing (strict) caller;
+ * only a caller that explicitly passes `false` ever produces the hookless shape. Key insertion
+ * order (PreToolUse before PostToolUse/PostToolUseFailure, when both are present) is unchanged
+ * from before this parameter existed.
  */
-export function buildPolicySettingsFile({ junitEvidenceEnabled = false } = {}) {
+export function buildPolicySettingsFile({ junitEvidenceEnabled = false, policyHookEnabled = true } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-settings-'));
   const settingsPath = join(dir, 'settings.json');
-  const hooks = { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `node "${POLICY_HOOK_PATH}"` }] }] };
+  const hooks = {};
+  if (policyHookEnabled) {
+    hooks.PreToolUse = [{ matcher: 'Bash', hooks: [{ type: 'command', command: `node "${POLICY_HOOK_PATH}"` }] }];
+  }
   if (junitEvidenceEnabled) {
     const junitHookEntry = { matcher: 'Bash', hooks: [{ type: 'command', command: `node "${JUNIT_EVIDENCE_HOOK_PATH}"` }] };
     hooks.PostToolUse = [junitHookEntry];
@@ -60,8 +71,15 @@ export function buildPolicySettingsFile({ junitEvidenceEnabled = false } = {}) {
 /**
  * The ONE shared base argv, condition-agnostic. --output-format stream-json requires
  * --verbose when combined with --print -- undocumented in --help, found only by running it.
+ *
+ * `permissionMode` (default 'dontAsk') is the ONLY execution-profile-driven difference in this
+ * argv (PR 4, sandboxed-unrestricted-v1: 'bypassPermissions') -- every other flag, in the same
+ * order, is identical regardless of profile. Default 'dontAsk' preserves this function's
+ * pre-existing byte-for-byte output for every caller that does not pass it explicitly.
  */
-export function buildBaseArgv({ prompt, model = 'claude-sonnet-5', settingsPath, maxBudgetUsd = 0.60 }) {
+export function buildBaseArgv({
+  prompt, model = 'claude-sonnet-5', settingsPath, maxBudgetUsd = 0.60, permissionMode = 'dontAsk',
+}) {
   return [
     'claude', '-p', prompt,
     '--output-format', 'stream-json', '--verbose', '--include-hook-events',
@@ -69,7 +87,7 @@ export function buildBaseArgv({ prompt, model = 'claude-sonnet-5', settingsPath,
     '--setting-sources', '', '--strict-mcp-config', '--no-chrome', '--no-session-persistence',
     '--settings', settingsPath,
     '--tools', 'Bash,Skill',
-    '--permission-mode', 'dontAsk', '--max-budget-usd', String(maxBudgetUsd),
+    '--permission-mode', permissionMode, '--max-budget-usd', String(maxBudgetUsd),
   ];
 }
 
@@ -99,8 +117,21 @@ export function buildConditionArgv(baseArgv, condition, snapshotDir) {
  * grammar, duplicate entries, or a non-array input fail loudly here, at harness-construction
  * time, instead of surfacing only as an opaque runtime hook denial once a real session is
  * already spawned.
+ *
+ * `includePolicyEnv` (default true) gates ONLY whether the validated KMP_EVAL_ALLOWED_* values are
+ * merged into the returned env -- validation itself (buildPolicyEnvValues, and its own fail-loudly
+ * grammar check) always runs regardless, so a malformed allowlist is still caught at construction
+ * time even under a profile that will never actually consume these values (PR 4,
+ * sandboxed-unrestricted-v1: no PreToolUse hook ever reads them). When false, the keys are
+ * completely ABSENT from the result -- never present as an empty string/array -- matching the
+ * general "null/not-applicable, never empty" discipline this harness uses throughout. Default true
+ * preserves this function's pre-existing byte-for-byte output for every caller that does not pass
+ * it explicitly.
  */
-export function buildSharedEnv({ shimDir, gradleUserHome, kmpEvalTempHome, expectedFixtureRoot, allowedGradleTasks, allowedKmpTestSubcommands }) {
+export function buildSharedEnv({
+  shimDir, gradleUserHome, kmpEvalTempHome, expectedFixtureRoot, allowedGradleTasks, allowedKmpTestSubcommands,
+  includePolicyEnv = true,
+}) {
   const baseEnv = buildEvalEnv(process.env);
   const { errors, envValues } = buildPolicyEnvValues({ allowedGradleTasks, allowedKmpTestSubcommands });
   if (errors.length > 0) {
@@ -112,7 +143,7 @@ export function buildSharedEnv({ shimDir, gradleUserHome, kmpEvalTempHome, expec
     GRADLE_USER_HOME: gradleUserHome,
     KMP_EVAL_TEMP_HOME: kmpEvalTempHome,
     KMP_EVAL_EXPECTED_FIXTURE_ROOT: expectedFixtureRoot,
-    ...envValues,
+    ...(includePolicyEnv ? envValues : {}),
   };
 }
 

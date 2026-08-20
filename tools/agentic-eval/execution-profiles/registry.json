@@ -11,6 +11,21 @@
       "isolation_attestation_required": false,
       "policy_mode": "required",
       "required_capabilities": ["softPermissionDenial"]
+    },
+    {
+      "id": "sandboxed-unrestricted-v1",
+      "enabled": true,
+      "default": false,
+      "supported_runtime_ids": ["claude-code"],
+      "isolation_kind": "external-sandbox",
+      "network_mode": "restricted",
+      "isolation_attestation_required": true,
+      "policy_mode": "not_applicable",
+      "required_capabilities": [
+        "structuredTranscript",
+        "correlatedToolResults",
+        "skillStateEvidence"
+      ]
     }
   ]
 }

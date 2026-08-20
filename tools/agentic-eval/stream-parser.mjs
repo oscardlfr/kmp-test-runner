@@ -400,12 +400,15 @@ export function findUnexpectedToolUses(events, allowedToolNames) {
 /**
  * True only if the init event's OWN declared profile exactly matches what this harness actually
  * launches with -- `--tools "Bash,Skill"` (as a SET, not proving anything about order), zero MCP
- * servers, `--permission-mode dontAsk`. Closes a real gap: a hard gate that only checks
- * `init != null` can't distinguish a genuinely narrow session from one that regressed to a wider
- * tool/MCP/permission profile (e.g. Read accidentally re-added to buildBaseArgv's --tools, or a
- * stray MCP server configured in the environment) -- the gate would still pass as long as the
- * expected Bash calls also happened to succeed, since nothing inspects the init event's own
- * fields beyond its mere existence.
+ * servers, `--permission-mode` one of this harness's own two possible compiled values (`dontAsk`
+ * for strict-policy-v1, `bypassPermissions` for sandboxed-unrestricted-v1 -- see
+ * runtimes/claude-code.mjs's own `isPolicyNotApplicable`-conditioned choice in `buildInvocation`;
+ * never a third value, and never guessed independently of what was actually compiled). Closes a
+ * real gap: a hard gate that only checks `init != null` can't distinguish a genuinely narrow
+ * session from one that regressed to a wider tool/MCP/permission profile (e.g. Read accidentally
+ * re-added to buildBaseArgv's --tools, or a stray MCP server configured in the environment) -- the
+ * gate would still pass as long as the expected Bash calls also happened to succeed, since nothing
+ * inspects the init event's own fields beyond its mere existence.
  */
 export function hasExpectedToolProfile(initEvent, allowedToolNames) {
   if (initEvent == null || !Array.isArray(initEvent.tools)) return false;
@@ -413,7 +416,12 @@ export function hasExpectedToolProfile(initEvent, allowedToolNames) {
   if (toolSet.size !== allowedToolNames.size) return false;
   for (const t of allowedToolNames) if (!toolSet.has(t)) return false;
   if (!Array.isArray(initEvent.mcp_servers) || initEvent.mcp_servers.length !== 0) return false;
-  if (initEvent.permissionMode !== 'dontAsk') return false;
+  // PR 4 (agentic-eval-isolated-unrestricted-profile-v1): 'bypassPermissions' is the ONE other
+  // value this harness ever compiles (sandboxed-unrestricted-v1's own buildInvocation choice) --
+  // a closed, additive set of exactly 2 literals, never a looser "anything goes" check. Any third
+  // value (a real regression, or a transcript from a permission mode this harness never compiles)
+  // still fails closed exactly as before.
+  if (initEvent.permissionMode !== 'dontAsk' && initEvent.permissionMode !== 'bypassPermissions') return false;
   return true;
 }
 

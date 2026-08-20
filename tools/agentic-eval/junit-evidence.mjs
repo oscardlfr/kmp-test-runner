@@ -135,7 +135,32 @@ export function countEvidenceTaskJunit(fixtureRoot, evidenceTask) {
  *   preDispatchBlockedAttemptIds: Set<string>}} keyed by each attempt's own `tool_use_id` string
  *   (`b.id`), never `b.index`.
  */
-export function resolveDecisions(evidenceDir, bashResults, terminationInfo = {}) {
+export function resolveDecisions(evidenceDir, bashResults, terminationInfo = {}, policyMode = 'required') {
+  if (policyMode !== 'required' && policyMode !== 'not_applicable') {
+    throw new Error(`resolveDecisions: policyMode must be "required" or "not_applicable" -- got ${JSON.stringify(policyMode)}`);
+  }
+  // PR 4 (agentic-eval-isolated-unrestricted-profile-v1): no PreToolUse:Bash hook is EVER wired
+  // for a policyMode:"not_applicable" profile (runtimes/claude-code.mjs's prepareIsolatedHome), so
+  // the decisions/anomalies sidecar directories never contain anything for this condition --
+  // reading them, or treating their absence as a CAPTURE failure, would be meaningless (there is
+  // no capture mechanism to have failed). Every attempt's own effective inclusion signal is RESULT
+  // CORRELATION instead (`b.resultFound`), never a policy decision that could never exist. The
+  // pre-dispatch-block check is unchanged and unconditional: Claude Code's own tool-layer
+  // rejection is profile-independent, and never requires a sidecar to detect (see below).
+  if (policyMode === 'not_applicable') {
+    const decisionByAttempt = new Map();
+    const preDispatchBlockedAttemptIds = new Set();
+    for (const b of bashResults) {
+      if (b.preDispatchBlock?.recognized === true) {
+        preDispatchBlockedAttemptIds.add(b.id);
+        decisionByAttempt.set(b.id, null);
+        continue;
+      }
+      decisionByAttempt.set(b.id, b.resultFound === true ? 'allow' : null);
+    }
+    return { decisionByAttempt, captureIncomplete: false, preDispatchBlockedAttemptIds };
+  }
+
   const { terminated = false, terminationReason = null } = terminationInfo;
   const decisionsDir = join(evidenceDir, 'decisions');
   const anomaliesDir = join(evidenceDir, 'anomalies');
@@ -268,13 +293,20 @@ export function resolveDecisions(evidenceDir, bashResults, terminationInfo = {})
  *   own Gradle-evidence-specific scan; both maps are keyed by each attempt's own `tool_use_id`
  *   string (`b.id`), never `b.index`.
  */
-export function attributeCondition(evidenceDir, scenario, bashResults, terminationInfo = {}, junitXmlAttributionEnabled = true) {
+export function attributeCondition(evidenceDir, scenario, bashResults, terminationInfo = {}, junitXmlAttributionEnabled = true, policyMode = 'required') {
   const { terminated = false, terminationReason = null } = terminationInfo;
   const allowedInvocations = scenario.expected?.gradle?.allowed_invocations ?? [];
   const targetModule = scenario.expected?.module;
   const evidenceRecordsDir = join(evidenceDir, 'evidence');
 
-  const { decisionByAttempt, captureIncomplete: decisionCaptureIncomplete, preDispatchBlockedAttemptIds } = resolveDecisions(evidenceDir, bashResults, terminationInfo);
+  // policyMode:"not_applicable" (PR 4) only changes resolveDecisions' own source of truth (result
+  // correlation instead of a nonexistent policy-hook sidecar) -- everything below this line
+  // (JUnit-XML-specific relevance/evidence attribution) is UNCHANGED and profile-independent: the
+  // PostToolUse JUnit-evidence hook (junit-evidence-hook.mjs) is wired whenever the scenario's own
+  // outcome_kind requires it, regardless of policy_mode (see runtimes/claude-code.mjs's
+  // prepareIsolatedHome / condition-launcher.mjs's buildPolicySettingsFile), so real Gradle JUnit
+  // XML sidecars exist here exactly like they always did.
+  const { decisionByAttempt, captureIncomplete: decisionCaptureIncomplete, preDispatchBlockedAttemptIds } = resolveDecisions(evidenceDir, bashResults, terminationInfo, policyMode);
 
   let ambiguousJunitEvidence = false;
   let evidenceCaptureIncomplete = false;

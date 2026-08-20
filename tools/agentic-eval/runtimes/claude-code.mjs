@@ -107,20 +107,45 @@ export async function preflight({ sharedEnv, repoRoot, timeoutMs, spawnFn } = {}
   };
 }
 
+/** True iff `executionProfile` is genuinely a policy_mode:"not_applicable" profile -- the ONE
+ * semantic switch prepareIsolatedHome/buildInvocation key their profile-aware compilation off of
+ * (never off a profile id list, which would need updating every time a new policy_mode:required
+ * profile is added). Omitted/null defaults to `false` (policy required) -- the safe, strict
+ * default matches this adapter's pre-existing behavior for every caller that predates this
+ * parameter, and fails CLOSED (toward the more restrictive strict shape) rather than open if a
+ * caller ever forgets to pass one. */
+function isPolicyNotApplicable(executionProfile) {
+  return executionProfile != null && executionProfile.policy_mode === 'not_applicable';
+}
+
 /**
  * `prepareIsolatedHome(context)` builds the same runtime environment/config as today:
  * buildPolicySettingsFile + buildSharedEnv. Self-contained rollback (mirrors
  * acquireSharedEvalResources' own incremental-cleanup pattern at the scope this method actually
  * owns): if buildSharedEnv rejects an invalid policy, the settings directory this method already
  * created is removed before rethrowing, rather than leaking it for the caller to discover.
+ *
+ * `executionProfile` (PR 4): when it is a policy_mode:"not_applicable" profile
+ * (sandboxed-unrestricted-v1), the produced settings carry no PreToolUse policy hook and the
+ * produced env carries no KMP_EVAL_ALLOWED_* keys -- everything else (JUnit hooks when requested,
+ * PATH/GRADLE_USER_HOME/KMP_EVAL_TEMP_HOME/KMP_EVAL_EXPECTED_FIXTURE_ROOT, and the allowlist
+ * grammar validation itself) is unchanged. Omitting it entirely preserves strict's exact
+ * pre-existing behavior byte-for-byte.
  * @returns {Promise<{sharedEnv: object, settingsPath: string, cleanupPaths: string[]}>}
  */
-export async function prepareIsolatedHome({ shimDir, gradleUserHome, kmpEvalTempHome, expectedFixtureRoot, allowedGradleTasks, allowedKmpTestSubcommands, junitEvidenceEnabled = false } = {}) {
-  const settingsPath = buildPolicySettingsFile({ junitEvidenceEnabled });
+export async function prepareIsolatedHome({
+  shimDir, gradleUserHome, kmpEvalTempHome, expectedFixtureRoot, allowedGradleTasks, allowedKmpTestSubcommands,
+  junitEvidenceEnabled = false, executionProfile = null,
+} = {}) {
+  const policyApplies = !isPolicyNotApplicable(executionProfile);
+  const settingsPath = buildPolicySettingsFile({ junitEvidenceEnabled, policyHookEnabled: policyApplies });
   const settingsDir = dirname(settingsPath);
   let sharedEnv;
   try {
-    sharedEnv = buildSharedEnv({ shimDir, gradleUserHome, kmpEvalTempHome, expectedFixtureRoot, allowedGradleTasks, allowedKmpTestSubcommands });
+    sharedEnv = buildSharedEnv({
+      shimDir, gradleUserHome, kmpEvalTempHome, expectedFixtureRoot, allowedGradleTasks, allowedKmpTestSubcommands,
+      includePolicyEnv: policyApplies,
+    });
   } catch (err) {
     rmSync(settingsDir, { recursive: true, force: true });
     throw err;
@@ -132,25 +157,45 @@ function isPlainObjectLike(v) {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
 
-/** The ONE execution-profile configuration this adapter actually implements today -- exactly
- * strict-policy-v1's current real semantics (registries.mjs's real registry entry). Any OTHER id,
- * or a mutation of this same id's own isolation/network/attestation/policy/capability fields, is
- * rejected: buildInvocation only ever receives {prompt, model, settingsPath}, so a profile
- * requiring e.g. an external sandbox or a restricted network mode would otherwise be silently
- * unenforced while the resulting record still claimed it. sandboxed-unrestricted-v1 (or any future
- * profile) becomes selectable only once a later PR adds real runtime-specific implementation work
- * for it and this reference is deliberately widened -- never by loosening this check itself. */
-const SUPPORTED_EXECUTION_PROFILE = Object.freeze({
-  id: 'strict-policy-v1',
-  isolation_kind: 'runtime-policy-hooks',
-  network_mode: 'runtime-default',
-  isolation_attestation_required: false,
-  policy_mode: 'required',
-  required_capabilities: Object.freeze(['softPermissionDenial']),
-});
+/** The CLOSED set of execution-profile configurations this adapter actually implements -- exactly
+ * strict-policy-v1's and sandboxed-unrestricted-v1's current real semantics (registries.mjs's real
+ * registry entries). Any OTHER id, or a mutation of either entry's own
+ * isolation/network/attestation/policy/capability fields, is rejected: buildInvocation only ever
+ * receives what this adapter itself derives from the exact matched entry below, so a profile
+ * requiring e.g. a different isolation boundary or network mode would otherwise be silently
+ * unenforced while the resulting record still claimed it. A future profile becomes selectable only
+ * once a later PR adds real runtime-specific implementation work for it and this list is
+ * deliberately widened -- never by loosening either existing entry or this check itself. */
+const SUPPORTED_EXECUTION_PROFILES = Object.freeze([
+  Object.freeze({
+    id: 'strict-policy-v1',
+    isolation_kind: 'runtime-policy-hooks',
+    network_mode: 'runtime-default',
+    isolation_attestation_required: false,
+    policy_mode: 'required',
+    required_capabilities: Object.freeze(['softPermissionDenial']),
+  }),
+  Object.freeze({
+    id: 'sandboxed-unrestricted-v1',
+    isolation_kind: 'external-sandbox',
+    network_mode: 'restricted',
+    isolation_attestation_required: true,
+    policy_mode: 'not_applicable',
+    required_capabilities: Object.freeze(['structuredTranscript', 'correlatedToolResults', 'skillStateEvidence']),
+  }),
+]);
 
 function sameStringArray(a, b) {
   return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
+function matchesExecutionProfileShape(profileEntry, supported) {
+  return profileEntry.id === supported.id
+    && profileEntry.isolation_kind === supported.isolation_kind
+    && profileEntry.network_mode === supported.network_mode
+    && profileEntry.isolation_attestation_required === supported.isolation_attestation_required
+    && profileEntry.policy_mode === supported.policy_mode
+    && sameStringArray(profileEntry.required_capabilities, supported.required_capabilities);
 }
 
 /** `supportsModelConfiguration(modelEntry)`: pure, fail-closed. Claude Code accepts an additional
@@ -169,17 +214,14 @@ export function supportsModelConfiguration(modelEntry) {
     && modelEntry.default_reasoning_mode === null;
 }
 
-/** `supportsExecutionProfile(profileEntry)`: pure, fail-closed. See SUPPORTED_EXECUTION_PROFILE's
- * own doc comment -- exact structural equality against the one profile shape this adapter's
- * buildInvocation/prepareIsolatedHome pipeline actually enforces today. */
+/** `supportsExecutionProfile(profileEntry)`: pure, fail-closed. See SUPPORTED_EXECUTION_PROFILES'
+ * own doc comment -- exact structural equality against ONE of the closed set of profile shapes
+ * this adapter's buildInvocation/prepareIsolatedHome pipeline actually enforces today. A profile
+ * sharing an id with a supported entry but differing in any other field matches neither entry (an
+ * id-only match never counts as support). */
 export function supportsExecutionProfile(profileEntry) {
   return isPlainObjectLike(profileEntry)
-    && profileEntry.id === SUPPORTED_EXECUTION_PROFILE.id
-    && profileEntry.isolation_kind === SUPPORTED_EXECUTION_PROFILE.isolation_kind
-    && profileEntry.network_mode === SUPPORTED_EXECUTION_PROFILE.network_mode
-    && profileEntry.isolation_attestation_required === SUPPORTED_EXECUTION_PROFILE.isolation_attestation_required
-    && profileEntry.policy_mode === SUPPORTED_EXECUTION_PROFILE.policy_mode
-    && sameStringArray(profileEntry.required_capabilities, SUPPORTED_EXECUTION_PROFILE.required_capabilities);
+    && SUPPORTED_EXECUTION_PROFILES.some((supported) => matchesExecutionProfileShape(profileEntry, supported));
 }
 
 /** `prepareSkillDelivery(argv, condition, snapshotDir)` delegates exactly to buildConditionArgv:
@@ -188,9 +230,17 @@ export function prepareSkillDelivery(argv, condition, snapshotDir) {
   return buildConditionArgv(argv, condition, snapshotDir);
 }
 
-/** `buildInvocation(context)` conserves buildBaseArgv byte-for-byte. */
-export function buildInvocation(opts) {
-  return buildBaseArgv(opts);
+/** `buildInvocation(context)` conserves buildBaseArgv byte-for-byte for strict (executionProfile
+ * omitted, or a policy_mode:"required" profile). PR 4: a policy_mode:"not_applicable" profile
+ * (sandboxed-unrestricted-v1) compiles the identical argv shape/order with ONLY
+ * `--permission-mode` swapped to `bypassPermissions` -- the sole non-interactive permission mode
+ * `claude-code 2.1.227 --help` documents for this purpose (see the runbook's own Decision C;
+ * `--dangerously-skip-permissions` is never used). `executionProfile` itself is never forwarded to
+ * buildBaseArgv (which knows nothing about profiles) -- only the one derived `permissionMode`
+ * value is. */
+export function buildInvocation({ executionProfile, ...rest }) {
+  const permissionMode = isPolicyNotApplicable(executionProfile) ? 'bypassPermissions' : 'dontAsk';
+  return buildBaseArgv({ ...rest, permissionMode });
 }
 
 /**

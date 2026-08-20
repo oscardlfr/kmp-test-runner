@@ -336,14 +336,32 @@ describe('boundary -- no anticipated FUTURE-runtime scaffolding exists yet (Code
   }
 });
 
-describe('boundary -- sandboxed-unrestricted-v1 is a reserved schema ID only, never a selectable registry entry', () => {
-  it('execution-profiles/registry.json never lists sandboxed-unrestricted-v1', () => {
-    const src = read(join('execution-profiles', 'registry.json'));
-    expect(src.includes('sandboxed-unrestricted-v1')).toBe(false);
-  });
-  it('the shipped registry contains exactly one execution profile: strict-policy-v1', () => {
+// PR 4 (agentic-eval-isolated-unrestricted-profile-v1): this is exactly the PR the header comment
+// above (boundary -- no anticipated FUTURE-runtime scaffolding) already documents as the intended
+// evolution point -- sandboxed-unrestricted-v1 graduates here from "reserved schema ID only" to a
+// real, non-default, selectable registry entry. Updating this block's own assertions to the new
+// shipped shape is that documented evolution, not a weakening: strict-policy-v1's own position,
+// default status, and byte-for-byte shape stay pinned exactly as before.
+describe('boundary -- sandboxed-unrestricted-v1 is now a real, non-default execution-profile registry entry (PR 4)', () => {
+  it('execution-profiles/registry.json lists exactly strict-policy-v1 (first) then sandboxed-unrestricted-v1 (second) -- no other id', () => {
     const json = JSON.parse(read(join('execution-profiles', 'registry.json')));
-    expect(json.execution_profiles.map((p) => p.id)).toEqual(['strict-policy-v1']);
+    expect(json.execution_profiles.map((p) => p.id)).toEqual(['strict-policy-v1', 'sandboxed-unrestricted-v1']);
+  });
+  it('strict-policy-v1 remains the sole default; sandboxed-unrestricted-v1 is enabled but never default', () => {
+    const json = JSON.parse(read(join('execution-profiles', 'registry.json')));
+    const [strict, unrestricted] = json.execution_profiles;
+    expect(strict.id).toBe('strict-policy-v1');
+    expect(strict.default).toBe(true);
+    expect(unrestricted.id).toBe('sandboxed-unrestricted-v1');
+    expect(unrestricted.enabled).toBe(true);
+    expect(unrestricted.default).toBe(false);
+  });
+  it('sandboxed-unrestricted-v1 requires an isolation attestation and is claude-code only', () => {
+    const json = JSON.parse(read(join('execution-profiles', 'registry.json')));
+    const unrestricted = json.execution_profiles.find((p) => p.id === 'sandboxed-unrestricted-v1');
+    expect(unrestricted.isolation_attestation_required).toBe(true);
+    expect(unrestricted.policy_mode).toBe('not_applicable');
+    expect(unrestricted.supported_runtime_ids).toEqual(['claude-code']);
   });
 });
 

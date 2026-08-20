@@ -47,10 +47,12 @@ import { LATEST_RUN_SCHEMA, SUPPORTED_RUN_SCHEMAS, validateRun, validateScenario
 import { materializeCalibrationProject, materializeScenarioProject, removeScenarioWorktree, realpath } from './materialize.mjs';
 import { msSinceOrigin, fingerprintNames, canonicalNamesKey, selectShellAttempts } from './runtimes/contract.mjs';
 import { acquireSharedEvalResources, runSingleCondition, runScenarioMatrix, reportCleanupFailures } from './matrix-runner.mjs';
+import { buildBashDispatchAccounting } from './dispatch-accounting.mjs';
 // resolveSelection is the ONLY way this file ever learns which runtime adapter to use --
 // cli.mjs never imports runtimes/claude-code.mjs directly (registries.mjs is the sole allowed
 // importer of that module; see agentic-eval-runtime-boundary.test.js).
 import { resolveSelection } from './registries.mjs';
+import { loadIsolationAttestation } from './execution-profiles/isolation-attestation.mjs';
 // Static treatment-size artifacts (schema v6's skill_observation.treatment_size) -- computed
 // entirely offline, once per command (prompt) / once per invocation before the first session
 // (skill snapshot). See input-artifacts.mjs's own header for why this is measured from Git
@@ -66,7 +68,7 @@ import { tokenize } from './policy-hook.mjs';
 import { runValidator as runPluginValidator } from '../validate-plugin.mjs';
 import { RUNS_ROOT, resolveEvidenceOutDir, isRawDirSafeFromAccidentalCommit, promoteTargetsAtomically } from './evidence-io.mjs';
 import { buildRejectionDiagnostics, writeRejectionRawTranscripts, writeRejectedRunDiagnostics, deriveTranscriptFilename, writeRejectionRawStderr, deriveStderrFilename, readRejectionStderrFile } from './rejection-diagnostics.mjs';
-import { acceptedAuditRelativePathFor, buildAcceptedRunAuditSidecar, finalizeAcceptedRunAuditSidecar, crossValidateAcceptedRunAuditAgainstRecord, LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA } from './accepted-run-audit.mjs';
+import { acceptedAuditRelativePathFor, buildAcceptedRunAuditSidecar, finalizeAcceptedRunAuditSidecar, crossValidateAcceptedRunAuditAgainstRecord, expectedAcceptedAuditSchemaFor } from './accepted-run-audit.mjs';
 import { loadMeasurementScopeFile, createMeasurementScopeFileExclusive } from './measurement-scope.mjs';
 import { createInvocationJournal, tagIncidentPhase } from './durable-journal.mjs';
 import { finalizeIncident, reportIncident } from './incident-diagnostics.mjs';
@@ -255,9 +257,9 @@ function parseArgs(argv) {
 // --private-patterns-file disabled redaction with no error and reported the run as 'public'. This
 // allowlist closes that: any flag not in the current subcommand's list is a hard error.
 const SUBCOMMAND_SHAPES = {
-  calibrate: { flags: ['runtime', 'model', 'execution-profile', 'private-patterns-file', 'measurement-scope-file'], extraPositionals: 0 },
-  smoke: { flags: ['runtime', 'model', 'execution-profile', 'source-repo-dir', 'pinned-commit', 'project-alias', 'private-patterns-file', 'measurement-scope-file'], extraPositionals: 0 },
-  run: { flags: ['scenario', 'source-repo-dir', 'seed', 'repeats', 'runtime', 'model', 'execution-profile', 'dry-run', 'private-patterns-file', 'measurement-scope-file'], extraPositionals: 0 },
+  calibrate: { flags: ['runtime', 'model', 'execution-profile', 'isolation-attestation-file', 'private-patterns-file', 'measurement-scope-file'], extraPositionals: 0 },
+  smoke: { flags: ['runtime', 'model', 'execution-profile', 'isolation-attestation-file', 'source-repo-dir', 'pinned-commit', 'project-alias', 'private-patterns-file', 'measurement-scope-file'], extraPositionals: 0 },
+  run: { flags: ['scenario', 'source-repo-dir', 'seed', 'repeats', 'runtime', 'model', 'execution-profile', 'isolation-attestation-file', 'dry-run', 'private-patterns-file', 'measurement-scope-file'], extraPositionals: 0 },
   corpus: { flags: [], extraPositionals: 1 }, // corpus <validate>
   aggregate: { flags: ['runs-dir'], extraPositionals: 0 },
   analyze: { flags: ['runs-dir'], extraPositionals: 0 },
@@ -335,6 +337,51 @@ function resolveSelectionOrFail(args) {
     modelId: args.model ?? null,
     executionProfileId: args['execution-profile'] ?? null,
   });
+}
+
+/**
+ * Resolves (or rejects) the isolation attestation for the already-resolved (runtime, executionProfile)
+ * selection, per the `--isolation-attestation-file <path>` CLI flag -- the ONE call site
+ * calibrate/smoke/run each make, exactly once, after resolveSelectionOrFail/
+ * validatePrivatePatternsFileOrFail/resolveMeasurementScopeOrFail and before any journal/
+ * materialization/auth/spawn (the runbook's own mandated ordering). Fail-closed BOTH directions:
+ * - executionProfile.isolation_attestation_required:true with no flag, or an invalid/mismatched/
+ *   expired attestation file, fails.
+ * - executionProfile.isolation_attestation_required:false (strict-policy-v1 today) with the flag
+ *   PRESENT also fails -- never silently ignored ("en strict, un flag presente es error").
+ * Returns `{ok:true, sha256: string|null}` (null iff attestation does not apply to this profile) or
+ * `{ok:false, reason}` -- never throws, mirrors resolveSelectionOrFail/
+ * validatePrivatePatternsFileOrFail's own shape. The attestation file's own PATH is read from args
+ * here and passed to loadIsolationAttestation, but never appears in the returned reason string on
+ * failure (loadIsolationAttestation's own contract already guarantees this for ITS failures; this
+ * function's own two ordering-check messages below name only the flag/profile id, never a path).
+ */
+function resolveIsolationAttestationOrFail(args, { runtime, executionProfile }) {
+  const filePath = args['isolation-attestation-file'] ?? null;
+  if (executionProfile.isolation_attestation_required !== true) {
+    if (filePath != null) {
+      return { ok: false, reason: `--isolation-attestation-file is not accepted for execution profile "${executionProfile.id}" (isolation_attestation_required:false)` };
+    }
+    return { ok: true, sha256: null };
+  }
+  if (filePath == null) {
+    return { ok: false, reason: `--isolation-attestation-file <path> is required for execution profile "${executionProfile.id}" (isolation_attestation_required:true)` };
+  }
+  const provenance = resolveHarnessProvenance();
+  if (provenance.repoCommit == null) {
+    return { ok: false, reason: 'cannot resolve harness_sha for isolation attestation (git rev-parse HEAD failed) -- refusing to proceed without a real binding' };
+  }
+  const result = loadIsolationAttestation(filePath, {
+    profileId: executionProfile.id,
+    runtimeId: runtime.runtime_id,
+    platform: resolvePlatform(),
+    networkMode: executionProfile.network_mode,
+    harnessSha: provenance.repoCommit,
+  });
+  if (!result.ok) {
+    return { ok: false, reason: `isolation attestation invalid: ${result.reason}` };
+  }
+  return { ok: true, sha256: result.sha256 };
 }
 
 function nullableMetric(value, reason = null) {
@@ -766,7 +813,10 @@ function reasonTextFor(err) {
   return err?.rollbackError ? `${err.message} (rollback also failed: ${err.rollbackError.message})` : err?.message;
 }
 
-async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpTestSubcommands, materializeFixture, cleanupFixture, timeoutMs, journal = null, runtimeAdapter }) {
+async function runConditionPair({
+  prompt, model, allowedGradleTasks, allowedKmpTestSubcommands, materializeFixture, cleanupFixture,
+  timeoutMs, journal = null, runtimeAdapter, executionProfile = null,
+}) {
   // Thin wrapper over matrix-runner.mjs's acquireSharedEvalResources/runSingleCondition (extracted
   // so a scenario-matrix run, which repeats this same acquire-then-run shape N times instead of
   // once, can reuse the identical machinery without duplicating it). The external contract here is
@@ -783,15 +833,25 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
     // buildPolicySettingsFile's own output is byte-for-byte identical to before this mechanism
     // existed whenever this is false.
     junitEvidenceEnabled: false,
-    runtimeAdapter,
+    runtimeAdapter, executionProfile,
   });
   const { registerCleanup, runCleanup } = shared;
+  // PR 4: matches matrix-runner.mjs's runScenarioMatrix identical policyMode derivation --
+  // calibrate/smoke keep the pre-existing aggregate hookStats.everyCallHooked proof under
+  // policyMode:"required" (Decision G: "el strict calibrate/smoke puede conservar su aggregate
+  // hook proof para equivalencia"), and use the SAME canonical per-attempt dispatch accounting the
+  // scenario path uses under "not_applicable" -- computed directly from each condition's own
+  // toolAttempts (never via junit-evidence.mjs/attributeCondition, which calibrate/smoke never
+  // enable at all: decisionByAttempt is not needed for this profile's classification, and
+  // preDispatchBlockedAttemptIds is derivable directly from each attempt's own
+  // preDispatchBlock.recognized, profile-independent).
+  const policyMode = executionProfile != null && executionProfile.policy_mode === 'not_applicable' ? 'not_applicable' : 'required';
 
   try {
     // shared.runtimeAdapter is the RESOLVED instance (default or test-injected) --
     // acquireSharedEvalResources returns it specifically so this call site never needs to import
     // runtimes/claude-code.mjs itself (cli.mjs is a core consumer; only matrix-runner.mjs may).
-    const baseArgv = shared.runtimeAdapter.buildInvocation({ prompt, model, settingsPath: shared.settingsPath });
+    const baseArgv = shared.runtimeAdapter.buildInvocation({ prompt, model, settingsPath: shared.settingsPath, executionProfile });
 
     let fixtureDir;
     let fixtureCleanupQueued = false;
@@ -815,6 +875,19 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
         junitEvidenceEnabled: false, journal, cellOrdinal, runtimeAdapter: shared.runtimeAdapter,
       });
       fixtureDir = conditionResult.fixtureDir;
+      if (policyMode === 'not_applicable') {
+        const shellAttempts = selectShellAttempts(conditionResult.observation.toolAttempts).map((a) => ({
+          id: a.id, command: a.command, index: a.eventIndex, resultFound: a.result.found, preDispatchBlock: a.preDispatchBlock,
+        }));
+        const preDispatchBlockedAttemptIds = new Set(
+          shellAttempts.filter((b) => b.preDispatchBlock?.recognized === true).map((b) => b.id),
+        );
+        const dispatchAccounting = buildBashDispatchAccounting({
+          bashResults: shellAttempts, hookStats: conditionResult.observation.hookStats,
+          decisionByAttempt: new Map(), preDispatchBlockedAttemptIds, policyMode,
+        });
+        return { ...conditionResult, dispatchAccounting };
+      }
       return conditionResult;
     };
 
@@ -825,7 +898,7 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
     // A anyway would spend a second live session on a pair that is already going to be rejected.
     let integrityB;
     try {
-      integrityB = cellTranscriptIntegrityOk(runB, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, requireDispatchAccounting: false });
+      integrityB = cellTranscriptIntegrityOk(runB, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, requireDispatchAccounting: policyMode === 'not_applicable' });
     } catch (err) {
       // No raw-text 4th argument (unlike runSingleCondition's own persistSpawnOutcome-failure
       // catch): persistSpawnOutcome already succeeded for this cell by the time control returns
@@ -860,7 +933,7 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
     // the same thing -- "this cell's own local integrity has been evaluated" -- for every cell in
     // every command, not merely "control returned" for A specifically.
     try {
-      cellTranscriptIntegrityOk(runA, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, requireDispatchAccounting: false });
+      cellTranscriptIntegrityOk(runA, { targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, requireDispatchAccounting: policyMode === 'not_applicable' });
     } catch (err) {
       throw tagIncidentPhase(err, 'parsing_or_attributing_cell', 1);
     }
@@ -907,6 +980,15 @@ function buildRunRecord({
   // caller (per-command for the prompt, per-invocation for the snapshot) and passed in here --
   // this function never recomputes either.
   selection, promptArtifact, skillSnapshotArtifact,
+  // PR 4 (agentic-eval-isolated-unrestricted-profile-v1): the isolation attestation's own bound
+  // hash -- REQUIRED (and validated as a real 64-hex string) when selection.executionProfile.
+  // policy_mode is "not_applicable", REQUIRED-null otherwise (a policy-required profile has no
+  // attestation to report; a caller passing one anyway is a contract error, never silently
+  // accepted). The caller (cmdCalibrate/cmdSmoke/cmdRun) resolves this exactly once via
+  // resolveIsolationAttestationOrFail, before any journal/materialization/auth/spawn -- this
+  // function only ever receives the already-validated `{schema, sha256}` result's own sha256,
+  // never a path or the attestation's own content.
+  isolationAttestationSha256 = null,
 }) {
   // schema v6 required-input contract: a missing/malformed selection, promptArtifact, or
   // skillSnapshotArtifact -- or a modelRequested that disagrees with the registry-resolved
@@ -929,6 +1011,18 @@ function buildRunRecord({
   }
   if (modelRequested !== selection.model.model_id) {
     throw new TypeError(`buildRunRecord: modelRequested (${JSON.stringify(modelRequested)}) must exactly equal selection.model.model_id (${JSON.stringify(selection.model.model_id)}) -- the caller's own asserted model must agree with the registry-resolved selection, never an independent value`);
+  }
+  // PR 4: the ONE semantic switch every policy-conditioned field below keys off -- matches
+  // runtimes/claude-code.mjs's own isPolicyNotApplicable exactly (registries.mjs is the only module
+  // allowed to import that adapter directly, so this is a deliberate, independent duplication of
+  // the identical one-line predicate, not a shared helper).
+  const policyApplies = selection.executionProfile.policy_mode !== 'not_applicable';
+  const ATTESTATION_SHA256_RE = /^[0-9a-f]{64}$/;
+  if (!policyApplies && (typeof isolationAttestationSha256 !== 'string' || !ATTESTATION_SHA256_RE.test(isolationAttestationSha256))) {
+    throw new TypeError('buildRunRecord: isolationAttestationSha256 must be a real 64-hex-char SHA-256 string when selection.executionProfile.policy_mode is "not_applicable"');
+  }
+  if (policyApplies && isolationAttestationSha256 !== null) {
+    throw new TypeError('buildRunRecord: isolationAttestationSha256 must be null when selection.executionProfile.policy_mode is "required" -- a policy-governed profile has no attestation to report');
   }
 
   const { observation, startedAt, endedAt } = conditionResult;
@@ -968,18 +1062,15 @@ function buildRunRecord({
   const noSignalBoundaryReason = 'no first useful signal boundary';
   let postSignalMs;
   let postSignalToolCalls;
-  let policyDenialsBeforeFirstSignal;
-  let policyDenialsAfterFirstSignal;
+  // post_signal_ms/post_signal_tool_calls: driven purely by isScenario/hasSignalBoundary, exactly
+  // as before this PR -- UNAFFECTED by execution_profile.policy_mode (a policy_mode:"not_applicable"
+  // scenario run with a real signal boundary still gets real post-signal timing/tool-call counts).
   if (!isScenario) {
     postSignalMs = nullableMetric(null, notApplicableReason);
     postSignalToolCalls = nullableMetric(null, notApplicableReason);
-    policyDenialsBeforeFirstSignal = nullableMetric(null, notApplicableReason);
-    policyDenialsAfterFirstSignal = nullableMetric(null, notApplicableReason);
   } else if (!hasSignalBoundary) {
     postSignalMs = nullableMetric(null, noSignalBoundaryReason);
     postSignalToolCalls = nullableMetric(null, noSignalBoundaryReason);
-    policyDenialsBeforeFirstSignal = nullableMetric(null, noSignalBoundaryReason);
-    policyDenialsAfterFirstSignal = nullableMetric(null, noSignalBoundaryReason);
   } else {
     postSignalMs = nullableMetric(msSinceOrigin(observation.process.endedHrtimeNs, observation.timing.receiptNsByEventIndex.get(firstUsefulSignalEventIndex)));
     // post_signal_tool_calls: every tool attempt (any kind) whose OWN assistant event index is
@@ -987,8 +1078,26 @@ function buildRunRecord({
     // signal but completed after it (its own eventIndex is still <= the boundary) is never
     // post-signal work, matching msSinceOrigin's own dispatch-time (never completion-time) framing.
     postSignalToolCalls = nullableMetric(observation.toolAttempts.filter((a) => a.eventIndex > firstUsefulSignalEventIndex).length);
-    // policy_denials_before/after_first_signal: classify each Bash attempt by its OWN tool-use
-    // event index (never its later tool-result index) against the identical boundary.
+  }
+  // policy_denials_before/after_first_signal: policy_mode:"not_applicable" takes PRIORITY over
+  // isScenario/hasSignalBoundary -- meaningless without a policy hook (no decisionByAttempt allow/
+  // deny classification exists at all under that profile), so the not-applicable reason applies
+  // unconditionally whenever policy doesn't apply, regardless of run_kind or signal-boundary status.
+  const notApplicablePolicyReason = 'execution-profile-policy-not-applicable';
+  let policyDenialsBeforeFirstSignal;
+  let policyDenialsAfterFirstSignal;
+  if (!policyApplies) {
+    policyDenialsBeforeFirstSignal = nullableMetric(null, notApplicablePolicyReason);
+    policyDenialsAfterFirstSignal = nullableMetric(null, notApplicablePolicyReason);
+  } else if (!isScenario) {
+    policyDenialsBeforeFirstSignal = nullableMetric(null, notApplicableReason);
+    policyDenialsAfterFirstSignal = nullableMetric(null, notApplicableReason);
+  } else if (!hasSignalBoundary) {
+    policyDenialsBeforeFirstSignal = nullableMetric(null, noSignalBoundaryReason);
+    policyDenialsAfterFirstSignal = nullableMetric(null, noSignalBoundaryReason);
+  } else {
+    // classify each Bash attempt by its OWN tool-use event index (never its later tool-result
+    // index) against the identical boundary.
     const decisionByAttempt = conditionResult.junitAttribution?.decisionByAttempt ?? new Map();
     let before = 0;
     let after = 0;
@@ -1024,9 +1133,10 @@ function buildRunRecord({
     sha256: selection.executionProfileSha256,
     isolation_kind: selection.executionProfile.isolation_kind,
     // strict-policy-v1 never requires attestation (registry: isolation_attestation_required:
-    // false) -- a future sandboxed-unrestricted-v1 profile would populate this from a real
-    // attestation artifact instead, never from this function guessing one.
-    isolation_attestation_sha256: null,
+    // false) -- null, always. sandboxed-unrestricted-v1 (policy_mode:"not_applicable") populates
+    // this from the caller's own already-validated attestation hash (resolveIsolationAttestationOrFail),
+    // never guessed or recomputed here.
+    isolation_attestation_sha256: policyApplies ? null : isolationAttestationSha256,
     isolation_attestation_required: selection.executionProfile.isolation_attestation_required,
     network_mode: selection.executionProfile.network_mode,
     policy_mode: selection.executionProfile.policy_mode,
@@ -1196,12 +1306,17 @@ function buildRunRecord({
     terminated: observation.process.terminated,
     termination_reason: observation.process.terminationReason,
     exit_code: observation.process.exitCode,
-    permission_mode_used: 'dontAsk',
-    policy_allowed_gradle_tasks: allowedGradleTasks,
-    policy_allowed_kmptest_subcommands: allowedKmpTestSubcommands,
-    policy_sha256: policySha256,
-    hook_call_count: observation.hookStats.hookCallCount,
-    hook_deny_count: observation.hookStats.hookDenyCount,
+    // PR 4: permission_mode_used mirrors runtimes/claude-code.mjs's own buildInvocation choice
+    // exactly (isPolicyNotApplicable) -- 'dontAsk' for strict, 'bypassPermissions' for
+    // sandboxed-unrestricted-v1, never a third value and never guessed independently of the actual
+    // compiled argv. The 4 policy-metric fields below are real values only when policy actually
+    // governed this run (policyApplies) -- otherwise exactly null, never 0/[]/a stale value.
+    permission_mode_used: policyApplies ? 'dontAsk' : 'bypassPermissions',
+    policy_allowed_gradle_tasks: policyApplies ? allowedGradleTasks : null,
+    policy_allowed_kmptest_subcommands: policyApplies ? allowedKmpTestSubcommands : null,
+    policy_sha256: policyApplies ? policySha256 : null,
+    hook_call_count: policyApplies ? observation.hookStats.hookCallCount : null,
+    hook_deny_count: policyApplies ? observation.hookStats.hookDenyCount : null,
     privacy_status: privacyStatus,
     raw_capture_committed: false,
     // Only accurate when RUNS_ROOT is the default -- see RUNS_ROOT_IS_DEFAULT's own comment.
@@ -1437,6 +1552,31 @@ function findBlockingHarnessToolingDirty(record, runsRootIsDefault) {
 }
 
 /**
+ * PR 4 (agentic-eval-isolated-unrestricted-profile-v1): the policy-hook-freshness check, factored
+ * out to ONE place so it is applied identically at all 4 call sites (finalizeAndWriteRecords'
+ * fail-fast-B-only and main branches, finalizeAndWriteMatrixRecords' fail-fast-partial and main
+ * branches) rather than re-inlined 4 times with a real risk of missing one. A
+ * policy_mode:"not_applicable" record's own policy_sha256 is ALWAYS null by design (no policy
+ * hook ever produced this evidence -- see buildRunRecord's own policyApplies-conditioned
+ * assignment) -- comparing it against policy-hook.mjs's real hash is meaningless for such a
+ * record and is unconditionally skipped, never treated as "stale" (there was never a real hash to
+ * go stale relative to in the first place).
+ * @param {Array<[string, object]>} labeledRecords - `[label, record]` pairs, using each call
+ *   site's own existing label convention ('A'/'B' for the pair path, '[i]' for the matrix path).
+ * @param {string} freshHash - policy-config.mjs's computePolicySha256({fresh:true}) result.
+ * @returns {string|null} a reason string for the FIRST stale record found, or null if none are stale.
+ */
+function findStalePolicyHash(labeledRecords, freshHash) {
+  for (const [label, record] of labeledRecords) {
+    if (record.execution_profile?.policy_mode === 'not_applicable') continue;
+    if (record.policy_sha256 !== freshHash) {
+      return `Run record ${label} policy_sha256 (${record.policy_sha256}) does not match the current policy-hook.mjs (${freshHash}) -- evidence is stale relative to the code that produced it`;
+    }
+  }
+  return null;
+}
+
+/**
  * Builds the stderrByRunId map writeRejectionForensics' 3rd transaction needs, reading each
  * cell's ALREADY-redacted stderr back from the journal (never conditionResult.spawnResult.stderr
  * raw). Returns `{stderrByRunId: null, stderrReadError: null}` -- skipping the transaction
@@ -1637,8 +1777,9 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
     }
     const { computePolicySha256: computePolicySha256B } = await import('./policy-config.mjs');
     const freshHashB = computePolicySha256B({ fresh: true });
-    if (recordB.policy_sha256 !== freshHashB) {
-      return { ok: false, reason: `Run record B policy_sha256 (${recordB.policy_sha256}) does not match the current policy-hook.mjs (${freshHashB}) -- evidence is stale relative to the code that produced it` };
+    const stalePolicyB = findStalePolicyHash([['B', recordB]], freshHashB);
+    if (stalePolicyB) {
+      return { ok: false, reason: stalePolicyB };
     }
     // stderrByRunId (Diseño 4d): null when there's no journal at all (e.g. a direct test of this
     // function) -- writeRejectionForensics skips its 3rd transaction cleanly in that case. When a
@@ -1707,10 +1848,9 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
   }
   const { computePolicySha256 } = await import('./policy-config.mjs');
   const freshHash = computePolicySha256({ fresh: true });
-  for (const [label, record] of [['A', recordA], ['B', recordB]]) {
-    if (record.policy_sha256 !== freshHash) {
-      return { ok: false, reason: `Run record ${label} policy_sha256 (${record.policy_sha256}) does not match the current policy-hook.mjs (${freshHash}) -- evidence is stale relative to the code that produced it` };
-    }
+  const stalePolicy = findStalePolicyHash([['A', recordA], ['B', recordB]], freshHash);
+  if (stalePolicy) {
+    return { ok: false, reason: stalePolicy };
   }
   let redactedRecordA;
   let redactedTextA;
@@ -1956,10 +2096,9 @@ async function finalizeAndWriteMatrixRecords({
     }
     const { computePolicySha256: computePolicySha256FF } = await import('./policy-config.mjs');
     const freshHashFF = computePolicySha256FF({ fresh: true });
-    for (const [i, record] of records.entries()) {
-      if (record.policy_sha256 !== freshHashFF) {
-        return { ok: false, reason: `Run record [${i}] policy_sha256 (${record.policy_sha256}) does not match the current policy-hook.mjs (${freshHashFF}) -- evidence is stale relative to the code that produced it` };
-      }
+    const stalePolicyFF = findStalePolicyHash(records.map((record, i) => [`[${i}]`, record]), freshHashFF);
+    if (stalePolicyFF) {
+      return { ok: false, reason: stalePolicyFF };
     }
 
     const failedChecksByRunId = Object.fromEntries(records.map((r) => [r.run_id, localIntegrityByRunId[r.run_id].failedChecks]));
@@ -2007,10 +2146,9 @@ async function finalizeAndWriteMatrixRecords({
   }
   const { computePolicySha256 } = await import('./policy-config.mjs');
   const freshHash = computePolicySha256({ fresh: true });
-  for (const [i, record] of records.entries()) {
-    if (record.policy_sha256 !== freshHash) {
-      return { ok: false, reason: `Run record [${i}] policy_sha256 (${record.policy_sha256}) does not match the current policy-hook.mjs (${freshHash}) -- evidence is stale relative to the code that produced it` };
-    }
+  const stalePolicy = findStalePolicyHash(records.map((record, i) => [`[${i}]`, record]), freshHash);
+  if (stalePolicy) {
+    return { ok: false, reason: stalePolicy };
   }
 
   // Gate decision -- BEFORE schema validation and BEFORE any accepted-audit-sidecar work (see this
@@ -2073,7 +2211,7 @@ async function finalizeAndWriteMatrixRecords({
   for (const [i, record] of records.entries()) {
     const needsPlaceholderAudit = record.schema >= 5 && record.run_kind === 'scenario' && record.accepted_audit == null;
     const preValidationRecord = needsPlaceholderAudit
-      ? { ...record, accepted_audit: { schema: LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA, relative_path: acceptedAuditRelativePathFor(record.run_id), sha256: '0'.repeat(64) } }
+      ? { ...record, accepted_audit: { schema: expectedAcceptedAuditSchemaFor(record), relative_path: acceptedAuditRelativePathFor(record.run_id), sha256: '0'.repeat(64) } }
       : record;
     const { errors } = validateRun(preValidationRecord);
     if (errors.length > 0) {
@@ -2308,8 +2446,19 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
   // genuine, uninterrupted completion.
   const resultOkA = obsA.terminal.resultSubtype === 'success' && obsA.terminal.isError === false;
   const resultOkB = obsB.terminal.resultSubtype === 'success' && obsB.terminal.isError === false;
-  const hookAccountingOkA = obsA.hookStats.everyCallHooked === true;
-  const hookAccountingOkB = obsB.hookStats.everyCallHooked === true;
+  // PR 4: policyMode:"not_applicable" never wires a PreToolUse hook at all, so
+  // hookStats.everyCallHooked is always false there (0 !== real Bash count) -- the equivalent
+  // proof under that profile is the canonical per-attempt dispatch accounting (identical to the
+  // scenario path), computed once by runConditionPair and attached to runAResult/runBResult
+  // whenever policy does not apply. Strict (policyApplies) keeps the pre-existing aggregate proof,
+  // byte-for-byte.
+  const policyApplies = a.execution_profile?.policy_mode !== 'not_applicable';
+  const hookAccountingOkA = policyApplies
+    ? obsA.hookStats.everyCallHooked === true
+    : runAResult.dispatchAccounting?.everyCallAccountedFor === true;
+  const hookAccountingOkB = policyApplies
+    ? obsB.hookStats.everyCallHooked === true
+    : runBResult.dispatchAccounting?.everyCallAccountedFor === true;
   // Regression coverage for a real gap an independent review pass demonstrated: findSkillInvocation
   // correctly reports confirmed:false for a Skill attempt with NO correlated tool_result at all
   // (transcript cut short before a result arrived), but the gate previously treated
@@ -2621,6 +2770,14 @@ async function cmdCalibrate(args) {
     console.error(scopeCheck.reason);
     return 1;
   }
+  // PR 4: resolved before any journal/materialization/auth/spawn -- see
+  // resolveIsolationAttestationOrFail's own doc comment for the full fail-closed-both-directions
+  // contract.
+  const attestationCheck = resolveIsolationAttestationOrFail(args, { runtime, executionProfile });
+  if (!attestationCheck.ok) {
+    console.error(attestationCheck.reason);
+    return 1;
+  }
   const { computePolicySha256 } = await import('./policy-config.mjs');
   const templateDir = join(__dirname, 'fixtures', 'calibration-project');
   // Round-7 audit finding: this call sat OUTSIDE the try block below, unguarded -- any exception
@@ -2665,6 +2822,7 @@ async function cmdCalibrate(args) {
       cleanupFixture: (fixtureDir) => rmSync(fixtureDir, { recursive: true, force: true }),
       journal,
       runtimeAdapter: adapter,
+      executionProfile,
     });
   } catch (err) {
     const incidentResult = finalizeIncident({
@@ -2693,6 +2851,7 @@ async function cmdCalibrate(args) {
     const common = {
       runKind: 'calibration', scenarioId: 'calibration-explicit-invocation', skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, modelRequested: model, privacyStatus, ambientProfileScopeId, ambientProfileKey,
       selection: selectionResult.selection, promptArtifact: computePromptArtifact(CALIBRATE_PROMPT), skillSnapshotArtifact,
+      isolationAttestationSha256: attestationCheck.sha256,
     };
 
     // Calibration's job is narrowly to prove invocation MECHANICS under an explicit-invocation
@@ -2834,15 +2993,29 @@ function smokeHardGate(a, b, runAResult, runBResult) {
   // false for that particular subtype.
   const resultOkA = obsA.terminal.resultSubtype === 'success' && obsA.terminal.isError === false;
   const resultOkB = obsB.terminal.resultSubtype === 'success' && obsB.terminal.isError === false;
-  const hookAccountingOkA = obsA.hookStats.everyCallHooked === true;
-  const hookAccountingOkB = obsB.hookStats.everyCallHooked === true;
+  // PR 4: see calibrationHardGate's identical policyApplies/hookAccountingOk rationale.
+  const policyApplies = a.execution_profile?.policy_mode !== 'not_applicable';
+  const hookAccountingOkA = policyApplies
+    ? obsA.hookStats.everyCallHooked === true
+    : runAResult.dispatchAccounting?.everyCallAccountedFor === true;
+  const hookAccountingOkB = policyApplies
+    ? obsB.hookStats.everyCallHooked === true
+    : runBResult.dispatchAccounting?.everyCallAccountedFor === true;
   // hook_call_count>=1 proves the agent actually tried real commands; hook_deny_count===0 proves
   // every command it tried was inside the approved grammar; hookAllowCount matching
   // hook_call_count proves every decision was explicitly "allow", not merely "not deny" (a
   // hook_response with unparseable `output` JSON produces neither an allow nor a deny decision --
-  // hook_deny_count===0 alone would silently accept that).
-  const realWorkOkA = a.hook_call_count >= 1 && a.hook_deny_count === 0 && obsA.hookStats.hookAllowCount === a.hook_call_count;
-  const realWorkOkB = b.hook_call_count >= 1 && b.hook_deny_count === 0 && obsB.hookStats.hookAllowCount === b.hook_call_count;
+  // hook_deny_count===0 alone would silently accept that). Under policyMode:"not_applicable" there
+  // is no policy decision at all -- the equivalent proof of real (non-fabricated) work is at least
+  // one Bash attempt with a genuinely correlated tool_result (dispatch_status:
+  // result_correlated_no_policy), from the identical per-attempt accounting hookAccountingOk above
+  // already trusts.
+  const realWorkOkA = policyApplies
+    ? a.hook_call_count >= 1 && a.hook_deny_count === 0 && obsA.hookStats.hookAllowCount === a.hook_call_count
+    : (runAResult.dispatchAccounting?.resultCorrelatedNoPolicyCount ?? 0) >= 1;
+  const realWorkOkB = policyApplies
+    ? b.hook_call_count >= 1 && b.hook_deny_count === 0 && obsB.hookStats.hookAllowCount === b.hook_call_count
+    : (runBResult.dispatchAccounting?.resultCorrelatedNoPolicyCount ?? 0) >= 1;
   // Requires the EXACT expected multiset (both commands, --json included, exactly once each, no
   // extras) -- see verifyExactCommandsSucceeded's own doc comment. Reconstructs the legacy
   // {command, resultFound, resultIsError} shape it expects from the canonical toolAttempts[].
@@ -2930,6 +3103,14 @@ async function cmdSmoke(args) {
     console.error(scopeCheck.reason);
     return 1;
   }
+  // PR 4: resolved before any journal/materialization/auth/spawn -- see
+  // resolveIsolationAttestationOrFail's own doc comment for the full fail-closed-both-directions
+  // contract.
+  const attestationCheck = resolveIsolationAttestationOrFail(args, { runtime, executionProfile });
+  if (!attestationCheck.ok) {
+    console.error(attestationCheck.reason);
+    return 1;
+  }
   // scenario_id and project_url both derive from the ACTUAL project smoke is pointed at, never
   // hardcoded -- an earlier version hard-coded scenario_id to 'kampkit-android-host-test-
   // discovery' regardless of --source-repo-dir/--project-alias, so a run against a DIFFERENT
@@ -2975,6 +3156,7 @@ async function cmdSmoke(args) {
       timeoutMs: 180000,
       journal,
       runtimeAdapter: adapter,
+      executionProfile,
     });
   } catch (err) {
     const incidentResult = finalizeIncident({
@@ -3000,6 +3182,7 @@ async function cmdSmoke(args) {
     const common = {
       runKind: 'smoke', scenarioId, skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, projectAlias, projectCommit: pinnedCommit, projectUrl, family: 'test-only', modelRequested: model, privacyStatus, ambientProfileScopeId, ambientProfileKey,
       selection: selectionResult.selection, promptArtifact: computePromptArtifact(SMOKE_PROMPT), skillSnapshotArtifact,
+      isolationAttestationSha256: attestationCheck.sha256,
     };
 
     // Smoke's gate requires EQUIVALENT REAL WORK in both arms -- not just skill availability.
@@ -3281,6 +3464,16 @@ async function cmdRun(args) {
     console.error(scopeCheck.reason);
     return 1;
   }
+  // PR 4: resolved before the --dry-run early-return -- Decision I requires --dry-run to also
+  // require+validate the attestation for a profile that needs one (never runtime/auth/
+  // materialization; a real subprocess only for resolveHarnessProvenance's own `git rev-parse
+  // HEAD`, and only when isolation_attestation_required:true -- strict's bare dry-run stays cero
+  // subprocess, see resolveIsolationAttestationOrFail's own doc comment).
+  const attestationCheck = resolveIsolationAttestationOrFail(args, { runtime, executionProfile });
+  if (!attestationCheck.ok) {
+    console.error(attestationCheck.reason);
+    return 1;
+  }
   const loaded = loadScenarioById(scenarioId);
   if (!loaded.ok) {
     console.error(loaded.reason);
@@ -3297,10 +3490,23 @@ async function cmdRun(args) {
     // so bare --dry-run (no scope flag) keeps its existing JSON shape byte-for-byte. Never the
     // key, only the already-non-secret scope_id.
     const measurementScope = scopeCheck.source === 'supplied' ? { measurement_scope: { scope_id: scopeCheck.scopeId, source: scopeCheck.source } } : {};
+    // PR 4: strict's bare dry-run JSON shape stays byte-for-byte (these 4 keys are added only when
+    // the resolved profile actually requires attestation -- see Decision I) -- never duplicated
+    // under a second, nested execution_profile object alongside the existing flat
+    // execution_profile_id/execution_profile_sha256 keys above.
+    const attestationFields = executionProfile.isolation_attestation_required === true
+      ? {
+          execution_profile_isolation_kind: executionProfile.isolation_kind,
+          execution_profile_network_mode: executionProfile.network_mode,
+          execution_profile_policy_mode: executionProfile.policy_mode,
+          execution_profile_isolation_attestation_sha256: attestationCheck.sha256,
+        }
+      : {};
     console.log(JSON.stringify({
       dry_run: true, scenario_id: scenario.id, repeats, seed,
       runtime_id: runtime.runtime_id, model_id: modelEntry.model_id, model_vendor_expected: modelEntry.model_vendor_expected,
       execution_profile_id: executionProfile.id, execution_profile_sha256: executionProfileSha256,
+      ...attestationFields,
       total_live_sessions: repeats * 2, policy: scenario.policy, plan, ...measurementScope,
     }, null, 2));
     return 0;
@@ -3347,6 +3553,7 @@ async function cmdRun(args) {
       timeoutMs: 600000,
       journal,
       runtimeAdapter: adapter,
+      executionProfile,
     });
   } catch (err) {
     const incidentResult = finalizeIncident({
@@ -3408,6 +3615,7 @@ async function cmdRun(args) {
         privacyStatus, seed: cell.seed, orderIndex: cell.orderIndex, repetitionIndex: cell.repetitionIndex,
         gradeResult, ambientProfileScopeId, ambientProfileKey,
         selection: selectionResult.selection, promptArtifact: runPromptArtifact, skillSnapshotArtifact: matrix.skillSnapshotArtifact,
+        isolationAttestationSha256: attestationCheck.sha256,
       });
       records.push(record);
       conditionResults.push(cell.conditionResult);
@@ -3437,10 +3645,15 @@ async function cmdRun(args) {
         // The pointer takes the BUILT sidecar's own version, never a hardcoded literal: with v1 and
         // v2 coexisting, a literal here would keep claiming v1 while the file on disk moved on, and
         // crossValidateAcceptedRunAuditAgainstRecord's schema equality would fail at promotion time.
-        // The LATEST assertion is the belt-and-braces half -- a builder that somehow emitted a stale
-        // version must not be silently blessed by faithfully copying it.
-        if (builtSidecar.schema !== LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA) {
-          return { ok: false, reason: `accepted-run-audit sidecar for record [${i}] (repetition ${record.repetition_index}, ${record.condition}): built sidecar schema ${builtSidecar.schema} is not the latest (${LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA})` };
+        // The expected-schema assertion is the belt-and-braces half -- a builder that somehow
+        // emitted the WRONG version for this record/profile must not be silently blessed by
+        // faithfully copying it. PR 4: never a flat `!== LATEST` comparison (LATEST is now 4) --
+        // that would reject every byte-identical v3 sidecar a policy-required schema:6 record
+        // still correctly produces. expectedAcceptedAuditSchemaFor is the one explicit dispatch
+        // both the builder and this promotion check agree on.
+        const expectedSidecarSchema = expectedAcceptedAuditSchemaFor(record);
+        if (builtSidecar.schema !== expectedSidecarSchema) {
+          return { ok: false, reason: `accepted-run-audit sidecar for record [${i}] (repetition ${record.repetition_index}, ${record.condition}): built sidecar schema ${builtSidecar.schema} is not the expected ${expectedSidecarSchema} for this record/profile` };
         }
         record.accepted_audit = { schema: builtSidecar.schema, relative_path: acceptedAuditRelativePathFor(record.run_id), sha256: sidecarResult.sha256 };
         texts.push(sidecarResult.redactedText);

@@ -450,8 +450,15 @@ describe('calibrationHardGate', () => {
     expect(reason).toContain('noUnexpectedToolsOk:true');
   });
 
-  it('isolates toolProfileOk -- B\'s init event has permissionMode !== dontAsk', () => {
-    const runB = passRunResult({ init: { ...passRunResult().init, permissionMode: 'bypassPermissions' } });
+  // PR 4 (agentic-eval-isolated-unrestricted-profile-v1): 'bypassPermissions' is no longer an
+  // arbitrary wrong value -- it is now the ONE other permissionMode this harness genuinely
+  // compiles (sandboxed-unrestricted-v1's own buildInvocation choice; see
+  // hasExpectedToolProfile's own updated doc comment in stream-parser.mjs), so it can no longer
+  // stand in for "a wrong permission mode" here. 'acceptEdits' (never compiled by this harness
+  // under either profile) is still genuinely wrong, matching the smoke-hard-gate copy of this
+  // same test below, which already used it.
+  it('isolates toolProfileOk -- B\'s init event has an unexpected permissionMode', () => {
+    const runB = passRunResult({ init: { ...passRunResult().init, permissionMode: 'acceptEdits' } });
     const { ok, reason } = callCalibrationHardGate(passA(), passB(), passRunResult(), runB);
     expect(ok).toBe(false);
     expect(reason).toContain('toolProfileOk:false');

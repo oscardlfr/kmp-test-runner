@@ -67,14 +67,31 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // as this PR's own motivating incident evidence, outside this repo, hashed and declared not to be
 // deleted) are schema:2 and must keep validating. CELL_CANONICAL_FIELDS_V2/
 // REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V2 are therefore frozen forever, exactly like
-// RUN_CANONICAL_FIELDS_V1 is frozen for the 8 historical schema:1 run records in schemas.mjs. The
-// builder (buildRejectionDiagnostics) only ever constructs schema 3 going forward -- it does not
-// need to know how to build v2, only that the validator keeps recognizing it if presented with one
-// (a test, a future audit tool). Re-check this premise before any FUTURE bump: the moment a real
-// schema:3 file is ever committed to this repo's own git history, the NEXT bump must follow this
-// same dispatch pattern rather than reverting to a plain constant bump.
-export const SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS = [2, 3];
-export const LATEST_REJECTION_DIAGNOSTICS_SCHEMA = 3;
+// RUN_CANONICAL_FIELDS_V1 is frozen for the 8 historical schema:1 run records in schemas.mjs.
+// v2 and v3 are BOTH frozen the same way going forward -- policy_sha256 stays a required real
+// hex64 hash for either, and the builder never emits v2. Re-check this premise before any FUTURE
+// bump: the moment a real schema:4 file is ever committed to this repo's own git history, the NEXT
+// bump must follow this same dispatch pattern rather than reverting to a plain constant bump.
+//
+// schema 4 (sandboxed-unrestricted-v1 rejection support): the ONE shape exclusive to a batch whose
+// every record is schema>=6 with execution_profile.policy_mode==="not_applicable" -- no policy
+// hook ever governed such a batch, so policy_sha256 is honestly null (never a stale/synthetic
+// hash) and three new fields (execution_profile_id/policy_mode/isolation_attestation_sha256)
+// report which profile/attestation actually applied. Every OTHER batch (policy-required, or a
+// pre-schema-6 legacy record) still builds v3 exactly as before -- see buildRejectionDiagnostics'
+// own inline dispatch (its `policyModes`/`buildingV4`/`schema` locals), which never selects a
+// schema via LATEST_REJECTION_DIAGNOSTICS_SCHEMA (a future LATEST bump must never silently
+// redirect an unrelated, policy-required batch away from schema 3).
+export const REJECTION_DIAGNOSTICS_SCHEMA_V2 = 2;
+export const REJECTION_DIAGNOSTICS_SCHEMA_V3 = 3;
+export const REJECTION_DIAGNOSTICS_SCHEMA_V4 = 4;
+export const SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS = [REJECTION_DIAGNOSTICS_SCHEMA_V2, REJECTION_DIAGNOSTICS_SCHEMA_V3, REJECTION_DIAGNOSTICS_SCHEMA_V4];
+export const LATEST_REJECTION_DIAGNOSTICS_SCHEMA = REJECTION_DIAGNOSTICS_SCHEMA_V4;
+
+// Mirrors registries.mjs's own ID_RE exactly (a small, local copy -- not imported, matching this
+// module's and isolation-attestation.mjs's own established convention of keeping such small
+// primitives module-local rather than sharing them).
+const EXECUTION_PROFILE_ID_RE = /^[a-z0-9][a-z0-9-]*$/;
 
 const FOREIGN_SKILL_SUMMARY_FIELDS = ['rejected', 'confirmed', 'incomplete'];
 const AMBIENT_SKILL_PROFILE_FIELDS = ['count', 'scope_id', 'fingerprint_hmac'];
@@ -105,9 +122,11 @@ const CELL_CANONICAL_FIELDS_V3 = [...CELL_CANONICAL_FIELDS_V2, 'unexpected_tool_
 
 // Explicit if-chain, never a ternary/fallthrough -- mirrors schemas.mjs's runCanonicalFieldsFor
 // rationale: a naive fallthrough would silently validate an unrecognized future schema against the
-// WRONG (older) field list.
+// WRONG (older) field list. v4 reuses the IDENTICAL per-cell shape as v3 (schema 4's own 3 new
+// fields are all batch-wide, never per-cell) -- never REJECTION_DIAGNOSTICS_SCHEMA_V4 falling
+// through to the v2 cell shape by accident.
 function cellCanonicalFieldsFor(schema) {
-  if (schema === 3) return CELL_CANONICAL_FIELDS_V3;
+  if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V4 || schema === REJECTION_DIAGNOSTICS_SCHEMA_V3) return CELL_CANONICAL_FIELDS_V3;
   return CELL_CANONICAL_FIELDS_V2;
 }
 
@@ -138,9 +157,19 @@ const REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V3 = [
   ...REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V2,
   'matrix_complete', 'planned_cell_count', 'executed_cell_count', 'raw_transcripts_persisted',
 ];
+// Schema 4 = v3 + execution_profile_id/policy_mode/isolation_attestation_sha256 -- the ONE shape
+// exclusive to a policy_mode:"not_applicable" batch (see this module's own header comment above
+// SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS for the full rationale). policy_sha256 stays a REQUIRED
+// field (inherited from v3, never removed) -- for schema 4 it is validated to be exactly null,
+// never dropped from the shape entirely.
+const REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V4 = [
+  ...REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V3,
+  'execution_profile_id', 'policy_mode', 'isolation_attestation_sha256',
+];
 
 function rejectionCanonicalFieldsFor(schema) {
-  if (schema === 3) return REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V3;
+  if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V4) return REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V4;
+  if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V3) return REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V3;
   return REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V2;
 }
 
@@ -500,7 +529,7 @@ function validateAmbientProfileMatrixOk(row) {
   const errors = [];
   if (RUN_KIND_VALUES.includes(row.run_kind)) {
     if (row.run_kind === 'scenario') {
-      if (row.schema === 3 && row.matrix_complete === false) {
+      if ((row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V3 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V4) && row.matrix_complete === false) {
         if (row.ambient_profile_matrix_ok !== null) {
           errors.push({ field: 'ambient_profile_matrix_ok', message: `must be null when matrix_complete is false -- a matrix that fail-fast stopped before finishing never actually evaluated a real cross-cell consensus` });
         }
@@ -555,7 +584,10 @@ function validateAmbientProfileMatrixOk(row) {
  * Validates one rejection-diagnostics record. Dispatches on `row.schema` (SUPPORTED_
  * REJECTION_DIAGNOSTICS_SCHEMAS): a schema:2 row is checked against its original, frozen shape
  * (no unexpected_tool_uses_count/matrix_complete/etc.); a schema:3 row additionally gets every new
- * check this fix adds. Closed key sets at EVERY nesting level (top-level, each cells[] entry, both
+ * check the "preserve rejected matrix forensics" fix added; a schema:4 row gets everything schema:3
+ * does PLUS the policy_mode:"not_applicable"-exclusive fields (execution_profile_id/policy_mode/
+ * isolation_attestation_sha256), and its own policy_sha256 must be exactly null rather than a real
+ * hash. Closed key sets at EVERY nesting level (top-level, each cells[] entry, both
  * foreign_skill_summary objects) for whichever schema applies. Also enforces: cells[].run_id
  * values unique within one record; exact set-equality between run_ids[] and cells[].run_id;
  * non-negative integer counts everywhere; the top-level foreign_skill_summary must equal the
@@ -568,7 +600,8 @@ export function validateRejectionRow(row) {
     return { errors: [{ field: 'row', message: 'must be an object' }], warnings };
   }
   const errors = [];
-  const isV3 = row.schema === 3;
+  const isV3 = row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V3;
+  const isV4 = row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V4;
   const allowedKeys = new Set(rejectionCanonicalFieldsFor(row.schema));
   for (const k of Object.keys(row)) if (!allowedKeys.has(k)) errors.push({ field: k, message: 'unrecognized field' });
   for (const k of allowedKeys) if (!(k in row)) errors.push({ field: k, message: 'missing required field' });
@@ -593,15 +626,39 @@ export function validateRejectionRow(row) {
   if (!PRIVACY_STATUS_VALUES.includes(row.privacy_status)) errors.push({ field: 'privacy_status', message: `must be one of ${PRIVACY_STATUS_VALUES.join('|')}` });
   errors.push(...validateProvenanceForRunKind(row));
   errors.push(...validateAmbientProfileMatrixOk(row));
-  if (typeof row.policy_sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(row.policy_sha256)) {
+  // policy_sha256: a real hash for every policy-required batch (v2, v3, and any future
+  // policy-required schema), but EXACTLY null for a schema:4 (policy_mode:"not_applicable") batch
+  // -- no policy hook ever governed it, so a real-looking hash there would misrepresent what
+  // actually happened. Never converted to "", 0, a synthetic hash, or any other sentinel.
+  if (isV4) {
+    if (row.policy_sha256 !== null) {
+      errors.push({ field: 'policy_sha256', message: `must be exactly null for schema:${REJECTION_DIAGNOSTICS_SCHEMA_V4} (policy_mode:"not_applicable" -- no policy hook ever governed this batch)` });
+    }
+  } else if (typeof row.policy_sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(row.policy_sha256)) {
     errors.push({ field: 'policy_sha256', message: 'must be a lowercase 64-char hex SHA-256 string' });
   }
 
-  // Schema 3-only top-level fields: matrix_complete/planned_cell_count/executed_cell_count/
-  // raw_transcripts_persisted. Gated on isV3 -- a schema:2 row (including the two preserved
+  // Schema 4-only top-level fields: exclusive to the policy_mode:"not_applicable" shape. Never
+  // checked for v2/v3 here -- rejectionCanonicalFieldsFor/the closed-key loop above already
+  // enforces that a v2/v3 row must NOT carry them (they are simply absent from those field lists).
+  if (isV4) {
+    if (typeof row.execution_profile_id !== 'string' || !EXECUTION_PROFILE_ID_RE.test(row.execution_profile_id)) {
+      errors.push({ field: 'execution_profile_id', message: `must be a non-empty lowercase id matching ${EXECUTION_PROFILE_ID_RE}` });
+    }
+    if (row.policy_mode !== 'not_applicable') {
+      errors.push({ field: 'policy_mode', message: `must be exactly "not_applicable" for schema:${REJECTION_DIAGNOSTICS_SCHEMA_V4}` });
+    }
+    if (typeof row.isolation_attestation_sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(row.isolation_attestation_sha256)) {
+      errors.push({ field: 'isolation_attestation_sha256', message: 'must be a lowercase 64-char hex SHA-256 string' });
+    }
+  }
+
+  // Schema 3/4-only top-level fields: matrix_complete/planned_cell_count/executed_cell_count/
+  // raw_transcripts_persisted. Gated on isV3||isV4 -- a schema:2 row (including the two preserved
   // incident files) never has these keys at all, and rejectionCanonicalFieldsFor/the closed-key
-  // loop above already enforces that a v2 row must NOT carry them.
-  if (isV3) {
+  // loop above already enforces that a v2 row must NOT carry them. Schema 4 inherits this whole
+  // block from schema 3 unchanged -- fail-fast partial-matrix support is orthogonal to policy_mode.
+  if (isV3 || isV4) {
     if (typeof row.matrix_complete !== 'boolean') {
       errors.push({ field: 'matrix_complete', message: 'must be a boolean' });
     }
@@ -718,7 +775,7 @@ export function validateRejectionRow(row) {
       // attributed to noUnexpectedToolsOk that records zero unexpected tools anywhere" -- the
       // precise, unrecoverable shape of the 2026-08 canary incident -- structurally impossible to
       // write ever again.
-      if (isV3) {
+      if (isV3 || isV4) {
         if (!(Number.isInteger(cell.unexpected_tool_uses_count) && cell.unexpected_tool_uses_count >= 0)) {
           errors.push({ field: `cells[${i}].unexpected_tool_uses_count`, message: 'must be a non-negative integer' });
         } else if (cellFailedChecksOk) {
@@ -738,7 +795,7 @@ export function validateRejectionRow(row) {
     if (!anyCellHasFailedCheck) {
       errors.push({ field: 'cells', message: 'at least one cell must have a non-empty failed_checks -- a rejection diagnostic with no recorded failure anywhere is not a real rejection' });
     }
-    if (isV3 && Number.isInteger(row.executed_cell_count) && row.executed_cell_count !== row.cells.length) {
+    if ((isV3 || isV4) && Number.isInteger(row.executed_cell_count) && row.executed_cell_count !== row.cells.length) {
       errors.push({ field: 'executed_cell_count', message: `must equal cells.length (${row.cells.length}) -- only executed cells ever produce a record, and every record produces exactly one cell` });
     }
     if (runIdsOk) {
@@ -782,9 +839,13 @@ export function validateRejectionRow(row) {
  * branch already has in scope. Never re-derives anything the gate functions already computed
  * (evaluateNamedChecks' failedChecks/failedChecksA/failedChecksB, scenarioHardGate's cellResults,
  * cell-integrity.mjs's unexpectedToolUsesCount/unexpectedTools) -- see cli.mjs's own call sites for
- * how each run_kind maps its own shape into the uniform inputs here. Always constructs schema
- * LATEST_REJECTION_DIAGNOSTICS_SCHEMA (3) -- see validateRejectionRow for why schema:2 is still
- * ACCEPTED (never built) by this module.
+ * how each run_kind maps its own shape into the uniform inputs here. Constructs schema
+ * REJECTION_DIAGNOSTICS_SCHEMA_V4 when every record in the batch is schema>=6 with
+ * execution_profile.policy_mode==="not_applicable" (see the dispatch this function runs, right
+ * after the existing BATCH_WIDE_FIELDS agreement check, for the exact rule -- NEVER
+ * LATEST_REJECTION_DIAGNOSTICS_SCHEMA used as that selector), REJECTION_DIAGNOSTICS_SCHEMA_V3
+ * otherwise (every policy-required or pre-schema-6 batch, unchanged from before) -- see
+ * validateRejectionRow for why schema:2 is still ACCEPTED (never built) by this module.
  *
  * @param {string} runKind
  * @param {string} rejectionId - a full UUID, generated ONCE by the caller (not here) so the SAME
@@ -881,6 +942,50 @@ export function buildRejectionDiagnostics({
   }
   const { project_url: projectUrl, ...committedBatchWide } = batchWide;
 
+  // Schema dispatch (sandboxed-unrestricted-v1 rejection support) -- explicit, never
+  // LATEST_REJECTION_DIAGNOSTICS_SCHEMA as a selector, exactly the "expectedXFor" pattern
+  // accepted-run-audit.mjs's own PR 4 already established for the accepted-sidecar side of this
+  // same feature. One harness invocation always resolves exactly one execution profile for its
+  // whole batch, so every record must agree on execution_profile.policy_mode -- a record whose own
+  // schema is <6 (no execution_profile concept at all) reads as its own distinct sentinel here, so
+  // a schema<6/schema>=6 mix is caught by this SAME agreement check rather than silently building
+  // v3 from a heterogeneous batch. A genuine disagreement can only ever be a caller-assembled
+  // inconsistency (never a real production shape) and fails closed with a specific reason, rather
+  // than silently degrading to schema 3 -- which would then also reject the batch's own honestly-
+  // null policy_sha256.
+  const policyModes = new Set(records.map((r) => (r.schema >= 6 ? r.execution_profile?.policy_mode : 'schema-pre-v6')));
+  if (policyModes.size !== 1) {
+    throw new Error(`buildRejectionDiagnostics: records disagree on execution_profile.policy_mode (${JSON.stringify([...policyModes])}) -- one harness invocation always resolves exactly one execution profile for its whole batch`);
+  }
+  const buildingV4 = [...policyModes][0] === 'not_applicable';
+  const schema = buildingV4 ? REJECTION_DIAGNOSTICS_SCHEMA_V4 : REJECTION_DIAGNOSTICS_SCHEMA_V3;
+
+  // v4-only batch-wide fields -- copied EXCLUSIVELY from records[].execution_profile (never
+  // consulted from a live registry, never derived from policy_sha256:null, never accepted as a
+  // parallel, independently-controllable caller parameter that could drift from what the records
+  // themselves actually carry). Batch-wide agreement is proven the SAME way as BATCH_WIDE_FIELDS
+  // above -- a mismatch fails closed with a specific reason, never silently picks the first value.
+  let executionProfileBatchWide = {};
+  if (buildingV4) {
+    const profileIds = new Set(records.map((r) => r.execution_profile.id));
+    if (profileIds.size !== 1) {
+      throw new Error(`buildRejectionDiagnostics: records disagree on execution_profile.id (${JSON.stringify([...profileIds])}) within one not_applicable batch`);
+    }
+    const attestationHashes = new Set(records.map((r) => r.execution_profile.isolation_attestation_sha256));
+    if (attestationHashes.size !== 1) {
+      throw new Error(`buildRejectionDiagnostics: records disagree on execution_profile.isolation_attestation_sha256 (${JSON.stringify([...attestationHashes])}) within one not_applicable batch`);
+    }
+    const [attestationSha256] = attestationHashes;
+    if (typeof attestationSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(attestationSha256)) {
+      throw new Error(`buildRejectionDiagnostics: execution_profile.isolation_attestation_sha256 must be a real 64-hex-char string for a not_applicable batch, got ${JSON.stringify(attestationSha256)}`);
+    }
+    executionProfileBatchWide = {
+      execution_profile_id: [...profileIds][0],
+      policy_mode: 'not_applicable',
+      isolation_attestation_sha256: attestationSha256,
+    };
+  }
+
   const executed = executedCellCount ?? records.length;
   const planned = plannedCellCount ?? records.length;
   if (!Number.isInteger(executed) || executed !== records.length) {
@@ -921,12 +1026,13 @@ export function buildRejectionDiagnostics({
   }
 
   const committed = {
-    schema: LATEST_REJECTION_DIAGNOSTICS_SCHEMA,
+    schema,
     rejection_id: rejectionId,
     timestamp: new Date().toISOString(),
     run_kind: runKind,
     run_ids: cells.map((c) => c.run_id),
     ...committedBatchWide,
+    ...executionProfileBatchWide,
     cells,
     foreign_skill_summary: foreignSkillSummary,
     ambient_profile_matrix_ok: ambientProfileMatrixOk,

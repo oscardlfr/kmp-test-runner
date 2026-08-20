@@ -216,6 +216,117 @@ describe('buildSharedEnv -- byte-identical policy config between conditions', ()
   });
 });
 
+describe('buildBaseArgv -- permissionMode parameter (PR 4: profile-aware compilation)', () => {
+  it('omitting permissionMode defaults to dontAsk -- byte-identical to the pre-existing frozen argv', () => {
+    const withDefault = buildBaseArgv({ prompt: 'PROMPT', settingsPath: 'SETTINGS' });
+    const withExplicitDontAsk = buildBaseArgv({ prompt: 'PROMPT', settingsPath: 'SETTINGS', permissionMode: 'dontAsk' });
+    expect(withDefault).toEqual(withExplicitDontAsk);
+    expect(withDefault[withDefault.indexOf('--permission-mode') + 1]).toBe('dontAsk');
+  });
+
+  it('permissionMode:bypassPermissions produces the identical argv shape/order, only that one value swapped', () => {
+    const strict = buildBaseArgv({ prompt: 'PROMPT', settingsPath: 'SETTINGS' });
+    const unrestricted = buildBaseArgv({ prompt: 'PROMPT', settingsPath: 'SETTINGS', permissionMode: 'bypassPermissions' });
+    expect(unrestricted.length).toBe(strict.length);
+    const idx = strict.indexOf('--permission-mode');
+    expect(unrestricted.slice(0, idx)).toEqual(strict.slice(0, idx));
+    expect(unrestricted.slice(idx + 2)).toEqual(strict.slice(idx + 2));
+    expect(unrestricted[idx + 1]).toBe('bypassPermissions');
+    expect(strict[idx + 1]).toBe('dontAsk');
+  });
+
+  it('the same --tools Bash,Skill, --model, and --max-budget-usd values appear regardless of permissionMode', () => {
+    const strict = buildBaseArgv({ prompt: 'p', settingsPath: 's', model: 'M', maxBudgetUsd: 2 });
+    const unrestricted = buildBaseArgv({ prompt: 'p', settingsPath: 's', model: 'M', maxBudgetUsd: 2, permissionMode: 'bypassPermissions' });
+    expect(strict[strict.indexOf('--tools') + 1]).toBe('Bash,Skill');
+    expect(unrestricted[unrestricted.indexOf('--tools') + 1]).toBe('Bash,Skill');
+    expect(strict[strict.indexOf('--model') + 1]).toBe('M');
+    expect(unrestricted[unrestricted.indexOf('--model') + 1]).toBe('M');
+    expect(strict[strict.indexOf('--max-budget-usd') + 1]).toBe('2');
+    expect(unrestricted[unrestricted.indexOf('--max-budget-usd') + 1]).toBe('2');
+  });
+});
+
+describe('buildPolicySettingsFile -- policyHookEnabled parameter (PR 4: profile-aware compilation)', () => {
+  it('omitting policyHookEnabled defaults to true -- byte-identical to the pre-existing frozen settings shape', () => {
+    const pathDefault = buildPolicySettingsFile();
+    const pathExplicitTrue = buildPolicySettingsFile({ policyHookEnabled: true });
+    try {
+      expect(JSON.parse(readFileSync(pathDefault, 'utf8'))).toEqual(JSON.parse(readFileSync(pathExplicitTrue, 'utf8')));
+    } finally {
+      rmSync(join(pathDefault, '..'), { recursive: true, force: true });
+      rmSync(join(pathExplicitTrue, '..'), { recursive: true, force: true });
+    }
+  });
+
+  it('policyHookEnabled:false omits PreToolUse entirely -- hooks:{} when junitEvidenceEnabled is also false', () => {
+    const settingsPath = buildPolicySettingsFile({ policyHookEnabled: false });
+    try {
+      const content = JSON.parse(readFileSync(settingsPath, 'utf8'));
+      expect(content).toEqual({ hooks: {} });
+    } finally {
+      rmSync(join(settingsPath, '..'), { recursive: true, force: true });
+    }
+  });
+
+  it('policyHookEnabled:false with junitEvidenceEnabled:true has ONLY PostToolUse/PostToolUseFailure -- no PreToolUse key at all', () => {
+    const settingsPath = buildPolicySettingsFile({ policyHookEnabled: false, junitEvidenceEnabled: true });
+    try {
+      const content = JSON.parse(readFileSync(settingsPath, 'utf8'));
+      expect(Object.keys(content.hooks).sort()).toEqual(['PostToolUse', 'PostToolUseFailure']);
+      expect(content.hooks.PostToolUse[0].hooks[0].command).toContain('junit-evidence-hook.mjs');
+    } finally {
+      rmSync(join(settingsPath, '..'), { recursive: true, force: true });
+    }
+  });
+
+  it('policyHookEnabled:true + junitEvidenceEnabled:true produces the SAME PostToolUse/PostToolUseFailure shape as policyHookEnabled:false + junitEvidenceEnabled:true -- only the PreToolUse key differs', () => {
+    const withPolicy = buildPolicySettingsFile({ policyHookEnabled: true, junitEvidenceEnabled: true });
+    const withoutPolicy = buildPolicySettingsFile({ policyHookEnabled: false, junitEvidenceEnabled: true });
+    try {
+      const contentWith = JSON.parse(readFileSync(withPolicy, 'utf8'));
+      const contentWithout = JSON.parse(readFileSync(withoutPolicy, 'utf8'));
+      expect(contentWith.hooks.PostToolUse).toEqual(contentWithout.hooks.PostToolUse);
+      expect(contentWith.hooks.PostToolUseFailure).toEqual(contentWithout.hooks.PostToolUseFailure);
+      expect(contentWithout.hooks.PreToolUse).toBeUndefined();
+      expect(contentWith.hooks.PreToolUse).toBeDefined();
+    } finally {
+      rmSync(join(withPolicy, '..'), { recursive: true, force: true });
+      rmSync(join(withoutPolicy, '..'), { recursive: true, force: true });
+    }
+  });
+});
+
+describe('buildSharedEnv -- includePolicyEnv parameter (PR 4: profile-aware compilation)', () => {
+  const opts = {
+    shimDir: 'C:\\shim', gradleUserHome: 'C:\\gradle-home', kmpEvalTempHome: 'C:\\kmp-home',
+    expectedFixtureRoot: 'C:\\fixture', allowedGradleTasks: ['build'], allowedKmpTestSubcommands: ['doctor'],
+  };
+
+  it('omitting includePolicyEnv defaults to true -- byte-identical to the pre-existing frozen env shape', () => {
+    const envDefault = buildSharedEnv(opts);
+    const envExplicitTrue = buildSharedEnv({ ...opts, includePolicyEnv: true });
+    expect(envDefault).toEqual(envExplicitTrue);
+  });
+
+  it('includePolicyEnv:false omits KMP_EVAL_ALLOWED_GRADLE_TASKS/KMP_EVAL_ALLOWED_KMPTEST_SUBCOMMANDS entirely -- absent, never empty string/array', () => {
+    const env = buildSharedEnv({ ...opts, includePolicyEnv: false });
+    expect(env).not.toHaveProperty('KMP_EVAL_ALLOWED_GRADLE_TASKS');
+    expect(env).not.toHaveProperty('KMP_EVAL_ALLOWED_KMPTEST_SUBCOMMANDS');
+  });
+
+  it('includePolicyEnv:false still validates allowedGradleTasks/allowedKmpTestSubcommands grammar -- fails loudly even though the values are never merged into env', () => {
+    expect(() => buildSharedEnv({ ...opts, includePolicyEnv: false, allowedGradleTasks: ['build; rm -rf /'] })).toThrow(/Invalid policy configuration/);
+  });
+
+  it('includePolicyEnv:false still carries every OTHER env key unchanged (PATH prefix, GRADLE_USER_HOME, KMP_EVAL_TEMP_HOME, KMP_EVAL_EXPECTED_FIXTURE_ROOT)', () => {
+    const withPolicy = buildSharedEnv(opts);
+    const withoutPolicy = buildSharedEnv({ ...opts, includePolicyEnv: false });
+    const { KMP_EVAL_ALLOWED_GRADLE_TASKS, KMP_EVAL_ALLOWED_KMPTEST_SUBCOMMANDS, ...withPolicyRest } = withPolicy;
+    expect(withoutPolicy).toEqual(withPolicyRest);
+  });
+});
+
 describe('spawnCondition -- real subprocess (local shell only, no Claude, no network)', () => {
   // Every argv here is a PLAIN command (no nested 'bash -c ...' inside argv itself) -- matching
   // how buildBaseArgv/buildConditionArgv actually shape a real invocation (['claude', '-p',

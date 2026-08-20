@@ -7,7 +7,7 @@
 // failure), the strengthened hard acceptance gates, wall_clock_ms, and cleanup (no leftover
 // temp dirs/worktrees after either a passing or failing run).
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -69,11 +69,53 @@ function fakeClaudeEnv(scenario) {
   };
 }
 
+/** Async spawn, never spawnSync -- mirrors agentic-eval-run-command.test.js's own identical fix
+ * and its rationale exactly: this file grew to 34 real subprocess invocations (this PR's own
+ * isolation-attestation-ordering describe block added 5 of them), and its own synchronous
+ * cumulative blocking measured 61574ms / 60222ms wall-clock on Windows-with-coverage in local-ci
+ * -- just over Vitest's own ~60s worker-RPC heartbeat window, reproducing the identical
+ * "[vitest-worker]: Timeout calling \"onTaskUpdate\"" unhandled error on two separate Lane All
+ * runs, even though every one of this file's own 34 tests passed cleanly both times (this is a
+ * demonstrated, reproducible relationship -- 60000ms RPC timeout vs. this file's own measured
+ * 60222-61574ms synchronous duration -- not an unrelated flake). Same external contract as the
+ * spawnSync-based helper it replaces: resolves to `{status, stdout, stderr, parsed}`, `parsed`
+ * is `null` on anything that doesn't parse as JSON, `status` is the child's real exit code (or
+ * `null` if the 30s safety timeout killed it first). Every caller must `await` this. */
 function runCli(args, env) {
-  const r = spawnSync('node', [CLI_PATH, ...args], { env, encoding: 'utf8', timeout: 30000 });
-  let parsed = null;
-  try { parsed = JSON.parse(r.stdout); } catch { /* stderr-only failure path -- fine */ }
-  return { status: r.status, stdout: r.stdout, stderr: r.stderr, parsed };
+  return new Promise((resolve) => {
+    const child = spawn('node', [CLI_PATH, ...args], { env });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      timedOut = true;
+      child.kill();
+    }, 30000);
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('close', (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (timedOut) {
+        resolve({ status: null, stdout, stderr, parsed: null });
+        return;
+      }
+      let parsed = null;
+      try { parsed = JSON.parse(stdout); } catch { /* stderr-only failure path -- fine */ }
+      resolve({ status: code, stdout, stderr, parsed });
+    });
+    child.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ status: null, stdout, stderr: `${stderr}\n${err.message}`, parsed: null });
+    });
+  });
 }
 
 function evidenceDirFor(runKind) {
@@ -87,8 +129,8 @@ function listEvidenceFiles(runKind) {
 }
 
 describe('cli.mjs calibrate -- real subprocess against fake claude (no live API cost)', () => {
-  it('success scenario: passes the hard gate, writes schema-valid evidence, sets a real wall_clock_ms', () => {
-    const result = runCli(['calibrate', '--model', 'claude-sonnet-5'], fakeClaudeEnv('success'));
+  it('success scenario: passes the hard gate, writes schema-valid evidence, sets a real wall_clock_ms', async () => {
+    const result = await runCli(['calibrate', '--model', 'claude-sonnet-5'], fakeClaudeEnv('success'));
     expect(result.status).toBe(0);
     expect(result.parsed).not.toBeNull();
     const { recordA, recordB } = result.parsed;
@@ -161,8 +203,8 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
   // wrong (and only .gitignore-covered) once KMP_EVAL_RUNS_ROOT is set, which every test in this
   // file already does. Fixed: the field is honest about a non-default root, and the actual
   // override path (runsRoot, a temp directory) is never itself written into the record.
-  it('discloses a non-default KMP_EVAL_RUNS_ROOT honestly, never leaking the real override path', () => {
-    const result = runCli(['calibrate', '--model', 'claude-sonnet-5'], fakeClaudeEnv('success'));
+  it('discloses a non-default KMP_EVAL_RUNS_ROOT honestly, never leaking the real override path', async () => {
+    const result = await runCli(['calibrate', '--model', 'claude-sonnet-5'], fakeClaudeEnv('success'));
     expect(result.status).toBe(0);
     const { recordA, recordB } = result.parsed;
     for (const record of [recordA, recordB]) {
@@ -184,8 +226,8 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
   // only, not a new fake-claude fixture, mirroring this same file's own established precedent for
   // smoke's 'all-denied' scenario (see its comment above): fabricating a realistic transcript
   // shape that isn't independently verified anywhere isn't worth the guesswork.
-  it('no-tool-use scenario: A never attempting the skill is a legitimate no-skill shape -- passes and writes evidence', () => {
-    const result = runCli(['calibrate', '--model', 'claude-sonnet-5'], fakeClaudeEnv('no-tool-use'));
+  it('no-tool-use scenario: A never attempting the skill is a legitimate no-skill shape -- passes and writes evidence', async () => {
+    const result = await runCli(['calibrate', '--model', 'claude-sonnet-5'], fakeClaudeEnv('no-tool-use'));
     expect(result.status).toBe(0);
     expect(result.parsed).not.toBeNull();
     const { recordA, recordB } = result.parsed;
@@ -210,8 +252,8 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
   // calibrationHardGate's two-sided reason (with checks like skillSelectionOk/currentInvocationOk,
   // which cellTranscriptIntegrityOk's canonical 15 do not cover -- skillSelectionOk specifically
   // because it needs matrix-wide sharedAmbientNames that don't exist yet) never gets built at all.
-  it('malformed-transcript scenario: fail-fast stops after current-skill fails its own cleanTranscriptOk check, never spawns no-skill, and writes NO evidence', () => {
-    const result = runCli(['calibrate', '--model', 'claude-sonnet-5'], fakeClaudeEnv('malformed'));
+  it('malformed-transcript scenario: fail-fast stops after current-skill fails its own cleanTranscriptOk check, never spawns no-skill, and writes NO evidence', async () => {
+    const result = await runCli(['calibrate', '--model', 'claude-sonnet-5'], fakeClaudeEnv('malformed'));
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('CALIBRATION FAILED');
     expect(result.stderr).toContain('cleanTranscriptOk:false');
@@ -228,7 +270,7 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
   // invocations (see its own header comment) so this test can assert on the actual count: a broken
   // fail-fast (e.g. runConditionPair spawning A regardless of B's own local verdict) would still
   // show a rejection here, but the probe log would carry a second line.
-  it('failfast-pair scenario (invocation-counted fixture): fail-fast stops after current-skill (B) fails locally -- EXACTLY ONE live session, no-skill (A) never spawned', () => {
+  it('failfast-pair scenario (invocation-counted fixture): fail-fast stops after current-skill (B) fails locally -- EXACTLY ONE live session, no-skill (A) never spawned', async () => {
     const probeLogPath = path.join(isolatedTmp, 'failfast-pair-invocations.log');
     // CodeRabbit review finding (PR #417): make the isolation precondition this test's own
     // invocation-count assertion depends on EXPLICIT, not merely implicit -- isolatedTmp is a
@@ -236,7 +278,7 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
     // never reused), so the probe log genuinely cannot pre-exist here; asserting it demonstrates
     // that guarantee rather than assuming it silently.
     expect(existsSync(probeLogPath)).toBe(false);
-    const result = runCli(['calibrate', '--model', 'claude-sonnet-5'], fakeClaudeEnv('failfast-pair'));
+    const result = await runCli(['calibrate', '--model', 'claude-sonnet-5'], fakeClaudeEnv('failfast-pair'));
     expect(result.status).toBe(1);
     expect(existsSync(probeLogPath)).toBe(true);
     const invocationLines = readFileSync(probeLogPath, 'utf8').trim().split('\n').filter(Boolean);
@@ -264,8 +306,8 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
   // see the fixture's own header comment. calibrationHardGate's contract is unchanged by the
   // result-aware classifier PR, so this correctly still fails regardless of the confirmed/
   // rejected distinction; the title now says what's actually being tested.
-  it('foreign-skill scenario: A calling an unrelated Skill that gets CONFIRMED is rejected by the gate (evidence-contamination bypass) and writes NO evidence', () => {
-    const result = runCli(['calibrate', '--model', 'claude-sonnet-5'], fakeClaudeEnv('foreign-skill'));
+  it('foreign-skill scenario: A calling an unrelated Skill that gets CONFIRMED is rejected by the gate (evidence-contamination bypass) and writes NO evidence', async () => {
+    const result = await runCli(['calibrate', '--model', 'claude-sonnet-5'], fakeClaudeEnv('foreign-skill'));
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('CALIBRATION FAILED');
     expect(result.stderr).toContain('skillSelectionOk:false');
@@ -282,8 +324,8 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
   // reflects TRUE execution order, not parameter-list order. runConditionPair always spawns B
   // (current-skill) before A (no-skill); a caller that instead assigned ordinals by the
   // (recordA, recordB) parameter order alone would silently swap them.
-  it('captureOrdinal in the persisted transcript filenames reflects TRUE execution order (B=current-skill first=0, A=no-skill second=1), never parameter-list order', () => {
-    const result = runCli(['calibrate', '--model', 'claude-sonnet-5'], fakeClaudeEnv('foreign-skill'));
+  it('captureOrdinal in the persisted transcript filenames reflects TRUE execution order (B=current-skill first=0, A=no-skill second=1), never parameter-list order', async () => {
+    const result = await runCli(['calibrate', '--model', 'claude-sonnet-5'], fakeClaudeEnv('foreign-skill'));
     expect(result.status).toBe(1);
     const rejectionIdMatch = result.stderr.match(/rejection_id ([0-9a-f-]{36})/i);
     expect(rejectionIdMatch).not.toBeNull();
@@ -300,8 +342,8 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
     expect(existsSync(path.join(transcriptsDir, cellA.transcript_filename))).toBe(true);
   }, 20000);
 
-  it('leaves no leftover temp directories after a passing run (cleanup ran)', () => {
-    const result = runCli(['calibrate', '--model', 'claude-sonnet-5'], fakeClaudeEnv('success'));
+  it('leaves no leftover temp directories after a passing run (cleanup ran)', async () => {
+    const result = await runCli(['calibrate', '--model', 'claude-sonnet-5'], fakeClaudeEnv('success'));
     expect(result.status).toBe(0);
     expect(readdirSync(isolatedTmp)).toEqual([]);
   }, 20000);
@@ -318,10 +360,10 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
   // acquisition/spawn threw before any condition completed" claim is replaced with real, honest
   // counters (this is the "failure before the first spawn: zero counters" case). Never a stack
   // trace or an absolute path in stderr either -- see incident-diagnostics.mjs's finalizeIncident.
-  it('a resource-acquisition failure (mkdtempSync throwing on a broken TEMP dir) fails cleanly with exit 1, real zero counters, never an uncaught exit 2', () => {
+  it('a resource-acquisition failure (mkdtempSync throwing on a broken TEMP dir) fails cleanly with exit 1, real zero counters, never an uncaught exit 2', async () => {
     const brokenTemp = path.join(isolatedTmp, 'this-directory-does-not-exist');
     const env = { ...fakeClaudeEnv('success'), TEMP: brokenTemp, TMP: brokenTemp, TMPDIR: brokenTemp };
-    const result = runCli(['calibrate', '--model', 'claude-sonnet-5'], env);
+    const result = await runCli(['calibrate', '--model', 'claude-sonnet-5'], env);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('CALIBRATION FAILED');
     expect(result.stderr).toMatch(/0\/2 cells evaluated/);
@@ -341,7 +383,7 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
   // shortcut. A real deployment's default RUNS_ROOT (inside this repo) exercises the git
   // check-ignore path instead -- reproduced here by pointing KMP_EVAL_RUNS_ROOT at a location
   // INSIDE a real git repo that does NOT have the new agentic-eval-journal/** gitignore rule.
-  it('a journal-creation failure (runs root inside a git repo lacking the journal gitignore rule) fails cleanly with exit 1, never an uncaught exit 2', () => {
+  it('a journal-creation failure (runs root inside a git repo lacking the journal gitignore rule) fails cleanly with exit 1, never an uncaught exit 2', async () => {
     const bareRepoDir = mkdtempSync(path.join(isolatedTmp, 'aeci-bare-repo-'));
     const gitViaBashLocal = (argv, cwd) => {
       const shQuote = (arg) => `'${String(arg).replace(/'/g, "'\\''")}'`;
@@ -356,7 +398,7 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
     // uncovered, exactly the condition isRawDirSafeFromAccidentalCommit must fail closed against.
     const unsafeRunsRoot = path.join(bareRepoDir, 'runs-root');
     const env = { ...fakeClaudeEnv('success'), KMP_EVAL_RUNS_ROOT: unsafeRunsRoot };
-    const result = runCli(['calibrate', '--model', 'claude-sonnet-5'], env);
+    const result = await runCli(['calibrate', '--model', 'claude-sonnet-5'], env);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('CALIBRATION FAILED');
     // Never the raw, unhandled "agentic-eval: <stack>" shape main()'s own top-level catch writes --
@@ -372,8 +414,8 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
   // 'unexpected-tool' trips noUnexpectedToolsOk (a Read tool_use outside the two expected calls)
   // in both conditions regardless of --plugin-dir, so it fails calibrate the same way it fails
   // smoke -- see this fixture's own header comment.
-  it('leaves no leftover temp directories after a FAILING run either (cleanup runs in finally)', () => {
-    const result = runCli(['calibrate', '--model', 'claude-sonnet-5'], fakeClaudeEnv('unexpected-tool'));
+  it('leaves no leftover temp directories after a FAILING run either (cleanup runs in finally)', async () => {
+    const result = await runCli(['calibrate', '--model', 'claude-sonnet-5'], fakeClaudeEnv('unexpected-tool'));
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('noUnexpectedToolsOk:false');
     expect(readdirSync(isolatedTmp)).toEqual([]);
@@ -383,8 +425,8 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
   // proven here via a REAL subprocess against a fixture that would otherwise clearly succeed
   // ('success'): zero fake-claude invocation ever happens (no evidence, no temp dirs used), not
   // just "cmdCalibrate's own code resolves the scope early" as a static/unit-level claim.
-  it('a malformed --measurement-scope-file fails closed before spawning any Claude session', () => {
-    const result = runCli(
+  it('a malformed --measurement-scope-file fails closed before spawning any Claude session', async () => {
+    const result = await runCli(
       ['calibrate', '--model', 'claude-sonnet-5', '--measurement-scope-file', path.join(isolatedTmp, 'does-not-exist-scope.json')],
       fakeClaudeEnv('success'),
     );
@@ -399,22 +441,22 @@ describe('cli.mjs calibrate -- real subprocess against fake claude (no live API 
   // materialize, or journal creation, exactly like the malformed-scope-file case above. Proven the
   // identical way: zero fake-claude invocation, zero temp resource under isolatedTmp (no journal,
   // no shim, no snapshot -- acquireSharedEvalResources is never even reached).
-  it('an unknown --runtime fails closed before any Claude session, auth preflight, or journal creation', () => {
-    const result = runCli(['calibrate', '--runtime', 'nonexistent-runtime'], fakeClaudeEnv('success'));
+  it('an unknown --runtime fails closed before any Claude session, auth preflight, or journal creation', async () => {
+    const result = await runCli(['calibrate', '--runtime', 'nonexistent-runtime'], fakeClaudeEnv('success'));
     expect(result.status).toBe(1);
     expect(listEvidenceFiles('calibration')).toEqual([]);
     expect(readdirSync(isolatedTmp)).toEqual([]);
   }, 20000);
 
-  it('an unknown --model fails closed the same way', () => {
-    const result = runCli(['calibrate', '--model', 'not-a-real-model'], fakeClaudeEnv('success'));
+  it('an unknown --model fails closed the same way', async () => {
+    const result = await runCli(['calibrate', '--model', 'not-a-real-model'], fakeClaudeEnv('success'));
     expect(result.status).toBe(1);
     expect(listEvidenceFiles('calibration')).toEqual([]);
     expect(readdirSync(isolatedTmp)).toEqual([]);
   }, 20000);
 
-  it('an unknown --execution-profile fails closed the same way', () => {
-    const result = runCli(['calibrate', '--execution-profile', 'not-a-real-profile'], fakeClaudeEnv('success'));
+  it('an unknown --execution-profile fails closed the same way', async () => {
+    const result = await runCli(['calibrate', '--execution-profile', 'not-a-real-profile'], fakeClaudeEnv('success'));
     expect(result.status).toBe(1);
     expect(listEvidenceFiles('calibration')).toEqual([]);
     expect(readdirSync(isolatedTmp)).toEqual([]);
@@ -461,8 +503,8 @@ describe('cli.mjs smoke -- real subprocess against fake claude (no live API cost
     return ['smoke', '--source-repo-dir', sourceRepoDir, '--pinned-commit', pinnedCommit, '--project-alias', projectAlias, '--model', 'claude-sonnet-5', ...extra];
   }
 
-  it('success scenario: passes the equivalent-real-work hard gate and writes schema-valid evidence', () => {
-    const result = runCli(smokeArgs(), fakeClaudeEnv('success'));
+  it('success scenario: passes the equivalent-real-work hard gate and writes schema-valid evidence', async () => {
+    const result = await runCli(smokeArgs(), fakeClaudeEnv('success'));
     expect(result.status).toBe(0);
     const { recordA, recordB } = result.parsed;
     expect(recordA.skill_available.value).toBe(false);
@@ -508,8 +550,8 @@ describe('cli.mjs smoke -- real subprocess against fake claude (no live API cost
 
   // See calibrate's identical regression test above for the full rationale -- smoke goes through
   // the same buildRunRecord/writeRunRecordEvidence path and shares the bug class.
-  it('discloses a non-default KMP_EVAL_RUNS_ROOT honestly, never leaking the real override path', () => {
-    const result = runCli(smokeArgs(), fakeClaudeEnv('success'));
+  it('discloses a non-default KMP_EVAL_RUNS_ROOT honestly, never leaking the real override path', async () => {
+    const result = await runCli(smokeArgs(), fakeClaudeEnv('success'));
     expect(result.status).toBe(0);
     const { recordA, recordB } = result.parsed;
     for (const record of [recordA, recordB]) {
@@ -524,8 +566,8 @@ describe('cli.mjs smoke -- real subprocess against fake claude (no live API cost
   // --project-alias -- a smoke run against ANY other project was still labeled as if it were
   // KaMPKit. project_url was never recorded at all. Fixed: scenario_id derives from the actual
   // --project-alias; project_url is the real git remote origin URL of --source-repo-dir.
-  it('scenario_id and project_url reflect the ACTUAL project smoke is pointed at, never a hardcoded kampkit label', () => {
-    const result = runCli(smokeArgs([], 'totally-different-project'), fakeClaudeEnv('success'));
+  it('scenario_id and project_url reflect the ACTUAL project smoke is pointed at, never a hardcoded kampkit label', async () => {
+    const result = await runCli(smokeArgs([], 'totally-different-project'), fakeClaudeEnv('success'));
     expect(result.status).toBe(0);
     const { recordA, recordB } = result.parsed;
     expect(recordA.scenario_id).toBe('totally-different-project-android-host-test-discovery');
@@ -543,14 +585,14 @@ describe('cli.mjs smoke -- real subprocess against fake claude (no live API cost
   // was clean. This drives a real subprocess with a custom --private-patterns-file matching a
   // distinctive marker planted in --project-alias, and asserts that marker never appears anywhere
   // in raw stdout -- only the redaction placeholder does.
-  it('privacy redaction applies to stdout too, not just the written evidence file', () => {
+  it('privacy redaction applies to stdout too, not just the written evidence file', async () => {
     const patternsFile = path.join(os.tmpdir(), `aeci-private-patterns-${process.pid}-${Date.now()}.json`);
     const secretMarker = 'totally-fake-marker-not-a-real-secret-xyz';
     writeFileSync(patternsFile, JSON.stringify([
       { class: 'test_marker', literal: secretMarker, replacement: '<REDACTED_TEST_MARKER>' },
     ]));
     try {
-      const result = runCli(smokeArgs(['--private-patterns-file', patternsFile], secretMarker), fakeClaudeEnv('success'));
+      const result = await runCli(smokeArgs(['--private-patterns-file', patternsFile], secretMarker), fakeClaudeEnv('success'));
       expect(result.status).toBe(0);
       expect(result.stdout).not.toContain(secretMarker);
       expect(result.stdout).toContain('<REDACTED_TEST_MARKER>');
@@ -597,9 +639,9 @@ describe('cli.mjs smoke -- real subprocess against fake claude (no live API cost
   // PUBLIC_SHAPE_RULES match -- no custom --private-patterns-file needed, proving the built-in,
   // always-on rule itself now works) and asserts it's redacted to <USER_PATH> in BOTH stdout and
   // the written evidence file, never surviving as the raw path in either.
-  it('a Windows user-home-shaped path is redacted correctly -- not silently missed due to JSON-escaped backslashes', () => {
+  it('a Windows user-home-shaped path is redacted correctly -- not silently missed due to JSON-escaped backslashes', async () => {
     const windowsPath = 'C:\\Users\\someuser\\private-app';
-    const result = runCli(smokeArgs([], windowsPath), fakeClaudeEnv('success'));
+    const result = await runCli(smokeArgs([], windowsPath), fakeClaudeEnv('success'));
     expect(result.status).toBe(0);
     expect(result.stdout).not.toContain('someuser');
     expect(result.stdout).not.toContain('private-app');
@@ -627,14 +669,14 @@ describe('cli.mjs smoke -- real subprocess against fake claude (no live API cost
   // directly -- the exact same "breaking" replacement string from the original finding is used,
   // and the run must now SUCCEED, with the newline correctly escaped as \n in the written
   // evidence (still valid, re-parseable JSON), not silently corrupt anything.
-  it('a private-pattern replacement containing a raw newline is safely JSON-escaped, not left to break JSON syntax', () => {
+  it('a private-pattern replacement containing a raw newline is safely JSON-escaped, not left to break JSON syntax', async () => {
     const patternsFile = path.join(os.tmpdir(), `aeci-breaking-patterns-${process.pid}-${Date.now()}.json`);
     const secretMarker = 'another-fake-marker-not-a-real-secret-xyz';
     writeFileSync(patternsFile, JSON.stringify([
       { class: 'test_marker', literal: secretMarker, replacement: 'line-one\nline-two-used-to-break-json' },
     ]));
     try {
-      const result = runCli(smokeArgs(['--private-patterns-file', patternsFile], secretMarker), fakeClaudeEnv('success'));
+      const result = await runCli(smokeArgs(['--private-patterns-file', patternsFile], secretMarker), fakeClaudeEnv('success'));
       expect(result.status).toBe(0);
       expect(result.parsed).not.toBeNull();
       expect(result.parsed.recordA.project_alias).toBe('line-one\nline-two-used-to-break-json');
@@ -669,8 +711,8 @@ describe('cli.mjs smoke -- real subprocess against fake claude (no live API cost
   // exactCommandsOk, which cellTranscriptIntegrityOk does not cover) never gets built. This
   // fixture is the exact reproduction shape of the 2026-08 canary incident this whole fix exists
   // for -- fail-fast now stops it after exactly one session, which is the point.
-  it('unexpected-tool scenario: fail-fast stops after current-skill fails its own toolProfileOk/noUnexpectedToolsOk checks, never spawns no-skill, and writes NO evidence', () => {
-    const result = runCli(smokeArgs(), fakeClaudeEnv('unexpected-tool'));
+  it('unexpected-tool scenario: fail-fast stops after current-skill fails its own toolProfileOk/noUnexpectedToolsOk checks, never spawns no-skill, and writes NO evidence', async () => {
+    const result = await runCli(smokeArgs(), fakeClaudeEnv('unexpected-tool'));
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('SMOKE FAILED');
     expect(result.stderr).toContain('toolProfileOk:false');
@@ -697,8 +739,8 @@ describe('cli.mjs smoke -- real subprocess against fake claude (no live API cost
   // agentic-eval-hard-gates.test.js's synthetic unit tests already isolate realWorkOk and
   // exactCommandsOk from each other precisely, with inputs that don't depend on that unverified
   // shape.
-  it('all-denied scenario: fails the equivalent-real-work hard gate (hook_deny_count>0) and writes NO evidence', () => {
-    const result = runCli(smokeArgs(), fakeClaudeEnv('all-denied'));
+  it('all-denied scenario: fails the equivalent-real-work hard gate (hook_deny_count>0) and writes NO evidence', async () => {
+    const result = await runCli(smokeArgs(), fakeClaudeEnv('all-denied'));
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('SMOKE FAILED');
     expect(result.stderr).toContain('realWorkOk:false');
@@ -723,8 +765,8 @@ describe('cli.mjs smoke -- real subprocess against fake claude (no live API cost
   // the moment fail-fast could short-circuit before smokeHardGate ever runs. What's still true,
   // and is exactly what this fixture exists to prove: cleanTranscriptOk is correctly identified
   // as the failing check, from a transcript that is otherwise completely clean.
-  it('malformed-transcript scenario: fail-fast stops after current-skill fails its own cleanTranscriptOk check, never spawns no-skill, and writes NO evidence', () => {
-    const result = runCli(smokeArgs(), fakeClaudeEnv('malformed'));
+  it('malformed-transcript scenario: fail-fast stops after current-skill fails its own cleanTranscriptOk check, never spawns no-skill, and writes NO evidence', async () => {
+    const result = await runCli(smokeArgs(), fakeClaudeEnv('malformed'));
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('SMOKE FAILED');
     expect(result.stderr).toContain('cleanTranscriptOk:false');
@@ -737,7 +779,7 @@ describe('cli.mjs smoke -- real subprocess against fake claude (no live API cost
   // test above (see that test's own header comment) -- fake-claude-failfast-pair/claude is shared
   // by both commands, exercising the SAME runConditionPair fail-fast wired through smoke's own
   // command instead of calibrate's, since each is an independently-testable call site.
-  it('failfast-pair scenario (invocation-counted fixture): fail-fast stops after current-skill (B) fails locally -- EXACTLY ONE live session, no-skill (A) never spawned', () => {
+  it('failfast-pair scenario (invocation-counted fixture): fail-fast stops after current-skill (B) fails locally -- EXACTLY ONE live session, no-skill (A) never spawned', async () => {
     const probeLogPath = path.join(isolatedTmp, 'failfast-pair-invocations.log');
     // CodeRabbit review finding (PR #417): make the isolation precondition this test's own
     // invocation-count assertion depends on EXPLICIT, not merely implicit -- isolatedTmp is a
@@ -745,7 +787,7 @@ describe('cli.mjs smoke -- real subprocess against fake claude (no live API cost
     // never reused), so the probe log genuinely cannot pre-exist here; asserting it demonstrates
     // that guarantee rather than assuming it silently.
     expect(existsSync(probeLogPath)).toBe(false);
-    const result = runCli(smokeArgs(), fakeClaudeEnv('failfast-pair'));
+    const result = await runCli(smokeArgs(), fakeClaudeEnv('failfast-pair'));
     expect(result.status).toBe(1);
     expect(existsSync(probeLogPath)).toBe(true);
     const invocationLines = readFileSync(probeLogPath, 'utf8').trim().split('\n').filter(Boolean);
@@ -759,8 +801,8 @@ describe('cli.mjs smoke -- real subprocess against fake claude (no live API cost
     expect(result.stderr).toContain('1 raw transcript(s) preserved locally');
   }, 30000);
 
-  it('leaves no registered git worktree behind after a passing run (removeScenarioWorktree ran)', () => {
-    const result = runCli(smokeArgs(), fakeClaudeEnv('success'));
+  it('leaves no registered git worktree behind after a passing run (removeScenarioWorktree ran)', async () => {
+    const result = await runCli(smokeArgs(), fakeClaudeEnv('success'));
     expect(result.status).toBe(0);
     const worktreeList = gitViaBash(['worktree', 'list'], sourceRepoDir);
     // Only the main working tree (sourceRepoDir itself) should be listed -- no scenario
@@ -768,8 +810,8 @@ describe('cli.mjs smoke -- real subprocess against fake claude (no live API cost
     expect(worktreeList.trim().split('\n').length).toBe(1);
   }, 30000);
 
-  it('leaves no registered git worktree behind after a FAILING run either (cleanup runs in finally)', () => {
-    const result = runCli(smokeArgs(), fakeClaudeEnv('all-denied'));
+  it('leaves no registered git worktree behind after a FAILING run either (cleanup runs in finally)', async () => {
+    const result = await runCli(smokeArgs(), fakeClaudeEnv('all-denied'));
     expect(result.status).toBe(1);
     const worktreeList = gitViaBash(['worktree', 'list'], sourceRepoDir);
     expect(worktreeList.trim().split('\n').length).toBe(1);
@@ -778,8 +820,8 @@ describe('cli.mjs smoke -- real subprocess against fake claude (no live API cost
   // Mirrors calibrate's identical proof above: a malformed --measurement-scope-file must fail
   // closed before any Claude session spawns -- proven via a REAL subprocess against a fixture
   // ('success') that would otherwise clearly succeed, so no worktree is ever materialized.
-  it('a malformed --measurement-scope-file fails closed before spawning any Claude session', () => {
-    const result = runCli(
+  it('a malformed --measurement-scope-file fails closed before spawning any Claude session', async () => {
+    const result = await runCli(
       smokeArgs(['--measurement-scope-file', path.join(isolatedTmp, 'does-not-exist-scope.json')]),
       fakeClaudeEnv('success'),
     );
@@ -793,11 +835,61 @@ describe('cli.mjs smoke -- real subprocess against fake claude (no live API cost
   // Registry selection is resolved before ANY other operation for smoke too -- an unknown
   // --runtime/--model/--execution-profile fails closed before auth, materialize (no git worktree
   // ever created), or journal creation.
-  it('an unknown --runtime fails closed before any Claude session or worktree materialization', () => {
-    const result = runCli(smokeArgs(['--runtime', 'nonexistent-runtime']), fakeClaudeEnv('success'));
+  it('an unknown --runtime fails closed before any Claude session or worktree materialization', async () => {
+    const result = await runCli(smokeArgs(['--runtime', 'nonexistent-runtime']), fakeClaudeEnv('success'));
     expect(result.status).toBe(1);
     expect(listEvidenceFiles('smoke')).toEqual([]);
     const worktreeList = gitViaBash(['worktree', 'list'], sourceRepoDir);
     expect(worktreeList.trim().split('\n').length).toBe(1);
+  }, 30000);
+});
+
+// PR 4 (agentic-eval-isolated-unrestricted-profile-v1): resolveIsolationAttestationOrFail ordering
+// -- real subprocess, real cli.mjs, calibrate only (the simplest, self-contained command -- no
+// source-repo-dir/worktree needed). Every case here fails BEFORE any journal is created or Claude
+// session spawns, exactly like the pre-existing --runtime/--measurement-scope-file ordering proofs
+// above. The success path (a real accepted sandboxed-unrestricted-v1 run) is Stage 7's own
+// dedicated fake-E2E coverage, not duplicated here.
+describe('cli.mjs calibrate -- isolation attestation ordering (real subprocess, no live API cost)', () => {
+  it('--isolation-attestation-file is rejected for the default (strict-policy-v1) profile -- never silently ignored', async () => {
+    const attestationPath = path.join(isolatedTmp, 'unexpected-attestation.json');
+    writeFileSync(attestationPath, JSON.stringify({ schema: 1 }));
+    const result = await runCli(['calibrate', '--isolation-attestation-file', attestationPath], fakeClaudeEnv('success'));
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/isolation-attestation-file is not accepted/);
+    expect(listEvidenceFiles('calibration')).toEqual([]);
+  }, 30000);
+
+  it('sandboxed-unrestricted-v1 without --isolation-attestation-file fails closed before any spawn', async () => {
+    const result = await runCli(['calibrate', '--execution-profile', 'sandboxed-unrestricted-v1'], fakeClaudeEnv('success'));
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/--isolation-attestation-file <path> is required/);
+    expect(listEvidenceFiles('calibration')).toEqual([]);
+  }, 30000);
+
+  it('sandboxed-unrestricted-v1 with a missing attestation file fails closed, sanitized (no path leaked)', async () => {
+    const missingPath = path.join(isolatedTmp, 'does-not-exist-attestation.json');
+    const result = await runCli(['calibrate', '--execution-profile', 'sandboxed-unrestricted-v1', '--isolation-attestation-file', missingPath], fakeClaudeEnv('success'));
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/isolation attestation invalid: not_a_regular_file/);
+    expect(result.stderr).not.toContain(missingPath);
+    expect(listEvidenceFiles('calibration')).toEqual([]);
+  }, 30000);
+
+  it('sandboxed-unrestricted-v1 with a malformed (empty-object) attestation file fails closed', async () => {
+    const attestationPath = path.join(isolatedTmp, 'malformed-attestation.json');
+    writeFileSync(attestationPath, JSON.stringify({}));
+    const result = await runCli(['calibrate', '--execution-profile', 'sandboxed-unrestricted-v1', '--isolation-attestation-file', attestationPath], fakeClaudeEnv('success'));
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/isolation attestation invalid: invalid_keys/);
+    expect(listEvidenceFiles('calibration')).toEqual([]);
+  }, 30000);
+
+  it('the attestation check runs before journal creation -- no journal directory materializes on failure (mirrors the pre-existing --measurement-scope-file/--runtime ordering proofs)', async () => {
+    const result = await runCli(['calibrate', '--execution-profile', 'sandboxed-unrestricted-v1'], fakeClaudeEnv('success'));
+    expect(result.status).toBe(1);
+    // No agentic-eval-calibration evidence dir contents at all -- calibrate never got far enough
+    // to create createInvocationJournal's own write-ahead artifact.
+    expect(listEvidenceFiles('calibration')).toEqual([]);
   }, 30000);
 });
