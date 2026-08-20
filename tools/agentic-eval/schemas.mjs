@@ -13,8 +13,19 @@
 import { GRADLE_TASK_ENTRY_RE, KMPTEST_SUBCOMMAND_ENTRY_RE } from './policy-hook.mjs';
 import { GRADING_CHECK_NAMES } from './graders.mjs';
 import { normalizeModuleName } from './command-classify.mjs';
-import { SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS } from './accepted-run-audit.mjs';
+import {
+  ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1,
+  ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2,
+  LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA,
+} from './accepted-run-audit.mjs';
 import { classifyExitCode, EXIT } from '../../lib/envelope/exit-codes.js';
+// canonicalStructuredValue moved to canonical-json.mjs (this PR) -- re-exported here verbatim so
+// every existing caller/test importing it from schemas.mjs is unaffected. canonical-json.mjs is
+// the ONE canonicalizer in the repo; this file never re-implements object-key sorting itself.
+import { canonicalStructuredValue, canonicalJsonSha256 } from './canonical-json.mjs';
+import { REQUIRED_CAPABILITY_KEYS } from './runtimes/contract.mjs';
+
+export { canonicalStructuredValue };
 
 // Run schema went from a single CURRENT_RUN_SCHEMA equality check to explicit per-version
 // dispatch (SUPPORTED_RUN_SCHEMAS / LATEST_RUN_SCHEMA) -- a real bug found on review: a naive
@@ -24,15 +35,17 @@ import { classifyExitCode, EXIT } from '../../lib/envelope/exit-codes.js';
 // alike) stamps on NEW records going forward; `SUPPORTED_RUN_SCHEMAS` is what validateRun()
 // still accepts, so the 8 historical files keep validating under their original v1 rules
 // unchanged (see the RUN_CANONICAL_FIELDS_V1/_V2/_V3 split and validateRun's dispatch, below).
-export const SUPPORTED_RUN_SCHEMAS = [1, 2, 3, 4, 5];
-export const LATEST_RUN_SCHEMA = 5;
+export const SUPPORTED_RUN_SCHEMAS = [1, 2, 3, 4, 5, 6];
+export const LATEST_RUN_SCHEMA = 6;
 export const CURRENT_SCENARIO_SCHEMA = 1;
 // v1 -> v2 (review-round-2 fix): group_key's own SHAPE changed -- it gained the
 // `ambient_skill_profile` partition field -- so this is bumped exactly like LATEST_RUN_SCHEMA is
-// whenever a run record's own shape changes. No historical committed aggregate-output files exist
+// whenever a run record's own shape changes. v2 -> v3 (agentic-eval-runtime-neutral-records-v1,
+// Section F): group_key's shape changed again -- it gained the `agent_runtime`/`execution_profile`/
+// `skill_treatment` structural partition keys. No historical committed aggregate-output files exist
 // to preserve compatibility with (aggregate output is always computed on demand, never persisted
 // under tools/runs/), so this is a plain constant bump, not a versioned dispatch.
-export const CURRENT_AGGREGATE_SCHEMA = 2;
+export const CURRENT_AGGREGATE_SCHEMA = 3;
 
 export const RUN_KIND_VALUES = ['calibration', 'corpus-probe', 'scenario', 'smoke'];
 export const CONDITION_VALUES = ['no-skill', 'current-skill', 'candidate-skill'];
@@ -106,6 +119,445 @@ const RUN_CANONICAL_FIELDS_V5 = [
   'accepted_audit',
 ];
 
+// Schema v6 (agentic-eval-runtime-neutral-records-v1, multi-runtime v1 PR 3) = v5 + exactly four
+// new top-level groups: agent_runtime, execution_profile, skill_observation, usage. Additive over
+// v5 -- every legacy field keeps meaning exactly what it always did; these four groups are the
+// SOLE canonical source for runtime/profile/skill/usage identity going forward. Named once here so
+// V6_GROUP_FIELDS is the one place both the canonical-field list below and validateRun's own
+// "forbidden below v6" gate read from -- the same discipline V5_METRIC_FIELDS already established.
+const V6_GROUP_FIELDS = ['agent_runtime', 'execution_profile', 'skill_observation', 'usage'];
+
+const RUN_CANONICAL_FIELDS_V6 = [
+  ...RUN_CANONICAL_FIELDS_V5,
+  ...V6_GROUP_FIELDS,
+];
+
+// IDs throughout schema v6 use one closed lowercase charset.
+const ID_RE = /^[a-z0-9][a-z0-9-]*$/;
+// Runtime IDs the SCHEMA permits as a structural shape -- a registry (registries.mjs) independently
+// gates which of these is actually selectable/enabled today. Reserving codex-cli here does not
+// implement or invoke it.
+const AGENT_RUNTIME_ID_VALUES = ['claude-code', 'codex-cli'];
+// Execution profile IDs the SCHEMA permits as a structural shape -- sandboxed-unrestricted-v1 is
+// reserved only; it is never added to the registry in this PR (see registries.mjs).
+const EXECUTION_PROFILE_ID_VALUES = ['strict-policy-v1', 'sandboxed-unrestricted-v1'];
+const MODEL_VENDOR_VALUES = ['anthropic', 'openai', 'google', 'microsoft', 'other'];
+const ISOLATION_KIND_VALUES = ['runtime-policy-hooks', 'external-sandbox', 'runtime-native-sandbox'];
+const NETWORK_MODE_VALUES = ['runtime-default', 'restricted', 'disabled'];
+const SKILL_DELIVERY_MODE_VALUES = ['runtime-extension', 'project-instructions', 'inline-context', 'none'];
+const AVAILABILITY_STATUS_VALUES = ['observed-present', 'observed-absent', 'not-observable'];
+const ACTIVATION_STATUS_VALUES = ['confirmed', 'indirect', 'not-observed', 'not-observable'];
+const AVAILABILITY_EVIDENCE_KIND_VALUES = ['runtime-catalog', 'isolated-filesystem', 'not-observable'];
+const ACTIVATION_EVIDENCE_KIND_VALUES = ['runtime-explicit-event', 'behavioral-indirect', 'not-observable'];
+const USAGE_SOURCE_VALUES = ['runtime-reported', 'offline-estimate', 'not-recorded'];
+const USAGE_DIMENSION_KEYS_V6 = ['input', 'cached_input', 'cache_write', 'output', 'reasoning_output'];
+const ATTRIBUTION_STATUS_VALUES = ['runtime-reported', 'not-recorded'];
+const ATTRIBUTION_REASON_VALUES = ['condition-no-skill', 'runtime-does-not-report-skill-attribution', 'runtime-attribution-unavailable'];
+// Mirrors registries.mjs's own POLICY_MODE_VALUES exactly -- duplicated deliberately rather than
+// imported, since schemas.mjs's v6 validators must never import registries.mjs at all (a record's
+// own embedded execution_profile metadata is self-contained and verifiable without ever consulting
+// the live, mutable registry -- see this section's own header comment on invariant 4).
+const POLICY_MODE_VALUES = ['required', 'not_applicable'];
+
+const AGENT_RUNTIME_KEYS = ['runtime_id', 'cli_version', 'model_requested', 'model_resolved', 'model_vendor_expected', 'model_vendor_observed'];
+const EXECUTION_PROFILE_RECORD_KEYS = [
+  'id', 'sha256', 'isolation_kind', 'isolation_attestation_sha256', 'isolation_attestation_required',
+  'network_mode', 'policy_mode', 'required_capabilities',
+];
+// The EXACT projection computeExecutionProfileSha256 (registries.mjs) hashes -- same field names,
+// same order. Duplicated here (not imported) for the same self-containment reason as
+// POLICY_MODE_VALUES above; canonicalJsonSha256 is the one shared low-level primitive both this
+// module and registries.mjs already build on, so this is the only piece that needs to agree.
+const EXECUTION_PROFILE_HASH_KEYS = ['id', 'isolation_kind', 'network_mode', 'isolation_attestation_required', 'policy_mode', 'required_capabilities'];
+const SKILL_OBSERVATION_KEYS = ['delivery_mode', 'availability', 'activation', 'source_sha', 'treatment_size'];
+const AVAILABILITY_KEYS_V6 = ['status', 'evidence_kind'];
+const ACTIVATION_KEYS_V6 = ['status', 'evidence_kind'];
+const TREATMENT_SIZE_KEYS = ['snapshot_sha256', 'snapshot_bytes', 'snapshot_file_count', 'prompt_sha256', 'prompt_bytes', 'absent_reason'];
+const USAGE_KEYS_V6 = ['source', 'input', 'cached_input', 'cache_write', 'output', 'reasoning_output', 'attributable_to_skill_load'];
+const ATTRIBUTABLE_KEYS_V6 = ['status', 'dimensions', 'unit', 'reason'];
+
+function isHex64(v) {
+  return typeof v === 'string' && /^[0-9a-f]{64}$/.test(v);
+}
+function isPlainObjectLike(v) {
+  return v != null && typeof v === 'object' && !Array.isArray(v);
+}
+function nonNegInt(v) {
+  return Number.isInteger(v) && v >= 0;
+}
+
+/** Closed-keyset check in BOTH directions (missing AND extra) for one v6 group/sub-object --
+ * schemas.mjs's existing `rejectUnrecognizedKeys` only ever checks the extra-key direction
+ * (scenario validation's optional-field convention doesn't need the other), so v6's groups (every
+ * key always required, never optional) get their own small local helper instead of overloading
+ * that one to mean something different depending on caller. Returns false (having already
+ * recorded the shape error) when `obj` itself is not a plain object -- callers must not inspect
+ * individual keys in that case. */
+function checkExactObjectKeysV6(obj, allowedKeys, field, errors) {
+  if (!isPlainObjectLike(obj)) {
+    errors.push({ field, message: 'must be an object' });
+    return false;
+  }
+  for (const k of allowedKeys) {
+    if (!Object.prototype.hasOwnProperty.call(obj, k)) errors.push({ field: `${field}.${k}`, message: 'missing required field' });
+  }
+  for (const k of Object.keys(obj)) {
+    if (!allowedKeys.includes(k)) errors.push({ field: `${field}.${k}`, message: `unrecognized field -- only ${allowedKeys.join(', ')} allowed on ${field}` });
+  }
+  return true;
+}
+
+/** Shape-checks execution_profile.required_capabilities: an array of unique strings, each a member
+ * of contract.mjs's REQUIRED_CAPABILITY_KEYS (the boolean-valued subset of the full CAPABILITY_KEYS
+ * -- P1 architectural review: observationSources/skillDeliveryModes/usageDimensions are array-valued
+ * and were previously wrongly accepted here), listed in that canonical relative order -- so two
+ * semantically-equal arrays never differ once fed to canonicalJsonSha256. The SAME shared constant
+ * registries.mjs's own buildRegistries validates required_capabilities against (this module never
+ * imports registries.mjs itself -- contract.mjs is the shared, registry-independent home for this
+ * vocabulary). Pushes onto `errors` and returns nothing; callers proceed regardless (the
+ * hash-recomputation check below fails closed on its own if this array turns out malformed). */
+function checkRequiredCapabilitiesV6(value, field, errors) {
+  if (!Array.isArray(value)) {
+    errors.push({ field, message: 'must be an array' });
+    return;
+  }
+  const seen = new Set();
+  let lastIdx = -1;
+  for (const v of value) {
+    if (typeof v !== 'string' || !REQUIRED_CAPABILITY_KEYS.includes(v)) {
+      errors.push({ field, message: `unknown capability ${JSON.stringify(v)} -- must be one of ${REQUIRED_CAPABILITY_KEYS.join('|')}` });
+      continue;
+    }
+    if (seen.has(v)) {
+      errors.push({ field, message: `duplicate capability "${v}"` });
+      continue;
+    }
+    seen.add(v);
+    const idx = REQUIRED_CAPABILITY_KEYS.indexOf(v);
+    if (idx < lastIdx) errors.push({ field, message: `capability "${v}" is out of canonical order` });
+    lastIdx = idx;
+  }
+}
+
+/** agent_runtime -- invariants 1-3 (Section D). Cross-field checks against the record's own
+ * legacy model_requested/model_resolved/claude_code_version are scoped to `runtime_id ===
+ * 'claude-code'` -- the only runtime this PR ever actually produces; a future non-Claude runtime
+ * is exempted from the byte-identical-legacy-mirror requirement (its own claude_code_version must
+ * instead be null, checked separately below).
+ */
+function validateAgentRuntime(ar, run, errors) {
+  if (!checkExactObjectKeysV6(ar, AGENT_RUNTIME_KEYS, 'agent_runtime', errors)) return;
+  if (!AGENT_RUNTIME_ID_VALUES.includes(ar.runtime_id)) {
+    errors.push({ field: 'agent_runtime.runtime_id', message: `must be one of ${AGENT_RUNTIME_ID_VALUES.join('|')}` });
+  }
+  if (typeof ar.cli_version !== 'string' || ar.cli_version.length === 0) {
+    errors.push({ field: 'agent_runtime.cli_version', message: 'must be a non-empty string' });
+  }
+  if (typeof ar.model_requested !== 'string' || ar.model_requested.length === 0) {
+    errors.push({ field: 'agent_runtime.model_requested', message: 'must be a non-empty string' });
+  }
+  if (ar.model_resolved !== null && (typeof ar.model_resolved !== 'string' || ar.model_resolved.length === 0)) {
+    errors.push({ field: 'agent_runtime.model_resolved', message: 'must be null or a non-empty string' });
+  }
+  if (ar.model_vendor_expected !== null && !MODEL_VENDOR_VALUES.includes(ar.model_vendor_expected)) {
+    errors.push({ field: 'agent_runtime.model_vendor_expected', message: `must be null or one of ${MODEL_VENDOR_VALUES.join('|')}` });
+  }
+  // model_vendor_observed: null, or a runtime-reported string -- bounded and control-character-free
+  // so it stays safely loggable, but never normalized/compared against model_vendor_expected (a
+  // runtime may report its vendor in a different casing/spelling; this is a faithful passthrough).
+  if (ar.model_vendor_observed !== null) {
+    const v = ar.model_vendor_observed;
+    if (typeof v !== 'string' || v.length === 0 || v.length > 128 || /[\x00-\x1F\x7F]/.test(v)) {
+      errors.push({ field: 'agent_runtime.model_vendor_observed', message: 'must be null or a non-empty, bounded, control-character-free string' });
+    }
+  }
+  if (ar.runtime_id === 'claude-code') {
+    if (run.model_requested !== ar.model_requested) {
+      errors.push({ field: 'agent_runtime.model_requested', message: 'must exactly equal the record\'s own legacy model_requested for runtime_id claude-code' });
+    }
+    if (run.model_resolved !== ar.model_resolved) {
+      errors.push({ field: 'agent_runtime.model_resolved', message: 'must exactly equal the record\'s own legacy model_resolved for runtime_id claude-code' });
+    }
+    if (run.claude_code_version !== ar.cli_version) {
+      errors.push({ field: 'agent_runtime.cli_version', message: 'must exactly equal the record\'s own legacy claude_code_version for runtime_id claude-code' });
+    }
+  } else if (typeof ar.runtime_id === 'string' && run.claude_code_version !== null) {
+    errors.push({ field: 'claude_code_version', message: 'must be null for a non-claude-code runtime_id -- never filled with a non-Claude version' });
+  }
+}
+
+/** execution_profile -- invariant 4. Self-contained and independently verifiable WITHOUT ever
+ * consulting the live, mutable registry: the record carries every field
+ * computeExecutionProfileSha256 (registries.mjs) hashes -- isolation_kind, network_mode,
+ * isolation_attestation_required, policy_mode, required_capabilities -- and this function
+ * recomputes that exact same canonical hash from the record's OWN copy of those fields and
+ * requires it to equal the record's own sha256. A future registry change to strict-policy-v1 (or
+ * any other profile) can never retroactively invalidate -- or silently reinterpret -- a historical
+ * record's own execution_profile group, because nothing here ever re-resolves through the
+ * registry. isolation_attestation_required drives isolation_attestation_sha256's own presence/
+ * absence directly (never a hardcoded per-ID rule): false requires null, true requires a real
+ * hash -- this supersedes the old strict-policy-v1-specific hardcoded rule, which assumed
+ * knowledge of that one ID's registry semantics instead of reading it from the record itself. */
+function validateExecutionProfileV6(ep, errors) {
+  if (!checkExactObjectKeysV6(ep, EXECUTION_PROFILE_RECORD_KEYS, 'execution_profile', errors)) return;
+  if (!EXECUTION_PROFILE_ID_VALUES.includes(ep.id)) {
+    errors.push({ field: 'execution_profile.id', message: `must be one of ${EXECUTION_PROFILE_ID_VALUES.join('|')}` });
+  }
+  if (!isHex64(ep.sha256)) errors.push({ field: 'execution_profile.sha256', message: 'must be a lowercase 64-char hex SHA-256 string' });
+  if (!ISOLATION_KIND_VALUES.includes(ep.isolation_kind)) {
+    errors.push({ field: 'execution_profile.isolation_kind', message: `must be one of ${ISOLATION_KIND_VALUES.join('|')}` });
+  }
+  if (!NETWORK_MODE_VALUES.includes(ep.network_mode)) {
+    errors.push({ field: 'execution_profile.network_mode', message: `must be one of ${NETWORK_MODE_VALUES.join('|')}` });
+  }
+  if (typeof ep.isolation_attestation_required !== 'boolean') {
+    errors.push({ field: 'execution_profile.isolation_attestation_required', message: 'must be a boolean' });
+  }
+  if (!POLICY_MODE_VALUES.includes(ep.policy_mode)) {
+    errors.push({ field: 'execution_profile.policy_mode', message: `must be one of ${POLICY_MODE_VALUES.join('|')}` });
+  }
+  checkRequiredCapabilitiesV6(ep.required_capabilities, 'execution_profile.required_capabilities', errors);
+  if (ep.isolation_attestation_sha256 !== null && !isHex64(ep.isolation_attestation_sha256)) {
+    errors.push({ field: 'execution_profile.isolation_attestation_sha256', message: 'must be null or a lowercase 64-char hex string' });
+  }
+  if (ep.isolation_attestation_required === false && ep.isolation_attestation_sha256 !== null) {
+    errors.push({ field: 'execution_profile.isolation_attestation_sha256', message: 'must be null when isolation_attestation_required is false' });
+  }
+  if (ep.isolation_attestation_required === true && ep.isolation_attestation_sha256 === null) {
+    errors.push({ field: 'execution_profile.isolation_attestation_sha256', message: 'must be a real hash when isolation_attestation_required is true' });
+  }
+  if (isHex64(ep.sha256) && typeof ep.isolation_attestation_required === 'boolean'
+    && POLICY_MODE_VALUES.includes(ep.policy_mode) && Array.isArray(ep.required_capabilities)) {
+    let expectedSha256;
+    try {
+      const projection = {};
+      for (const k of EXECUTION_PROFILE_HASH_KEYS) projection[k] = ep[k];
+      expectedSha256 = canonicalJsonSha256(projection);
+    } catch {
+      expectedSha256 = null;
+    }
+    if (expectedSha256 !== null && ep.sha256 !== expectedSha256) {
+      errors.push({ field: 'execution_profile.sha256', message: 'does not match the canonical hash of this record\'s own id/isolation_kind/network_mode/isolation_attestation_required/policy_mode/required_capabilities' });
+    }
+  }
+}
+
+function validateAvailabilityV6(av, errors) {
+  if (!checkExactObjectKeysV6(av, AVAILABILITY_KEYS_V6, 'skill_observation.availability', errors)) return;
+  if (!AVAILABILITY_STATUS_VALUES.includes(av.status)) {
+    errors.push({ field: 'skill_observation.availability.status', message: `must be one of ${AVAILABILITY_STATUS_VALUES.join('|')}` });
+  }
+  if (!AVAILABILITY_EVIDENCE_KIND_VALUES.includes(av.evidence_kind)) {
+    errors.push({ field: 'skill_observation.availability.evidence_kind', message: `must be one of ${AVAILABILITY_EVIDENCE_KIND_VALUES.join('|')}` });
+  }
+  if (av.status === 'not-observable' && av.evidence_kind !== 'not-observable') {
+    errors.push({ field: 'skill_observation.availability.evidence_kind', message: 'must be not-observable when status is not-observable' });
+  }
+  if (av.status !== 'not-observable' && av.evidence_kind === 'not-observable') {
+    errors.push({ field: 'skill_observation.availability.evidence_kind', message: 'must not be not-observable when status is an observed status' });
+  }
+}
+
+function validateActivationV6(act, errors) {
+  if (!checkExactObjectKeysV6(act, ACTIVATION_KEYS_V6, 'skill_observation.activation', errors)) return;
+  if (!ACTIVATION_STATUS_VALUES.includes(act.status)) {
+    errors.push({ field: 'skill_observation.activation.status', message: `must be one of ${ACTIVATION_STATUS_VALUES.join('|')}` });
+  }
+  if (!ACTIVATION_EVIDENCE_KIND_VALUES.includes(act.evidence_kind)) {
+    errors.push({ field: 'skill_observation.activation.evidence_kind', message: `must be one of ${ACTIVATION_EVIDENCE_KIND_VALUES.join('|')}` });
+  }
+  if (act.status === 'not-observable' && act.evidence_kind !== 'not-observable') {
+    errors.push({ field: 'skill_observation.activation.evidence_kind', message: 'must be not-observable when status is not-observable' });
+  }
+  if (act.status !== 'not-observable' && act.evidence_kind === 'not-observable') {
+    errors.push({ field: 'skill_observation.activation.evidence_kind', message: 'must not be not-observable when status is an observed/indirect status' });
+  }
+}
+
+/** treatment_size -- invariants 5/6. `isNoSkill`/`isCurrentSkill` are passed in (derived once,
+ * from the record's own top-level `condition`) rather than re-derived here. */
+function validateTreatmentSizeV6(ts, isNoSkill, isCurrentSkill, errors) {
+  if (!checkExactObjectKeysV6(ts, TREATMENT_SIZE_KEYS, 'skill_observation.treatment_size', errors)) return;
+  if (!isHex64(ts.prompt_sha256)) errors.push({ field: 'skill_observation.treatment_size.prompt_sha256', message: 'must be a lowercase 64-char hex SHA-256 string' });
+  if (!nonNegInt(ts.prompt_bytes)) errors.push({ field: 'skill_observation.treatment_size.prompt_bytes', message: 'must be a non-negative integer' });
+
+  if (isNoSkill) {
+    if (ts.snapshot_sha256 !== null) errors.push({ field: 'skill_observation.treatment_size.snapshot_sha256', message: 'must be null for condition no-skill' });
+    if (ts.snapshot_bytes !== null) errors.push({ field: 'skill_observation.treatment_size.snapshot_bytes', message: 'must be null for condition no-skill' });
+    if (ts.snapshot_file_count !== null) errors.push({ field: 'skill_observation.treatment_size.snapshot_file_count', message: 'must be null for condition no-skill' });
+    if (ts.absent_reason !== 'condition-no-skill') errors.push({ field: 'skill_observation.treatment_size.absent_reason', message: 'must be exactly "condition-no-skill" for condition no-skill' });
+  } else if (isCurrentSkill) {
+    if (!isHex64(ts.snapshot_sha256)) errors.push({ field: 'skill_observation.treatment_size.snapshot_sha256', message: 'must be a real hash for condition current-skill' });
+    if (!(Number.isInteger(ts.snapshot_bytes) && ts.snapshot_bytes > 0)) errors.push({ field: 'skill_observation.treatment_size.snapshot_bytes', message: 'must be a positive integer for condition current-skill' });
+    if (!(Number.isInteger(ts.snapshot_file_count) && ts.snapshot_file_count > 0)) errors.push({ field: 'skill_observation.treatment_size.snapshot_file_count', message: 'must be a positive integer for condition current-skill' });
+    if (ts.absent_reason !== null) errors.push({ field: 'skill_observation.treatment_size.absent_reason', message: 'must be null for condition current-skill' });
+  }
+}
+
+/** skill_observation -- invariants 5-8. `run` is the WHOLE record (not just this group) because
+ * several invariants are cross-field: condition (a top-level legacy field) decides delivery_mode/
+ * source_sha/treatment_size's own required shape, agent_runtime.runtime_id decides which
+ * evidence_kind Claude specifically must report, and activation.status constrains the record's
+ * own legacy skill_invoked. */
+function validateSkillObservationV6(so, run, errors) {
+  if (!checkExactObjectKeysV6(so, SKILL_OBSERVATION_KEYS, 'skill_observation', errors)) return;
+  if (!SKILL_DELIVERY_MODE_VALUES.includes(so.delivery_mode)) {
+    errors.push({ field: 'skill_observation.delivery_mode', message: `must be one of ${SKILL_DELIVERY_MODE_VALUES.join('|')}` });
+  }
+  if ('availability' in so) validateAvailabilityV6(so.availability, errors);
+  if ('activation' in so) validateActivationV6(so.activation, errors);
+
+  // Bicondtional with the record's own legacy skill_available.value -- the two must never
+  // independently drift, regardless of runtime or condition: observed-present <=> true,
+  // observed-absent <=> false, not-observable <=> null. Only checked once availability's own shape
+  // is already known-good (isPlainObjectLike guard mirrors the "'availability' in so" gate above).
+  if (isPlainObjectLike(so.availability) && AVAILABILITY_STATUS_VALUES.includes(so.availability.status) && isPlainObjectLike(run.skill_available)) {
+    const legacyValue = run.skill_available.value;
+    const expectedStatus = legacyValue === true ? 'observed-present' : legacyValue === false ? 'observed-absent' : legacyValue === null ? 'not-observable' : undefined;
+    if (expectedStatus !== undefined && so.availability.status !== expectedStatus) {
+      errors.push({ field: 'skill_observation.availability.status', message: `must be "${expectedStatus}" to agree with the record's own legacy skill_available.value (${JSON.stringify(legacyValue)})` });
+    }
+  }
+
+  const isNoSkill = run.condition === 'no-skill';
+  const isCurrentSkill = run.condition === 'current-skill';
+  const isClaudeCode = isPlainObjectLike(run.agent_runtime) && run.agent_runtime.runtime_id === 'claude-code';
+
+  // Exact equality with the record's own legacy skill_source_sha -- unconditional, both for the
+  // no-skill case (both null) and the current-skill case (both the same non-empty pin). The two
+  // condition-specific shape checks below stay as clearer, field-scoped error messages when only
+  // ONE side disagrees with condition; this catches the case where BOTH sides independently
+  // satisfy their own shape rule yet still disagree with each other.
+  if (so.source_sha !== run.skill_source_sha) {
+    errors.push({ field: 'skill_observation.source_sha', message: `must exactly equal the record's own legacy skill_source_sha (${JSON.stringify(run.skill_source_sha)})` });
+  }
+
+  if (isNoSkill) {
+    if (so.delivery_mode !== 'none') errors.push({ field: 'skill_observation.delivery_mode', message: 'must be none for condition no-skill' });
+    if (so.source_sha !== null) errors.push({ field: 'skill_observation.source_sha', message: 'must be null for condition no-skill' });
+  } else if (isCurrentSkill && isClaudeCode) {
+    if (so.delivery_mode !== 'runtime-extension') errors.push({ field: 'skill_observation.delivery_mode', message: 'must be runtime-extension for condition current-skill on claude-code' });
+    if (typeof so.source_sha !== 'string' || so.source_sha.length === 0) errors.push({ field: 'skill_observation.source_sha', message: 'must be a non-empty pin for condition current-skill' });
+  }
+
+  if ('treatment_size' in so) validateTreatmentSizeV6(so.treatment_size, isNoSkill, isCurrentSkill, errors);
+
+  // Invariant 7 (Claude-specific): availability always runtime-catalog, activation always
+  // runtime-explicit-event, whenever a real observed/indirect status is reported (not-observable
+  // is independently validated above, generically, for every runtime).
+  if (isClaudeCode) {
+    if (isPlainObjectLike(so.availability) && so.availability.status !== 'not-observable' && so.availability.evidence_kind !== 'runtime-catalog') {
+      errors.push({ field: 'skill_observation.availability.evidence_kind', message: 'must be runtime-catalog for claude-code' });
+    }
+    if (isPlainObjectLike(so.activation) && so.activation.status !== 'not-observable' && so.activation.evidence_kind !== 'runtime-explicit-event') {
+      errors.push({ field: 'skill_observation.activation.evidence_kind', message: 'must be runtime-explicit-event for claude-code' });
+    }
+  }
+
+  // Invariant 8: activation.status <-> legacy skill_invoked coherence.
+  if (isPlainObjectLike(so.activation)) {
+    const status = so.activation.status;
+    if (status === 'confirmed') {
+      if (run.skill_invoked?.value !== true) errors.push({ field: 'skill_invoked', message: 'must be true when skill_observation.activation.status is confirmed' });
+      if (run.skill_invocation_attempted?.value !== true) errors.push({ field: 'skill_invocation_attempted', message: 'must be true when skill_observation.activation.status is confirmed -- a confirmed activation requires a real attempt' });
+    } else if (status === 'not-observed') {
+      if (run.skill_invoked?.value !== false) errors.push({ field: 'skill_invoked', message: 'must be false when skill_observation.activation.status is not-observed' });
+    } else if (status === 'indirect' || status === 'not-observable') {
+      if (run.skill_invoked?.value !== null) errors.push({ field: 'skill_invoked', message: 'must be null (with a reason) when skill_observation.activation.status is indirect or not-observable -- never forced to false' });
+    }
+  }
+}
+
+/** attributable_to_skill_load -- invariants 12/13. */
+function validateAttributableToSkillLoadV6(attr, run, errors) {
+  if (!checkExactObjectKeysV6(attr, ATTRIBUTABLE_KEYS_V6, 'usage.attributable_to_skill_load', errors)) return;
+  if (!ATTRIBUTION_STATUS_VALUES.includes(attr.status)) {
+    errors.push({ field: 'usage.attributable_to_skill_load.status', message: `must be one of ${ATTRIBUTION_STATUS_VALUES.join('|')}` });
+  }
+  const dimensionsOk = checkExactObjectKeysV6(attr.dimensions, USAGE_DIMENSION_KEYS_V6, 'usage.attributable_to_skill_load.dimensions', errors);
+  if (dimensionsOk) {
+    for (const dim of USAGE_DIMENSION_KEYS_V6) {
+      const v = attr.dimensions[dim];
+      if (v !== null && !nonNegInt(v)) errors.push({ field: `usage.attributable_to_skill_load.dimensions.${dim}`, message: 'must be null or a non-negative integer' });
+    }
+  }
+  if (attr.unit !== null && attr.unit !== 'tokens') errors.push({ field: 'usage.attributable_to_skill_load.unit', message: 'must be null or exactly "tokens"' });
+  if (attr.reason !== null && !ATTRIBUTION_REASON_VALUES.includes(attr.reason)) {
+    errors.push({ field: 'usage.attributable_to_skill_load.reason', message: `must be null or one of ${ATTRIBUTION_REASON_VALUES.join('|')}` });
+  }
+
+  if (attr.status === 'runtime-reported') {
+    const hasAnyDim = dimensionsOk && USAGE_DIMENSION_KEYS_V6.some((d) => Number.isInteger(attr.dimensions[d]));
+    if (!hasAnyDim) errors.push({ field: 'usage.attributable_to_skill_load.dimensions', message: 'runtime-reported requires at least one dimension to be a non-negative integer' });
+    if (attr.unit !== 'tokens') errors.push({ field: 'usage.attributable_to_skill_load.unit', message: 'must be exactly "tokens" when status is runtime-reported' });
+    if (attr.reason !== null) errors.push({ field: 'usage.attributable_to_skill_load.reason', message: 'must be null when status is runtime-reported' });
+  } else if (attr.status === 'not-recorded') {
+    if (dimensionsOk) {
+      for (const dim of USAGE_DIMENSION_KEYS_V6) {
+        if (attr.dimensions[dim] !== null) errors.push({ field: `usage.attributable_to_skill_load.dimensions.${dim}`, message: 'must be null when status is not-recorded' });
+      }
+    }
+    if (attr.unit !== null) errors.push({ field: 'usage.attributable_to_skill_load.unit', message: 'must be null when status is not-recorded' });
+    if (attr.reason == null || attr.reason === '') errors.push({ field: 'usage.attributable_to_skill_load.reason', message: 'must be a non-empty closed reason when status is not-recorded' });
+  }
+
+  const isClaudeCode = isPlainObjectLike(run.agent_runtime) && run.agent_runtime.runtime_id === 'claude-code';
+  if (isClaudeCode && attr.status === 'runtime-reported') {
+    errors.push({ field: 'usage.attributable_to_skill_load.status', message: 'claude-code never produces runtime-reported skill-load attribution in this PR' });
+  }
+  if (isClaudeCode && attr.status === 'not-recorded' && attr.reason !== undefined) {
+    const expectedReason = run.condition === 'current-skill' ? 'runtime-does-not-report-skill-attribution' : run.condition === 'no-skill' ? 'condition-no-skill' : null;
+    if (expectedReason != null && attr.reason !== expectedReason) {
+      errors.push({ field: 'usage.attributable_to_skill_load.reason', message: `must be exactly "${expectedReason}" for claude-code condition "${run.condition}"` });
+    }
+  }
+}
+
+/** usage -- invariants 9-13. */
+function validateUsageV6(usage, run, errors) {
+  if (!checkExactObjectKeysV6(usage, USAGE_KEYS_V6, 'usage', errors)) return;
+  if (!USAGE_SOURCE_VALUES.includes(usage.source)) {
+    errors.push({ field: 'usage.source', message: `must be one of ${USAGE_SOURCE_VALUES.join('|')}` });
+  }
+  for (const dim of USAGE_DIMENSION_KEYS_V6) {
+    const v = usage[dim];
+    if (v !== null && !nonNegInt(v)) errors.push({ field: `usage.${dim}`, message: 'must be null or a non-negative integer' });
+  }
+
+  if (usage.source === 'runtime-reported') {
+    const hasAny = USAGE_DIMENSION_KEYS_V6.some((d) => Number.isInteger(usage[d]));
+    if (!hasAny) errors.push({ field: 'usage', message: 'source runtime-reported requires at least one dimension to be a non-negative integer' });
+  } else if (usage.source === 'not-recorded') {
+    for (const dim of USAGE_DIMENSION_KEYS_V6) {
+      if (usage[dim] !== null) errors.push({ field: `usage.${dim}`, message: 'must be null when source is not-recorded' });
+    }
+  } else if (usage.source === 'offline-estimate') {
+    for (const dim of ['cached_input', 'cache_write', 'output', 'reasoning_output']) {
+      if (usage[dim] !== null) errors.push({ field: `usage.${dim}`, message: 'must be null for source offline-estimate -- only input may be a non-null integer (this PR never produces this source; the shape is validated for forward compatibility only)' });
+    }
+  }
+
+  const isClaudeCode = isPlainObjectLike(run.agent_runtime) && run.agent_runtime.runtime_id === 'claude-code';
+  if (isClaudeCode && usage.reasoning_output !== null) {
+    errors.push({ field: 'usage.reasoning_output', message: 'must be null for claude-code -- this runtime never reports a reasoning-output dimension, and null is never coerced to zero' });
+  }
+
+  // Invariant 9: legacy tokens.* are exact projections of usage.input/output/cached_input/cache_write.
+  if (isPlainObjectLike(run.tokens)) {
+    const projections = [['input', 'input'], ['output', 'output'], ['cache_read', 'cached_input'], ['cache_creation', 'cache_write']];
+    for (const [tokenKey, usageKey] of projections) {
+      const tokenVal = isPlainObjectLike(run.tokens[tokenKey]) ? run.tokens[tokenKey].value ?? null : undefined;
+      const usageVal = usage[usageKey] ?? null;
+      if (tokenVal !== usageVal) {
+        errors.push({ field: `tokens.${tokenKey}`, message: `must exactly equal usage.${usageKey} (${JSON.stringify(usageVal)}) -- schema v6 legacy tokens are an exact projection, never independently derived` });
+        errors.push({ field: `usage.${usageKey}`, message: `must exactly equal tokens.${tokenKey}.value (${JSON.stringify(tokenVal)})` });
+      }
+    }
+  }
+
+  if ('attributable_to_skill_load' in usage) validateAttributableToSkillLoadV6(usage.attributable_to_skill_load, run, errors);
+}
+
 // Closed charset (no `/`, no `\`) so a traversal sequence or absolute path can never match this
 // regex regardless of what a (possibly tampered) run_id contains -- see this regex's own call site
 // in validateRun for the full rationale.
@@ -116,6 +568,7 @@ const ACCEPTED_AUDIT_RELATIVE_PATH_RE = /^audit\/[A-Za-z0-9._-]+\.json$/;
 // schema number to V1 instead of the LATEST fields, which would make a schema:5 record validate
 // against the wrong (v1) field list entirely. schema===5 must resolve to V5, never V1.
 function runCanonicalFieldsFor(schema) {
+  if (schema === 6) return RUN_CANONICAL_FIELDS_V6;
   if (schema === 5) return RUN_CANONICAL_FIELDS_V5;
   if (schema === 4) return RUN_CANONICAL_FIELDS_V4;
   if (schema === 3) return RUN_CANONICAL_FIELDS_V3;
@@ -424,11 +877,19 @@ export function validateRun(run) {
         if (actualKeys.some((k) => !allowedKeys.has(k)) || actualKeys.length !== allowedKeys.size) {
           errors.push({ field: 'accepted_audit', message: `must have exactly the keys schema/relative_path/sha256, got ${JSON.stringify(actualKeys)}` });
         }
-        // A SET, not a pinned constant: the 92 historical records point at v1 sidecars and must
-        // keep validating verbatim, while newly built records point at v2. The loader/validator
-        // dispatches on the sidecar's real version; an unknown version fails closed there.
-        if (!SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS.includes(audit.schema)) {
-          errors.push({ field: 'accepted_audit.schema', message: `must be one of ${SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS.join('|')}` });
+        // A SET keyed off the RECORD's own schema, not a flat pinned constant: a schema:5 record
+        // must point at a v1 or v2 sidecar (the 92 v1 + 64 v2 historical records; both still
+        // require literally run_schema:5 on the sidecar side, checked independently by
+        // crossValidateAcceptedRunAuditAgainstRecord), while a schema:6+ record must point at
+        // exactly v3 (the only sidecar version that stamps run_provenance_sha256 and requires
+        // literally run_schema:6). Accepting v3 for a v5 record (or v1/v2 for a v6 record) would
+        // let a record and its sidecar silently disagree about which run schema produced it --
+        // the whole point of requiredRunSchemaFor's own dedicated check on the sidecar side.
+        const compatibleSidecarSchemas = run.schema === 5
+          ? [ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2]
+          : [LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA];
+        if (!compatibleSidecarSchemas.includes(audit.schema)) {
+          errors.push({ field: 'accepted_audit.schema', message: `must be one of ${compatibleSidecarSchemas.join('|')} for a schema:${run.schema} record (got ${JSON.stringify(audit.schema)})` });
         }
         const expectedRelativePath = typeof run.run_id === 'string' ? `audit/${run.run_id}.json` : null;
         if (typeof audit.relative_path !== 'string' || !ACCEPTED_AUDIT_RELATIVE_PATH_RE.test(audit.relative_path) || audit.relative_path !== expectedRelativePath) {
@@ -453,6 +914,46 @@ export function validateRun(run) {
     for (const f of V5_METRIC_FIELDS) {
       if (f in run && run[f] != null) {
         errors.push({ field: f, message: `must be absent or null for schema ${run.schema} -- ${f} was introduced in schema v5` });
+      }
+    }
+  }
+
+  // Schema v6 (agentic-eval-runtime-neutral-records-v1) -- the four new groups are REQUIRED
+  // (non-null objects) for every schema:6+ record, regardless of run_kind (unlike accepted_audit,
+  // which is scenario-only in VALUE): a calibrate/smoke record still has a real runtime/profile/
+  // skill/usage identity. Forbidden below v6 via a dedicated error, mirroring every other
+  // schema-introduced field above -- not merely the generic unrecognized-field warning.
+  if (run.schema >= 6) {
+    if (!isPlainObjectLike(run.agent_runtime)) {
+      errors.push({ field: 'agent_runtime', message: 'required (non-null object) for a schema:6+ record' });
+    } else {
+      validateAgentRuntime(run.agent_runtime, run, errors);
+    }
+    if (!isPlainObjectLike(run.execution_profile)) {
+      errors.push({ field: 'execution_profile', message: 'required (non-null object) for a schema:6+ record' });
+    } else {
+      validateExecutionProfileV6(run.execution_profile, errors);
+    }
+    if (!isPlainObjectLike(run.skill_observation)) {
+      errors.push({ field: 'skill_observation', message: 'required (non-null object) for a schema:6+ record' });
+    } else {
+      validateSkillObservationV6(run.skill_observation, run, errors);
+    }
+    if (!isPlainObjectLike(run.usage)) {
+      errors.push({ field: 'usage', message: 'required (non-null object) for a schema:6+ record' });
+    } else {
+      validateUsageV6(run.usage, run, errors);
+    }
+    // Schema v6 admits only conditions no-skill|current-skill -- candidate-skill keeps validating
+    // under schemas v1-v5 (CONDITION_VALUES still includes it there) but is rejected here until a
+    // future phase defines its own source/delivery/treatment contract.
+    if (run.condition === 'candidate-skill') {
+      errors.push({ field: 'condition', message: 'candidate-skill is rejected for schema v6 until a future phase defines its own source/delivery/treatment contract' });
+    }
+  } else {
+    for (const f of V6_GROUP_FIELDS) {
+      if (f in run && run[f] != null) {
+        errors.push({ field: f, message: `must be absent or null for schema ${run.schema} -- ${f} was introduced in schema v6` });
       }
     }
   }
@@ -1186,35 +1687,33 @@ const AGGREGATE_CANONICAL_FIELDS = ['schema', 'group_key', 'run_count', 'runs'];
 // different measured capability PROFILES within the SAME schema version -- e.g. a Claude Code
 // version bump that changes which skills are bundled would otherwise silently combine two runs
 // whose no-skill/current-skill baselines were not actually comparable.
+// agent_runtime/execution_profile/skill_treatment (Section F, agentic-eval-runtime-neutral-records-
+// v1): three new STRUCTURAL partition keys covering runtime ID, requested/resolved model,
+// expected/observed vendor, runtime CLI version, execution-profile ID/hash/isolation/network, and
+// skill delivery mode/source SHA/measured-treatment identity -- none of which any existing field
+// above captures. These three are never read directly off a raw record by name here: a caller MUST
+// pre-project them via run-record-view.mjs's withPartitionView() before this list (or
+// buildAggregateGroup below) ever sees the record, so a schema<=5 record's own absence of a real
+// agent_runtime/execution_profile/skill_observation projects to the literal "not-recorded" sentinel
+// here rather than `undefined` silently matching another `undefined`. execution_profile/
+// skill_treatment are each a NARROWED projection (never the full v6 object) -- see
+// run-record-view.mjs's own header for exactly why isolation_attestation_sha256 and
+// availability/activation are deliberately excluded from a partition key.
 export const HARD_PARTITION_FIELDS = [
   'scenario_id', 'condition', 'family', 'run_kind', 'cache_state',
   'project_commit', 'model_resolved', 'platform', 'skill_source_sha', 'policy_sha256',
   'kmp_test_cli_source_sha', 'daemon_policy',
   'env_allowlist_profile', 'policy_allowed_gradle_tasks', 'policy_allowed_kmptest_subcommands',
   'claude_code_version', 'schema', 'ambient_skill_profile',
+  'agent_runtime', 'execution_profile', 'skill_treatment',
 ];
 
-/**
- * Recursively sorts every OBJECT's own keys (arrays keep their own positional order -- only object
- * keys are order-independent), returning a new, canonically-shaped value ready for
- * `JSON.stringify`. Review-round-2 fix: a bare `JSON.stringify` is NOT canonical w.r.t. object key
- * INSERTION order -- `{count:1,fingerprint_hmac:'x'}` and `{fingerprint_hmac:'x',count:1}` (the
- * identical value, constructed with keys in a different order) serialize to two DIFFERENT
- * strings, which previously caused two semantically-identical `ambient_skill_profile` values to be
- * spuriously treated as "mixed" (demonstrated directly: two such records failed to group under the
- * old code). The SAME shared function is used by both `partitionFieldKey` (below) and
- * `aggregate.mjs`'s own bucketing key -- one canonical serializer, not two independently-drifting
- * notions of "the same value".
- */
-export function canonicalStructuredValue(value) {
-  if (Array.isArray(value)) return value.map(canonicalStructuredValue);
-  if (value != null && typeof value === 'object') {
-    const sorted = {};
-    for (const k of Object.keys(value).sort()) sorted[k] = canonicalStructuredValue(value[k]);
-    return sorted;
-  }
-  return value;
-}
+// canonicalStructuredValue: see the top-of-file import from canonical-json.mjs -- this module no
+// longer defines its own copy. Used below by both `partitionFieldKey` and `aggregate.mjs`'s own
+// bucketing key -- one canonical serializer, not two independently-drifting notions of "the same
+// value" (review-round-2 finding this shared function originally closed: a bare `JSON.stringify`
+// is NOT canonical w.r.t. object key INSERTION order, which previously caused two
+// semantically-identical `ambient_skill_profile` values to be spuriously treated as "mixed").
 
 // Some HARD_PARTITION_FIELDS values (the two policy_allowed_* lists, and the object-valued
 // ambient_skill_profile) are arrays or plain objects -- a bare `new Set(runs.map(r => r[f]))`
@@ -1292,17 +1791,31 @@ export function buildAggregateGroup(runs) {
   if (ineligible.length > 0) {
     errors.push({ field: 'benchmark_eligible', message: `${ineligible.length} run(s) are benchmark_eligible:false and cannot be folded into a publishable aggregate` });
   }
-  // claude_code_version being merely PRESENT (validateRun's job) isn't the same as it being a
-  // concrete, known value -- run.claude_code_version can legitimately be null (buildRunRecord's
-  // own `init?.claude_code_version ?? null` fallback) for a genuinely degraded capture that's
-  // still a valid, WRITABLE run record. Two such runs both carrying null would otherwise match
-  // as "the same partition key" in the mixing check below (null === null), silently permitting
-  // exactly the cross-CLI-release averaging this field exists to prevent -- unlike every other
-  // HARD_PARTITION_FIELDS entry, an unknown value here can't be trusted to genuinely agree with
-  // another unknown value, so aggregation eligibility requires a concrete, non-empty string.
-  const unknownClaudeVersion = runs.filter((r) => typeof r.claude_code_version !== 'string' || r.claude_code_version.length === 0);
+  // The canonical CLI-version identity being merely PRESENT (validateRun's job) isn't the same as
+  // it being a concrete, known value -- it can legitimately be null for a genuinely degraded
+  // capture that's still a valid, WRITABLE run record. Two such runs both carrying null would
+  // otherwise match as "the same partition key" in the mixing check below (null === null), silently
+  // permitting exactly the cross-CLI-release averaging this field exists to prevent -- an unknown
+  // value here can't be trusted to genuinely agree with another unknown value, so aggregation
+  // eligibility requires a concrete, non-empty string.
+  //
+  // P1 architectural review: the canonical version comes from agent_runtime.cli_version for a
+  // schema:6+ record (required on EVERY runtime_id, unlike the legacy field), never from the
+  // legacy claude_code_version alone -- that field is correctly null for a non-claude-code
+  // runtime_id (schema invariant 3), so gating aggregation eligibility on it exclusively made
+  // every valid non-Claude v6 record permanently ineligible, regardless of how well-formed its own
+  // agent_runtime group was. For runtime_id:claude-code the two are already required to agree
+  // exactly (same invariant), so this is never a second, independently-drifting notion of "the
+  // version" for that runtime -- purely a wider read for the runtimes claude_code_version was
+  // never able to describe in the first place.
+  const unknownClaudeVersion = runs.filter((r) => {
+    const version = typeof r.schema === 'number' && r.schema >= 6 && isPlainObjectLike(r.agent_runtime)
+      ? r.agent_runtime.cli_version
+      : r.claude_code_version;
+    return typeof version !== 'string' || version.length === 0;
+  });
   if (unknownClaudeVersion.length > 0) {
-    errors.push({ field: 'claude_code_version', message: `${unknownClaudeVersion.length} run(s) have a missing/empty claude_code_version and cannot be folded into a publishable aggregate -- an unknown CLI version can't be trusted to match another unknown value` });
+    errors.push({ field: 'claude_code_version', message: `${unknownClaudeVersion.length} run(s) have a missing/empty canonical CLI version and cannot be folded into a publishable aggregate -- an unknown CLI version can't be trusted to match another unknown value` });
   }
   // A further completeness matrix, scoped narrowly to run_kind:'scenario' + benchmark_eligible:
   // true -- the only combination this Fairness Contract ever expects to reach real, publishable

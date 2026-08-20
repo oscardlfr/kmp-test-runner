@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "execution_profiles": [
+    {
+      "id": "strict-policy-v1",
+      "enabled": true,
+      "default": true,
+      "supported_runtime_ids": ["claude-code"],
+      "isolation_kind": "runtime-policy-hooks",
+      "network_mode": "runtime-default",
+      "isolation_attestation_required": false,
+      "policy_mode": "required",
+      "required_capabilities": ["softPermissionDenial"]
+    }
+  ]
+}

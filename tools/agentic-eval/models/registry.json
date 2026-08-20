@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "models": [
+    {
+      "runtime_id": "claude-code",
+      "model_id": "claude-sonnet-5",
+      "enabled": true,
+      "default": true,
+      "model_vendor_expected": "anthropic",
+      "default_reasoning_mode": null,
+      "required_capabilities": [],
+      "usage_dimensions": ["input", "cached_input", "cache_write", "output"]
+    }
+  ]
+}

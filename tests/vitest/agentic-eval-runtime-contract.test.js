@@ -48,6 +48,12 @@ function validAdapter(overrides = {}) {
     id: 'synthetic-runtime',
     protocolVersion: 1,
     capabilities: validCapabilities(),
+    // P1 architectural review (Codex round 2): a synthetic test adapter is a permissive stand-in
+    // -- it supports whatever configuration it's asked about, matching the previous (implicit)
+    // behavior before these 2 gating methods existed, so no OTHER test in this file needs to know
+    // or care about them.
+    supportsModelConfiguration: () => true,
+    supportsExecutionProfile: () => true,
     probeInstallation: asyncNoop,
     preflight: asyncNoop,
     prepareIsolatedHome: asyncNoop,
@@ -99,10 +105,15 @@ function validObservation(overrides = {}) {
 }
 
 describe('ADAPTER_KEYS / CAPABILITY_KEYS -- exact literal inventories', () => {
-  it('is exactly these 11 keys, in this order', () => {
+  // P1 architectural review (Codex round 2): supportsModelConfiguration/supportsExecutionProfile
+  // are 2 new REQUIRED keys -- the registry accepted treatments an adapter never actually applies
+  // (buildInvocation only ever receives {prompt, model, settingsPath}), so an adapter must now
+  // declare, per model/execution-profile entry, whether it genuinely implements that entry's own
+  // configuration before registries.mjs/resolveSelection will ever select it.
+  it('is exactly these 13 keys, in this order', () => {
     expect([...ADAPTER_KEYS]).toEqual([
-      'id', 'protocolVersion', 'capabilities', 'probeInstallation', 'preflight',
-      'prepareIsolatedHome', 'prepareSkillDelivery', 'buildInvocation',
+      'id', 'protocolVersion', 'capabilities', 'supportsModelConfiguration', 'supportsExecutionProfile',
+      'probeInstallation', 'preflight', 'prepareIsolatedHome', 'prepareSkillDelivery', 'buildInvocation',
       'collectObservationSources', 'normalizeObservations', 'redactRuntimeDiagnostics',
     ]);
   });
@@ -140,7 +151,7 @@ describe('validateRuntimeAdapter -- rejections', () => {
     expect(result.errors.some((e) => e.field === 'preflight')).toBe(true);
   });
 
-  it('rejects each of the 11 required keys individually when missing', () => {
+  it('rejects each of the 13 required keys individually when missing', () => {
     for (const key of ADAPTER_KEYS) {
       const adapter = validAdapter();
       delete adapter[key];
@@ -174,7 +185,7 @@ describe('validateRuntimeAdapter -- rejections', () => {
     expect(validateRuntimeAdapter(validAdapter({ protocolVersion: 7 })).ok).toBe(true);
   });
 
-  for (const method of ['probeInstallation', 'preflight', 'prepareIsolatedHome', 'prepareSkillDelivery', 'buildInvocation', 'collectObservationSources', 'normalizeObservations', 'redactRuntimeDiagnostics']) {
+  for (const method of ['supportsModelConfiguration', 'supportsExecutionProfile', 'probeInstallation', 'preflight', 'prepareIsolatedHome', 'prepareSkillDelivery', 'buildInvocation', 'collectObservationSources', 'normalizeObservations', 'redactRuntimeDiagnostics']) {
     it(`rejects a non-function value for the "${method}" operation`, () => {
       const result = validateRuntimeAdapter(validAdapter({ [method]: 'not-a-function' }));
       expect(result.ok).toBe(false);
@@ -1110,6 +1121,8 @@ describe('Stage 5 -- synthetic multi-source and typed-step fixtures both satisfy
       usageDimensions: ['input', 'cached_input', 'output'],
       softPermissionDenial: false,
     },
+    supportsModelConfiguration: () => true,
+    supportsExecutionProfile: () => true,
     probeInstallation: syntheticAsyncNoop(),
     preflight: syntheticAsyncNoop(),
     prepareIsolatedHome: syntheticAsyncNoop(),
@@ -1132,6 +1145,8 @@ describe('Stage 5 -- synthetic multi-source and typed-step fixtures both satisfy
       usageDimensions: [],
       softPermissionDenial: true,
     },
+    supportsModelConfiguration: () => true,
+    supportsExecutionProfile: () => true,
     probeInstallation: syntheticAsyncNoop(),
     preflight: syntheticAsyncNoop(),
     prepareIsolatedHome: syntheticAsyncNoop(),

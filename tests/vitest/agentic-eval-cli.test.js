@@ -12,6 +12,11 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readdirSync } from 'node
 import os from 'node:os';
 import { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, resolveMeasurementScopeOrFail, nullableMetric, resolveHarnessProvenance, verifyExactCommandsSucceeded, writeRunRecordEvidence, buildRunRecord, finalizeAndWriteRecords, finalizeAndWriteMatrixRecords, findBlockingHarnessToolingDirty, isRunsRootDefault, cmdAggregate, validateRunRecordFile, SUBCOMMAND_SHAPES, discardJournalIfRedundant, buildStderrByRunId } from '../../tools/agentic-eval/cli.mjs';
 import { computePolicySha256 } from '../../tools/agentic-eval/policy-config.mjs';
+import { buildAcceptedRunAuditSidecar, finalizeAcceptedRunAuditSidecar, acceptedAuditRelativePathFor, crossValidateAcceptedRunAuditAgainstRecord } from '../../tools/agentic-eval/accepted-run-audit.mjs';
+import { canonicalJsonSha256 as canonicalJsonSha256Local } from '../../tools/agentic-eval/canonical-json.mjs';
+import { resolveSelection } from '../../tools/agentic-eval/registries.mjs';
+import { TEST_RUN_RECORD_V6_INPUTS } from './_agentic-eval-run-record-fixtures.js';
+import { withPartitionView } from '../../tools/agentic-eval/run-record-view.mjs';
 import { LATEST_RUN_SCHEMA, validateRun, buildAggregateGroup } from '../../tools/agentic-eval/schemas.mjs';
 import { GRADING_CHECK_NAMES } from '../../tools/agentic-eval/graders.mjs';
 import { createInvocationJournal } from '../../tools/agentic-eval/durable-journal.mjs';
@@ -218,6 +223,47 @@ describe('validateSubcommandArgs', () => {
     const args = parseArgs(['scope', 'init', 'unexpected']);
     const errors = validateSubcommandArgs('scope', args);
     expect(errors.some((e) => e.includes('extra argument'))).toBe(true);
+  });
+
+  // --runtime/--execution-profile (agentic-eval-runtime-neutral-records-v1): accepted for
+  // calibrate/smoke/run (the three commands that can spend a live session), rejected everywhere
+  // else -- exactly like --model's own existing scope.
+  it('accepts --runtime and --execution-profile for calibrate/smoke/run', () => {
+    for (const sub of ['calibrate', 'smoke', 'run']) {
+      expect(SUBCOMMAND_SHAPES[sub].flags).toContain('runtime');
+      expect(SUBCOMMAND_SHAPES[sub].flags).toContain('execution-profile');
+    }
+    const args = parseArgs(['calibrate', '--runtime', 'claude-code', '--execution-profile', 'strict-policy-v1']);
+    expect(validateSubcommandArgs('calibrate', args)).toEqual([]);
+  });
+
+  it('rejects --runtime for a subcommand that never spends a session', () => {
+    const args = parseArgs(['validate', '--run', 'x.json', '--runtime', 'claude-code']);
+    const errors = validateSubcommandArgs('validate', args);
+    expect(errors.some((e) => e.includes('--runtime'))).toBe(true);
+  });
+
+  it('rejects --execution-profile for aggregate/analyze/validate/corpus/scope', () => {
+    for (const [sub, extraArgs] of [
+      ['aggregate', ['--runs-dir', 'x']], ['analyze', ['--runs-dir', 'x']], ['validate', ['--run', 'x.json']],
+    ]) {
+      const args = parseArgs([sub, ...extraArgs, '--execution-profile', 'strict-policy-v1']);
+      const errors = validateSubcommandArgs(sub, args);
+      expect(errors.some((e) => e.includes('--execution-profile'))).toBe(true);
+    }
+  });
+
+  // --provider is deliberately never a recognized flag anywhere -- the plan reserves that term
+  // for a future backend-model-service concept, never an alias for --runtime.
+  it('--provider is unknown for every subcommand, including calibrate/smoke/run', () => {
+    for (const [sub, extraArgs] of [
+      ['calibrate', []], ['smoke', ['--source-repo-dir', 'x', '--pinned-commit', 'y']],
+      ['run', ['--scenario', 'x', '--source-repo-dir', 'y', '--seed', '1']],
+    ]) {
+      const args = parseArgs([sub, ...extraArgs, '--provider', 'anthropic']);
+      const errors = validateSubcommandArgs(sub, args);
+      expect(errors.some((e) => e.includes('--provider'))).toBe(true);
+    }
   });
 });
 
@@ -675,7 +721,7 @@ describe('finalizeAndWriteRecords -- fails closed on a dirty measured-code tree'
 
   it('refuses to write evidence -- and never calls the hard gate at all -- when a record carries a dirty_measured_code error', async () => {
     const policySha256 = computePolicySha256();
-    const common = { runKind: 'calibration', scenarioId: 'test-dirty-tree', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256, modelRequested: 'fake-model', ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex') };
+    const common = { runKind: 'calibration', scenarioId: 'test-dirty-tree', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256, ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'), ...TEST_RUN_RECORD_V6_INPUTS };
     const recordA = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'no-skill', skillSourceSha: null, ...common });
     const recordB = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'current-skill', skillSourceSha: 'c5c0661852f7c9da145ef56892048e706216a6ce', ...common });
     // Simulate what resolveHarnessProvenance() would have populated for a genuinely dirty
@@ -707,7 +753,7 @@ describe('finalizeAndWriteRecords -- fails closed on a dirty measured-code tree'
   // never-risk-a-real-write discipline.
   it('a dirty_harness_tooling error (tools/agentic-eval itself) DOES block before reaching the hard gate, when writing to the default RUNS_ROOT', async () => {
     const policySha256 = computePolicySha256();
-    const common = { runKind: 'calibration', scenarioId: 'test-dirty-tooling', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256, modelRequested: 'fake-model', ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex') };
+    const common = { runKind: 'calibration', scenarioId: 'test-dirty-tooling', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256, ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'), ...TEST_RUN_RECORD_V6_INPUTS };
     const recordA = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'no-skill', skillSourceSha: null, ...common });
     const recordB = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'current-skill', skillSourceSha: 'c5c0661852f7c9da145ef56892048e706216a6ce', ...common });
     recordA.errors = [{ code: 'dirty_harness_tooling', message: 'tools/agentic-eval/cli.mjs has uncommitted local modifications' }];
@@ -777,8 +823,9 @@ describe('finalizeAndWriteRecords / finalizeAndWriteMatrixRecords -- a rejected 
     return {
       runKind, scenarioId: 'test-stderr-producer', daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
-      modelRequested: 'fake-model', ambientProfileScopeId: '00000000-0000-4000-8000-000000000000',
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000',
       ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
+      ...TEST_RUN_RECORD_V6_INPUTS,
       // run_kind:'scenario' schema-requires a real project_commit + integer seed (calibration/smoke
       // don't) -- buildRejectionDiagnostics' own committed-record validation refuses without them.
       ...(runKind === 'scenario' ? { seed: 42, projectCommit: 'a'.repeat(40) } : {}),
@@ -1191,7 +1238,7 @@ describe('buildRunRecord -- raw_capture_location under the default (non-overridd
       conditionResult, condition: 'no-skill', runKind: 'calibration', scenarioId: 'test-default-root',
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
-      modelRequested: 'fake-model',
+      ...TEST_RUN_RECORD_V6_INPUTS,
       ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
     });
     expect(record.raw_capture_location).toBe('tools/runs/agentic-eval-calibration/raw/');
@@ -1235,7 +1282,7 @@ describe('buildRunRecord -- retries reflects "not tracked", never a hardcoded ze
       conditionResult: fakeConditionResult(), condition: 'no-skill', runKind: 'calibration', scenarioId: 'test-retries-calibration',
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
-      modelRequested: 'fake-model',
+      ...TEST_RUN_RECORD_V6_INPUTS,
       ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
     });
     expect(record.retries).toEqual({ value: null, reason: 'not tracked for calibration runs' });
@@ -1246,7 +1293,7 @@ describe('buildRunRecord -- retries reflects "not tracked", never a hardcoded ze
       conditionResult: fakeConditionResult(), condition: 'no-skill', runKind: 'smoke', scenarioId: 'test-retries-smoke',
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
-      modelRequested: 'fake-model',
+      ...TEST_RUN_RECORD_V6_INPUTS,
       ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
     });
     expect(record.retries).toEqual({ value: null, reason: 'not tracked for smoke runs' });
@@ -1300,7 +1347,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'scenario', scenarioId: 'test-ambiguous-junit',
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
-      modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      ...TEST_RUN_RECORD_V6_INPUTS, seed: 1, orderIndex: 0, repetitionIndex: 0,
       ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
       gradeResult: fakeGradeResult({ harnessEvidenceAmbiguous: true }),
     });
@@ -1312,7 +1359,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'scenario', scenarioId: 'test-ambiguous-junit-clean',
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
-      modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      ...TEST_RUN_RECORD_V6_INPUTS, seed: 1, orderIndex: 0, repetitionIndex: 0,
       ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
       gradeResult: fakeGradeResult({ harnessEvidenceAmbiguous: false }),
     });
@@ -1324,7 +1371,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'calibration', scenarioId: 'test-ambiguous-junit-calibration',
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
-      modelRequested: 'fake-model',
+      ...TEST_RUN_RECORD_V6_INPUTS,
       ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
     });
     expect(record.errors.some((e) => e.code === 'ambiguous_junit_evidence')).toBe(false);
@@ -1339,7 +1386,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'scenario', scenarioId: 'test-malformed-parallel',
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
-      modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      ...TEST_RUN_RECORD_V6_INPUTS, seed: 1, orderIndex: 0, repetitionIndex: 0,
       ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
       gradeResult: fakeGradeResult({ parallelEvidenceMalformed: true }),
     });
@@ -1351,7 +1398,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'scenario', scenarioId: 'test-malformed-parallel-clean',
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
-      modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      ...TEST_RUN_RECORD_V6_INPUTS, seed: 1, orderIndex: 0, repetitionIndex: 0,
       ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
       gradeResult: fakeGradeResult({ parallelEvidenceMalformed: false }),
     });
@@ -1363,7 +1410,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'calibration', scenarioId: 'test-malformed-parallel-calibration',
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
-      modelRequested: 'fake-model',
+      ...TEST_RUN_RECORD_V6_INPUTS,
       ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
     });
     expect(record.errors.some((e) => e.code === 'malformed_parallel_evidence')).toBe(false);
@@ -1378,7 +1425,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'scenario', scenarioId: 'test-malformed-changed',
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [':core:common:test'], allowedKmpTestSubcommands: ['changed'], policySha256: computePolicySha256(),
-      modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      ...TEST_RUN_RECORD_V6_INPUTS, seed: 1, orderIndex: 0, repetitionIndex: 0,
       ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
       gradeResult: fakeGradeResult({ changedEvidenceMalformed: true }),
     });
@@ -1390,7 +1437,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'scenario', scenarioId: 'test-malformed-changed-clean',
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [':core:common:test'], allowedKmpTestSubcommands: ['changed'], policySha256: computePolicySha256(),
-      modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      ...TEST_RUN_RECORD_V6_INPUTS, seed: 1, orderIndex: 0, repetitionIndex: 0,
       ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
       gradeResult: fakeGradeResult({ changedEvidenceMalformed: false }),
     });
@@ -1402,7 +1449,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'calibration', scenarioId: 'test-malformed-changed-calibration',
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
-      modelRequested: 'fake-model',
+      ...TEST_RUN_RECORD_V6_INPUTS,
       ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
     });
     expect(record.errors.some((e) => e.code === 'malformed_changed_evidence')).toBe(false);
@@ -1419,7 +1466,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'scenario', scenarioId: 'test-unreliable-gradle-junit',
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
-      modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      ...TEST_RUN_RECORD_V6_INPUTS, seed: 1, orderIndex: 0, repetitionIndex: 0,
       ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
       gradeResult: fakeGradeResult({ gradleJunitEvidenceUnreliable: true }),
     });
@@ -1431,7 +1478,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'scenario', scenarioId: 'test-unreliable-gradle-junit-clean',
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
-      modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      ...TEST_RUN_RECORD_V6_INPUTS, seed: 1, orderIndex: 0, repetitionIndex: 0,
       ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
       gradeResult: fakeGradeResult({ gradleJunitEvidenceUnreliable: false }),
     });
@@ -1443,7 +1490,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'smoke', scenarioId: 'test-unreliable-gradle-junit-smoke',
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
-      modelRequested: 'fake-model',
+      ...TEST_RUN_RECORD_V6_INPUTS,
       ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
     });
     expect(record.errors.some((e) => e.code === 'unreliable_gradle_junit_evidence')).toBe(false);
@@ -1459,7 +1506,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'scenario', scenarioId: 'test-junit-capture-incomplete',
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
-      modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      ...TEST_RUN_RECORD_V6_INPUTS, seed: 1, orderIndex: 0, repetitionIndex: 0,
       ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
       gradeResult: fakeGradeResult({ gradleJunitEvidenceCaptureIncomplete: true }),
     });
@@ -1471,7 +1518,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'scenario', scenarioId: 'test-junit-capture-incomplete-clean',
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
-      modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      ...TEST_RUN_RECORD_V6_INPUTS, seed: 1, orderIndex: 0, repetitionIndex: 0,
       ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
       gradeResult: fakeGradeResult({ gradleJunitEvidenceCaptureIncomplete: false }),
     });
@@ -1483,7 +1530,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'calibration', scenarioId: 'test-junit-capture-incomplete-calibration',
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
-      modelRequested: 'fake-model',
+      ...TEST_RUN_RECORD_V6_INPUTS,
       ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
     });
     expect(record.errors.some((e) => e.code === 'junit_evidence_capture_incomplete')).toBe(false);
@@ -1496,7 +1543,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       conditionResult: fakeScenarioConditionResult(), condition: 'no-skill', runKind: 'scenario', scenarioId: 'test-junit-both-codes',
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'], policySha256: computePolicySha256(),
-      modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      ...TEST_RUN_RECORD_V6_INPUTS, seed: 1, orderIndex: 0, repetitionIndex: 0,
       ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
       gradeResult: fakeGradeResult({ harnessEvidenceAmbiguous: true, gradleJunitEvidenceCaptureIncomplete: true }),
     });
@@ -1578,7 +1625,7 @@ describe('buildRunRecord -- tool_calls_total counts every Skill attempt, not jus
       conditionResult, condition: 'current-skill', runKind: 'calibration', scenarioId: 'test-tool-calls-total',
       skillSourceSha: 'aeba6eaa8d027be999cdfeeb5bb2d1bbd0f688ee', daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
-      modelRequested: 'fake-model',
+      ...TEST_RUN_RECORD_V6_INPUTS,
       ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
     });
     // 3 real Bash tool_use events + 2 real Skill tool_use events = 5, not 4.
@@ -1597,7 +1644,7 @@ describe('buildRunRecord -- tool_calls_total counts every Skill attempt, not jus
       conditionResult, condition: 'no-skill', runKind: 'calibration', scenarioId: 'test-tool-calls-total-no-invocation',
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
-      modelRequested: 'fake-model',
+      ...TEST_RUN_RECORD_V6_INPUTS,
       ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
     });
     expect(record.tool_calls_total).toEqual({ value: 1, reason: null });
@@ -1626,7 +1673,7 @@ describe('buildRunRecord -- tool_calls_total counts every Skill attempt, not jus
       conditionResult, condition: 'current-skill', runKind: 'calibration', scenarioId: 'test-tool-calls-total-foreign-skill',
       skillSourceSha: 'aeba6eaa8d027be999cdfeeb5bb2d1bbd0f688ee', daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
-      modelRequested: 'fake-model',
+      ...TEST_RUN_RECORD_V6_INPUTS,
       ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
     });
     // 0 Bash + 1 expected-skill tool_use event + 1 foreign-skill tool_use event = 2, not 1.
@@ -1671,7 +1718,7 @@ describe('finalizeAndWriteRecords -- a writeRunRecordEvidence() throw returns {o
       };
     }
     const policySha256 = computePolicySha256();
-    const common = { runKind: 'calibration', scenarioId: 'test-collision-via-finalize', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256, modelRequested: 'fake-model', ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex') };
+    const common = { runKind: 'calibration', scenarioId: 'test-collision-via-finalize', daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256, ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'), ...TEST_RUN_RECORD_V6_INPUTS };
     const recordA = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'no-skill', skillSourceSha: null, ...common });
     const recordB = buildRunRecord({ conditionResult: fakeConditionResult(), condition: 'current-skill', skillSourceSha: 'c5c0661852f7c9da145ef56892048e706216a6ce', ...common });
     // This test is specifically about the run_id-collision property, not dirty-tree behavior --
@@ -2040,18 +2087,19 @@ describe('buildRunRecord -- schema v5 post-signal metrics + accepted_audit place
     condition: 'no-skill', runKind: 'scenario', scenarioId: 'test-post-signal',
     skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
     allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'],
-    policySha256: computePolicySha256(), modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+    policySha256: computePolicySha256(), seed: 1, orderIndex: 0, repetitionIndex: 0,
     ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
+    ...TEST_RUN_RECORD_V6_INPUTS,
   };
 
-  it('schema is now LATEST_RUN_SCHEMA (5), and every record carries accepted_audit:null at build time', () => {
+  it('schema is now LATEST_RUN_SCHEMA (6), and every record carries accepted_audit:null at build time', () => {
     const record = buildRunRecord({
       conditionResult: fakeConditionResultWithEvents({ events: [] }),
       ...commonScenarioParams,
       gradeResult: { expectedOutcomeMatched: false, success: false, checks: [], firstUsefulSignalEventIndex: null, testInvocationsTotal: 0, retries: 0 },
     });
     expect(record.schema).toBe(LATEST_RUN_SCHEMA);
-    expect(record.schema).toBe(5);
+    expect(record.schema).toBe(6);
     expect(record.accepted_audit).toBeNull();
   });
 
@@ -2061,7 +2109,7 @@ describe('buildRunRecord -- schema v5 post-signal metrics + accepted_audit place
       condition: 'no-skill', runKind: 'calibration', scenarioId: 'test-post-signal-calibration',
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
-      modelRequested: 'fake-model',
+      ...TEST_RUN_RECORD_V6_INPUTS,
       ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
     });
     for (const f of ['post_signal_ms', 'post_signal_tool_calls', 'policy_denials_before_first_signal', 'policy_denials_after_first_signal']) {
@@ -2154,6 +2202,110 @@ describe('buildRunRecord -- schema v5 post-signal metrics + accepted_audit place
       gradeResult: { expectedOutcomeMatched: false, success: false, checks: [], firstUsefulSignalEventIndex: null, testInvocationsTotal: 0, retries: 0 },
     });
     expect(record.tool_calls_total.value).toBe(1);
+  });
+});
+
+// Section E follow-up correction: selection/promptArtifact/skillSnapshotArtifact are REQUIRED
+// buildRunRecord inputs (schema v6) with no default -- but until this test existed, a missing or
+// malformed one crashed with an ACCIDENTAL TypeError deep inside agentRuntime/
+// executionProfileGroup/skillObservation construction ("Cannot read properties of undefined
+// (reading 'runtime')"), never a legible, named contract violation naming which parameter and
+// field is wrong. Also closes a real duplication gap: modelRequested was an independent parameter
+// with no relationship at all to selection.model.model_id, so a caller could pass two silently
+// disagreeing values for "the model" -- now enforced as a hard equality requirement, and
+// agent_runtime.model_requested / the legacy top-level model_requested are both written FROM
+// selection.model.model_id (the one source of truth), never from the separately-passed parameter.
+describe('buildRunRecord -- selection/promptArtifact/skillSnapshotArtifact are required and well-formed; modelRequested must agree with selection.model.model_id', () => {
+  function fakeConditionResult() {
+    return {
+      observation: {
+        schema: 1,
+        runtime: { id: 'claude-code', protocolVersion: 1 },
+        process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1000n },
+        session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true },
+        transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+        terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
+        toolAttempts: [],
+        skill: {
+          available: false, profileMatchesCondition: true, snapshotBindingMatches: false,
+          targetInvocation: null, foreignInvocations: [],
+          ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+        },
+        hookStats: { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: true },
+        byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+        timing: { receiptNsByEventIndex: new Map() },
+      },
+      startedAt: new Date('2026-01-01T00:00:00.000Z'),
+      endedAt: new Date('2026-01-01T00:00:01.000Z'),
+    };
+  }
+
+  function realSelection() {
+    const result = resolveSelection({});
+    expect(result.ok).toBe(true);
+    return result.selection;
+  }
+
+  function baseParams(overrides = {}) {
+    const selection = overrides.selection ?? realSelection();
+    return {
+      conditionResult: fakeConditionResult(), condition: 'no-skill', runKind: 'calibration', scenarioId: 'test-selection-contract',
+      skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
+      modelRequested: selection.model.model_id,
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
+      selection,
+      promptArtifact: { prompt_sha256: 'b'.repeat(64), prompt_bytes: 1 },
+      skillSnapshotArtifact: { snapshot_sha256: 'c'.repeat(64), snapshot_bytes: 1, snapshot_file_count: 1 },
+      ...overrides,
+    };
+  }
+
+  it('a well-formed call with modelRequested === selection.model.model_id succeeds, and both model_requested fields are written from selection.model.model_id', () => {
+    const selection = realSelection();
+    const record = buildRunRecord(baseParams({ selection, modelRequested: selection.model.model_id }));
+    expect(record.model_requested).toBe(selection.model.model_id);
+    expect(record.agent_runtime.model_requested).toBe(selection.model.model_id);
+  });
+
+  it('a missing selection throws a named contract error, never the accidental deep-dereference TypeError', () => {
+    const params = baseParams();
+    delete params.selection;
+    expect(() => buildRunRecord(params)).toThrow(/selection is required and must be a well-formed resolveSelection\(\) result/);
+  });
+
+  it('a malformed selection (missing selection.model.model_id) throws the same named contract error', () => {
+    const selection = realSelection();
+    const params = baseParams({ selection: { ...selection, model: { ...selection.model, model_id: undefined } } });
+    expect(() => buildRunRecord(params)).toThrow(/selection is required and must be a well-formed resolveSelection\(\) result/);
+  });
+
+  it('a missing promptArtifact throws a named contract error', () => {
+    const params = baseParams();
+    delete params.promptArtifact;
+    expect(() => buildRunRecord(params)).toThrow(/promptArtifact is required and must be a well-formed computePromptArtifact\(\) result/);
+  });
+
+  it('a malformed promptArtifact (non-integer prompt_bytes) throws the same named contract error', () => {
+    const params = baseParams({ promptArtifact: { prompt_sha256: 'b'.repeat(64), prompt_bytes: 'not-a-number' } });
+    expect(() => buildRunRecord(params)).toThrow(/promptArtifact is required and must be a well-formed computePromptArtifact\(\) result/);
+  });
+
+  it('a missing skillSnapshotArtifact throws a named contract error', () => {
+    const params = baseParams();
+    delete params.skillSnapshotArtifact;
+    expect(() => buildRunRecord(params)).toThrow(/skillSnapshotArtifact is required and must be a well-formed computeSkillSnapshotArtifact\(\) result/);
+  });
+
+  it('a malformed skillSnapshotArtifact (missing snapshot_file_count) throws the same named contract error', () => {
+    const params = baseParams({ skillSnapshotArtifact: { snapshot_sha256: 'c'.repeat(64), snapshot_bytes: 1, snapshot_file_count: undefined } });
+    expect(() => buildRunRecord(params)).toThrow(/skillSnapshotArtifact is required and must be a well-formed computeSkillSnapshotArtifact\(\) result/);
+  });
+
+  it('a modelRequested that disagrees with selection.model.model_id throws closed -- never silently records the caller\'s mismatched value', () => {
+    const selection = realSelection();
+    const params = baseParams({ selection, modelRequested: 'some-other-model-the-caller-mistakenly-typed' });
+    expect(() => buildRunRecord(params)).toThrow(/modelRequested .* must exactly equal selection\.model\.model_id/);
   });
 });
 
@@ -2276,10 +2428,48 @@ describe('finalizeAndWriteMatrixRecords -- gate rejection precedence over sideca
     }
   });
 
+  // Codex round 2, Finding 3's pre-redaction validation pass (finalizeAndWriteMatrixRecords) now
+  // runs BEFORE this test's own target code path (the sidecar-builder-failure branch, only
+  // reachable once the gate ACCEPTS) -- minimalScenarioRecord is deliberately incomplete (its own
+  // comment: "only actually needed by buildRejectionDiagnostics's own narrower rejection-record
+  // schema"), which is fine for the 2 sibling tests above (both use rejectingGate, returning
+  // BEFORE pre-redaction validation is ever reached) but not for this one, which needs a genuinely
+  // schema-complete pair to exercise the ACCEPTING path at all. Built via the real buildRunRecord +
+  // TEST_RUN_RECORD_V6_INPUTS seam, matching the sibling "provenance-bound field redacted" describe
+  // block's own realV6ScenarioRecord pattern -- not shared across describe blocks (this file's own
+  // established convention), so duplicated locally rather than hoisted.
+  function completeScenarioMatrix() {
+    const shared = {
+      runKind: 'scenario', daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
+      projectAlias: 'test-gate-precedence-project', projectCommit: 'd'.repeat(40), projectUrl: null,
+      family: 'test-only', privacyStatus: 'public', seed: 1, repetitionIndex: 0,
+      gradeResult: {
+        expectedOutcomeMatched: false, success: false, firstUsefulSignalEventIndex: null,
+        testInvocationsTotal: 0, retries: 0, harnessEvidenceAmbiguous: false,
+        checks: GRADING_CHECK_NAMES.map((name) => ({ name, passed: true, detail: 'synthetic', evidence_event_indices: [] })),
+      },
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
+      ...TEST_RUN_RECORD_V6_INPUTS,
+    };
+    const startedAt = new Date('2026-01-01T00:00:00.000Z');
+    const endedAt = new Date('2026-01-01T00:00:01.000Z');
+    return [
+      buildRunRecord({
+        ...shared, conditionResult: { observation: minimalObservation(), startedAt, endedAt, cellOrdinal: 0 },
+        condition: 'current-skill', scenarioId: 'test-gate-precedence', skillSourceSha: 'a'.repeat(40), orderIndex: 0,
+      }),
+      buildRunRecord({
+        ...shared, conditionResult: { observation: minimalObservation(), startedAt, endedAt, cellOrdinal: 1 },
+        condition: 'no-skill', scenarioId: 'test-gate-precedence', skillSourceSha: null, orderIndex: 1,
+      }),
+    ];
+  }
+
   it('an ACCEPTED matrix promotes NOTHING when the sidecar builder fails, and reports why', async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'aec-gate-precedence-accept-fail-'));
     try {
-      const records = twoCellMatrix();
+      const records = completeScenarioMatrix();
       // cellOrdinal stamped on each -- captureOrdinalByRunId (cli.mjs) now derives from
       // conditionResult.cellOrdinal, never array position (Codex-audit fix, PR #418).
       const conditionResults = [{ observation: minimalObservation(), cellOrdinal: 0 }, { observation: minimalObservation(), cellOrdinal: 1 }];
@@ -2287,11 +2477,247 @@ describe('finalizeAndWriteMatrixRecords -- gate rejection precedence over sideca
       const result = await finalizeAndWriteMatrixRecords({
         runKind: 'scenario', records, conditionResults, hardGateFn: acceptingGate,
         repeats: 1, runsRootOverride: dir, buildSidecarsFn: alwaysFailingSidecarBuilder,
-        transcriptsByRunId: { 'scenario-current-skill-syn0001': '', 'scenario-no-skill-syn0002': '' },
+        transcriptsByRunId: { [records[0].run_id]: '', [records[1].run_id]: '' },
       });
       expect(result.ok).toBe(false);
       expect(result.reason).toContain('sidecar builder should never be invoked for a rejected matrix');
       expect(existsSync(path.join(dir, 'agentic-eval-scenario'))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// P1 architectural review: redaction must happen BEFORE the accepted-audit sidecar/provenance is
+// built FROM the record, never after -- otherwise a redaction pass that touches a
+// RUN_PROVENANCE_PROJECTION_KEYS field (accepted-run-audit.mjs) makes final cross-validation
+// structurally impossible to pass (the sidecar's stored hash would forever disagree with a re-read
+// of the final, redacted record). Exercised end-to-end against the REAL redaction pipeline
+// (privacy.mjs's own PUBLIC_SHAPE_RULES, always active -- no privatePatternsFile needed, and this
+// public repo has no lib/redact.mjs private-rule module to load one from anyway) and the REAL
+// accepted-run-audit sidecar builder, never mocked.
+describe('finalizeAndWriteMatrixRecords -- a provenance-bound field redacted by a real rule still cross-validates (P1 architectural review)', () => {
+  // scenario_id deliberately builds a value that matches PUBLIC_SHAPE_RULES' device_serial rule
+  // (an 8-15 char uppercase-alphanumeric run containing at least one digit) -- scenario_id is a
+  // RUN_PROVENANCE_PROJECTION_KEYS member, exactly the class of field this fix is about. Built via
+  // concatenation of two shorter pieces, NEITHER of which alone is long enough or has a digit, so
+  // this file's own committed TEXT never contains a contiguous run matching that shape (decouple-
+  // audit, tools/decouple-audit.mjs, statically scans committed file text for exactly this
+  // pattern -- a spelled-out example value in this very comment would trip it just as the code
+  // literal would, so intentionally none appears here or below). The runtime VALUE produced by the
+  // concatenation is unchanged and still genuinely matches the rule when the real redaction
+  // pipeline scans it.
+  const REDACTABLE_SCENARIO_ID = 'DEVICE' + 'SN1234';
+
+  // Matches the canonical minimal condition-observation-v1 shape (mirrors the sibling
+  // 'gate rejection precedence' describe block's own identical helper -- not shared across
+  // describe blocks in this file's own established convention).
+  function minimalObservation() {
+    return {
+      schema: 1,
+      runtime: { id: 'claude-code', protocolVersion: 1 },
+      process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1000n },
+      session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true },
+      transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+      terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
+      toolAttempts: [],
+      skill: {
+        available: false, profileMatchesCondition: true, snapshotBindingMatches: false,
+        targetInvocation: null, foreignInvocations: [],
+        ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+      },
+      hookStats: { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: true },
+      byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+      timing: { receiptNsByEventIndex: new Map() },
+    };
+  }
+
+  function fakeConditionResultLocal() {
+    return { observation: minimalObservation(), startedAt: new Date('2026-01-01T00:00:00.000Z'), endedAt: new Date('2026-01-01T00:00:01.000Z'), cellOrdinal: 0 };
+  }
+
+  const REQUIRED_GRADING_CHECK_NAMES = [
+    'no_transcript_structural_issues', 'bash_tool_use_present', 'tool_result_correlated',
+    'authoritative_evidence_well_formed', 'authoritative_target_matches_expected',
+    'authoritative_outcome_matches_expected', 'no_provider_contradiction', 'final_answer_consistent_with_evidence',
+  ];
+  function fakeGradeResultLocal(overrides = {}) {
+    return {
+      expectedOutcomeMatched: false, success: false, firstUsefulSignalEventIndex: null,
+      testInvocationsTotal: 0, retries: 0, harnessEvidenceAmbiguous: false,
+      checks: REQUIRED_GRADING_CHECK_NAMES.map((name) => ({ name, passed: true, detail: 'synthetic', evidence_event_indices: [] })),
+      ...overrides,
+    };
+  }
+
+  // Real buildRunRecord + the real resolveSelection() seam (TEST_RUN_RECORD_V6_INPUTS), never a
+  // hand-rolled 60-field object -- constructing a full v6 record by hand proved too error-prone at
+  // this scale (a first attempt was missing over 20 required fields before this rewrite).
+  function realV6ScenarioRecord(overrides = {}) {
+    const condition = overrides.condition ?? 'current-skill';
+    const conditionResult = overrides.conditionResult ?? { ...fakeConditionResultLocal(), cellOrdinal: overrides.orderIndex ?? 0 };
+    return buildRunRecord({
+      conditionResult, condition, runKind: 'scenario',
+      scenarioId: overrides.scenarioId ?? REDACTABLE_SCENARIO_ID,
+      skillSourceSha: condition === 'no-skill' ? null : PINNED_SKILL_SHA_LOCAL,
+      daemonPolicy: 'disabled-via-gradle-user-home-properties',
+      allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
+      projectAlias: 'test-redact-order-project', projectCommit: 'd'.repeat(40), projectUrl: null, family: 'test-only',
+      privacyStatus: 'public', seed: 1, orderIndex: overrides.orderIndex ?? 0, repetitionIndex: 0,
+      gradeResult: fakeGradeResultLocal(), ambientProfileScopeId: '00000000-0000-4000-8000-000000000000',
+      ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
+      ...TEST_RUN_RECORD_V6_INPUTS,
+      ...overrides,
+    });
+  }
+  const PINNED_SKILL_SHA_LOCAL = '0'.repeat(40);
+
+  it('a scenario_id redacted by a PUBLIC_SHAPE_RULES rule still produces a record and sidecar that cross-validate successfully, and the actually-written record carries the redacted value', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'aec-redact-order-'));
+    try {
+      const records = [
+        realV6ScenarioRecord({ condition: 'current-skill', orderIndex: 0 }),
+        realV6ScenarioRecord({ condition: 'no-skill', orderIndex: 1 }),
+      ];
+      const conditionResults = [fakeConditionResultLocal(), { ...fakeConditionResultLocal(), cellOrdinal: 1 }];
+      const acceptingGate = () => ({ ok: true, reason: null, cellResults: [], ambientProfileMatrixOk: true });
+      const buildSidecarsFn = async (recs, condResults) => {
+        const texts = [];
+        for (const [i, record] of recs.entries()) {
+          const built = buildAcceptedRunAuditSidecar({ record, conditionResult: condResults[i], terminalAuthoritativeEventIndex: null });
+          const finalized = finalizeAcceptedRunAuditSidecar(built, { privatePatternsFile: null });
+          if (!finalized.ok) return { ok: false, reason: finalized.reason };
+          record.accepted_audit = { schema: built.schema, relative_path: acceptedAuditRelativePathFor(record.run_id), sha256: finalized.sha256 };
+          texts.push(finalized.redactedText);
+        }
+        return { ok: true, sidecarTexts: texts };
+      };
+      const result = await finalizeAndWriteMatrixRecords({
+        runKind: 'scenario', records, conditionResults, hardGateFn: acceptingGate,
+        repeats: 1, runsRootOverride: dir, buildSidecarsFn,
+        transcriptsByRunId: { [records[0].run_id]: 'raw A', [records[1].run_id]: 'raw B' },
+      });
+      expect(result.ok, result.reason).toBe(true);
+      for (const record of result.redactedRecords) {
+        expect(record.scenario_id).toBe('<DEVICE_SERIAL>');
+        expect(record.scenario_id).not.toBe(REDACTABLE_SCENARIO_ID);
+      }
+      // Codex round 2, Finding 2/test C: the RETURNED redactedRecords object is not proof enough
+      // that the file actually on disk matches -- re-read record + sidecar from disk (through the
+      // exact same trusted-input gate cmdValidate/cmdAggregate use) and validate the pair that was
+      // REALLY written, not the in-memory object this function happens to return.
+      for (const record of result.redactedRecords) {
+        const runPath = path.join(dir, 'agentic-eval-scenario', `${record.run_id}.json`);
+        const onDisk = validateRunRecordFile(runPath);
+        expect(onDisk.errors, JSON.stringify(onDisk.errors)).toEqual([]);
+        expect(onDisk.record.scenario_id).toBe('<DEVICE_SERIAL>');
+        expect(onDisk.sidecar).not.toBeNull();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Codex round 2, Finding 3: validation was only ever run on the REDACTED record -- a private
+  // rule that happens to transform an invalid enum value into a VALID one would silently launder
+  // a producer defect through redaction, promoting a record that claims a state the producer
+  // never actually generated. Pre-redaction validation on the ORIGINAL records must catch this
+  // BEFORE redaction ever runs, and buildSidecarsFn must never be reached.
+  it('an invalid record whose bad field a private rule would coincidentally launder into a valid value fails BEFORE redaction -- buildSidecarsFn is never invoked (Codex round 2, Finding 3)', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'aec-prevalidate-'));
+    const privatePatternsFile = path.join(dir, '.private-patterns.json');
+    try {
+      // platform is a simple, isolated top-level enum (PLATFORM_VALUES, schemas.mjs) with no
+      // cross-field coupling elsewhere in the schema -- chosen specifically so the ONLY defect is
+      // the invalid enum value itself, not an incidental cascade from some OTHER field.
+      const INVALID_PLATFORM = 'not-a-real-platform';
+      writeFileSync(privatePatternsFile, JSON.stringify([
+        { class: 'test_enum_launder', literal: INVALID_PLATFORM, replacement: 'windows' },
+      ]));
+      // A genuine current-skill/no-skill PAIR -- repeats:1 requires exactly 2 records
+      // (findMatrixCompletenessGap), matching the existing positive test's own fixture shape; a
+      // single record would reject at the completeness gate BEFORE ever reaching redaction, never
+      // actually exercising the code path this test targets.
+      //
+      // platform is NOT a buildRunRecord input parameter -- buildRunRecord hardcodes it internally
+      // via resolvePlatform() (cli.mjs), silently ignoring any `platform` key passed to it. The
+      // corruption is applied by spreading onto the RETURNED record directly instead.
+      const records = [
+        realV6ScenarioRecord({ condition: 'current-skill', orderIndex: 0 }),
+        { ...realV6ScenarioRecord({ condition: 'no-skill', orderIndex: 1 }), platform: INVALID_PLATFORM },
+      ];
+      const conditionResults = [fakeConditionResultLocal(), { ...fakeConditionResultLocal(), cellOrdinal: 1 }];
+      const acceptingGate = () => ({ ok: true, reason: null, cellResults: [], ambientProfileMatrixOk: true });
+      let sidecarBuildCalls = 0;
+      const spySidecarsFn = async (recs) => {
+        sidecarBuildCalls += 1;
+        return { ok: true, sidecarTexts: recs.map(() => '{}') };
+      };
+      const result = await finalizeAndWriteMatrixRecords({
+        runKind: 'scenario', records, conditionResults, hardGateFn: acceptingGate,
+        repeats: 1, runsRootOverride: dir, buildSidecarsFn: spySidecarsFn, privatePatternsFile,
+        transcriptsByRunId: { [records[0].run_id]: 'raw A', [records[1].run_id]: 'raw B' },
+      });
+      expect(result.ok).toBe(false);
+      expect(result.reason).toMatch(/platform/);
+      expect(sidecarBuildCalls).toBe(0);
+      for (const record of records) {
+        expect(existsSync(path.join(dir, 'agentic-eval-scenario', `${record.run_id}.json`))).toBe(false);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Codex round 2, Finding 2: the second redaction pass (after buildSidecarsFn attaches
+  // accepted_audit) previously kept the freshly-redacted TEXT but discarded the freshly-redacted
+  // OBJECT, so downstream validation/cross-validation ran against the STALE, pre-second-pass
+  // object while the STALE object's own accepted_audit.relative_path still happened to match the
+  // canonical path -- even though the text actually about to be written to disk carries a
+  // DIFFERENT (tampered) value. A private rule targeting accepted_audit.relative_path's own
+  // literal value (only ever present starting the second pass, once buildSidecarsFn has attached
+  // it) reproduces exactly that divergence.
+  it('a private rule that retargets accepted_audit.relative_path fails closed and writes zero evidence -- never validates one object while persisting a different one (Codex round 2, Finding 2)', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'aec-relpath-tamper-'));
+    const privatePatternsFile = path.join(dir, '.private-patterns.json');
+    try {
+      // A genuine current-skill/no-skill PAIR -- see the sibling Finding-3 test above for why a
+      // single record would never reach the code path this test targets.
+      const records = [
+        realV6ScenarioRecord({ condition: 'current-skill', orderIndex: 0 }),
+        realV6ScenarioRecord({ condition: 'no-skill', orderIndex: 1 }),
+      ];
+      const [record] = records; // the tampered rule targets only this one -- the other stays clean
+      const conditionResults = [fakeConditionResultLocal(), { ...fakeConditionResultLocal(), cellOrdinal: 1 }];
+      const acceptingGate = () => ({ ok: true, reason: null, cellResults: [], ambientProfileMatrixOk: true });
+      const realRelativePath = acceptedAuditRelativePathFor(record.run_id);
+      writeFileSync(privatePatternsFile, JSON.stringify([
+        { class: 'test_relpath_tamper', literal: realRelativePath, replacement: 'audit/TAMPERED.json' },
+      ]));
+      const buildSidecarsFn = async (recs, condResults) => {
+        const texts = [];
+        for (const [i, rec] of recs.entries()) {
+          const built = buildAcceptedRunAuditSidecar({ record: rec, conditionResult: condResults[i], terminalAuthoritativeEventIndex: null });
+          const finalized = finalizeAcceptedRunAuditSidecar(built, { privatePatternsFile: null });
+          if (!finalized.ok) return { ok: false, reason: finalized.reason };
+          rec.accepted_audit = { schema: built.schema, relative_path: acceptedAuditRelativePathFor(rec.run_id), sha256: finalized.sha256 };
+          texts.push(finalized.redactedText);
+        }
+        return { ok: true, sidecarTexts: texts };
+      };
+      const result = await finalizeAndWriteMatrixRecords({
+        runKind: 'scenario', records, conditionResults, hardGateFn: acceptingGate,
+        repeats: 1, runsRootOverride: dir, buildSidecarsFn, privatePatternsFile,
+        transcriptsByRunId: { [records[0].run_id]: 'raw A', [records[1].run_id]: 'raw B' },
+      });
+      expect(result.ok).toBe(false);
+      // Zero evidence written for EITHER record -- a rejection anywhere in the batch promotes
+      // nothing, neither the record, nor its raw transcript, nor the sidecar.
+      for (const r of records) {
+        expect(existsSync(path.join(dir, 'agentic-eval-scenario', `${r.run_id}.json`))).toBe(false);
+        expect(existsSync(path.join(dir, 'agentic-eval-scenario', 'raw', `${r.run_id}.jsonl`))).toBe(false);
+        expect(existsSync(path.join(dir, 'agentic-eval-scenario', 'audit', `${r.run_id}.json`))).toBe(false);
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -2382,7 +2808,7 @@ describe('finalizeAndWriteMatrixRecords -- a localIntegrityByRunId mismatch on a
 // file via validateRunRecordFile (record schema + on-disk sidecar) BEFORE handing anything to
 // aggregateRuns, excluding and reporting any schema-v5 scenario record whose sidecar is
 // missing/malformed/mismatched.
-describe('cmdAggregate -- schema-v5 scenario records require a verifiable on-disk sidecar', () => {
+describe('cmdAggregate -- schema-v6 scenario records require a verifiable on-disk sidecar', () => {
   // Matches the canonical minimal condition-observation-v1 shape (see e.g.
   // agentic-eval-graders.test.js's own baseObservation helper) -- buildRunRecord now reads
   // conditionResult.observation exclusively, never a raw provider event. This describe block's
@@ -2422,33 +2848,37 @@ describe('cmdAggregate -- schema-v5 scenario records require a verifiable on-dis
     };
   }
 
-  /** A publicly complete, schema-v5-valid scenario record (built via the real buildRunRecord, not
+  /** A publicly complete, schema-v6-valid scenario record (built via the real buildRunRecord, not
    * hand-typed) with a FABRICATED accepted_audit -- overriding the null placeholder buildRunRecord
-   * itself always leaves. */
+   * itself always leaves. A schema:6 record requires exactly a v3 sidecar pointer (Section E). */
   function completeV5ScenarioRecordWithFabricatedAudit(auditOverrides = {}) {
     const record = buildRunRecord({
       conditionResult: fakeConditionResultWithEvents({}),
       condition: 'no-skill', runKind: 'scenario', scenarioId: 'test-aggregate-sidecar',
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [':shared:testAndroidHostTest'], allowedKmpTestSubcommands: ['parallel'],
-      policySha256: computePolicySha256(), modelRequested: 'fake-model', seed: 1, orderIndex: 0, repetitionIndex: 0,
+      policySha256: computePolicySha256(), ...TEST_RUN_RECORD_V6_INPUTS, seed: 1, orderIndex: 0, repetitionIndex: 0,
       projectAlias: 'test-aggregate-project', projectCommit: 'd'.repeat(40), projectUrl: 'https://example.invalid/test-aggregate-project',
       ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
       gradeResult: { expectedOutcomeMatched: true, success: true, checks: GRADING_CHECK_NAMES.map((name) => ({ name, passed: true, detail: 'ok', evidence_event_indices: [] })), firstUsefulSignalEventIndex: null, testInvocationsTotal: 1, retries: 0 },
     });
     record.benchmark_eligible = true;
-    record.accepted_audit = { schema: 1, relative_path: `audit/${record.run_id}.json`, sha256: '0'.repeat(64), ...auditOverrides };
+    record.accepted_audit = { schema: 3, relative_path: `audit/${record.run_id}.json`, sha256: '0'.repeat(64), ...auditOverrides };
     return record;
   }
 
   /** Sanity check the fixture itself: with a REMOVED accepted_audit requirement bypassed (a
    * well-formed, if fabricated, sidecar reference), this record must otherwise aggregate cleanly
    * -- proves any exclusion asserted below is attributable to the sidecar check this describe
-   * block exists to test, not some unrelated Fairness-Contract gap in the fixture. */
+   * block exists to test, not some unrelated Fairness-Contract gap in the fixture. withPartitionView
+   * mirrors aggregate.mjs's own pipeline exactly: buildAggregateGroup is called directly here
+   * (bypassing aggregateRuns), so this helper -- not aggregate.mjs -- is responsible for the same
+   * pre-projection a real caller always applies before the 3 new structural partition keys
+   * (Section F) are read off the record. */
   function expectFixtureWouldAggregateCleanlyOnItsOwnMerits(record) {
     const { errors: runErrors } = validateRun(record);
     expect(runErrors).toEqual([]);
-    const { errors: groupErrors, group } = buildAggregateGroup([record]);
+    const { errors: groupErrors, group } = buildAggregateGroup([withPartitionView(record)]);
     expect(groupErrors).toEqual([]);
     expect(group).not.toBeNull();
   }
@@ -2464,7 +2894,7 @@ describe('cmdAggregate -- schema-v5 scenario records require a verifiable on-dis
     }
   }
 
-  it('excludes and reports a schema-5 scenario record whose sidecar file does not exist on disk', () => {
+  it('excludes and reports a schema-6 scenario record whose sidecar file does not exist on disk', () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'aec-aggregate-sidecar-missing-'));
     try {
       const record = completeV5ScenarioRecordWithFabricatedAudit();
@@ -2480,7 +2910,7 @@ describe('cmdAggregate -- schema-v5 scenario records require a verifiable on-dis
     }
   });
 
-  it('excludes and reports a schema-5 scenario record whose sidecar hash does not match', () => {
+  it('excludes and reports a schema-6 scenario record whose sidecar hash does not match', () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'aec-aggregate-sidecar-badhash-'));
     try {
       const record = completeV5ScenarioRecordWithFabricatedAudit();

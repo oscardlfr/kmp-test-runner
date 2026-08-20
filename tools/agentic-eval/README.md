@@ -195,7 +195,7 @@ matrix is rejected anyway.
   `benchmark_eligible`-capable unless even (see below) — the cap exists because each repetition
   spawns 2 live Claude sessions once `run` is pointed at a real `claude` binary, so an unbounded
   value would let a single typo (`--repeats 100` for `--repeats 10`) silently authorize hundreds
-  of live sessions; `--dry-run`'s own output states `total_live_claude_sessions` explicitly.
+  of live sessions; `--dry-run`'s own output states `total_live_sessions` explicitly.
   `--dry-run` prints the fully resolved execution plan and returns before touching
   `--source-repo-dir` or spawning Claude. Without `--measurement-scope-file`, this is a genuine
   zero-subprocess preview; if that flag IS supplied, `--dry-run` does invoke `git` subprocesses —
@@ -449,7 +449,7 @@ matrix is rejected anyway.
   own `policy_allowed_*` list, and even then only that allowed value, never an arbitrary one),
   `plan_only`, `policy_decision` (`allow|deny|missing|not-applicable`), `result_status`
   (`success|error|missing`), `phase` (`pre-signal|produced-signal|post-signal|no-signal`), and — in
-  schema 2 — `dispatch_status`
+  schema 2 and 3 — `dispatch_status`
   (`hook_evaluated|pre_dispatch_blocked|unaccounted|not_applicable`) — plus
   each entry's own `tool_use_event_index`/`tool_result_event_index` (integers, not timestamps) and a
   stable `ordinal` (`0..N-1`, transcript order, including multiple calls dispatched in one assistant
@@ -471,12 +471,29 @@ matrix is rejected anyway.
   **not** independently prove the original raw transcript's own content, which was never committed
   in the first place and is not recoverable from the sidecar.
 
-  **Schema versions, and the construction-time vs at-rest evidentiary boundary.** Two versions
-  coexist: **v1** (frozen — the 92 historical committed sidecars) and **v2** (current), which adds
-  per-call `dispatch_status` and `summary.pre_dispatch_blocked_total`. Validation dispatches on the
-  sidecar's own real version and fails closed on anything outside `{1, 2}`; a record's
-  `accepted_audit.schema` must equal the schema of the sidecar it points at, checked during
-  cross-validation. That equality was implicit while only one version existed and is now asserted.
+  **Schema versions, and the construction-time vs at-rest evidentiary boundary.** Three versions
+  coexist: **v1** (frozen — the 92 historical committed sidecars), **v2** (frozen — the 64 committed
+  sidecars written since, adding per-call `dispatch_status` and `summary.pre_dispatch_blocked_total`;
+  both v1 and v2 still require literally `run_schema: 5`), and **v3** (current, for schema-v6
+  records). Validation dispatches on the sidecar's own real version and fails closed on anything
+  outside `{1, 2, 3}`; a record's `accepted_audit.schema` must equal the schema of the sidecar it
+  points at, checked during cross-validation — a schema-v5 record accepts only sidecar schema 1 or
+  2, a schema-v6 record accepts only sidecar schema 3 (never the reverse in either direction, so a
+  future schema bump can never silently borrow the wrong version's shape). That equality was
+  implicit while only one version existed and is now asserted per the compatible pair.
+
+  **v3** conserves v2's `tool_calls`/`summary` shape verbatim (no re-litigating the
+  `dispatch_status` contract below), requires literally `run_schema: 6`, and adds exactly one new
+  top-level field: `run_provenance_sha256` — the canonical SHA-256 of an exact projection of the
+  record (`schema`, `run_id`, `run_kind`, `condition`, `scenario_id`, `agent_runtime`,
+  `execution_profile`, `skill_observation`, `platform`, `repo_commit`,
+  `kmp_test_cli_source_sha`, `project_commit` — excluding the record's own `accepted_audit`
+  pointer, to avoid a hashing cycle). The builder computes it once; the self-contained validator
+  checks only its shape (a real lowercase 64-hex string); cross-validation recomputes it from the
+  re-read record and requires exact equality — binding runtime, model, execution profile, platform,
+  harness/project commits, and skill delivery/source/treatment identity to the sidecar in BOTH
+  directions (record → sidecar hash, sidecar → recomputed provenance hash), the same role a
+  content hash plays everywhere else in this harness.
 
   The boundary matters for what `dispatch_status: "pre_dispatch_blocked"` can be trusted to mean.
   At **construction** time `buildAcceptedRunAuditSidecar` consumes the canonical per-attempt map
@@ -1130,7 +1147,10 @@ extra positional argument is a hard error, not silently ignored. The process its
 before that write actually flushes — the same class of bug this harness already fixed once in
 `policy-hook.mjs`'s own write-then-exit ordering.
 
-`calibrate`, `smoke`, and `run` all accept `--model <name>` and an optional
+`calibrate`, `smoke`, and `run` all accept `--model <name>`, `--runtime <id>`, and
+`--execution-profile <id>` (see "Runtime/model/execution-profile selection" under "Schemas"
+below for the full registry-resolution contract — omitting all three reproduces today's single
+enabled default), plus an optional
 `--private-patterns-file <path>` — supplying the latter loads additional private-project
 redaction rules (via `tools/lib/redact.mjs`'s `loadPrivateRules`) and marks the resulting
 records `privacy_status: 'redacted-private'` instead of `'public'`. This harness's own usage today
@@ -1193,13 +1213,78 @@ via `>=`) are rejected as unrecognized/self-contradictory below v5, exactly like
 version-introduced field. See "Accepted-run observability" above for the full metric/sidecar
 contract.
 
+**v6** (runtime-neutral records) adds four required, non-nullable groups on **every** run_kind —
+`agent_runtime`, `execution_profile`, `skill_observation`, `usage` — reflecting a
+registry-resolved runtime/model/execution-profile selection (`registries.mjs`) rather than a
+hardcoded Claude Code assumption. `agent_runtime` carries `runtime_id`, `cli_version`,
+`model_requested`/`model_resolved`, and `model_vendor_expected`/`model_vendor_observed`; for
+`runtime_id: 'claude-code'`, `model_requested`/`model_resolved`/`cli_version` are required to
+exactly mirror the record's own legacy `model_requested`/`model_resolved`/`claude_code_version`
+fields (never a second, independently-drifting source of the same fact). `execution_profile`
+carries `id`, `sha256` (the registry's own canonical execution-profile hash), `isolation_kind`,
+`isolation_attestation_sha256`, `network_mode` — `strict-policy-v1`'s frozen registry semantics
+require `isolation_attestation_sha256: null` (no attestation is ever required under it).
+`skill_observation` carries `delivery_mode` (strictly gated by `condition` for claude-code —
+`'none'` for no-skill, `'runtime-extension'` for current-skill), `availability`/`activation`
+(each `{status, evidence_kind}`, structurally identical to — and required to cross-validate
+against — the legacy `skill_available`/`skill_invoked` fields), `source_sha`, and
+`treatment_size` (see "Treatment size" below). `usage` carries the four runtime-reported
+dimensions (`input`/`cached_input`/`cache_write`/`output`), `reasoning_output` (always `null` for
+Claude, which never reports it — never coerced to zero), `source`
+(`'runtime-reported'`/`'not-recorded'`, real only when at least one dimension is a genuine
+number), and `attributable_to_skill_load` (a separate `{status, dimensions, unit, reason}` group —
+Claude never attributes usage to skill loading specifically in this PR, so `status` is always
+`'not-recorded'` here, never inferred). All four groups (and every prior schema's own semantic
+rules, inherited via `>=`) are rejected as unrecognized/self-contradictory below v6.
+
+**Treatment size** (`skill_observation.treatment_size`) answers "what was made available to the
+model", never "what the model actually loaded or read" — `snapshot_sha256`/`snapshot_bytes`/
+`snapshot_file_count` are computed offline from Git objects (`input-artifacts.mjs`'s
+`computeSkillSnapshotArtifact`, via `git ls-tree`, never touching checkout bytes) over the
+materialized skill directory, and `prompt_sha256`/`prompt_bytes` identically for the scenario
+prompt text (`computePromptArtifact`) — both are artifact-availability measurements, not proof of
+model attention. For a no-skill condition, `snapshot_*` are `null` with
+`absent_reason: 'condition-no-skill'` (the skill was never made available at all); the prompt
+fields are still populated (a prompt is always sent, regardless of condition).
+
+**Runtime/model/execution-profile selection** (`--runtime <id>`, `--execution-profile <id>` — new
+flags on `calibrate`/`smoke`/`run` only, alongside the existing `--model <id>`) resolves against
+three closed JSON registries (`runtimes/registry.json`, `models/registry.json`,
+`execution-profiles/registry.json`) via `registries.mjs`'s `resolveSelection()`: omitting a flag
+resolves to that registry's own documented default for the axis (model/execution-profile
+resolution is scoped to whichever runtime was already resolved); an unknown, disabled, or
+cross-runtime-incompatible id fails closed with a clear reason before any auth/materialize/spawn
+ever happens — never a fuzzy match, never a silent fallback. Today's registries carry exactly one
+enabled entry per axis (`claude-code` / `claude-sonnet-5` / `strict-policy-v1`), so omitting all
+three flags reproduces the pre-registry default exactly.
+
+**Adding a model or execution profile is a registry-only change ONLY when the adapter actually
+supports the new entry's configuration** — every runtime adapter now implements two additional
+gating methods, `supportsModelConfiguration(modelEntry)` and `supportsExecutionProfile(profileEntry)`
+(`runtimes/contract.mjs`'s `ADAPTER_KEYS`), and `buildRegistries`/`resolveSelection` reject any
+ENABLED entry the adapter itself reports `false` for. This closes a real gap: `buildInvocation`
+only ever receives `{prompt, model, settingsPath}`, so a registry could previously describe a
+model/profile configuration (e.g. `default_reasoning_mode:"max"`, or a profile requiring a
+sandbox/restricted network/attestation) that was never actually applied, while a resulting record
+still carried it as if it had been. Claude Code's own adapter accepts an additional model only
+when `default_reasoning_mode` is `null` (`model_id` itself is genuinely registry-only — it is
+passed literally to the CLI); it accepts exactly `strict-policy-v1`'s current shape as an
+execution profile and rejects everything else, including a mutation of that same id and
+`sandboxed-unrestricted-v1` — until a later PR adds real runtime-specific implementation for a
+second profile and this adapter is deliberately widened, a differently-isolated profile can
+describe its shape in the JSON registry (`enabled:false`, kept for history/future work) but is
+never selectable.
+`aggregate`/`analyze`/`validate`/`corpus`/`scope` never accept these flags — selection is a
+per-run-command concern, not a reporting one.
+
 ## Fairness Contract
 
 `aggregate.mjs`/`schemas.mjs` refuse to fold runs into one aggregate unless they agree on every
 `HARD_PARTITION_FIELDS` key: `scenario_id`, `condition`, `family`, `run_kind`, `cache_state`,
 `project_commit`, `model_resolved`, `platform`, `skill_source_sha`, `policy_sha256`,
 `kmp_test_cli_source_sha`, `daemon_policy`, `env_allowlist_profile`, `policy_allowed_gradle_tasks`,
-`policy_allowed_kmptest_subcommands`, `claude_code_version`, `schema`, `ambient_skill_profile` —
+`policy_allowed_kmptest_subcommands`, `claude_code_version`, `schema`, `ambient_skill_profile`,
+`agent_runtime`, `execution_profile`, `skill_treatment` —
 beyond the original guards
 (a re-pinned scenario commit, a different resolved model, host platform, skill snapshot,
 policy-hook version, or harness code version), the next three guard against silently averaging
@@ -1227,7 +1312,25 @@ two schema:3 records missing the field previously aggregated with zero errors, t
 `validateAggregateGroupKey`'s own contract the moment the group was JSON-round-tripped, since an
 `undefined` object value silently vanishes on serialization). `buildAggregateGroup()` also refuses,
 as a general safety net, to return ANY group whose own key would contain an `undefined`
-value for any `HARD_PARTITION_FIELDS` entry, for the identical round-trip reason. The two
+value for any `HARD_PARTITION_FIELDS` entry, for the identical round-trip reason.
+
+**`agent_runtime`/`execution_profile`/`skill_treatment`** (schema v6, `run-record-view.mjs`) are
+three further structural partition keys, each projected the SAME way for both `aggregate.mjs` and
+`analysis.mjs` so neither module (nor a third) independently re-derives "legacy vs v6" logic.
+`agent_runtime` is the full real object below (runtime ID, requested/resolved model,
+expected/observed vendor, runtime CLI version — every one of these is its own independent guard,
+so a Claude Code version bump or a different resolved model never silently averages with another
+run's). `execution_profile`/`skill_treatment` are each a NARROWED projection —
+`{id, sha256, isolation_kind, network_mode}` and `{delivery_mode, source_sha, treatment_size}`
+respectively — deliberately excluding `isolation_attestation_sha256` and
+`availability`/`activation`: attestation is real per-execution evidence, bound and validated
+against the record, but can legitimately vary between cells under the same profile, so
+partitioning by it would make aggregating repetitions impossible; availability/activation are
+OBSERVED OUTCOMES (whether the skill actually loaded), never the treatment itself, and
+partitioning by an outcome would introduce exactly the survivorship bias this Contract exists to
+prevent. A record below schema v6 projects all three as the literal string `"not-recorded"`
+(never `null`, never inferred from `claude_code_version` or hook/policy fields) — so a legacy and
+a v6 record can never silently share a bucket merely by both lacking these fields. The two
 `policy_allowed_*` fields (and now `ambient_skill_profile`) are arrays or plain objects;
 `buildAggregateGroup()`'s mixing-check — and `aggregate.mjs`'s own bucketing key — both compare
 them via `canonicalStructuredValue()` (`schemas.mjs`): a single, shared serializer that recursively
@@ -1236,8 +1339,9 @@ structurally-identical values are treated as matching regardless of BOTH object-
 identity and key INSERTION order (a bare `JSON.stringify` is not canonical w.r.t. the latter — a
 real gap this closes: two `ambient_skill_profile` objects with the same `{count, scope_id,
 fingerprint_hmac}` values in a different key order previously landed in separate groups/buckets).
-`CURRENT_AGGREGATE_SCHEMA` is **2** (was 1) — `group_key`'s own shape changed (gained
-`ambient_skill_profile`), versioned exactly like `LATEST_RUN_SCHEMA` is whenever a run record's own
+`CURRENT_AGGREGATE_SCHEMA` is **3** (was 1, then 2 when `group_key` gained
+`ambient_skill_profile`; now 3 for the `agent_runtime`/`execution_profile`/`skill_treatment`
+addition above) — versioned exactly like `LATEST_RUN_SCHEMA` is whenever a run record's own
 shape changes; no historical committed aggregate-output files exist to preserve compatibility with
 (aggregate output is always computed on demand, never persisted under `tools/runs/`). The bucket
 key itself is built via `JSON.stringify()`
@@ -1324,7 +1428,7 @@ together, into 5 independent axes per run:
 5. **final task outcome** — `expected_outcome_matched`, `final_answer_consistent`, `success`
 
 plus one closed-vocabulary `failure_class` per run (see below). It operates ONLY on already-
-committed schema-v5 `run_kind:'scenario'` records and their validated accepted-run-audit sidecars
+committed schema-v5-or-later `run_kind:'scenario'` records and their validated accepted-run-audit sidecars
 — reusing `run-record-loader.mjs`'s `validateRunRecordFile()` as the ONLY gate for trusting a
 file, exactly like `aggregate`/`validate` already do (that module also returns the sidecar's own
 already-parsed object, so this command never re-opens the file a second time) — never a raw
@@ -1463,6 +1567,26 @@ structural design, `analyzeRunsDir`'s complete return value is passed through a 
 (`tools/lib/redact.mjs`'s `PUBLIC_SHAPE_RULES`, via `privacy.mjs`) before being returned; a value
 that still matches even after redaction — which nothing this module structurally emits should ever
 do — withholds the entire batch rather than returning content that failed its own safety check.
+
+**Schema v6 reporting fields.** Per-run entries and summary groups both gain `agent_runtime`,
+`execution_profile`, `skill_observation`, and `usage` — the FULL real object for a schema-v6
+record, or the literal `"not-recorded"` sentinel below v6 (never `null`, never inferred). Unlike
+`aggregate.mjs`'s own group_key projection, `execution_profile`/`skill_observation` here are the
+FULL objects (including `isolation_attestation_sha256` and `availability`/`activation`) — there is
+no reason to hide them from a human-readable report the way there is for a bucketing key. A
+schema-v6 record's `target_skill_invoked` is read from `skill_observation.activation.status`
+(`'confirmed'` → `true`, `'not-observed'` → `false`, `'indirect'`/`'not-observable'` → `null`)
+rather than the legacy `skill_invoked.value` — schema invariant 8 already requires the two to
+agree for claude-code, so this is behavior-preserving today, and exists for forward compatibility
+with a runtime whose activation is not simply boolean. Group summaries additionally report
+`usage_source_counts` and 5 SEPARATE distributions — `usage_input_distribution`,
+`usage_cached_input_distribution`, `usage_cache_write_distribution`, `usage_output_distribution`,
+`usage_reasoning_output_distribution` — deliberately no summed total field anywhere: runtime-
+native token counts are never rankable as if they shared a tokenizer or hidden prompt, so a single
+combined number would misleadingly imply they are. `ANALYSIS_SCHEMA` is **2** (was 1) for this
+shape change; bucketing/grouping is unchanged (still `HARD_PARTITION_FIELDS`, which itself gained
+the 3 new structural keys — see "Fairness Contract" above, which `analyze` shares verbatim via
+`run-record-view.mjs`'s `withPartitionView()`).
 
 **Explicit limitation**: no timing metric is derived or reported anywhere in this command's output
 — the committed schema-v5 sidecars carry event-INDEX ordering only, never per-event wall-clock
@@ -1616,6 +1740,19 @@ unparseable JSON, wrong schema value, invalid `scope_id`, non-canonical or wrong
   noisy content, never a bare whole-string parse) using real stdout captured from direct local CLI
   execution, but that is not the same thing as having observed a genuine live capture. Confirming
   it is exactly the job of a future live-validation PR, mirroring #373/#378 relative to #372.
+- **Runtime-neutral records (this PR) is schema/registry/reporting scope only.**
+  `schemas.mjs`'s own closed enums reserve `codex-cli` (as an `agent_runtime.runtime_id` value)
+  and `sandboxed-unrestricted-v1` (as an `execution_profile.id` value) — so a FUTURE record could
+  validly carry either — but neither is registered in `runtimes/registry.json` /
+  `execution-profiles/registry.json` today (both files list exactly one entry each,
+  `claude-code` / `strict-policy-v1`), neither has a concrete adapter
+  (`ADAPTERS_BY_RUNTIME_ID` carries only `claude-code`), and `resolveSelection()` fails closed on
+  either exactly like any other unregistered id — `--runtime codex-cli` /
+  `--execution-profile sandboxed-unrestricted-v1` are rejected today, not silently accepted. A
+  real Codex (or any other non-Claude) adapter, a real `sandboxed-unrestricted-v1` isolation
+  implementation and its own registry entry, and this harness's own no-policy-hooks execution mode
+  are all future PRs' scope, not authorized or implemented here — this PR's own fake-Claude E2E
+  coverage never spawns a real vendor binary or touches the network for any of them.
 - Wildcard support in `--module-filter`/`--test-filter` is out of scope for the policy hook's
   grammar in this PR (a shell could re-expand an unquoted wildcard after the hook approves it) —
   documented as a future grammar extension.

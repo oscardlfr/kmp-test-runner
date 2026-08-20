@@ -4,12 +4,16 @@
 // tools/agentic-eval/cli.mjs -- entrypoint for the reproducible skill evaluation harness.
 //
 // Usage:
-//   node tools/agentic-eval/cli.mjs calibrate [--model <name>] [--private-patterns-file <path>]
+//   node tools/agentic-eval/cli.mjs calibrate [--runtime <id>] [--model <name>]
+//                                              [--execution-profile <id>]
+//                                              [--private-patterns-file <path>]
 //   node tools/agentic-eval/cli.mjs smoke --source-repo-dir <local-clone> --pinned-commit <sha>
-//                                          [--project-alias <alias>] [--model <name>]
+//                                          [--project-alias <alias>] [--runtime <id>]
+//                                          [--model <name>] [--execution-profile <id>]
 //                                          [--private-patterns-file <path>]
 //   node tools/agentic-eval/cli.mjs run --scenario <id> --source-repo-dir <local-clone> --seed <n>
-//                                        [--repeats <n>] [--model <name>] [--dry-run]
+//                                        [--repeats <n>] [--runtime <id>] [--model <name>]
+//                                        [--execution-profile <id>] [--dry-run]
 //                                        [--private-patterns-file <path>]
 //   node tools/agentic-eval/cli.mjs corpus validate
 //   node tools/agentic-eval/cli.mjs aggregate --runs-dir <dir>
@@ -43,6 +47,16 @@ import { LATEST_RUN_SCHEMA, SUPPORTED_RUN_SCHEMAS, validateRun, validateScenario
 import { materializeCalibrationProject, materializeScenarioProject, removeScenarioWorktree, realpath } from './materialize.mjs';
 import { msSinceOrigin, fingerprintNames, canonicalNamesKey, selectShellAttempts } from './runtimes/contract.mjs';
 import { acquireSharedEvalResources, runSingleCondition, runScenarioMatrix, reportCleanupFailures } from './matrix-runner.mjs';
+// resolveSelection is the ONLY way this file ever learns which runtime adapter to use --
+// cli.mjs never imports runtimes/claude-code.mjs directly (registries.mjs is the sole allowed
+// importer of that module; see agentic-eval-runtime-boundary.test.js).
+import { resolveSelection } from './registries.mjs';
+// Static treatment-size artifacts (schema v6's skill_observation.treatment_size) -- computed
+// entirely offline, once per command (prompt) / once per invocation before the first session
+// (skill snapshot). See input-artifacts.mjs's own header for why this is measured from Git
+// objects, never checkout bytes, and why it is never a second notion of "the skill" beyond what
+// materializeSkillSnapshot already delivers.
+import { computePromptArtifact } from './input-artifacts.mjs';
 import { cellTranscriptIntegrityOk, summarizeUnexpectedToolUses, evaluateNamedChecks } from './cell-integrity.mjs';
 import { gradeScenarioCondition } from './graders.mjs';
 import { buildRunMatrix, buildConditionOrders } from './randomizer.mjs';
@@ -140,14 +154,18 @@ const RUNS_ROOT_IS_DEFAULT = isRunsRootDefault(RUNS_ROOT, REPO_ROOT);
 const HELP = `tools/agentic-eval/cli.mjs -- reproducible skill evaluation harness
 
 Usage:
-  node tools/agentic-eval/cli.mjs calibrate [--model <name>] [--private-patterns-file <path>]
+  node tools/agentic-eval/cli.mjs calibrate [--runtime <id>] [--model <name>]
+                                             [--execution-profile <id>]
+                                             [--private-patterns-file <path>]
                                              [--measurement-scope-file <path>]
   node tools/agentic-eval/cli.mjs smoke --source-repo-dir <local-clone> --pinned-commit <sha>
-                                         [--project-alias <alias>] [--model <name>]
+                                         [--project-alias <alias>] [--runtime <id>]
+                                         [--model <name>] [--execution-profile <id>]
                                          [--private-patterns-file <path>]
                                          [--measurement-scope-file <path>]
   node tools/agentic-eval/cli.mjs run --scenario <id> --source-repo-dir <local-clone> --seed <n>
-                                       [--repeats <n>] [--model <name>] [--dry-run]
+                                       [--repeats <n>] [--runtime <id>] [--model <name>]
+                                       [--execution-profile <id>] [--dry-run]
                                        [--private-patterns-file <path>]
                                        [--measurement-scope-file <path>]
   node tools/agentic-eval/cli.mjs scope init --out <path>
@@ -237,9 +255,9 @@ function parseArgs(argv) {
 // --private-patterns-file disabled redaction with no error and reported the run as 'public'. This
 // allowlist closes that: any flag not in the current subcommand's list is a hard error.
 const SUBCOMMAND_SHAPES = {
-  calibrate: { flags: ['model', 'private-patterns-file', 'measurement-scope-file'], extraPositionals: 0 },
-  smoke: { flags: ['model', 'source-repo-dir', 'pinned-commit', 'project-alias', 'private-patterns-file', 'measurement-scope-file'], extraPositionals: 0 },
-  run: { flags: ['scenario', 'source-repo-dir', 'seed', 'repeats', 'model', 'dry-run', 'private-patterns-file', 'measurement-scope-file'], extraPositionals: 0 },
+  calibrate: { flags: ['runtime', 'model', 'execution-profile', 'private-patterns-file', 'measurement-scope-file'], extraPositionals: 0 },
+  smoke: { flags: ['runtime', 'model', 'execution-profile', 'source-repo-dir', 'pinned-commit', 'project-alias', 'private-patterns-file', 'measurement-scope-file'], extraPositionals: 0 },
+  run: { flags: ['scenario', 'source-repo-dir', 'seed', 'repeats', 'runtime', 'model', 'execution-profile', 'dry-run', 'private-patterns-file', 'measurement-scope-file'], extraPositionals: 0 },
   corpus: { flags: [], extraPositionals: 1 }, // corpus <validate>
   aggregate: { flags: ['runs-dir'], extraPositionals: 0 },
   analyze: { flags: ['runs-dir'], extraPositionals: 0 },
@@ -302,6 +320,21 @@ function resolveMeasurementScopeOrFail(measurementScopeFile) {
   } catch (err) {
     return { ok: false, reason: `--measurement-scope-file is invalid: ${err.message}` };
   }
+}
+
+/** Resolves the (runtime, model, execution-profile) selection for calibrate/smoke/run -- the ONE
+ * call site every one of those three commands makes, exactly once, before any operation that
+ * could spend a session (mirrors validatePrivatePatternsFileOrFail's own shape: never throws,
+ * `{ok:false, reason}` on any unknown/disabled/incompatible id). Omitted flags (parseArgs never
+ * sets a key it didn't see, so `args.runtime`/`args.model`/`args['execution-profile']` are
+ * `undefined` when not supplied) resolve to registries.mjs's own documented defaults -- never a
+ * second, CLI-local default. */
+function resolveSelectionOrFail(args) {
+  return resolveSelection({
+    runtimeId: args.runtime ?? null,
+    modelId: args.model ?? null,
+    executionProfileId: args['execution-profile'] ?? null,
+  });
 }
 
 function nullableMetric(value, reason = null) {
@@ -441,6 +474,12 @@ function verifyExactCommandsSucceeded(bashResults, expectedCommands) {
   }
   return remaining.every((r) => r.matched);
 }
+// Named (not inlined at the runConditionPair call site) so cmdCalibrate's/cmdSmoke's own
+// promptArtifact computations (schema v6's skill_observation.treatment_size.prompt_*) read the
+// byte-identical text the real session is launched with -- never a second, independently-typed-out
+// copy.
+const CALIBRATE_PROMPT = 'Use the kmp-test-runner skill to check this project.';
+const SMOKE_PROMPT = "Run `kmp-test doctor --json` in this project directory, then run `kmp-test describe --json`. Based only on their output, tell me whether the test setup looks healthy. Do not run any other commands or tools.";
 const SMOKE_EXPECTED_COMMANDS = [
   ['kmp-test', 'doctor', '--json'],
   ['kmp-test', 'describe', '--json'],
@@ -802,7 +841,8 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
     }
     if (!integrityB.ok) {
       return {
-        runA: null, runB, snapshotDir: shared.snapshotDir, daemonPolicy: shared.daemonPolicy,
+        runA: null, runB, snapshotDir: shared.snapshotDir, skillSnapshotArtifact: shared.skillSnapshotArtifact,
+        daemonPolicy: shared.daemonPolicy,
         allowedGradleTasks, allowedKmpTestSubcommands, cleanup: runCleanup,
         plannedCellCount: 2, executedCellCount: 1, matrixComplete: false,
         failFastStop: {
@@ -833,7 +873,8 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
     }
 
     return {
-      runA, runB, snapshotDir: shared.snapshotDir, daemonPolicy: shared.daemonPolicy,
+      runA, runB, snapshotDir: shared.snapshotDir, skillSnapshotArtifact: shared.skillSnapshotArtifact,
+      daemonPolicy: shared.daemonPolicy,
       allowedGradleTasks, allowedKmpTestSubcommands, cleanup: runCleanup,
       plannedCellCount: 2, executedCellCount: 2, matrixComplete: true, failFastStop: null,
     };
@@ -846,7 +887,7 @@ async function runConditionPair({ prompt, model, allowedGradleTasks, allowedKmpT
 function buildRunRecord({
   conditionResult, condition, runKind, scenarioId, skillSourceSha, daemonPolicy,
   allowedGradleTasks, allowedKmpTestSubcommands, policySha256, projectAlias = 'calibration-project',
-  projectCommit = null, projectUrl = null, family = 'trigger-only', modelRequested = 'claude-sonnet-5',
+  projectCommit = null, projectUrl = null, family = 'trigger-only', modelRequested,
   privacyStatus = 'public',
   // Scenario-only (decisions 6/12/13) -- every one defaults so calibrate/smoke's existing call
   // sites are completely unaffected. `gradeResult` is graders.mjs's gradeScenarioCondition() own
@@ -859,7 +900,37 @@ function buildRunRecord({
   // record this invocation produces -- REQUIRED (no default), so a caller can never silently fall
   // back to an unkeyed/absent key.
   ambientProfileScopeId, ambientProfileKey,
+  // schema v6 (agentic-eval-runtime-neutral-records-v1): `selection` is registries.mjs's own
+  // resolveSelection() result (REQUIRED -- no default, matching ambientProfileScopeId/Key's own
+  // "never silently fall back" discipline); `promptArtifact`/`skillSnapshotArtifact` are
+  // input-artifacts.mjs's offline treatment-size computations, each computed exactly ONCE by the
+  // caller (per-command for the prompt, per-invocation for the snapshot) and passed in here --
+  // this function never recomputes either.
+  selection, promptArtifact, skillSnapshotArtifact,
 }) {
+  // schema v6 required-input contract: a missing/malformed selection, promptArtifact, or
+  // skillSnapshotArtifact -- or a modelRequested that disagrees with the registry-resolved
+  // selection.model.model_id -- fails immediately with a clear, named error here, never as an
+  // accidental TypeError from a deep field dereference further below (a caller with a genuinely
+  // broken input previously got "Cannot read properties of undefined (reading 'runtime')" instead
+  // of a legible contract violation naming exactly which parameter and field is wrong).
+  const isObj = (v) => v != null && typeof v === 'object' && !Array.isArray(v);
+  if (!isObj(selection) || !isObj(selection.runtime) || typeof selection.runtime.runtime_id !== 'string' || selection.runtime.runtime_id.length === 0
+    || !isObj(selection.model) || typeof selection.model.model_id !== 'string' || selection.model.model_id.length === 0 || typeof selection.model.model_vendor_expected !== 'string'
+    || !isObj(selection.executionProfile) || typeof selection.executionProfile.id !== 'string' || typeof selection.executionProfile.isolation_kind !== 'string' || typeof selection.executionProfile.network_mode !== 'string'
+    || typeof selection.executionProfileSha256 !== 'string' || selection.executionProfileSha256.length === 0) {
+    throw new TypeError('buildRunRecord: selection is required and must be a well-formed resolveSelection() result (selection.runtime.runtime_id / selection.model.{model_id,model_vendor_expected} / selection.executionProfile.{id,isolation_kind,network_mode} / selection.executionProfileSha256)');
+  }
+  if (!isObj(promptArtifact) || typeof promptArtifact.prompt_sha256 !== 'string' || !Number.isInteger(promptArtifact.prompt_bytes)) {
+    throw new TypeError('buildRunRecord: promptArtifact is required and must be a well-formed computePromptArtifact() result (prompt_sha256/prompt_bytes)');
+  }
+  if (!isObj(skillSnapshotArtifact) || typeof skillSnapshotArtifact.snapshot_sha256 !== 'string' || !Number.isInteger(skillSnapshotArtifact.snapshot_bytes) || !Number.isInteger(skillSnapshotArtifact.snapshot_file_count)) {
+    throw new TypeError('buildRunRecord: skillSnapshotArtifact is required and must be a well-formed computeSkillSnapshotArtifact() result (snapshot_sha256/snapshot_bytes/snapshot_file_count)');
+  }
+  if (modelRequested !== selection.model.model_id) {
+    throw new TypeError(`buildRunRecord: modelRequested (${JSON.stringify(modelRequested)}) must exactly equal selection.model.model_id (${JSON.stringify(selection.model.model_id)}) -- the caller's own asserted model must agree with the registry-resolved selection, never an independent value`);
+  }
+
   const { observation, startedAt, endedAt } = conditionResult;
   const isScenario = runKind === 'scenario';
   const notApplicableReason = `${runKind} run -- no scenario grader applies`;
@@ -934,6 +1005,90 @@ function buildRunRecord({
   // findBlockingHarnessToolingDirty/finalizeAndWriteRecords were made conditionally fail-closed)
   // is the bug this constant exists to prevent from recurring.
   const harnessToolingDispositionNote = `always disclosed here; additionally fail-closed by finalizeAndWriteRecords() when writing to the default, committable RUNS_ROOT -- see resolveHarnessProvenance's own comment for the full conditional reasoning`;
+
+  // Schema v6 (agentic-eval-runtime-neutral-records-v1): agent_runtime/execution_profile are a
+  // direct, faithful projection of the resolved registry selection plus the observation's own
+  // reported identity -- never re-derived independently of the legacy fields they must exactly
+  // mirror for claude-code (schema invariant 3, enforced by validateRun). model_vendor_observed
+  // stays null: Claude's own result/init events never report a separate vendor string.
+  const agentRuntime = {
+    runtime_id: selection.runtime.runtime_id,
+    cli_version: observation.session.runtimeVersion,
+    model_requested: selection.model.model_id,
+    model_resolved: observation.session.modelResolved,
+    model_vendor_expected: selection.model.model_vendor_expected,
+    model_vendor_observed: null,
+  };
+  const executionProfileGroup = {
+    id: selection.executionProfile.id,
+    sha256: selection.executionProfileSha256,
+    isolation_kind: selection.executionProfile.isolation_kind,
+    // strict-policy-v1 never requires attestation (registry: isolation_attestation_required:
+    // false) -- a future sandboxed-unrestricted-v1 profile would populate this from a real
+    // attestation artifact instead, never from this function guessing one.
+    isolation_attestation_sha256: null,
+    isolation_attestation_required: selection.executionProfile.isolation_attestation_required,
+    network_mode: selection.executionProfile.network_mode,
+    policy_mode: selection.executionProfile.policy_mode,
+    required_capabilities: selection.executionProfile.required_capabilities,
+  };
+  // skill_observation: delivery/availability/activation come from the SAME observation.skill
+  // facts the legacy skill_available/skill_invocation_attempted/skill_invoked fields already read
+  // -- never a second, independent derivation. treatment_size reuses the ONE promptArtifact/
+  // skillSnapshotArtifact the caller computed once (this function never recomputes either).
+  const skillObservation = {
+    delivery_mode: condition === 'current-skill' ? 'runtime-extension' : 'none',
+    availability: {
+      status: observation.skill.available ? 'observed-present' : 'observed-absent',
+      evidence_kind: 'runtime-catalog',
+    },
+    activation: {
+      status: observation.skill.targetInvocation?.confirmed === true ? 'confirmed' : 'not-observed',
+      evidence_kind: 'runtime-explicit-event',
+    },
+    source_sha: condition === 'current-skill' ? skillSourceSha : null,
+    treatment_size: condition === 'current-skill'
+      ? {
+          snapshot_sha256: skillSnapshotArtifact.snapshot_sha256,
+          snapshot_bytes: skillSnapshotArtifact.snapshot_bytes,
+          snapshot_file_count: skillSnapshotArtifact.snapshot_file_count,
+          prompt_sha256: promptArtifact.prompt_sha256,
+          prompt_bytes: promptArtifact.prompt_bytes,
+          absent_reason: null,
+        }
+      : {
+          snapshot_sha256: null,
+          snapshot_bytes: null,
+          snapshot_file_count: null,
+          prompt_sha256: promptArtifact.prompt_sha256,
+          prompt_bytes: promptArtifact.prompt_bytes,
+          absent_reason: 'condition-no-skill',
+        },
+  };
+  // usage: the four Claude-reported dimensions, copied ONCE from the same terminal.usage the
+  // legacy tokens.* fields already read -- schema invariant 9 requires these stay exact
+  // projections of each other, never independently derived. source is runtime-reported only when
+  // at least one dimension is a real integer (never inferred true merely because the process
+  // completed) -- claude never reports a reasoning_output dimension, so that one is always null,
+  // and attributable_to_skill_load is always not-recorded (claude never attributes usage to skill
+  // loading specifically in this PR), with the one reason value that differs by condition.
+  const usageDims = observation.terminal.usage;
+  const hasAnyUsageDimension = [usageDims.input, usageDims.cached_input, usageDims.cache_write, usageDims.output].some((v) => typeof v === 'number');
+  const usageGroup = {
+    source: hasAnyUsageDimension ? 'runtime-reported' : 'not-recorded',
+    input: usageDims.input ?? null,
+    cached_input: usageDims.cached_input ?? null,
+    cache_write: usageDims.cache_write ?? null,
+    output: usageDims.output ?? null,
+    reasoning_output: null,
+    attributable_to_skill_load: {
+      status: 'not-recorded',
+      dimensions: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null },
+      unit: null,
+      reason: condition === 'current-skill' ? 'runtime-does-not-report-skill-attribution' : 'condition-no-skill',
+    },
+  };
+
   return {
     schema: LATEST_RUN_SCHEMA,
     run_id: `${runKind}-${condition}-${randomUUID().slice(0, 8)}`,
@@ -946,7 +1101,7 @@ function buildRunRecord({
     kmp_test_cli_version: provenance.cliVersion,
     kmp_test_cli_source_sha: provenance.repoCommit,
     resolved_kmp_test_executable_path: provenance.resolvedExecutablePath,
-    model_requested: modelRequested,
+    model_requested: selection.model.model_id,
     model_resolved: observation.session.modelResolved,
     session_id_observed: observation.session.sessionIdObserved,
     claude_code_version: observation.session.runtimeVersion,
@@ -1007,6 +1162,15 @@ function buildRunRecord({
     policy_denials_before_first_signal: policyDenialsBeforeFirstSignal,
     policy_denials_after_first_signal: policyDenialsAfterFirstSignal,
     accepted_audit: null,
+    // Schema v6 (agentic-eval-runtime-neutral-records-v1) -- the four canonical groups, computed
+    // once above. Legacy tokens/claude_code_version/model_requested/model_resolved below remain
+    // exactly as they always were; they are never derived FROM these new groups (or vice versa) --
+    // both sides read the SAME underlying observation/selection facts independently, and
+    // validateRun's own schema-v6 invariants prove they stay in lockstep.
+    agent_runtime: agentRuntime,
+    execution_profile: executionProfileGroup,
+    skill_observation: skillObservation,
+    usage: usageGroup,
     tokens: {
       input: nullableMetric(observation.terminal.usage.input, observation.terminal.present ? undefined : 'no result event'),
       output: nullableMetric(observation.terminal.usage.output, observation.terminal.present ? undefined : 'no result event'),
@@ -1894,30 +2058,38 @@ async function finalizeAndWriteMatrixRecords({
   const eligible = scenarioMatrixIsBenchmarkEligible(records, gate);
   for (const record of records) record.benchmark_eligible = eligible;
 
-  // Accepted-audit sidecar work -- ONLY reached once gate.ok is confirmed true. buildSidecarsFn
-  // builds+finalizes+attaches record.accepted_audit for every record (cmdRun supplies the
-  // closure); a failure here means promotion cannot proceed (the sidecar contract can't be
-  // satisfied), but it is never confused with a gate rejection -- writeRejectedRunDiagnostics is
-  // never called for this failure class, matching how a privacy-check-refusal failure below is
-  // also never treated as a rejection.
-  let sidecarTexts = null;
-  if (buildSidecarsFn != null) {
-    const sidecarBuild = await buildSidecarsFn(records, conditionResults);
-    if (!sidecarBuild.ok) {
-      return { ok: false, reason: `Cannot promote: ${sidecarBuild.reason}` };
-    }
-    sidecarTexts = sidecarBuild.sidecarTexts;
-  }
-
+  // Validate the ORIGINAL, unredacted records FIRST (Codex round 2, Finding 3) -- catches a
+  // producer-generated defect (e.g. an invalid enum value) BEFORE any redaction rule ever touches
+  // it. Without this, a private rule that coincidentally launders an invalid value into a valid
+  // one would silently promote a record attributing a state the producer never actually
+  // generated -- schema validation would only ever see the POST-redaction (laundered) value.
+  // accepted_audit genuinely does not exist yet at this point (buildSidecarsFn has not run) --
+  // validated here against a placeholder that is structurally valid but never the real sidecar
+  // hash (schema/relative_path/sha256 are the only 3 keys validateRun's own shape check inspects;
+  // relative_path is computed for real since it is a pure function of run_id alone), so this pass
+  // can check every OTHER field without a false "accepted_audit missing" rejection that would
+  // otherwise fire on every scenario record, always, regardless of any real defect. The placeholder
+  // is local to this validation call only -- never written anywhere, never mixed into `records`.
   for (const [i, record] of records.entries()) {
-    const { errors } = validateRun(record);
+    const needsPlaceholderAudit = record.schema >= 5 && record.run_kind === 'scenario' && record.accepted_audit == null;
+    const preValidationRecord = needsPlaceholderAudit
+      ? { ...record, accepted_audit: { schema: LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA, relative_path: acceptedAuditRelativePathFor(record.run_id), sha256: '0'.repeat(64) } }
+      : record;
+    const { errors } = validateRun(preValidationRecord);
     if (errors.length > 0) {
-      return { ok: false, reason: `Run record [${i}] (repetition ${record.repetition_index}, ${record.condition}) failed schema validation: ${JSON.stringify(errors)}` };
+      return { ok: false, reason: `Run record [${i}] (repetition ${record.repetition_index}, ${record.condition}) failed pre-redaction schema validation: ${JSON.stringify(errors)}` };
     }
   }
 
-  const redactedRecords = [];
-  const redactedTexts = [];
+  // Redact FIRST -- before any accepted-audit/provenance work ever touches a record (P1
+  // architectural review). A sidecar's run_provenance_sha256 (and every other accepted_audit
+  // field) must be computed from the record that actually gets promoted: the redacted one.
+  // Building the sidecar from the UNREDACTED record, then redacting afterward (the old order),
+  // made final cross-validation structurally impossible to ever pass for a record where a
+  // private-pattern rule happens to touch a provenance-bound field -- the stored hash would
+  // forever disagree with what a re-read of the final, redacted record recomputes.
+  let redactedRecords = [];
+  let redactedTexts = [];
   try {
     for (const record of records) {
       const { redactedObj, redactedText } = assertCleanOrThrowObject(record, { privatePatternsFile });
@@ -1927,22 +2099,65 @@ async function finalizeAndWriteMatrixRecords({
   } catch (err) {
     return { ok: false, reason: `Privacy check refused to clear evidence for writing: ${err.message}` };
   }
+
+  // Accepted-audit sidecar work -- ONLY reached once gate.ok is confirmed true, and now built FROM
+  // the already-redacted records. buildSidecarsFn builds+finalizes+attaches record.accepted_audit
+  // for every record (cmdRun supplies the closure, mutating each redactedRecords[i] in place); a
+  // failure here means promotion cannot proceed (the sidecar contract can't be satisfied), but it
+  // is never confused with a gate rejection -- writeRejectedRunDiagnostics is never called for
+  // this failure class, matching how a privacy-check-refusal failure above is also never treated
+  // as a rejection.
+  let sidecarTexts = null;
+  if (buildSidecarsFn != null) {
+    const sidecarBuild = await buildSidecarsFn(redactedRecords, conditionResults);
+    if (!sidecarBuild.ok) {
+      return { ok: false, reason: `Cannot promote: ${sidecarBuild.reason}` };
+    }
+    sidecarTexts = sidecarBuild.sidecarTexts;
+    // accepted_audit was just attached in place onto each redactedRecords[i] -- re-redact-and-
+    // verify (never merely re-serialize) so redactedTexts keeps the SAME leak-verified guarantee
+    // for the newly-added field, rather than assuming it's safe because it "looks like" only a
+    // schema number/path/hash. accepted_audit's own 3 fields are never provenance-bound (see this
+    // function's own header on why provenance excludes accepted_audit), so this second pass over
+    // an already-redacted object cannot itself perturb anything the sidecar already hashed.
+    //
+    // Codex round 2, Finding 2: BOTH results of this second pass must replace redactedRecords AND
+    // redactedTexts together -- keeping only the fresh redactedText while discarding the fresh
+    // redactedObj (the old bug) left every check below (schema validation, cross-validation)
+    // running against the STALE, pre-second-pass object, while the ACTUAL text about to be written
+    // to disk came from a DIFFERENT, more-redacted object. A private rule that happens to match
+    // something inside accepted_audit itself (e.g. its own relative_path) would then validate one
+    // object while persisting another -- the exact class of bug this reassignment closes.
+    try {
+      const updatedRedactedRecords = [];
+      const updatedRedactedTexts = [];
+      for (const record of redactedRecords) {
+        const { redactedObj, redactedText } = assertCleanOrThrowObject(record, { privatePatternsFile });
+        updatedRedactedRecords.push(redactedObj);
+        updatedRedactedTexts.push(redactedText);
+      }
+      redactedRecords = updatedRedactedRecords;
+      redactedTexts = updatedRedactedTexts;
+    } catch (err) {
+      return { ok: false, reason: `Privacy check refused to clear evidence for writing: ${err.message}` };
+    }
+  }
+
   for (const [i, record] of redactedRecords.entries()) {
     const { errors } = validateRun(record);
     if (errors.length > 0) {
-      return { ok: false, reason: `Redacted run record [${i}] failed schema validation (redaction corrupted a field) -- refusing to write: ${JSON.stringify(errors)}` };
+      return { ok: false, reason: `Run record [${i}] (repetition ${record.repetition_index}, ${record.condition}) failed schema validation: ${JSON.stringify(errors)}` };
     }
   }
   // accepted_audit binding + cross-validation (accepted-run-observability PR, privacy/binding
   // steps 7-8): sidecarTexts[i] is the ALREADY build->redact->hash'd sidecar text buildSidecarsFn
-  // produced above. Here, AFTER the record's own redact+revalidate cycle, re-hash the exact
-  // sidecar text one more time and cross-validate the FINAL redacted record against it -- catches
-  // a redaction pass that somehow touched accepted_audit's own sha256/relative_path (never
-  // expected in practice, since neither is a private-pattern-shaped value, but this is the one
-  // point in the pipeline that can still prove the binding survived intact before anything is
-  // written). This can only ever run on the confirmed gate-passing path now, so a mismatch here
-  // is unambiguously a "cannot promote" failure, never confusable with (or reported instead of) a
-  // gate rejection.
+  // produced above, built from the already-redacted record. Cross-validate the FINAL redacted
+  // record against it -- catches a redaction pass that somehow touched accepted_audit's own
+  // sha256/relative_path (never expected in practice, since neither is a private-pattern-shaped
+  // value, but this is the one point in the pipeline that can still prove the binding survived
+  // intact before anything is written). This can only ever run on the confirmed gate-passing path
+  // now, so a mismatch here is unambiguously a "cannot promote" failure, never confusable with (or
+  // reported instead of) a gate rejection.
   if (sidecarTexts != null) {
     for (const [i, record] of redactedRecords.entries()) {
       const actualSha256 = createHash('sha256').update(sidecarTexts[i], 'utf8').digest('hex');
@@ -2383,7 +2598,17 @@ function scenarioHardGate(records, conditionResults) {
 }
 
 async function cmdCalibrate(args) {
-  const model = args.model ?? 'claude-sonnet-5';
+  // Resolved first, before any other check -- the closed registry selection that determines
+  // which runtime adapter this whole invocation uses (see resolveSelectionOrFail's own doc
+  // comment). An unknown/disabled/incompatible id fails closed here, before auth, materialize, or
+  // journal creation ever runs.
+  const selectionResult = resolveSelectionOrFail(args);
+  if (!selectionResult.ok) {
+    console.error(selectionResult.reason);
+    return 1;
+  }
+  const { runtime, model: modelEntry, executionProfile, adapter, executionProfileSha256 } = selectionResult.selection;
+  const model = modelEntry.model_id;
   const privatePatternsFile = args['private-patterns-file'] ?? null;
   const privacyStatus = privatePatternsFile ? 'redacted-private' : 'public';
   const patternsCheck = validatePrivatePatternsFileOrFail(privatePatternsFile);
@@ -2432,13 +2657,14 @@ async function cmdCalibrate(args) {
   let conditionPair;
   try {
     conditionPair = await runConditionPair({
-      prompt: 'Use the kmp-test-runner skill to check this project.',
+      prompt: CALIBRATE_PROMPT,
       model,
       allowedGradleTasks: ['build'],
       allowedKmpTestSubcommands: ['doctor', 'parallel'],
       materializeFixture: (existingDir) => materializeCalibrationProject({ templateDir, existingDir }),
       cleanupFixture: (fixtureDir) => rmSync(fixtureDir, { recursive: true, force: true }),
       journal,
+      runtimeAdapter: adapter,
     });
   } catch (err) {
     const incidentResult = finalizeIncident({
@@ -2452,14 +2678,22 @@ async function cmdCalibrate(args) {
     return 1;
   }
   try {
-    const { runA, runB, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, matrixComplete: pairComplete, plannedCellCount, executedCellCount, failFastStop } = conditionPair;
+    const { runA, runB, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, matrixComplete: pairComplete, plannedCellCount, executedCellCount, failFastStop, skillSnapshotArtifact } = conditionPair;
     const policySha256 = computePolicySha256();
     // One HMAC key + opaque scope id for this ENTIRE calibrate invocation (correction 2) --
     // shared by both A and B so they remain comparable to each other, never persisted. Ephemeral
     // (freshly random) unless --measurement-scope-file supplied a stable one (resolved eagerly,
     // above, before any spawn -- see resolveMeasurementScopeOrFail's own doc comment).
     const { scopeId: ambientProfileScopeId, key: ambientProfileKey } = scopeCheck;
-    const common = { runKind: 'calibration', scenarioId: 'calibration-explicit-invocation', skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, modelRequested: model, privacyStatus, ambientProfileScopeId, ambientProfileKey };
+    // Schema v6: promptArtifact is computed ONCE from the exact literal prompt text runConditionPair
+    // was called with above; skillSnapshotArtifact is resolved exactly once during resource
+    // acquisition (acquireSharedEvalResources, AFTER materializeSkillSnapshot has backfilled the
+    // pinned commit into a shallow CI checkout -- see matrix-runner.mjs's own doc comment) and
+    // propagated back here on conditionPair, never recomputed by this command.
+    const common = {
+      runKind: 'calibration', scenarioId: 'calibration-explicit-invocation', skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, modelRequested: model, privacyStatus, ambientProfileScopeId, ambientProfileKey,
+      selection: selectionResult.selection, promptArtifact: computePromptArtifact(CALIBRATE_PROMPT), skillSnapshotArtifact,
+    };
 
     // Calibration's job is narrowly to prove invocation MECHANICS under an explicit-invocation
     // prompt -- see calibrationHardGate's own doc comment for why this is a named function.
@@ -2670,7 +2904,13 @@ function smokeHardGate(a, b, runAResult, runBResult) {
 }
 
 async function cmdSmoke(args) {
-  const model = args.model ?? 'claude-sonnet-5';
+  const selectionResult = resolveSelectionOrFail(args);
+  if (!selectionResult.ok) {
+    console.error(selectionResult.reason);
+    return 1;
+  }
+  const { runtime, model: modelEntry, executionProfile, adapter, executionProfileSha256 } = selectionResult.selection;
+  const model = modelEntry.model_id;
   const sourceRepoDir = args['source-repo-dir'];
   const pinnedCommit = args['pinned-commit'];
   const projectAlias = args['project-alias'] ?? 'kampkit';
@@ -2726,7 +2966,7 @@ async function cmdSmoke(args) {
       // correctly denies by design -- 11/13 and 6/6 calls were denied in that run, meaning the
       // agent never actually got to do the diagnostic work smoke exists to prove. Naming the exact
       // two read-only commands removes the need to explore.
-      prompt: "Run `kmp-test doctor --json` in this project directory, then run `kmp-test describe --json`. Based only on their output, tell me whether the test setup looks healthy. Do not run any other commands or tools.",
+      prompt: SMOKE_PROMPT,
       model,
       allowedGradleTasks: [],
       allowedKmpTestSubcommands: ['doctor', 'describe'],
@@ -2734,6 +2974,7 @@ async function cmdSmoke(args) {
       cleanupFixture: (fixtureDir) => removeScenarioWorktree({ sourceRepoDir, worktreeDir: fixtureDir }),
       timeoutMs: 180000,
       journal,
+      runtimeAdapter: adapter,
     });
   } catch (err) {
     const incidentResult = finalizeIncident({
@@ -2747,14 +2988,19 @@ async function cmdSmoke(args) {
     return 1;
   }
   try {
-    const { runA, runB, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, matrixComplete: pairComplete, plannedCellCount, executedCellCount, failFastStop } = conditionPair;
+    const { runA, runB, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, matrixComplete: pairComplete, plannedCellCount, executedCellCount, failFastStop, skillSnapshotArtifact } = conditionPair;
     const policySha256 = computePolicySha256();
     // One HMAC key + opaque scope id for this ENTIRE smoke invocation (correction 2) -- shared by
     // both A and B so they remain comparable to each other, never persisted. Ephemeral (freshly
     // random) unless --measurement-scope-file supplied a stable one (resolved eagerly, above,
     // before any spawn -- see resolveMeasurementScopeOrFail's own doc comment).
     const { scopeId: ambientProfileScopeId, key: ambientProfileKey } = scopeCheck;
-    const common = { runKind: 'smoke', scenarioId, skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, projectAlias, projectCommit: pinnedCommit, projectUrl, family: 'test-only', modelRequested: model, privacyStatus, ambientProfileScopeId, ambientProfileKey };
+    // Schema v6: promptArtifact is computed ONCE from the exact literal prompt text runConditionPair
+    // is called with below -- kept as its own named constant so the two never drift apart.
+    const common = {
+      runKind: 'smoke', scenarioId, skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, projectAlias, projectCommit: pinnedCommit, projectUrl, family: 'test-only', modelRequested: model, privacyStatus, ambientProfileScopeId, ambientProfileKey,
+      selection: selectionResult.selection, promptArtifact: computePromptArtifact(SMOKE_PROMPT), skillSnapshotArtifact,
+    };
 
     // Smoke's gate requires EQUIVALENT REAL WORK in both arms -- not just skill availability.
     // Every sub-check is reported by name in the failure reason (not just an aggregate boolean)
@@ -2987,15 +3233,21 @@ const MAX_REPEATS = 20;
  * included in the preview.
  */
 async function cmdRun(args) {
+  const selectionResult = resolveSelectionOrFail(args);
+  if (!selectionResult.ok) {
+    console.error(selectionResult.reason);
+    return 1;
+  }
+  const { runtime, model: modelEntry, executionProfile, adapter, executionProfileSha256 } = selectionResult.selection;
   const scenarioId = args.scenario;
   const sourceRepoDir = args['source-repo-dir'];
-  const model = args.model ?? 'claude-sonnet-5';
+  const model = modelEntry.model_id;
   const privatePatternsFile = args['private-patterns-file'] ?? null;
   const privacyStatus = privatePatternsFile ? 'redacted-private' : 'public';
   const isDryRun = args['dry-run'] === true;
 
   if (!scenarioId || !sourceRepoDir) {
-    console.error('run requires --scenario <id> --source-repo-dir <local clone> --seed <n> [--repeats <n>] [--model <name>] [--dry-run] [--private-patterns-file <path>]');
+    console.error('run requires --scenario <id> --source-repo-dir <local clone> --seed <n> [--repeats <n>] [--runtime <id>] [--model <name>] [--execution-profile <id>] [--dry-run] [--private-patterns-file <path>]');
     return 1;
   }
   if (args.seed == null) {
@@ -3013,7 +3265,7 @@ async function cmdRun(args) {
     return 1;
   }
   if (repeats > MAX_REPEATS) {
-    console.error(`--repeats ${repeats} exceeds the maximum of ${MAX_REPEATS} (each repetition spawns 2 live Claude sessions once pointed at a real claude binary -- ${repeats} repeats would authorize ${repeats * 2} sessions; if this is genuinely intentional, split it into multiple smaller --repeats invocations)`);
+    console.error(`--repeats ${repeats} exceeds the maximum of ${MAX_REPEATS} (each repetition spawns 2 live runtime sessions once pointed at a real runtime binary -- ${repeats} repeats would authorize ${repeats * 2} sessions; if this is genuinely intentional, split it into multiple smaller --repeats invocations)`);
     return 1;
   }
   const patternsCheck = validatePrivatePatternsFileOrFail(privatePatternsFile);
@@ -3045,7 +3297,12 @@ async function cmdRun(args) {
     // so bare --dry-run (no scope flag) keeps its existing JSON shape byte-for-byte. Never the
     // key, only the already-non-secret scope_id.
     const measurementScope = scopeCheck.source === 'supplied' ? { measurement_scope: { scope_id: scopeCheck.scopeId, source: scopeCheck.source } } : {};
-    console.log(JSON.stringify({ dry_run: true, scenario_id: scenario.id, repeats, seed, model, total_live_claude_sessions: repeats * 2, policy: scenario.policy, plan, ...measurementScope }, null, 2));
+    console.log(JSON.stringify({
+      dry_run: true, scenario_id: scenario.id, repeats, seed,
+      runtime_id: runtime.runtime_id, model_id: modelEntry.model_id, model_vendor_expected: modelEntry.model_vendor_expected,
+      execution_profile_id: executionProfile.id, execution_profile_sha256: executionProfileSha256,
+      total_live_sessions: repeats * 2, policy: scenario.policy, plan, ...measurementScope,
+    }, null, 2));
     return 0;
   }
 
@@ -3089,6 +3346,7 @@ async function cmdRun(args) {
       targetSkillName: TARGET_SKILL_NAME,
       timeoutMs: 600000,
       journal,
+      runtimeAdapter: adapter,
     });
   } catch (err) {
     const incidentResult = finalizeIncident({
@@ -3131,6 +3389,13 @@ async function cmdRun(args) {
     // sourced from the journal's own already-durable copy (keyed by cellOrdinal, never array
     // position), never from conditionResult itself (the observation contract carries no raw field).
     const transcriptsByRunId = {};
+    // Schema v6: computed ONCE for the whole matrix (every cell shares the same scenario prompt
+    // and the same pinned skill snapshot) -- never recomputed per cell. matrix.skillSnapshotArtifact
+    // was resolved exactly once during resource acquisition (acquireSharedEvalResources, AFTER
+    // materializeSkillSnapshot backfilled the pinned commit into a shallow CI checkout -- see
+    // matrix-runner.mjs's own doc comment) and propagated back on `matrix` -- reused here directly,
+    // never re-resolved.
+    const runPromptArtifact = computePromptArtifact(scenario.prompt);
     for (const cell of matrix.cellResults) {
       const gradeResult = gradeScenarioCondition(cell.conditionResult, scenario);
       const record = buildRunRecord({
@@ -3142,6 +3407,7 @@ async function cmdRun(args) {
         projectUrl: scenario.project_url, family: scenario.family, modelRequested: model,
         privacyStatus, seed: cell.seed, orderIndex: cell.orderIndex, repetitionIndex: cell.repetitionIndex,
         gradeResult, ambientProfileScopeId, ambientProfileKey,
+        selection: selectionResult.selection, promptArtifact: runPromptArtifact, skillSnapshotArtifact: matrix.skillSnapshotArtifact,
       });
       records.push(record);
       conditionResults.push(cell.conditionResult);

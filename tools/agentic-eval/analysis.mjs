@@ -44,8 +44,16 @@ import { join } from 'node:path';
 import { validateRunRecordFile } from './run-record-loader.mjs';
 import { HARD_PARTITION_FIELDS, canonicalStructuredValue, findScenarioBenchmarkCompletenessViolations } from './schemas.mjs';
 import { redactObjectAndVerify } from './privacy.mjs';
+import { withPartitionView, agentRuntimeView, executionProfileView, skillObservationView, usageView, targetSkillInvokedView } from './run-record-view.mjs';
 
-export const ANALYSIS_SCHEMA = 1;
+// v1 -> v2 (Section F, agentic-eval-runtime-neutral-records-v1): per-run entries and group
+// summaries both gained agent_runtime/execution_profile/skill_observation/usage reporting fields,
+// group_key gained the same 3 new structural partition keys aggregate.mjs's own
+// CURRENT_AGGREGATE_SCHEMA bump already covers, and group summaries gained 5 usage-dimension
+// distributions plus usage_source_counts. No historical committed analysis-output files exist to
+// preserve compatibility with (analysis output is always computed on demand), so this is a plain
+// constant bump, not a versioned dispatch.
+export const ANALYSIS_SCHEMA = 2;
 
 /** Closed vocabulary for `failure_class` -- exactly one per run, resolved by classifyFailure's own
  * documented precedence. `success` is not a "failure" in the literal sense; it is included so every
@@ -269,7 +277,12 @@ export function deriveSkillRelativeFields(record, sidecar, activationExpected, t
  */
 export function analyzeRunRecord(record, sidecar) {
   const activation_expected = record.condition === 'current-skill';
-  const rawInvoked = record.skill_invoked?.value ?? null;
+  // targetSkillInvokedView (run-record-view.mjs): for schema>=6, reads
+  // skill_observation.activation.status (canonical activation, Section F); below schema 6, reads
+  // the legacy skill_invoked.value field exactly as before. Schema invariant 8 already requires the
+  // two sources to agree for claude-code, so this is a behavior-preserving read for every record
+  // this PR can produce today.
+  const rawInvoked = targetSkillInvokedView(record);
   const target_skill_invoked = activation_expected ? rawInvoked : null;
 
   const skillFields = deriveSkillRelativeFields(record, sidecar, activation_expected, target_skill_invoked);
@@ -328,6 +341,16 @@ export function analyzeRunRecord(record, sidecar) {
       final_answer_consistent,
       success,
       failure_class,
+      // agent_runtime/execution_profile/skill_observation (Section F): the FULL real object for
+      // schema>=6, or the literal "not-recorded" sentinel below schema 6 -- never narrowed the way
+      // aggregate.mjs's own partition-key projection is, since these are human-readable reporting
+      // fields, not a bucketing key.
+      agent_runtime: agentRuntimeView(record),
+      execution_profile: executionProfileView(record),
+      skill_observation: skillObservationView(record),
+      // usage: the real v6 usage object, or run-record-view.mjs's canonical not-recorded shape
+      // (every dimension null, never zero) below schema 6.
+      usage: usageView(record),
     },
   };
 }
@@ -348,10 +371,28 @@ function buildDistribution(values) {
   return dist;
 }
 
-function buildGroupSummary(groupKey, entries) {
+/** Compact {source_value: count} map over a group's own entries -- e.g. {"runtime-reported": 4,
+ * "not-recorded": 2}. Mirrors buildDistribution's own flat-map shape/rationale, scoped to
+ * usage.source specifically (never a raw per-run array). */
+function buildUsageSourceCounts(entries) {
+  const counts = {};
+  for (const e of entries) {
+    const src = e.usage?.source ?? 'not-recorded';
+    counts[src] = (counts[src] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function buildGroupSummary(groupKey, entries, record) {
   const total = entries.length;
   const activationExpectedEntries = entries.filter((e) => e.activation_expected === true);
-  const invokedCount = activationExpectedEntries.filter((e) => e.target_skill_invoked === true).length;
+  // P1 architectural review: null (an indirect/not-observable activation -- see
+  // targetSkillInvokedView's own doc comment) must be excluded from BOTH the numerator and the
+  // denominator, never merely left out of the numerator while still diluting the denominator --
+  // that would silently treat "unobservable" as "not invoked", the exact null-becomes-zero
+  // coercion this harness refuses everywhere else. Only a real boolean is an "observable" verdict.
+  const observableEntries = activationExpectedEntries.filter((e) => typeof e.target_skill_invoked === 'boolean');
+  const invokedCount = observableEntries.filter((e) => e.target_skill_invoked === true).length;
   const evidencePresentCount = entries.filter((e) => e.terminal_authoritative_evidence_present === true).length;
   const evidenceWellFormedCount = entries.filter((e) => e.terminal_authoritative_evidence_well_formed === true).length;
   const outcomeMatchedCount = entries.filter((e) => e.expected_outcome_matched === true).length;
@@ -361,12 +402,41 @@ function buildGroupSummary(groupKey, entries) {
   for (const cls of FAILURE_CLASS_VALUES) failure_class_counts[cls] = 0;
   for (const e of entries) failure_class_counts[e.failure_class] = (failure_class_counts[e.failure_class] ?? 0) + 1;
 
+  // P1 architectural review: execution_profile.isolation_attestation_sha256 and
+  // skill_observation.{availability,activation} are OBSERVED OUTCOMES/per-execution evidence,
+  // deliberately excluded from the hard partition key (run-record-view.mjs's own documented
+  // rationale) -- two entries in this SAME group (same partition key) can genuinely disagree on
+  // them, so publishing entries[0]'s own full value would misrepresent it as if every entry shared
+  // the identical result. Reported as counts/distributions instead; the exact per-run value stays
+  // available on each individual entry (never summarized away).
+  const attestationRecordedCount = entries.filter((e) => typeof e.execution_profile?.isolation_attestation_sha256 === 'string').length;
+  const availabilityStatusDistribution = buildDistribution(entries.map((e) => e.skill_observation?.availability?.status ?? null));
+  const activationStatusDistribution = buildDistribution(entries.map((e) => e.skill_observation?.activation?.status ?? null));
+
   return {
     group_key: groupKey,
     run_count: total,
+    // agent_runtime (Section F): every field is an identity/request-time fact, never an observed
+    // outcome, and the whole object is itself a hard partition key -- genuinely identical across
+    // every entry in this group by construction, so entries[0]'s own value IS the group's value.
+    agent_runtime: entries[0].agent_runtime,
+    // execution_profile / skill_observation (P1 architectural review): the NARROWED partition
+    // views already computed once by withPartitionView onto this bucket's own `record` (never
+    // re-derived here, never entries[0]'s own FULL, potentially-outcome-carrying value) -- sha256
+    // is (Phase 2 of this PR) now guaranteed to be the canonical hash of every semantic field on
+    // the profile, so it alone already fully captures identity; skill_treatment excludes
+    // availability/activation for the exact same reason.
+    execution_profile: record.execution_profile,
+    execution_profile_attestation_recorded_count: attestationRecordedCount,
+    execution_profile_attestation_missing_count: total - attestationRecordedCount,
+    skill_observation: record.skill_treatment,
+    skill_observation_availability_status_distribution: availabilityStatusDistribution,
+    skill_observation_activation_status_distribution: activationStatusDistribution,
     activation_expected_count: activationExpectedEntries.length,
+    target_skill_invoked_observable_count: observableEntries.length,
+    target_skill_invoked_unknown_count: activationExpectedEntries.length - observableEntries.length,
     target_skill_invoked_count: invokedCount,
-    target_skill_invoked_rate: rate(invokedCount, activationExpectedEntries.length),
+    target_skill_invoked_rate: rate(invokedCount, observableEntries.length),
     terminal_authoritative_evidence_present_count: evidencePresentCount,
     terminal_authoritative_evidence_present_rate: rate(evidencePresentCount, total),
     terminal_authoritative_evidence_well_formed_count: evidenceWellFormedCount,
@@ -380,6 +450,15 @@ function buildGroupSummary(groupKey, entries) {
     target_skill_attempt_ordinal_distribution: buildDistribution(entries.map((e) => e.target_skill_attempt_ordinal)),
     pre_skill_tool_calls_distribution: buildDistribution(entries.map((e) => e.pre_skill_tool_calls)),
     post_skill_tool_calls_total_distribution: buildDistribution(entries.map((e) => e.post_skill_tool_calls_total)),
+    // usage (Section F): 5 dimensions reported SEPARATELY, deliberately no summed "tokens_total" --
+    // runtime-native token counts are never rankable as if they shared a tokenizer or hidden
+    // prompt, so a single combined number would misleadingly imply they are.
+    usage_source_counts: buildUsageSourceCounts(entries),
+    usage_input_distribution: buildDistribution(entries.map((e) => e.usage?.input ?? null)),
+    usage_cached_input_distribution: buildDistribution(entries.map((e) => e.usage?.cached_input ?? null)),
+    usage_cache_write_distribution: buildDistribution(entries.map((e) => e.usage?.cache_write ?? null)),
+    usage_output_distribution: buildDistribution(entries.map((e) => e.usage?.output ?? null)),
+    usage_reasoning_output_distribution: buildDistribution(entries.map((e) => e.usage?.reasoning_output ?? null)),
   };
 }
 
@@ -399,15 +478,20 @@ function buildGroupSummary(groupKey, entries) {
 export function buildSummary(pairs) {
   const buckets = new Map();
   for (const { record, entry } of pairs) {
-    const key = JSON.stringify(HARD_PARTITION_FIELDS.map((f) => canonicalStructuredValue(record[f])));
-    if (!buckets.has(key)) buckets.set(key, { record, entries: [], sortKey: key });
+    // withPartitionView (Section F): projects the 3 new structural partition fields (real value for
+    // schema>=6, the literal "not-recorded" sentinel below schema 6) onto a COPY of `record`, the
+    // exact same projection aggregate.mjs's own bucketing already applies -- never a second,
+    // independently-drifting notion of "legacy vs v6" for this module's own bucketing.
+    const view = withPartitionView(record);
+    const key = JSON.stringify(HARD_PARTITION_FIELDS.map((f) => canonicalStructuredValue(view[f])));
+    if (!buckets.has(key)) buckets.set(key, { record: view, entries: [], sortKey: key });
     buckets.get(key).entries.push(entry);
   }
   const groups = [];
   for (const { record, entries, sortKey } of buckets.values()) {
     const groupKey = {};
     for (const f of HARD_PARTITION_FIELDS) groupKey[f] = record[f];
-    groups.push({ ...buildGroupSummary(groupKey, entries), __sortKey: sortKey });
+    groups.push({ ...buildGroupSummary(groupKey, entries, record), __sortKey: sortKey });
   }
   // Tie-break with the FULL canonical bucket key (every HARD_PARTITION_FIELDS value, the exact
   // same string already used to construct the bucket -- never re-derived a second way), not just

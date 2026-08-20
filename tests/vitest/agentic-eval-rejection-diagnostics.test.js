@@ -944,7 +944,7 @@ describe('writeRejectedRunDiagnostics -- wired into cli.mjs end-to-end (real sub
 
   it('a real calibrate rejection writes exactly one committed + one raw rejection-diagnostics file, and nothing under the real evidence directory', () => {
     runsRootFor((runsRoot) => {
-      const r = spawnSync('node', [CLI_PATH, 'calibrate', '--model', 'fake-model-x'], { env: fakeClaudeEnv('foreign-skill', runsRoot), encoding: 'utf8', timeout: 20000 });
+      const r = spawnSync('node', [CLI_PATH, 'calibrate', '--model', 'claude-sonnet-5'], { env: fakeClaudeEnv('foreign-skill', runsRoot), encoding: 'utf8', timeout: 20000 });
       // Round-7 audit finding: a bare expect(r.status).toBe(1) gives no diagnostic surface at all
       // when it fails -- status alone doesn't distinguish a normal exit(2) (cmdCalibrate's own
       // top-level uncaught-exception handler, see cli.mjs's `main().catch()`) from a signal kill
@@ -1018,7 +1018,7 @@ describe('writeRejectedRunDiagnostics -- wired into cli.mjs end-to-end (real sub
 
   it('a real calibrate SUCCESS writes nothing under agentic-eval-rejected/ at all', () => {
     runsRootFor((runsRoot) => {
-      const r = spawnSync('node', [CLI_PATH, 'calibrate', '--model', 'fake-model-x'], { env: fakeClaudeEnv('success', runsRoot), encoding: 'utf8', timeout: 20000 });
+      const r = spawnSync('node', [CLI_PATH, 'calibrate', '--model', 'claude-sonnet-5'], { env: fakeClaudeEnv('success', runsRoot), encoding: 'utf8', timeout: 20000 });
       expect(r.status).toBe(0);
       expect(existsSync(path.join(runsRoot, 'agentic-eval-rejected'))).toBe(false);
     });
@@ -1032,7 +1032,7 @@ describe('writeRejectedRunDiagnostics -- wired into cli.mjs end-to-end (real sub
   // never wired into.
   it('a pre-hard-gate argument validation failure (nonexistent --private-patterns-file) writes nothing under agentic-eval-rejected/', () => {
     runsRootFor((runsRoot) => {
-      const r = spawnSync('node', [CLI_PATH, 'calibrate', '--model', 'fake-model-x', '--private-patterns-file', '/definitely/does/not/exist.json'], { env: fakeClaudeEnv('success', runsRoot), encoding: 'utf8', timeout: 20000 });
+      const r = spawnSync('node', [CLI_PATH, 'calibrate', '--model', 'claude-sonnet-5', '--private-patterns-file', '/definitely/does/not/exist.json'], { env: fakeClaudeEnv('success', runsRoot), encoding: 'utf8', timeout: 20000 });
       expect(r.status).toBe(1);
       expect(existsSync(path.join(runsRoot, 'agentic-eval-rejected'))).toBe(false);
     });

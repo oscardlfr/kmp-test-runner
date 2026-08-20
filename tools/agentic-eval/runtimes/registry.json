@@ -1,0 +1,6 @@
+{
+  "schema": 1,
+  "runtimes": [
+    { "runtime_id": "claude-code", "enabled": true, "default": true }
+  ]
+}

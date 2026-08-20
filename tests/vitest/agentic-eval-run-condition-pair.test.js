@@ -26,6 +26,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runConditionPair } from '../../tools/agentic-eval/cli.mjs';
+// Test-only, deliberately vendor-specific: matrix-runner.mjs no longer defaults runtimeAdapter
+// (agentic-eval-runtime-neutral-records-v1) -- an omitted adapter is now a contract error, not a
+// fallback. This test exercises runConditionPair's own real acquisition/cleanup machinery against
+// the real Claude adapter (spawnCondition itself is never reached here), so it injects the real
+// singleton directly rather than going through the registry default.
+import { claudeCodeRuntimeAdapter } from '../../tools/agentic-eval/runtimes/claude-code.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = path.join(__dirname, '..', 'fixtures');
@@ -85,6 +91,7 @@ describe('runConditionPair -- cleanup on acquisition failure', () => {
             materializeCalls++;
             throw new Error('injected acquisition failure');
           },
+          runtimeAdapter: claudeCodeRuntimeAdapter,
         })).rejects.toThrow('injected acquisition failure');
       });
       // Confirms the failure really did happen AFTER acquisition (not e.g. materializeFixture

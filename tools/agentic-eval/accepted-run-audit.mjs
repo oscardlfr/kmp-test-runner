@@ -30,26 +30,36 @@ import { msSinceOrigin } from './runtimes/contract.mjs';
 import { classifyBashCommand } from './command-classify.mjs';
 import { assertCleanOrThrowObject } from './privacy.mjs';
 import { DISPATCH_STATUS_VALUES as BASH_DISPATCH_STATUS_VALUES } from './dispatch-accounting.mjs';
+import { canonicalJsonSha256 } from './canonical-json.mjs';
 
 /**
- * Sidecar schema versions. v1 is FROZEN -- its field lists and validation rules must keep accepting
- * (and keep rejecting) exactly what they did when the 92 historical sidecars were written. v2 adds
- * per-call `dispatch_status` and the `pre_dispatch_blocked_total` summary counter.
+ * Sidecar schema versions. v1 and v2 are FROZEN -- their field lists and validation rules must
+ * keep accepting (and keep rejecting) exactly what they did when the 92 v1 + 64 v2 historical
+ * sidecars were written, and both still require literally `run_schema:5` (a v5 scenario record
+ * accepts only sidecar schema 1 or 2). v2 added per-call `dispatch_status` and the
+ * `pre_dispatch_blocked_total` summary counter. v3 (agentic-eval-runtime-neutral-records-v1)
+ * conserves v2's `tool_calls`/`summary` shape verbatim, requires literally `run_schema:6`, and adds
+ * exactly one new top-level field: `run_provenance_sha256` -- a v6 scenario record accepts only
+ * sidecar schema 3. Extending v2 to accept run_schema 6 would silently rewrite its own frozen
+ * historical contract, which is exactly why v3 exists as its own version instead.
  *
- * Deliberately three EXPLICIT constants and no bare `ACCEPTED_AUDIT_SIDECAR_SCHEMA`: a single
- * unversioned name cannot say whether a caller means "the historical shape" or "whatever is current",
- * and test builders constructing genuinely v1-shaped sidecars would have had their meaning rewritten
- * underneath them the moment it started resolving to 2. Use V1 for historical fixtures, LATEST for
- * newly built sidecars, and SUPPORTED for validation.
+ * Deliberately explicit named constants and no bare `ACCEPTED_AUDIT_SIDECAR_SCHEMA`: a single
+ * unversioned name cannot say whether a caller means "a specific historical shape" or "whatever is
+ * current", and test builders constructing genuinely v1/v2-shaped sidecars would have had their
+ * meaning rewritten underneath them the moment LATEST moved on to a newer version. Use V1/V2 for
+ * historical fixtures, LATEST for newly built sidecars, and SUPPORTED for validation -- never
+ * convert the LATEST alias into how a historical fixture gets built.
  */
 export const ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1 = 1;
-export const LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA = 2;
-export const SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS = Object.freeze([1, 2]);
+export const ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2 = 2;
+export const LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA = 3;
+export const SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS = Object.freeze([1, 2, 3]);
 
-const SIDECAR_TOP_FIELDS = [
+const SIDECAR_TOP_FIELDS_V1V2 = [
   'schema', 'run_id', 'run_schema', 'run_kind', 'condition', 'scenario_id',
   'first_useful_signal_event', 'terminal_authoritative_event', 'tool_calls', 'summary',
 ];
+const SIDECAR_TOP_FIELDS_V3 = [...SIDECAR_TOP_FIELDS_V1V2, 'run_provenance_sha256'];
 const TOOL_CALL_FIELDS_V1 = [
   'ordinal', 'tool_use_event_index', 'tool_result_event_index', 'tool_kind', 'operation',
   'plan_only', 'policy_decision', 'result_status', 'phase',
@@ -62,16 +72,53 @@ const SUMMARY_FIELDS_V1 = [
 ];
 const SUMMARY_FIELDS_V2 = [...SUMMARY_FIELDS_V1, 'pre_dispatch_blocked_total'];
 
+// The exact canonical projection of a run record that identity-binds a v3 sidecar to it
+// (Section E) -- excludes accepted_audit itself (the record's own pointer back to this sidecar) to
+// avoid a hashing cycle. Runtime/model/profile/platform/commits/delivery/availability/activation
+// evidence/source SHA/snapshot identity+size/prompt identity+size are all reachable transitively
+// through agent_runtime/execution_profile/skill_observation, so listing those three whole groups
+// (rather than picking individual leaf fields out of them) is what actually binds all of it.
+const RUN_PROVENANCE_PROJECTION_KEYS = [
+  'schema', 'run_id', 'run_kind', 'condition', 'scenario_id',
+  'agent_runtime', 'execution_profile', 'skill_observation',
+  'platform', 'repo_commit', 'kmp_test_cli_source_sha', 'project_commit',
+];
+
+/** SHA-256 of the canonical JSON of exactly RUN_PROVENANCE_PROJECTION_KEYS, taken from `record`.
+ * The ONE implementation -- the v3 builder calls this to stamp `run_provenance_sha256`, and
+ * crossValidateAcceptedRunAuditAgainstRecord recomputes it from the re-read record and requires
+ * exact equality, so a sidecar can never be self-consistent while pointing at a DIFFERENT record's
+ * provenance. */
+export function computeRunProvenanceSha256(record) {
+  const projection = {};
+  for (const k of RUN_PROVENANCE_PROJECTION_KEYS) projection[k] = record[k];
+  return canonicalJsonSha256(projection);
+}
+
 /** Explicit per-version dispatch -- never a fallthrough default, so an unknown version can never
- * silently borrow another version's field list. */
+ * silently borrow another version's field list. v3 reuses v2's tool_calls/summary shape verbatim
+ * (Section E: "V3 conserva tool calls y summary de v2"). */
+function topFieldsFor(schema) {
+  if (schema === 3) return SIDECAR_TOP_FIELDS_V3;
+  return SIDECAR_TOP_FIELDS_V1V2;
+}
 function toolCallFieldsFor(schema) {
   if (schema === 1) return TOOL_CALL_FIELDS_V1;
-  if (schema === 2) return TOOL_CALL_FIELDS_V2;
+  if (schema === 2 || schema === 3) return TOOL_CALL_FIELDS_V2;
   return null;
 }
 function summaryFieldsFor(schema) {
   if (schema === 1) return SUMMARY_FIELDS_V1;
-  if (schema === 2) return SUMMARY_FIELDS_V2;
+  if (schema === 2 || schema === 3) return SUMMARY_FIELDS_V2;
+  return null;
+}
+/** The run record schema a given sidecar schema requires literally (Section E's exact
+ * compatibility matrix) -- v1/v2 require exactly 5 (frozen); v3 requires exactly 6. An unknown
+ * sidecar schema has no required run_schema of its own (validated separately as an unknown
+ * version). */
+function requiredRunSchemaFor(sidecarSchema) {
+  if (sidecarSchema === 1 || sidecarSchema === 2) return 5;
+  if (sidecarSchema === 3) return 6;
   return null;
 }
 
@@ -251,8 +298,14 @@ export function buildAcceptedRunAuditSidecar({ record, conditionResult, terminal
   const policyDenialsBefore = hasBoundary ? toolCalls.filter((tc) => isBashKind(tc) && tc.policy_decision === 'deny' && tc.tool_use_event_index <= firstUsefulSignalEventIndex).length : null;
   const policyDenialsAfter = hasBoundary ? toolCalls.filter((tc) => isBashKind(tc) && tc.policy_decision === 'deny' && tc.tool_use_event_index > firstUsefulSignalEventIndex).length : null;
 
-  return {
-    schema: LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA,
+  // Schema-aware (Section E): a schema:6+ record gets a v3 sidecar (LATEST); every earlier record
+  // (v5, still the only other schema a real accepted-run scenario record ever carries) gets v2 --
+  // the version that record's own accepted_audit.schema pointer actually requires. tool_calls/
+  // summary are computed identically either way (v3 conserves v2's shape verbatim); only the
+  // schema stamp and the presence of run_provenance_sha256 differ.
+  const sidecarSchema = record.schema >= 6 ? LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA : ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2;
+  const built = {
+    schema: sidecarSchema,
     run_id: record.run_id,
     run_schema: record.schema,
     run_kind: record.run_kind,
@@ -273,6 +326,10 @@ export function buildAcceptedRunAuditSidecar({ record, conditionResult, terminal
       pre_dispatch_blocked_total: preDispatchBlockedTotal,
     },
   };
+  if (sidecarSchema === LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA) {
+    built.run_provenance_sha256 = computeRunProvenanceSha256(record);
+  }
+  return built;
 }
 
 const EVENT_REF_KEYS = ['type', 'index'];
@@ -323,22 +380,36 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
     return { errors, warnings };
   }
 
-  rejectUnrecognizedKeys(sidecar, SIDECAR_TOP_FIELDS, '(root)', errors);
-  for (const f of SIDECAR_TOP_FIELDS) {
-    if (!(f in sidecar)) errors.push({ field: f, message: 'missing required field' });
-  }
-
-  // Version dispatch, not a single pinned constant: the 92 historical sidecars are genuinely v1 and
-  // must keep validating under v1's own frozen rules. An unrecognized version fails closed here and
-  // the per-version field lists below resolve to null, so nothing borrows another version's shape.
+  // Version dispatch, not a single pinned constant: the 92 v1 + 64 v2 historical sidecars are
+  // genuinely v1/v2 and must keep validating under their own frozen rules. An unrecognized version
+  // fails closed here and the per-version field lists below resolve to null/a v1/v2 default, so
+  // nothing borrows another version's shape. `schema` is read before the top-level key-set check
+  // (never validated yet at that point) specifically so that check can itself be schema-aware --
+  // v3's own extra `run_provenance_sha256` key is unrecognized for v1/v2, required for v3.
   const schema = sidecar.schema;
   const isKnownSchema = SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS.includes(schema);
   if (!isKnownSchema) errors.push({ field: 'schema', message: `must be one of ${SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS.join('|')}` });
+  const topFields = topFieldsFor(schema);
+  rejectUnrecognizedKeys(sidecar, topFields, '(root)', errors);
+  for (const f of topFields) {
+    if (!(f in sidecar)) errors.push({ field: f, message: 'missing required field' });
+  }
+
   const toolCallFields = toolCallFieldsFor(schema) ?? TOOL_CALL_FIELDS_V1;
   const summaryFields = summaryFieldsFor(schema) ?? SUMMARY_FIELDS_V1;
-  const isV2 = schema === 2;
+  // v2 AND v3 both carry the dispatch_status shape (v3 conserves v2's tool_calls/summary verbatim).
+  const hasDispatchStatusShape = schema === 2 || schema === 3;
+  const isV3 = schema === 3;
   if (typeof sidecar.run_id !== 'string' || sidecar.run_id.length === 0) errors.push({ field: 'run_id', message: 'must be a non-empty string' });
-  if (sidecar.run_schema !== 5) errors.push({ field: 'run_schema', message: 'must be exactly 5' });
+  const requiredRunSchema = requiredRunSchemaFor(schema);
+  if (requiredRunSchema != null && sidecar.run_schema !== requiredRunSchema) {
+    errors.push({ field: 'run_schema', message: `must be exactly ${requiredRunSchema} for sidecar schema ${schema}` });
+  }
+  if (isV3) {
+    if (!/^[0-9a-f]{64}$/.test(sidecar.run_provenance_sha256)) {
+      errors.push({ field: 'run_provenance_sha256', message: 'must be a lowercase 64-char hex SHA-256 string' });
+    }
+  }
   if (sidecar.run_kind !== 'scenario') errors.push({ field: 'run_kind', message: 'must be exactly "scenario" -- a sidecar only ever exists for a scenario record' });
   if (typeof sidecar.condition !== 'string' || sidecar.condition.length === 0) errors.push({ field: 'condition', message: 'must be a non-empty string' });
   if (typeof sidecar.scenario_id !== 'string' || sidecar.scenario_id.length === 0) errors.push({ field: 'scenario_id', message: 'must be a non-empty string' });
@@ -378,7 +449,7 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
       // hand (see buildAcceptedRunAuditSidecar, which derives pre_dispatch_blocked exclusively from
       // buildBashDispatchAccounting's own id set). What IS checkable at rest is that the two closed
       // vocabularies agree, which is what this enforces.
-      if (isV2) {
+      if (hasDispatchStatusShape) {
         if (!DISPATCH_STATUS_VALUES.includes(tc.dispatch_status)) {
           errors.push({ field: `${label}.dispatch_status`, message: `must be one of ${DISPATCH_STATUS_VALUES.join('|')}` });
         } else if (isBash) {
@@ -410,7 +481,7 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
         // exception -- a recognized pre-dispatch block, where no decision was ever due -- and that
         // exception is admissible ONLY together with dispatch_status pre_dispatch_blocked, checked
         // above. A normal Bash call still can never be not-applicable.
-        const preDispatchExempt = isV2 && tc.dispatch_status === 'pre_dispatch_blocked';
+        const preDispatchExempt = hasDispatchStatusShape && tc.dispatch_status === 'pre_dispatch_blocked';
         if (tc.policy_decision === 'not-applicable' && !preDispatchExempt) errors.push({ field: `${label}.policy_decision`, message: 'a Bash-family entry must have a real decision category (allow/deny/missing), never not-applicable' });
         // Per-tool_kind operation domain (review finding 1b/1c/1d) -- previously unchecked for
         // EVERY Bash-family entry, so an arbitrary or contradictory operation string (or even a
@@ -462,7 +533,7 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
       if (summary.policy_denials_total !== deniedCount) errors.push({ field: 'summary.policy_denials_total', message: 'must equal the number of Bash-family entries with policy_decision:deny' });
       const missingCount = bashEntries.filter((tc) => tc.policy_decision === 'missing').length;
       if (summary.policy_decisions_missing !== missingCount) errors.push({ field: 'summary.policy_decisions_missing', message: 'must equal the number of Bash-family entries with policy_decision:missing' });
-      if (isV2) {
+      if (hasDispatchStatusShape) {
         // Exact cardinality against tool_calls[], the same discipline every other summary counter
         // gets -- a standalone total nobody cross-checks is a number that can quietly go wrong.
         const preDispatchCount = bashEntries.filter((tc) => tc.dispatch_status === 'pre_dispatch_blocked').length;
@@ -480,7 +551,7 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
     if (summary.post_signal_ms != null && !(typeof summary.post_signal_ms === 'number' && Number.isFinite(summary.post_signal_ms) && summary.post_signal_ms >= 0)) {
       errors.push({ field: 'summary.post_signal_ms', message: 'must be null or a non-negative finite number' });
     }
-    for (const f of ['post_signal_tool_calls', 'policy_denials_before_first_signal', 'policy_denials_after_first_signal', 'policy_denials_total', 'policy_decisions_missing', 'tool_calls_total', 'shell_commands_total', ...(isV2 ? ['pre_dispatch_blocked_total'] : [])]) {
+    for (const f of ['post_signal_tool_calls', 'policy_denials_before_first_signal', 'policy_denials_after_first_signal', 'policy_denials_total', 'policy_decisions_missing', 'tool_calls_total', 'shell_commands_total', ...(hasDispatchStatusShape ? ['pre_dispatch_blocked_total'] : [])]) {
       const v = summary[f];
       if (v != null && !(Number.isInteger(v) && v >= 0)) {
         errors.push({ field: `summary.${f}`, message: 'must be null (only for the 3 boundary-dependent fields) or a non-negative integer' });
@@ -605,6 +676,17 @@ export function crossValidateAcceptedRunAuditAgainstRecord(sidecar, record) {
   // policy_denials_total at all.
   if ((sidecar.summary?.policy_denials_total ?? null) !== (record.hook_deny_count ?? null)) {
     errors.push({ field: 'summary.policy_denials_total', message: `sidecar summary.policy_denials_total (${sidecar.summary?.policy_denials_total}) does not match record hook_deny_count (${record.hook_deny_count})` });
+  }
+
+  // run_provenance_sha256 (v3 only) -- recomputed from the RE-READ record and required to match
+  // exactly, so a v3 sidecar can never be self-consistent while pointing at a different record's
+  // provenance (the same identity-binding role sha256/blob hashes play elsewhere in this repo).
+  // Only checked for schema 3: a v1/v2 sidecar carries no such field at all.
+  if (sidecar.schema === LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA) {
+    const expected = computeRunProvenanceSha256(record);
+    if (sidecar.run_provenance_sha256 !== expected) {
+      errors.push({ field: 'run_provenance_sha256', message: `sidecar run_provenance_sha256 (${sidecar.run_provenance_sha256}) does not match recomputed value from record (${expected})` });
+    }
   }
 
   // kmp-test operation membership against the record's OWN policy_allowed_kmptest_subcommands

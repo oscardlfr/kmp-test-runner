@@ -34,6 +34,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
+import { TEST_RUN_RECORD_V6_INPUTS } from './_agentic-eval-run-record-fixtures.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -92,7 +93,7 @@ describe('resolveHarnessProvenance -- fails closed when the git status check its
       conditionResult, condition: 'no-skill', runKind: 'calibration', scenarioId: 'test-git-fail',
       skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
-      modelRequested: 'fake-model',
+      ...TEST_RUN_RECORD_V6_INPUTS,
       ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
     });
 
@@ -178,7 +179,7 @@ async function buildRecordWithHarnessToolingError() {
     conditionResult, condition: 'no-skill', runKind: 'calibration', scenarioId: 'test-harness-tooling-wording',
     skillSourceSha: null, daemonPolicy: 'disabled-via-gradle-user-home-properties',
     allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
-    modelRequested: 'fake-model',
+    ...TEST_RUN_RECORD_V6_INPUTS,
     ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
   });
 }

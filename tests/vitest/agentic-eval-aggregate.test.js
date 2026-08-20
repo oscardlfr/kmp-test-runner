@@ -4,8 +4,26 @@
 // every record against the FULL run schema before bucketing, so these fixtures must be
 // completely schema-valid, not just carry the partition/benchmark_eligible fields.
 import { describe, it, expect } from 'vitest';
+import { readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 import { aggregateRuns, summarizeGroup } from '../../tools/agentic-eval/aggregate.mjs';
 import { GRADING_CHECK_NAMES } from '../../tools/agentic-eval/graders.mjs';
+import { agentRuntimeView } from '../../tools/agentic-eval/run-record-view.mjs';
+import { validateRunRecordFile } from '../../tools/agentic-eval/run-record-loader.mjs';
+import { canonicalStructuredValue, canonicalJsonSha256 } from '../../tools/agentic-eval/canonical-json.mjs';
+
+// The real strict-policy-v1 projection computeExecutionProfileSha256 (registries.mjs) hashes --
+// computed here rather than hardcoded, so run6()'s own fixture can never silently drift from the
+// actual hash algorithm schemas.mjs's execution_profile validator recomputes and checks against.
+const STRICT_POLICY_V1_SHA256_FOR_TEST = canonicalJsonSha256({
+  id: 'strict-policy-v1', isolation_kind: 'runtime-policy-hooks', network_mode: 'runtime-default',
+  isolation_attestation_required: false, policy_mode: 'required', required_capabilities: ['softPermissionDenial'],
+});
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const REAL_RUNS_DIR = join(__dirname, '..', '..', 'tools', 'runs', 'agentic-eval-scenario');
 
 // schema:4 (review-round-2 fix) -- a benchmark-eligible scenario record now REQUIRES a real,
 // well-shaped ambient_skill_profile to aggregate at all (schemas.mjs's buildAggregateGroup
@@ -186,6 +204,338 @@ describe('aggregateRuns', () => {
   });
 });
 
+// Section F (agentic-eval-runtime-neutral-records-v1): agent_runtime/execution_profile/
+// skill_treatment become 3 new structural Fairness Contract partition keys. run6() extends run()'s
+// own schema:4 base into a fully well-formed, aggregable schema:6 no-skill record (v5's 4 metrics +
+// accepted_audit pointing at a v3 sidecar, plus the 4 new v6 groups) -- mirroring exactly how the
+// pre-existing "keeps schema:4 and schema:5 in SEPARATE buckets" test above builds its own v5
+// fixture inline.
+function run6(overrides = {}) {
+  const runId = overrides.run_id ?? `r-${Math.random().toString(36).slice(2)}`;
+  return run({
+    schema: 6,
+    run_id: runId,
+    post_signal_ms: { value: null, reason: 'no first useful signal boundary' },
+    post_signal_tool_calls: { value: null, reason: 'no first useful signal boundary' },
+    policy_denials_before_first_signal: { value: null, reason: 'no first useful signal boundary' },
+    policy_denials_after_first_signal: { value: null, reason: 'no first useful signal boundary' },
+    accepted_audit: { schema: 3, relative_path: `audit/${runId}.json`, sha256: 'a'.repeat(64) },
+    // run()'s own base default is skill_available:{value:true,...}, which disagrees with this
+    // fixture's condition:'no-skill' / skill_observation.availability.status:'observed-absent' --
+    // overridden here so the base schema:4 default and the v6 availability biconditional (P1
+    // architectural review) never contradict each other.
+    skill_available: { value: false, reason: null },
+    agent_runtime: {
+      runtime_id: 'claude-code', cli_version: '1.2.3-fake', model_requested: 'claude-sonnet-5',
+      model_resolved: 'claude-sonnet-5', model_vendor_expected: 'anthropic', model_vendor_observed: null,
+    },
+    execution_profile: {
+      id: 'strict-policy-v1', sha256: STRICT_POLICY_V1_SHA256_FOR_TEST, isolation_kind: 'runtime-policy-hooks',
+      isolation_attestation_sha256: null, isolation_attestation_required: false, network_mode: 'runtime-default',
+      policy_mode: 'required', required_capabilities: ['softPermissionDenial'],
+    },
+    skill_observation: {
+      delivery_mode: 'none',
+      availability: { status: 'observed-absent', evidence_kind: 'runtime-catalog' },
+      activation: { status: 'not-observed', evidence_kind: 'runtime-explicit-event' },
+      source_sha: null,
+      treatment_size: {
+        snapshot_sha256: null, snapshot_bytes: null, snapshot_file_count: null,
+        prompt_sha256: 'e'.repeat(64), prompt_bytes: 55,
+        absent_reason: 'condition-no-skill',
+      },
+    },
+    usage: {
+      source: 'runtime-reported', input: 2, cached_input: 0, cache_write: 0, output: 4, reasoning_output: null,
+      attributable_to_skill_load: {
+        status: 'not-recorded',
+        dimensions: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null },
+        unit: null, reason: 'condition-no-skill',
+      },
+    },
+    ...overrides,
+  });
+}
+
+// A well-formed schema:6 current-skill record -- delivery_mode is strictly gated by condition on
+// claude-code (validateRun: 'must be runtime-extension for condition current-skill on claude-code'),
+// so there is no way to vary delivery_mode while holding condition fixed; this helper builds the
+// full, mutually-consistent current-skill shape (skill_source_sha/skill_invoked/
+// skill_invocation_attempted/skill_invocation_event/skill_observation/usage attribution reason all
+// move together) so individual tests only need to override the ONE field they are exercising.
+function run6CurrentSkill(overrides = {}) {
+  return run6({
+    condition: 'current-skill',
+    skill_source_sha: 'a'.repeat(40),
+    skill_available: { value: true, reason: null },
+    skill_invocation_attempted: { value: true, reason: null },
+    skill_invoked: { value: true, reason: null },
+    skill_invocation_event: { type: 'assistant.tool_use.Skill', index: 3 },
+    skill_observation: {
+      delivery_mode: 'runtime-extension',
+      availability: { status: 'observed-present', evidence_kind: 'runtime-catalog' },
+      activation: { status: 'confirmed', evidence_kind: 'runtime-explicit-event' },
+      source_sha: 'a'.repeat(40),
+      treatment_size: {
+        snapshot_sha256: 'c'.repeat(64), snapshot_bytes: 234997, snapshot_file_count: 28,
+        prompt_sha256: 'e'.repeat(64), prompt_bytes: 55,
+        absent_reason: null,
+      },
+    },
+    usage: {
+      source: 'runtime-reported', input: 2, cached_input: 0, cache_write: 0, output: 4, reasoning_output: null,
+      attributable_to_skill_load: {
+        status: 'not-recorded',
+        dimensions: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null },
+        unit: null, reason: 'runtime-does-not-report-skill-attribution',
+      },
+    },
+    ...overrides,
+  });
+}
+
+describe('aggregateRuns -- agent_runtime/execution_profile/skill_treatment structural partition keys (Section F)', () => {
+  it('a schema<=5 record projects all 3 new fields as the literal "not-recorded" sentinel in group_key', () => {
+    const { groups, errors } = aggregateRuns([run(), run()]);
+    expect(errors).toEqual([]);
+    expect(groups.length).toBe(1);
+    expect(groups[0].group_key.agent_runtime).toBe('not-recorded');
+    expect(groups[0].group_key.execution_profile).toBe('not-recorded');
+    expect(groups[0].group_key.skill_treatment).toBe('not-recorded');
+  });
+
+  it('a well-formed schema:6 record aggregates cleanly with real (non-sentinel) values in group_key', () => {
+    const { groups, errors } = aggregateRuns([run6(), run6()]);
+    expect(errors).toEqual([]);
+    expect(groups.length).toBe(1);
+    expect(groups[0].group_key.agent_runtime).toEqual(run6().agent_runtime);
+    expect(groups[0].group_key.execution_profile).toEqual({ id: 'strict-policy-v1', sha256: STRICT_POLICY_V1_SHA256_FOR_TEST, isolation_kind: 'runtime-policy-hooks', network_mode: 'runtime-default' });
+    expect(groups[0].group_key.skill_treatment).toEqual({ delivery_mode: 'none', source_sha: null, treatment_size: run6().skill_observation.treatment_size });
+  });
+
+  it('never pools a schema:5 record with a schema:6 record, even with identical scenario_id/condition', () => {
+    const v5RunId = 'r-v5-pool-check';
+    const v5 = run({
+      schema: 5, run_id: v5RunId,
+      post_signal_ms: { value: null, reason: 'no first useful signal boundary' },
+      post_signal_tool_calls: { value: null, reason: 'no first useful signal boundary' },
+      policy_denials_before_first_signal: { value: null, reason: 'no first useful signal boundary' },
+      policy_denials_after_first_signal: { value: null, reason: 'no first useful signal boundary' },
+      accepted_audit: { schema: 1, relative_path: `audit/${v5RunId}.json`, sha256: 'a'.repeat(64) },
+    });
+    const v6 = run6({ run_id: 'r-v6-pool-check' });
+    const { groups, errors } = aggregateRuns([v5, v6]);
+    expect(errors).toEqual([]);
+    expect(groups.length).toBe(2);
+    expect(groups.map((g) => g.group_key.schema).sort()).toEqual([5, 6]);
+  });
+
+  it('changing ONLY an outcome field (success/expected_outcome_matched) never separates buckets', () => {
+    const a = run6({ run_id: 'r-outcome-a', success: { value: true, reason: null }, expected_outcome_matched: { value: true, reason: null } });
+    const b = run6({ run_id: 'r-outcome-b', success: { value: false, reason: null }, expected_outcome_matched: { value: false, reason: null } });
+    const { groups, errors } = aggregateRuns([a, b]);
+    expect(errors).toEqual([]);
+    expect(groups.length).toBe(1);
+    expect(groups[0].run_count).toBe(2);
+  });
+
+  it('is insensitive to property insertion order in agent_runtime/execution_profile/skill_observation -- semantically equal records still group together', () => {
+    const a = run6({ run_id: 'r-order-a' });
+    const reorderedAgentRuntime = {};
+    for (const k of Object.keys(a.agent_runtime).reverse()) reorderedAgentRuntime[k] = a.agent_runtime[k];
+    const reorderedExecutionProfile = {};
+    for (const k of Object.keys(a.execution_profile).reverse()) reorderedExecutionProfile[k] = a.execution_profile[k];
+    const reorderedSkillObservation = {};
+    for (const k of Object.keys(a.skill_observation).reverse()) reorderedSkillObservation[k] = a.skill_observation[k];
+    const b = run6({
+      run_id: 'r-order-b', agent_runtime: reorderedAgentRuntime,
+      execution_profile: reorderedExecutionProfile, skill_observation: reorderedSkillObservation,
+    });
+    const { groups, errors } = aggregateRuns([a, b]);
+    expect(errors).toEqual([]);
+    expect(groups.length).toBe(1);
+    expect(groups[0].run_count).toBe(2);
+  });
+
+  it('a malformed v6 agent_runtime is rejected by validateRun and never reaches aggregation', () => {
+    const broken = run6({ run_id: 'r-broken-runtime', agent_runtime: { runtime_id: 'claude-code' } }); // missing required keys
+    const { groups, errors } = aggregateRuns([run6({ run_id: 'r-ok' }), broken]);
+    expect(groups.length).toBe(1);
+    expect(groups[0].run_count).toBe(1);
+    expect(errors.some((e) => e.run_id === 'r-broken-runtime')).toBe(true);
+  });
+
+  // P1 architectural review: buildAggregateGroup's completeness gate used to read ONLY the legacy
+  // claude_code_version, unconditionally requiring a non-empty string on every run regardless of
+  // runtime_id -- since schema invariant 3 requires claude_code_version:null for a non-claude-code
+  // runtime_id, no non-claude-code v6 record could ever satisfy both rules at once, making
+  // end-to-end aggregateRuns() permanently unreachable for any runtime but claude-code. The gate
+  // now reads the canonical CLI version from agent_runtime.cli_version for schema:6+ (required on
+  // every runtime_id, unlike the legacy field), falling back to the legacy field for schema<6.
+  it('a well-formed non-claude-code v6 record (claude_code_version:null, agent_runtime.cli_version non-empty) aggregates cleanly', () => {
+    const codexAgentRuntime = {
+      runtime_id: 'codex-cli', cli_version: '2.0.0-fake', model_requested: 'gpt-5-codex',
+      model_resolved: 'gpt-5-codex', model_vendor_expected: 'openai', model_vendor_observed: null,
+    };
+    const a = run6({ run_id: 'r-codex-a', claude_code_version: null, agent_runtime: codexAgentRuntime });
+    const b = run6({ run_id: 'r-codex-b', claude_code_version: null, agent_runtime: codexAgentRuntime });
+    const { groups, errors } = aggregateRuns([a, b]);
+    expect(errors).toEqual([]);
+    expect(groups.length).toBe(1);
+    expect(groups[0].run_count).toBe(2);
+  });
+
+  describe('agent_runtime -- each sub-field independently separates buckets', () => {
+    // cli_version/model_requested/model_resolved mirror a legacy top-level field 1:1 for
+    // runtime_id:claude-code (schema invariant 3) -- varying the agent_runtime sub-field ALONE
+    // without also moving its legacy counterpart is itself a schema violation, not a valid
+    // "same record, one field different" fixture. legacyField is null when no such mirror exists
+    // (model_vendor_expected, model_vendor_observed -- neither has a pre-v6 legacy counterpart).
+    //
+    // runtime_id itself is deliberately NOT a case here: varying it means moving to the
+    // non-claude-code branch of schema invariant 3 (claude_code_version:null + no legacy-mirror
+    // cross-checks), which is a materially different fixture shape than the other rows in this
+    // table, not a same-shape sub-field swap. It is covered directly above (end-to-end, now that
+    // buildAggregateGroup's completeness gate no longer blocks it) and directly below, at the
+    // run-record-view.mjs projection level.
+    it.each([
+      ['cli_version', 'claude_code_version', '1.2.3-fake', '9.9.9-different'],
+      ['model_requested', 'model_requested', 'claude-sonnet-5', 'claude-sonnet-5-different'],
+      ['model_resolved', 'model_resolved', 'claude-sonnet-5', 'claude-sonnet-5-different'],
+      ['model_vendor_expected', null, 'anthropic', 'openai'],
+    ])('varying agent_runtime.%s alone separates the two runs into different buckets', (field, legacyField, baseValue, otherValue) => {
+      const legacyOverrideA = legacyField ? { [legacyField]: baseValue } : {};
+      const legacyOverrideB = legacyField ? { [legacyField]: otherValue } : {};
+      const a = run6({ run_id: 'r-a', ...legacyOverrideA, agent_runtime: { ...run6().agent_runtime, [field]: baseValue } });
+      const b = run6({ run_id: 'r-b', ...legacyOverrideB, agent_runtime: { ...run6().agent_runtime, [field]: otherValue } });
+      const { groups, errors } = aggregateRuns([a, b]);
+      expect(errors).toEqual([]);
+      expect(groups.length).toBe(2);
+    });
+
+    it('agent_runtime.runtime_id is included verbatim in agentRuntimeView -- two otherwise-identical records with different runtime_id project different partition values', () => {
+      const a = run6({ run_id: 'r-a' });
+      const b = run6({ run_id: 'r-b', agent_runtime: { ...run6().agent_runtime, runtime_id: 'codex-cli' } });
+      expect(agentRuntimeView(a)).not.toEqual(agentRuntimeView(b));
+      expect(agentRuntimeView(a).runtime_id).toBe('claude-code');
+      expect(agentRuntimeView(b).runtime_id).toBe('codex-cli');
+    });
+
+    it('varying agent_runtime.model_vendor_observed (null vs a string) alone separates the two runs into different buckets', () => {
+      const a = run6({ run_id: 'r-a', agent_runtime: { ...run6().agent_runtime, model_vendor_observed: null } });
+      const b = run6({ run_id: 'r-b', agent_runtime: { ...run6().agent_runtime, model_vendor_observed: 'anthropic' } });
+      const { groups, errors } = aggregateRuns([a, b]);
+      expect(errors).toEqual([]);
+      expect(groups.length).toBe(2);
+    });
+  });
+
+  describe('execution_profile -- each partition-relevant sub-field independently separates buckets; attestation does not', () => {
+    // sha256 is now a DERIVED, self-verifying field (P1 architectural review) -- it is the
+    // canonical hash of the record's own id/isolation_kind/network_mode/isolation_attestation_required/
+    // policy_mode/required_capabilities, recomputed and checked by schemas.mjs on every validate.
+    // A fixture can no longer vary sha256 alone while holding those other fields fixed (that pair
+    // is a schema violation, not two valid groups), so each row here recomputes sha256 from
+    // whichever field it varies. There is no longer a standalone "varying sha256 alone" row: that
+    // scenario is unreachable now that sha256 is derived rather than freely assignable, and its
+    // original intent (sha256 participates in the partition key) is already covered by the id/
+    // isolation_kind/network_mode rows below, each of which legitimately changes the real hash.
+    function executionProfileVariant(field, value) {
+      const hashInput = {
+        id: 'strict-policy-v1', isolation_kind: 'runtime-policy-hooks', network_mode: 'runtime-default',
+        isolation_attestation_required: false, policy_mode: 'required', required_capabilities: ['softPermissionDenial'],
+        [field]: value,
+      };
+      return { ...hashInput, sha256: canonicalJsonSha256(hashInput), isolation_attestation_sha256: null };
+    }
+
+    it.each([
+      ['id', 'strict-policy-v1', 'sandboxed-unrestricted-v1'],
+      ['isolation_kind', 'runtime-policy-hooks', 'external-sandbox'],
+      ['network_mode', 'runtime-default', 'restricted'],
+    ])('varying execution_profile.%s alone separates the two runs into different buckets', (field, baseValue, otherValue) => {
+      const a = run6({ run_id: 'r-a', execution_profile: executionProfileVariant(field, baseValue) });
+      const b = run6({ run_id: 'r-b', execution_profile: executionProfileVariant(field, otherValue) });
+      const { groups, errors } = aggregateRuns([a, b]);
+      expect(errors).toEqual([]);
+      expect(groups.length).toBe(2);
+    });
+
+    // strict-policy-v1's own frozen registry semantics force isolation_attestation_sha256 to null
+    // unconditionally (schema-level hardcoded rule) -- sandboxed-unrestricted-v1 carries no such
+    // rule, so it is the only id attestation can vary under at all. isolation_attestation_required
+    // must be true here (P1 architectural review): a non-null attestation is only legal for a
+    // profile that actually requires one, and true/false both participate in the sha256 hash, so
+    // a and b share the SAME recomputed hash despite their attestation payloads differing.
+    it('varying ONLY execution_profile.isolation_attestation_sha256 does NOT separate buckets -- it is bound/validated evidence, never a partition key', () => {
+      const base = {
+        id: 'sandboxed-unrestricted-v1', isolation_kind: 'runtime-policy-hooks', network_mode: 'runtime-default',
+        isolation_attestation_required: true, policy_mode: 'required', required_capabilities: ['softPermissionDenial'],
+      };
+      const baseSha256 = canonicalJsonSha256(base);
+      const a = run6({ run_id: 'r-a', execution_profile: { ...base, sha256: baseSha256, isolation_attestation_sha256: 'a'.repeat(64) } });
+      const b = run6({ run_id: 'r-b', execution_profile: { ...base, sha256: baseSha256, isolation_attestation_sha256: 'b'.repeat(64) } });
+      const { groups, errors } = aggregateRuns([a, b]);
+      expect(errors).toEqual([]);
+      expect(groups.length).toBe(1);
+      expect(groups[0].run_count).toBe(2);
+    });
+  });
+
+  describe('skill_treatment -- each sub-field independently separates buckets; availability/activation do not', () => {
+    it('varying skill_observation.delivery_mode (via condition, the only way it can differ on claude-code) separates the two runs into different buckets', () => {
+      const a = run6CurrentSkill({ run_id: 'r-a' });
+      const b = run6({ run_id: 'r-b' }); // no-skill -> delivery_mode:'none'
+      const { groups, errors } = aggregateRuns([a, b]);
+      expect(errors).toEqual([]);
+      expect(groups.length).toBe(2);
+    });
+
+    it('varying skill_observation.source_sha alone (both current-skill) separates the two runs into different buckets', () => {
+      const a = run6CurrentSkill({ run_id: 'r-a' });
+      const b = run6CurrentSkill({
+        run_id: 'r-b', skill_source_sha: 'b'.repeat(40),
+        skill_observation: { ...run6CurrentSkill().skill_observation, source_sha: 'b'.repeat(40) },
+      });
+      const { groups, errors } = aggregateRuns([a, b]);
+      expect(errors).toEqual([]);
+      expect(groups.length).toBe(2);
+    });
+
+    it('varying skill_observation.treatment_size alone (both current-skill, same source_sha) separates the two runs into different buckets -- the same source SHA is not enough on its own', () => {
+      const a = run6CurrentSkill({ run_id: 'r-a' });
+      const b = run6CurrentSkill({
+        run_id: 'r-b',
+        skill_observation: { ...run6CurrentSkill().skill_observation, treatment_size: { ...run6CurrentSkill().skill_observation.treatment_size, prompt_bytes: 99 } },
+      });
+      const { groups, errors } = aggregateRuns([a, b]);
+      expect(errors).toEqual([]);
+      expect(groups.length).toBe(2);
+    });
+
+    it('varying ONLY skill_observation.availability/activation (delivery_mode/source_sha/treatment_size held identical) does NOT separate buckets -- they are observed outcomes, never the treatment itself', () => {
+      const a = run6CurrentSkill({ run_id: 'r-a' });
+      const b = run6CurrentSkill({
+        run_id: 'r-b',
+        // Moved together with availability.status (P1 architectural review): the legacy
+        // skill_available.value must agree with skill_observation.availability.status, so
+        // flipping availability to observed-absent requires flipping the legacy field too.
+        skill_available: { value: false, reason: null },
+        skill_invoked: { value: false, reason: null },
+        skill_observation: {
+          ...run6CurrentSkill().skill_observation,
+          availability: { status: 'observed-absent', evidence_kind: 'runtime-catalog' },
+          activation: { status: 'not-observed', evidence_kind: 'runtime-explicit-event' },
+        },
+      });
+      const { groups, errors } = aggregateRuns([a, b]);
+      expect(errors).toEqual([]);
+      expect(groups.length).toBe(1);
+      expect(groups[0].run_count).toBe(2);
+    });
+  });
+});
+
 describe('summarizeGroup', () => {
   it('computes skill_invoked_rate and success_rate', () => {
     const runs = [
@@ -202,5 +552,72 @@ describe('summarizeGroup', () => {
     const summary = summarizeGroup([]);
     expect(summary.skill_invoked_rate).toBeNull();
     expect(summary.success_rate).toBeNull();
+  });
+});
+
+// Compatibility regression fix (agentic-eval-runtime-neutral-records-v1, Stage 1): canonical-
+// json.mjs's extraction tightened canonicalStructuredValue to THROW on `undefined` (correct for its
+// real security-relevant callers -- execution-profile/provenance hashing), but aggregateRuns()'s own
+// bucket-key computation used to rely on the OLD, silently-tolerant behavior to let a schema<4
+// record's genuinely-absent ambient_skill_profile (introduced in schema v4, never present before)
+// flow through harmlessly into buildAggregateGroup's own graceful completeness error, instead of
+// hard-crashing the entire aggregateRuns() call. Fixed by restricting canonicalization to
+// object/array values only in the bucket-key computation (mirroring schemas.mjs's own unexported
+// partitionFieldKey predicate) -- canonical-json.mjs itself is untouched.
+describe('aggregateRuns -- bucket-key computation tolerates a genuinely absent (undefined) primitive field (compatibility regression fix)', () => {
+  it('a schema:3 record with NO ambient_skill_profile key at all does not throw during bucketing, and reaches buildAggregateGroup\'s own graceful completeness error', () => {
+    const a = run({ schema: 3, run_id: 'r-schema3-a' });
+    const b = run({ schema: 3, run_id: 'r-schema3-b' });
+    delete a.ambient_skill_profile;
+    delete b.ambient_skill_profile;
+    expect('ambient_skill_profile' in a).toBe(false);
+    let result;
+    expect(() => { result = aggregateRuns([a, b]); }).not.toThrow();
+    expect(result.groups).toEqual([]);
+    expect(result.errors.length).toBe(1);
+    expect(result.errors[0].errors.some((e) => e.field === 'ambient_skill_profile')).toBe(true);
+  });
+
+  it('canonicalStructuredValue(undefined) itself still throws -- canonical-json.mjs\'s own contract is untouched by this fix', () => {
+    expect(() => canonicalStructuredValue(undefined)).toThrow(TypeError);
+  });
+
+  it('is insensitive to property insertion order for an object-valued field (ambient_skill_profile) -- the object/array canonicalization path still runs', () => {
+    const scopeId = '00000000-0000-4000-8000-000000000000';
+    const a = run({ run_id: 'r-order-x', ambient_skill_profile: { count: 1, scope_id: scopeId, fingerprint_hmac: 'f'.repeat(64) } });
+    const b = run({ run_id: 'r-order-y', ambient_skill_profile: { fingerprint_hmac: 'f'.repeat(64), scope_id: scopeId, count: 1 } });
+    const { groups, errors } = aggregateRuns([a, b]);
+    expect(errors).toEqual([]);
+    expect(groups.length).toBe(1);
+    expect(groups[0].run_count).toBe(2);
+  });
+
+  // The real committed corpus (read-only) -- the actual failure this fix closes: before it,
+  // aggregateRuns() crashed outright on this exact directory (8 real schema:3 records missing
+  // ambient_skill_profile) instead of ever reaching buildAggregateGroup's own per-bucket error.
+  // Pinned counts mirror Stage 0's own recorded baseline sanity anchors for this corpus.
+  describe('real committed corpus (read-only, tools/runs/agentic-eval-scenario)', () => {
+    const files = readdirSync(REAL_RUNS_DIR, { withFileTypes: true }).filter((d) => d.isFile() && d.name.endsWith('.json')).map((d) => d.name);
+    const records = files.map((f) => validateRunRecordFile(join(REAL_RUNS_DIR, f))).filter((r) => r.errors.length === 0).map((r) => r.record);
+
+    it('the corpus is non-empty (a silent zero would make every assertion below vacuously true)', () => {
+      expect(records.length).toBeGreaterThan(0);
+    });
+
+    it('aggregateRuns() does not throw against the full real corpus', () => {
+      expect(() => aggregateRuns(records)).not.toThrow();
+    });
+
+    it('produces exactly 78 groups and the same 4 historical "missing ambient_skill_profile" errors -- the 8 schema:3 records are reported, never silently excluded or silently included', () => {
+      const { groups, errors } = aggregateRuns(records);
+      expect(groups.length).toBe(78);
+      const ambientProfileErrors = errors.filter((e) => e.errors.some((er) => er.field === 'ambient_skill_profile'));
+      expect(ambientProfileErrors.length).toBe(4);
+      const totalFlaggedRecords = ambientProfileErrors.reduce((sum, e) => {
+        const match = e.errors.find((er) => er.field === 'ambient_skill_profile').message.match(/^(\d+) run\(s\)/);
+        return sum + Number(match[1]);
+      }, 0);
+      expect(totalFlaggedRecords).toBe(8);
+    });
   });
 });

@@ -24,17 +24,18 @@ import { join } from 'node:path';
 
 import { buildPathShim } from './path-shim.mjs';
 import { materializeSkillSnapshot, materializeGradleUserHome, realpath, applyFixtureSetup } from './materialize.mjs';
+import { computeSkillSnapshotArtifact } from './input-artifacts.mjs';
 import { buildRunMatrix, buildConditionOrders } from './randomizer.mjs';
 import { attributeCondition } from './junit-evidence.mjs';
 import { buildBashDispatchAccounting } from './dispatch-accounting.mjs';
 import { cellTranscriptIntegrityOk } from './cell-integrity.mjs';
 import { tagIncidentPhase } from './durable-journal.mjs';
 import { validateRuntimeAdapter, validateObservation, freezeObservation, selectShellAttempts } from './runtimes/contract.mjs';
-// The one authorized exception (contract.mjs's own doc comment): matrix-runner.mjs may import the
-// Claude singleton as the default runtime while no registry exists. No other core module may
-// import runtimes/claude-code.mjs or any Claude-specific module (stream-parser.mjs,
-// condition-launcher.mjs, auth-preflight.mjs, env-builder.mjs) directly.
-import claudeCodeRuntimeAdapter from './runtimes/claude-code.mjs';
+// registries.mjs is now the ONE module allowed to import runtimes/claude-code.mjs directly
+// (agentic-eval-runtime-neutral-records-v1) -- this module no longer defaults runtimeAdapter to
+// the Claude singleton; every caller must resolve a selection (registries.mjs's resolveSelection)
+// and pass the resulting adapter in explicitly. An omitted adapter is a contract error
+// (validateRuntimeAdapter below rejects `undefined`), never a silent fallback.
 
 /** Prints a single, clearly-labeled WARNING line if `failures` (from a cleanup accumulator's
  * runCleanup()) is non-empty -- never silent, but never escalated into a hard failure either: a
@@ -83,10 +84,11 @@ function createCleanupAccumulator() {
  * @param {boolean} [junitEvidenceEnabled] - threaded straight into buildPolicySettingsFile(); false
  *   (the default) produces byte-for-byte the same settings.json this function has always produced
  *   -- calibrate/smoke never pass true, so their behavior is completely unaffected.
- * @returns {Promise<{settingsPath, shimDir, snapshotDir, gradleUserHome, gradleSnapshotDir,
- *   resetGradleToSnapshot, daemonPolicy, kmpEvalTempHome, sharedEnv, registerCleanup, runCleanup}>}
+ * @returns {Promise<{settingsPath, shimDir, snapshotDir, skillSnapshotArtifact, gradleUserHome,
+ *   gradleSnapshotDir, resetGradleToSnapshot, daemonPolicy, kmpEvalTempHome, sharedEnv,
+ *   registerCleanup, runCleanup}>}
  */
-export async function acquireSharedEvalResources({ allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, junitEvidenceEnabled = false, runtimeAdapter = claudeCodeRuntimeAdapter }) {
+export async function acquireSharedEvalResources({ allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, junitEvidenceEnabled = false, runtimeAdapter }) {
   // Validated BEFORE any resource below is created (post-review hardening, round 1): the default
   // (claudeCodeRuntimeAdapter) is already validated once, at module load, by defineRuntimeAdapter
   // -- but that guarantee is specific to the DEFAULT instance, not to whatever an individual
@@ -103,6 +105,23 @@ export async function acquireSharedEvalResources({ allowedGradleTasks, allowedKm
     registerCleanup(() => rmSync(shimDir, { recursive: true, force: true }));
     const { snapshotDir } = await materializeSkillSnapshot({ repoRoot, sha: pinnedSkillSha, validateFn: runPluginValidator });
     registerCleanup(() => rmSync(snapshotDir, { recursive: true, force: true }));
+    // Computed here, immediately after materialization and its cleanup registration, and before
+    // any adapter/spawn work below -- a Git or canonicalization failure must fail closed before
+    // any live session starts, but this must run AFTER materializeSkillSnapshot, never before:
+    // that call's own ensureCommitAvailable (materialize.mjs) is the ONE mechanism that backfills
+    // the pinned commit into a shallow CI checkout (`git fetch --depth 1 origin <sha>`) when it
+    // isn't already present locally -- computing the artifact any earlier would race a shallow
+    // clone that hasn't been backfilled yet (the real CI failure mode
+    // agentic-eval-materialize.test.js's own "backfills a commit missing from a shallow clone"
+    // test guards). Explicitly phase-tagged, mirroring the auth-preflight throw below: an untagged
+    // throw here would default to incidentPhaseOf's own 'finalizing_matrix' fallback, misclassifying
+    // a resource-acquisition failure as something that happened at the very end of a whole matrix.
+    let skillSnapshotArtifact;
+    try {
+      skillSnapshotArtifact = computeSkillSnapshotArtifact({ repoRoot, sha: pinnedSkillSha, root: '.skills/kmp-test-runner' });
+    } catch (err) {
+      throw tagIncidentPhase(err, 'acquiring_shared_resources');
+    }
     // materializeGradleUserHome creates TWO temp directories (gradleUserHome itself, plus its own
     // internal snapshotDir it resets from) -- gradleSnapshotDir here is deliberately distinctly
     // named from the skill snapshot's `snapshotDir` above; conflating the two previously meant the
@@ -140,7 +159,7 @@ export async function acquireSharedEvalResources({ allowedGradleTasks, allowedKm
     }
 
     return {
-      settingsPath, shimDir, snapshotDir, gradleUserHome, gradleSnapshotDir,
+      settingsPath, shimDir, snapshotDir, skillSnapshotArtifact, gradleUserHome, gradleSnapshotDir,
       resetGradleToSnapshot: resetToSnapshot, daemonPolicy, kmpEvalTempHome, sharedEnv,
       registerCleanup, runCleanup,
       // The RESOLVED adapter instance (default or test-injected) -- returned so a caller outside
@@ -211,7 +230,20 @@ export async function acquireSharedEvalResources({ allowedGradleTasks, allowedKm
  *   acquireSharedEvalResources); the scratch directory's removal is queued on it IMMEDIATELY after
  *   creation, before spawnCondition runs, so a failure anywhere later in this call is still covered.
  */
-export async function runSingleCondition({ condition, materializeFixture, previousFixtureDir, cleanupFixtureOnce, resetGradleToSnapshot, kmpEvalTempHome, sharedEnv, baseArgv, snapshotDir, targetPluginName, targetSkillName, timeoutMs, decisionAttributionEnabled = false, junitEvidenceEnabled = false, evidenceTask = null, allowedInvocations = null, registerCleanup = null, fixtureSetup = null, journal = null, cellOrdinal = null, runtimeAdapter = claudeCodeRuntimeAdapter }) {
+export async function runSingleCondition({ condition, materializeFixture, previousFixtureDir, cleanupFixtureOnce, resetGradleToSnapshot, kmpEvalTempHome, sharedEnv, baseArgv, snapshotDir, targetPluginName, targetSkillName, timeoutMs, decisionAttributionEnabled = false, junitEvidenceEnabled = false, evidenceTask = null, allowedInvocations = null, registerCleanup = null, fixtureSetup = null, journal = null, cellOrdinal = null, runtimeAdapter }) {
+  // Validated BEFORE any per-condition resource is created (P1 architectural review): every
+  // condition within a matrix reuses the SAME runtimeAdapter acquireSharedEvalResources already
+  // validated once upfront, but this function's own materialization work (fixture materialize,
+  // Gradle reset-to-snapshot, scratch directories) is exactly the same class of expensive,
+  // hard-to-unwind side effect acquireSharedEvalResources refuses to start before validating -- so
+  // this applies the identical fail-fast discipline locally, rather than trusting a caller never to
+  // regress it. Mirrors acquireSharedEvalResources's own un-tagged throw (line ~98): this happens
+  // before the try block below and before any cleanup accumulator exists for this cell, so there is
+  // nothing yet for tagIncidentPhase's rollback context to describe.
+  const { ok: adapterOk, errors: adapterErrors } = validateRuntimeAdapter(runtimeAdapter);
+  if (!adapterOk) {
+    throw new Error(`invalid runtime adapter: ${adapterErrors.map((e) => `${e.field}:${e.code}`).join(', ')}`);
+  }
   let fixtureDir;
   try {
     const materialized = materializeFixture(previousFixtureDir);
@@ -406,7 +438,7 @@ export function isJunitEvidenceOutcome(outcomeKind) {
   return outcomeKind === 'tests_executed' || outcomeKind === 'tests_failed' || outcomeKind === 'coverage_threshold_exceeded';
 }
 
-export async function runScenarioMatrix({ scenario, repeats, seed, model, allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, materializeFixture, cleanupFixture, targetPluginName, targetSkillName, timeoutMs, journal = null, runtimeAdapter = claudeCodeRuntimeAdapter }) {
+export async function runScenarioMatrix({ scenario, repeats, seed, model, allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, materializeFixture, cleanupFixture, targetPluginName, targetSkillName, timeoutMs, journal = null, runtimeAdapter }) {
   // Decision attribution (allow/deny per Bash attempt) is needed for EVERY scenario regardless of
   // outcome_kind (round-7 fix): a no_applicable_tests condition's denied kmp-test-parallel
   // attempts were previously phantom-counted as real executions (test_invocations_total/retries),
@@ -552,7 +584,8 @@ export async function runScenarioMatrix({ scenario, repeats, seed, model, allowe
     const matrixComplete = executedCellCount === plannedCellCount;
 
     return {
-      cellResults, snapshotDir: shared.snapshotDir, daemonPolicy: shared.daemonPolicy,
+      cellResults, snapshotDir: shared.snapshotDir, skillSnapshotArtifact: shared.skillSnapshotArtifact,
+      daemonPolicy: shared.daemonPolicy,
       allowedGradleTasks, allowedKmpTestSubcommands, cleanup: runCleanup,
       plannedCellCount, executedCellCount, matrixComplete, failFastStop,
     };
