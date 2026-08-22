@@ -54,6 +54,10 @@ function receiptMap(eventCount) {
   return new Map(Array.from({ length: eventCount }, (_, i) => [i, BigInt(i)]));
 }
 
+function argvOf(invocation) {
+  return invocation.argv;
+}
+
 describe('claudeCodeRuntimeAdapter -- shape', () => {
   it('validates clean against runtimes/contract.mjs\'s own adapter validator', () => {
     const result = validateRuntimeAdapter(claudeCodeRuntimeAdapter);
@@ -132,11 +136,12 @@ describe('EXPECTED_TOOL_NAMES -- the literal Claude tools profile', () => {
   });
 });
 
-describe('buildInvocation -- byte-identical to condition-launcher.mjs\'s buildBaseArgv contract', () => {
-  it('freezes the exact full argv for the defaults case (mirrors agentic-eval-condition-launcher.test.js)', () => {
-    const argv = buildInvocation({ prompt: 'PROMPT', settingsPath: 'SETTINGS' });
-    expect(argv).toEqual([
-      'claude', '-p', 'PROMPT',
+describe('buildInvocation -- byte-identical flags with prompt-safe stdin transport', () => {
+  it('freezes the exact full argv for the defaults case and carries the prompt only as stdinText', () => {
+    const invocation = buildInvocation({ prompt: 'PROMPT', settingsPath: 'SETTINGS' });
+    expect(invocation.stdinText).toBe('PROMPT');
+    expect(argvOf(invocation)).toEqual([
+      'claude', '-p',
       '--output-format', 'stream-json', '--verbose', '--include-hook-events',
       '--model', 'claude-sonnet-5',
       '--setting-sources', '', '--strict-mcp-config', '--no-chrome',
@@ -145,12 +150,14 @@ describe('buildInvocation -- byte-identical to condition-launcher.mjs\'s buildBa
       '--permission-mode', 'dontAsk',
       '--max-budget-usd', '0.6',
     ]);
+    expect(argvOf(invocation)).not.toContain('PROMPT');
   });
 
   it('freezes the exact full argv when model/maxBudgetUsd are supplied', () => {
-    const argv = buildInvocation({ prompt: 'PROMPT', settingsPath: 'SETTINGS', model: 'MODEL', maxBudgetUsd: 1.25 });
-    expect(argv).toEqual([
-      'claude', '-p', 'PROMPT',
+    const invocation = buildInvocation({ prompt: 'PROMPT', settingsPath: 'SETTINGS', model: 'MODEL', maxBudgetUsd: 1.25 });
+    expect(invocation.stdinText).toBe('PROMPT');
+    expect(argvOf(invocation)).toEqual([
+      'claude', '-p',
       '--output-format', 'stream-json', '--verbose', '--include-hook-events',
       '--model', 'MODEL',
       '--setting-sources', '', '--strict-mcp-config', '--no-chrome',
@@ -165,7 +172,7 @@ describe('buildInvocation -- byte-identical to condition-launcher.mjs\'s buildBa
 describe('buildInvocation -- executionProfile-aware permission mode (PR 4)', () => {
   it('omitting executionProfile still defaults to dontAsk -- byte-identical to the pre-existing frozen argv (strict, unchanged)', () => {
     const withDefault = buildInvocation({ prompt: 'PROMPT', settingsPath: 'SETTINGS' });
-    expect(withDefault[withDefault.indexOf('--permission-mode') + 1]).toBe('dontAsk');
+    expect(argvOf(withDefault)[argvOf(withDefault).indexOf('--permission-mode') + 1]).toBe('dontAsk');
   });
 
   it('executionProfile:strict-policy-v1 (policy_mode:required) produces the SAME byte-identical argv as omitting it entirely', () => {
@@ -177,16 +184,16 @@ describe('buildInvocation -- executionProfile-aware permission mode (PR 4)', () 
   it('executionProfile:sandboxed-unrestricted-v1 (policy_mode:not_applicable) produces the identical argv shape/order with ONLY --permission-mode swapped to bypassPermissions', () => {
     const strict = buildInvocation({ prompt: 'PROMPT', settingsPath: 'SETTINGS' });
     const unrestricted = buildInvocation({ prompt: 'PROMPT', settingsPath: 'SETTINGS', executionProfile: UNRESTRICTED_PROFILE });
-    expect(unrestricted.length).toBe(strict.length);
-    const idx = strict.indexOf('--permission-mode');
-    expect(unrestricted.slice(0, idx)).toEqual(strict.slice(0, idx));
-    expect(unrestricted.slice(idx + 2)).toEqual(strict.slice(idx + 2));
-    expect(unrestricted[idx + 1]).toBe('bypassPermissions');
+    expect(argvOf(unrestricted).length).toBe(argvOf(strict).length);
+    const idx = argvOf(strict).indexOf('--permission-mode');
+    expect(argvOf(unrestricted).slice(0, idx)).toEqual(argvOf(strict).slice(0, idx));
+    expect(argvOf(unrestricted).slice(idx + 2)).toEqual(argvOf(strict).slice(idx + 2));
+    expect(argvOf(unrestricted)[idx + 1]).toBe('bypassPermissions');
   });
 
   it('never contains --dangerously-skip-permissions -- only --permission-mode bypassPermissions is ever compiled', () => {
     const unrestricted = buildInvocation({ prompt: 'PROMPT', settingsPath: 'SETTINGS', executionProfile: UNRESTRICTED_PROFILE });
-    expect(unrestricted.join(' ')).not.toContain('dangerously-skip-permissions');
+    expect(argvOf(unrestricted).join(' ')).not.toContain('dangerously-skip-permissions');
   });
 
   it('the SAME Bash,Skill --tools value and model/budget appear for both profiles', () => {
@@ -196,12 +203,12 @@ describe('buildInvocation -- executionProfile-aware permission mode (PR 4)', () 
     const unrestricted = buildInvocation({
       prompt: 'p', settingsPath: 's', model: 'M', maxBudgetUsd: 2, executionProfile: UNRESTRICTED_PROFILE,
     });
-    expect(strict[strict.indexOf('--tools') + 1]).toBe('Bash,Skill');
-    expect(unrestricted[unrestricted.indexOf('--tools') + 1]).toBe('Bash,Skill');
-    expect(strict[strict.indexOf('--model') + 1]).toBe('M');
-    expect(unrestricted[unrestricted.indexOf('--model') + 1]).toBe('M');
-    expect(strict[strict.indexOf('--max-budget-usd') + 1]).toBe('2');
-    expect(unrestricted[unrestricted.indexOf('--max-budget-usd') + 1]).toBe('2');
+    expect(argvOf(strict)[argvOf(strict).indexOf('--tools') + 1]).toBe('Bash,Skill');
+    expect(argvOf(unrestricted)[argvOf(unrestricted).indexOf('--tools') + 1]).toBe('Bash,Skill');
+    expect(argvOf(strict)[argvOf(strict).indexOf('--model') + 1]).toBe('M');
+    expect(argvOf(unrestricted)[argvOf(unrestricted).indexOf('--model') + 1]).toBe('M');
+    expect(argvOf(strict)[argvOf(strict).indexOf('--max-budget-usd') + 1]).toBe('2');
+    expect(argvOf(unrestricted)[argvOf(unrestricted).indexOf('--max-budget-usd') + 1]).toBe('2');
   });
 
   it('a frozen executionProfile object (exactly as resolveSelection returns) works fine -- buildInvocation never attempts to mutate it', () => {
@@ -272,17 +279,18 @@ describe('prepareIsolatedHome -- executionProfile-aware settings/env compilation
 });
 
 describe('prepareSkillDelivery -- condition delta (mirrors agentic-eval-condition-launcher.test.js)', () => {
-  it('no-skill returns the base argv completely unchanged (same reference)', () => {
+  it('no-skill returns the base invocation completely unchanged (same reference)', () => {
     const base = buildInvocation({ prompt: 'test', settingsPath: 'C:\\fake\\settings.json' });
     const argvA = prepareSkillDelivery(base, 'no-skill', null);
     expect(argvA).toBe(base);
   });
 
-  it('current-skill is the base argv plus exactly one trailing --plugin-dir pair', () => {
+  it('current-skill is the base invocation argv plus exactly one trailing --plugin-dir pair, preserving stdinText', () => {
     const base = buildInvocation({ prompt: 'test', settingsPath: 'C:\\fake\\settings.json' });
     const argvB = prepareSkillDelivery(base, 'current-skill', 'C:\\fake-snapshot');
-    expect(argvB.slice(0, base.length)).toEqual(base);
-    expect(argvB.slice(base.length)).toEqual(['--plugin-dir', 'C:\\fake-snapshot']);
+    expect(argvB.stdinText).toBe(base.stdinText);
+    expect(argvOf(argvB).slice(0, argvOf(base).length)).toEqual(argvOf(base));
+    expect(argvOf(argvB).slice(argvOf(base).length)).toEqual(['--plugin-dir', 'C:\\fake-snapshot']);
   });
 
   it('current-skill without a snapshotDir throws rather than silently omitting --plugin-dir', () => {

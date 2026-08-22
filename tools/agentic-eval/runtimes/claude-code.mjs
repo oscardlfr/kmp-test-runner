@@ -19,7 +19,7 @@ import { dirname } from 'node:path';
 
 import { defineRuntimeAdapter } from './contract.mjs';
 import {
-  buildBaseArgv, buildConditionArgv, buildSharedEnv, buildPolicySettingsFile, spawnCondition,
+  buildBaseInvocation, buildConditionArgv, buildSharedEnv, buildPolicySettingsFile, spawnCondition,
 } from '../condition-launcher.mjs';
 import { runAuthPreflight, authPreflightReasonCode } from '../auth-preflight.mjs';
 import {
@@ -224,28 +224,28 @@ export function supportsExecutionProfile(profileEntry) {
     && SUPPORTED_EXECUTION_PROFILES.some((supported) => matchesExecutionProfileShape(profileEntry, supported));
 }
 
-/** `prepareSkillDelivery(argv, condition, snapshotDir)` delegates exactly to buildConditionArgv:
- * no-skill adds nothing; current-skill appends only `--plugin-dir <snapshotDir>` at the end. */
+/** `prepareSkillDelivery(invocation, condition, snapshotDir)` delegates exactly to
+ * buildConditionArgv: no-skill adds nothing; current-skill appends only
+ * `--plugin-dir <snapshotDir>` at the end of argv, preserving stdinText. */
 export function prepareSkillDelivery(argv, condition, snapshotDir) {
   return buildConditionArgv(argv, condition, snapshotDir);
 }
 
-/** `buildInvocation(context)` conserves buildBaseArgv byte-for-byte for strict (executionProfile
- * omitted, or a policy_mode:"required" profile). PR 4: a policy_mode:"not_applicable" profile
- * (sandboxed-unrestricted-v1) compiles the identical argv shape/order with ONLY
+/** `buildInvocation(context)` conserves the Claude flag shape for strict (executionProfile
+ * omitted, or a policy_mode:"required" profile), while carrying the prompt over stdin instead of
+ * argv. A policy_mode:"not_applicable" profile (sandboxed-unrestricted-v1) compiles the identical
+ * argv shape/order with ONLY
  * `--permission-mode` swapped to `bypassPermissions` -- the sole non-interactive permission mode
  * `claude-code 2.1.227 --help` documents for this purpose (see the runbook's own Decision C;
- * `--dangerously-skip-permissions` is never used). `executionProfile` itself is never forwarded to
- * buildBaseArgv (which knows nothing about profiles) -- only the one derived `permissionMode`
- * value is. */
+ * `--dangerously-skip-permissions` is never used). */
 export function buildInvocation({ executionProfile, ...rest }) {
   const permissionMode = isPolicyNotApplicable(executionProfile) ? 'bypassPermissions' : 'dontAsk';
-  return buildBaseArgv({ ...rest, permissionMode });
+  return buildBaseInvocation({ ...rest, permissionMode });
 }
 
 /**
- * `collectObservationSources(argv, spawnOpts)` conserves spawnCondition, including timeout, tree
- * kill, receipts, stdout and stderr -- returns the ephemeral envelope
+ * `collectObservationSources(invocation, spawnOpts)` conserves spawnCondition, including timeout,
+ * tree kill, receipts, stdout and stderr -- returns the ephemeral envelope
  * `{process, capture, providerSources}` the generic executor coordinates collect -> persist
  * callback -> normalize -> validate around. `providerSources` is opaque to the core: only
  * normalizeObservations may inspect it.
