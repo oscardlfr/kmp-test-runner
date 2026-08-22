@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   buildBaseArgv,
+  buildBaseInvocation,
   buildConditionArgv,
   buildSharedEnv,
   buildPolicySettingsFile,
@@ -132,6 +133,40 @@ describe('buildBaseArgv / buildConditionArgv -- mechanical A/B equivalence', () 
   it('--settings points at the provided settings path', () => {
     const base = buildBaseArgv({ prompt: 'test', settingsPath: 'C:\\some\\settings.json' });
     expect(base[base.indexOf('--settings') + 1]).toBe('C:\\some\\settings.json');
+  });
+});
+
+describe('buildBaseInvocation -- prompt-safe stdin transport', () => {
+  it('keeps the exact prompt out of argv and carries it only as stdinText', () => {
+    const prompt = 'first line\nsecond line\n--output-format plain-text';
+    const invocation = buildBaseInvocation({ prompt, settingsPath: 'SETTINGS' });
+    expect(invocation.stdinText).toBe(prompt);
+    expect(invocation.argv).toEqual([
+      'claude', '-p',
+      '--output-format', 'stream-json', '--verbose', '--include-hook-events',
+      '--model', 'claude-sonnet-5',
+      '--setting-sources', '', '--strict-mcp-config', '--no-chrome',
+      '--no-session-persistence', '--settings', 'SETTINGS',
+      '--tools', 'Bash,Skill',
+      '--permission-mode', 'dontAsk',
+      '--max-budget-usd', '0.6',
+    ]);
+    expect(invocation.argv).not.toContain(prompt);
+    expect(invocation.argv.join(' ')).not.toContain('second line');
+  });
+
+  it('current-skill appends only --plugin-dir to argv and preserves stdinText byte-for-byte', () => {
+    const invocation = buildBaseInvocation({ prompt: 'line1\nline2', settingsPath: 'SETTINGS' });
+    const withSkill = buildConditionArgv(invocation, 'current-skill', 'C:\\fake-snapshot');
+    expect(withSkill).not.toBe(invocation);
+    expect(withSkill.stdinText).toBe(invocation.stdinText);
+    expect(withSkill.argv.slice(0, invocation.argv.length)).toEqual(invocation.argv);
+    expect(withSkill.argv.slice(invocation.argv.length)).toEqual(['--plugin-dir', 'C:\\fake-snapshot']);
+  });
+
+  it('no-skill returns the prompt-safe invocation object unchanged', () => {
+    const invocation = buildBaseInvocation({ prompt: 'line1\nline2', settingsPath: 'SETTINGS' });
+    expect(buildConditionArgv(invocation, 'no-skill', null)).toBe(invocation);
   });
 });
 
@@ -383,6 +418,37 @@ describe('spawnCondition -- real subprocess (local shell only, no Claude, no net
     const result = await spawnCondition(argv, { env: process.env, cwd: process.cwd(), timeoutMs: 10000 });
     expect(result.taggedLines.map((t) => t.line)).toEqual(['row-1', 'row-2', 'row-3', 'row-4', 'row-5']);
   });
+
+  it('delivers multiline stdinText to the child without adding that prompt to argv', async () => {
+    const prompt = 'first line\nsecond line\n--output-format plain-text';
+    const script = [
+      'let stdin = "";',
+      'process.stdin.setEncoding("utf8");',
+      'process.stdin.on("data", c => { stdin += c; });',
+      'process.stdin.on("end", () => process.stdout.write(JSON.stringify({ argv: process.argv.slice(1), stdin }) + "\\n"));',
+    ].join('');
+    const result = await spawnCondition({
+      argv: ['node', '-e', script, '--', '--output-format', 'stream-json', '--verbose'],
+      stdinText: prompt,
+    }, { env: process.env, cwd: process.cwd(), timeoutMs: 10000 });
+    expect(result.exitCode).toBe(0);
+    const observed = JSON.parse(result.rawStdout);
+    expect(observed.stdin).toBe(prompt);
+    expect(observed.argv).toEqual(['--output-format', 'stream-json', '--verbose']);
+  });
+
+  it('does not turn early child exit while writing stdinText into an unhandled harness crash', async () => {
+    // A malformed fake-claude fixture can exit before consuming the prompt. On Linux CI that
+    // surfaced as EPIPE from child.stdin.end(...), which must be classified through the normal
+    // child exit path instead of crashing the parent Node process before graders can run.
+    const result = await spawnCondition({
+      argv: ['node', '-e', 'process.exit(7)'],
+      stdinText: 'prompt\n'.repeat(200000),
+    }, { env: process.env, cwd: process.cwd(), timeoutMs: 10000 });
+    expect(result.exitCode).toBe(7);
+    expect(result.terminated).toBe(false);
+    expect(result.terminationReason).toBeNull();
+  }, 15000);
 
   it('resolves rather than hanging when the command itself fails to spawn', async () => {
     const result = await spawnCondition(['this-binary-does-not-exist-anywhere-xyz'], { env: process.env, cwd: process.cwd(), timeoutMs: 5000 });

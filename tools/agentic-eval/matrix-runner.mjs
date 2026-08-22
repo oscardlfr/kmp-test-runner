@@ -197,7 +197,7 @@ export async function acquireSharedEvalResources({
  * @param {() => void} opts.resetGradleToSnapshot
  * @param {string} opts.kmpEvalTempHome
  * @param {object} opts.sharedEnv
- * @param {string[]} opts.baseArgv
+ * @param {string[]|{argv: string[], stdinText?: string}} opts.baseArgv
  * @param {string} opts.snapshotDir - the skill snapshot dir (only actually used when
  *   condition==='current-skill'; buildConditionArgv ignores it otherwise).
  * @param {string} opts.targetPluginName - the plugin's own identity (plugin.json's `name`), used
@@ -379,8 +379,8 @@ export async function runSingleCondition({ condition, materializeFixture, previo
  * Orchestrates a full scenario matrix: acquires shared resources ONCE, gets a reproducible
  * EXECUTION order for the `repeats` repetition slots from buildRunMatrix (honoring the task
  * brief's literal "execute cells from buildRunMatrix()") and a genuinely counterbalanced
- * per-repetition condition order from buildConditionOrders, builds baseArgv ONCE from the
- * scenario's own prompt (a matrix is scoped to exactly one scenario -- `run`'s `--scenario` is
+ * per-repetition condition order from buildConditionOrders, builds the runtime invocation ONCE
+ * from the scenario's own prompt (a matrix is scoped to exactly one scenario -- `run`'s `--scenario` is
  * required and singular), then runs every repetition's pair strictly sequentially, visiting
  * repetitions in buildRunMatrix's shuffled slot order and, within each repetition, the two
  * conditions in buildConditionOrders' data-driven order. "Which repetition runs in which

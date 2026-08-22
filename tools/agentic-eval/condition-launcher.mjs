@@ -92,6 +92,29 @@ export function buildBaseArgv({
 }
 
 /**
+ * Prompt-safe invocation shape for measured Claude sessions. The argv contains only flags and
+ * non-prompt values; the exact prompt bytes travel over stdin. This avoids Windows' Git Bash ->
+ * npm .cmd shim path reinterpreting multiline prompt arguments before --output-format/--verbose
+ * reach claude.exe, while preserving the prompt content itself byte-for-byte.
+ */
+export function buildBaseInvocation({
+  prompt, model = 'claude-sonnet-5', settingsPath, maxBudgetUsd = 0.60, permissionMode = 'dontAsk',
+}) {
+  return {
+    argv: [
+      'claude', '-p',
+      '--output-format', 'stream-json', '--verbose', '--include-hook-events',
+      '--model', model,
+      '--setting-sources', '', '--strict-mcp-config', '--no-chrome', '--no-session-persistence',
+      '--settings', settingsPath,
+      '--tools', 'Bash,Skill',
+      '--permission-mode', permissionMode, '--max-budget-usd', String(maxBudgetUsd),
+    ],
+    stdinText: prompt,
+  };
+}
+
+/**
  * The ONLY condition-specific step: appends --plugin-dir at the end if and only if
  * condition==='current-skill'; otherwise returns baseArgv completely unchanged (same array
  * content, never mutated in place). A dedicated test asserts this mechanically: condition A's
@@ -103,6 +126,9 @@ export function buildConditionArgv(baseArgv, condition, snapshotDir) {
   }
   if (condition === 'current-skill') {
     if (!snapshotDir) throw new Error('current-skill requires a materialized snapshotDir');
+    if (baseArgv && !Array.isArray(baseArgv) && Array.isArray(baseArgv.argv)) {
+      return { ...baseArgv, argv: [...baseArgv.argv, '--plugin-dir', snapshotDir] };
+    }
     return [...baseArgv, '--plugin-dir', snapshotDir];
   }
   if (condition === 'no-skill') return baseArgv;
@@ -178,20 +204,13 @@ function killTree(pid, signal) {
  * duration" for every event and defeating the whole point of per-event timing.
  * @returns {Promise<object>}
  */
-export function spawnCondition(argv, { env, cwd, timeoutMs = 300000, onSpawned }) {
+export function spawnCondition(invocation, { env, cwd, timeoutMs = 300000, onSpawned }) {
+  const argv = Array.isArray(invocation) ? invocation : invocation.argv;
+  const stdinText = Array.isArray(invocation) ? undefined : invocation.stdinText;
   const cmd = argv.map(shQuote).join(' ');
   const t0 = process.hrtime.bigint();
   return new Promise((resolve) => {
     const child = spawn(resolveBash(), ['-c', cmd], { env, cwd, detached: process.platform !== 'win32' });
-    // Fires only once the OS-level process has actually started -- never on a spawn-level failure
-    // (child.on('error') below, which resolves without this ever firing). This module knows
-    // nothing about journals/storage: callers (runSingleCondition) are expected to pass a callback
-    // that is itself side-effect-light (sets a local flag, does no I/O) -- Node's EventEmitter
-    // dispatch does not protect a listener from its own thrown exception, so a callback that DID
-    // do fallible I/O here could crash the whole process while this live session is still running.
-    if (onSpawned) child.on('spawn', () => onSpawned());
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
     let rawStdout = '';
     let stderr = '';
     let buf = '';
@@ -199,6 +218,32 @@ export function spawnCondition(argv, { env, cwd, timeoutMs = 300000, onSpawned }
     let timedOut = false;
     let settled = false;
     let killTimer = null;
+    // Fires only once the OS-level process has actually started -- never on a spawn-level failure
+    // (child.on('error') below, which resolves without this ever firing). This module knows
+    // nothing about journals/storage: callers (runSingleCondition) are expected to pass a callback
+    // that is itself side-effect-light (sets a local flag, does no I/O) -- Node's EventEmitter
+    // dispatch does not protect a listener from its own thrown exception, so a callback that DID
+    // do fallible I/O here could crash the whole process while this live session is still running.
+    if (onSpawned) child.on('spawn', () => onSpawned());
+    child.stdin.on('error', (error) => {
+      // A malformed/fail-fast fake Claude can exit before consuming stdin. That must not turn a
+      // real child-process result into an unhandled harness crash; downstream graders still own
+      // classification from stdout/stderr/exitCode.
+      if (error?.code !== 'EPIPE') {
+        stderr += `\n[agentic-eval] stdin write failed: ${error?.message ?? String(error)}`;
+      }
+    });
+    if (stdinText !== undefined) {
+      try {
+        child.stdin.end(stdinText);
+      } catch (error) {
+        if (error?.code !== 'EPIPE') {
+          stderr += `\n[agentic-eval] stdin write failed: ${error?.message ?? String(error)}`;
+        }
+      }
+    }
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
 
     function clearTimers() {
       clearTimeout(timer);
