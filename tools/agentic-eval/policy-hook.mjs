@@ -31,15 +31,16 @@ import { fileURLToPath } from 'node:url';
 const DENY_REASON = 'Command not permitted by evaluation harness policy.';
 const ALLOW_REASON = 'Command permitted by evaluation harness policy.';
 
-function denyOutput() {
+function permissionOutput(decision, reason) {
   return JSON.stringify({
-    hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: DENY_REASON },
+    hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: decision, permissionDecisionReason: reason },
   });
 }
-function allowOutput() {
-  return JSON.stringify({
-    hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: ALLOW_REASON },
-  });
+function denyDiagnostic(reasonCode) {
+  return { output: permissionOutput('deny', DENY_REASON), decision: 'deny', reasonCode };
+}
+function allowDiagnostic() {
+  return { output: permissionOutput('allow', ALLOW_REASON), decision: 'allow', reasonCode: 'allowed' };
 }
 
 // --- path containment: path.relative-based, never a lowercase/prefix string comparison
@@ -194,24 +195,24 @@ export function isSafeNumericValue(val) {
   return NUMERIC_VALUE_RE.test(val);
 }
 
-export function evaluateKmpTest(tokens, cwd, config) {
+export function evaluateKmpTestDetailed(tokens, cwd, config) {
   const rest = tokens.slice(1);
-  if (rest.length === 1 && KMP_TEST_ALLOWED_BARE_FLAGS.has(rest[0])) return true;
-  if (rest.length === 0) return false;
+  if (rest.length === 1 && KMP_TEST_ALLOWED_BARE_FLAGS.has(rest[0])) return { allowed: true, reasonCode: 'allowed' };
+  if (rest.length === 0) return { allowed: false, reasonCode: 'kmp_test_missing_subcommand' };
   const [subcommand, ...args] = rest;
-  if (!config.allowedKmpTestSubcommands.has(subcommand)) return false;
+  if (!config.allowedKmpTestSubcommands.has(subcommand)) return { allowed: false, reasonCode: 'kmp_test_subcommand_not_allowlisted' };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (KMP_TEST_PATH_FLAGS.has(a)) {
       const val = args[i + 1];
-      if (val === undefined || val.startsWith('-')) return false;
-      if (!realpathWithinFixture(val, cwd, config.expectedFixtureRootReal)) return false;
+      if (val === undefined || val.startsWith('-')) return { allowed: false, reasonCode: 'kmp_test_path_flag_missing_value' };
+      if (!realpathWithinFixture(val, cwd, config.expectedFixtureRootReal)) return { allowed: false, reasonCode: 'kmp_test_path_flag_outside_fixture' };
       i++;
       continue;
     }
     if (KMP_TEST_FILTER_FLAGS.has(a)) {
       const val = args[i + 1];
-      if (val === undefined || !isSafeFilterValue(val)) return false;
+      if (val === undefined || !isSafeFilterValue(val)) return { allowed: false, reasonCode: 'kmp_test_filter_flag_invalid' };
       i++;
       continue;
     }
@@ -220,17 +221,23 @@ export function evaluateKmpTest(tokens, cwd, config) {
       // unlike the filter flags above (the contract for this flag specifically requires two
       // tokens, no combined payload).
       const val = args[i + 1];
-      if (val === undefined || !isSafeNumericValue(val)) return false;
+      if (val === undefined) return { allowed: false, reasonCode: 'kmp_test_numeric_flag_missing_value' };
+      if (!isSafeNumericValue(val)) return { allowed: false, reasonCode: 'kmp_test_numeric_flag_invalid' };
       i++;
       continue;
     }
     if (a.startsWith('--module-filter=') && isSafeFilterValue(a.slice('--module-filter='.length))) continue;
     if (a.startsWith('--test-filter=') && isSafeFilterValue(a.slice('--test-filter='.length))) continue;
+    if (a.startsWith('--min-missed-lines=')) return { allowed: false, reasonCode: 'kmp_test_numeric_flag_combined_form' };
     if (KMP_TEST_BOOLEAN_FLAGS.has(a)) continue;
     if (subcommand === 'changed' && KMP_TEST_CHANGED_ONLY_BOOLEAN_FLAGS.has(a)) continue;
-    return false;
+    return { allowed: false, reasonCode: 'kmp_test_flag_not_allowlisted' };
   }
-  return true;
+  return { allowed: true, reasonCode: 'allowed' };
+}
+
+export function evaluateKmpTest(tokens, cwd, config) {
+  return evaluateKmpTestDetailed(tokens, cwd, config).allowed;
 }
 
 export const GRADLE_ALLOWED_FLAGS = new Set(['--offline', '-q', '--quiet', '--console=plain', '--rerun-tasks']);
@@ -256,7 +263,7 @@ export const GRADLE_ALLOWED_FLAGS = new Set(['--offline', '-q', '--quiet', '--co
 // and bash's actual execution -- no divergence is possible.
 export const GRADLE_LEADING_TOKENS = new Set(['./gradlew', './gradlew.bat']);
 
-export function evaluateGradle(tokens, cwd, config) {
+export function evaluateGradleDetailed(tokens, cwd, config) {
   const wrapperReal = (() => {
     try {
       return fs.realpathSync(path.resolve(cwd, tokens[0]));
@@ -264,21 +271,25 @@ export function evaluateGradle(tokens, cwd, config) {
       return null;
     }
   })();
-  if (wrapperReal === null) return false;
-  if (!isEqualCanonical(config.expectedFixtureRootReal, path.dirname(wrapperReal))) return false;
+  if (wrapperReal === null) return { allowed: false, reasonCode: 'gradle_wrapper_unresolved' };
+  if (!isEqualCanonical(config.expectedFixtureRootReal, path.dirname(wrapperReal))) return { allowed: false, reasonCode: 'gradle_wrapper_not_fixture_bound' };
 
   const rest = tokens.slice(1);
-  if (rest.length === 0) return false;
+  if (rest.length === 0) return { allowed: false, reasonCode: 'gradle_missing_task' };
   let sawTask = false;
   for (const t of rest) {
     if (t.startsWith('-')) {
-      if (!GRADLE_ALLOWED_FLAGS.has(t)) return false;
+      if (!GRADLE_ALLOWED_FLAGS.has(t)) return { allowed: false, reasonCode: 'gradle_flag_not_allowlisted' };
       continue;
     }
-    if (!config.allowedGradleTasks.has(t)) return false;
+    if (!config.allowedGradleTasks.has(t)) return { allowed: false, reasonCode: 'gradle_task_not_allowlisted' };
     sawTask = true;
   }
-  return sawTask;
+  return sawTask ? { allowed: true, reasonCode: 'allowed' } : { allowed: false, reasonCode: 'gradle_missing_task' };
+}
+
+export function evaluateGradle(tokens, cwd, config) {
+  return evaluateGradleDetailed(tokens, cwd, config).allowed;
 }
 
 export const MAX_STDIN_BYTES = 64 * 1024;
@@ -288,51 +299,52 @@ export const MAX_TIMEOUT_MS = 300000;
  * Pure decision function: given a raw stdin string and an env source, returns the exact
  * JSON string that should be written to stdout. Never throws -- every path denies on error.
  */
-export function decide(raw, env = process.env) {
+export function decideWithDiagnostics(raw, env = process.env) {
   try {
     // Defense in depth: the streaming stdin handler (runAsHook, below) also enforces this cap
     // as data arrives, but decide() itself must fail closed on an oversized input regardless of
     // how it was invoked -- it is a public, directly-callable function, not solely reached via
     // the stdin-streaming path.
-    if (Buffer.byteLength(raw, 'utf8') > MAX_STDIN_BYTES) return denyOutput();
+    if (Buffer.byteLength(raw, 'utf8') > MAX_STDIN_BYTES) return denyDiagnostic('input_too_large');
 
     const config = loadConfig(env);
-    if (config == null) return denyOutput();
+    if (config == null) return denyDiagnostic('policy_config_invalid');
 
     let payload;
     try {
       payload = JSON.parse(raw);
     } catch {
-      return denyOutput();
+      return denyDiagnostic('payload_json_invalid');
     }
-    if (payload == null || typeof payload !== 'object') return denyOutput();
-    if (payload.hook_event_name !== 'PreToolUse') return denyOutput();
-    if (payload.tool_name !== 'Bash') return denyOutput();
+    if (payload == null || typeof payload !== 'object' || Array.isArray(payload)) return denyDiagnostic('payload_shape_invalid');
+    if (payload.hook_event_name !== 'PreToolUse') return denyDiagnostic('hook_event_unsupported');
+    if (payload.tool_name !== 'Bash') return denyDiagnostic('tool_unsupported');
 
-    if (typeof payload.cwd !== 'string' || payload.cwd.length === 0) return denyOutput();
+    if (typeof payload.cwd !== 'string' || payload.cwd.length === 0) return denyDiagnostic('cwd_invalid');
     let cwdReal;
     try {
       cwdReal = fs.realpathSync(payload.cwd);
     } catch {
-      return denyOutput();
+      return denyDiagnostic('cwd_unresolved');
     }
-    if (!isEqualCanonical(config.expectedFixtureRootReal, cwdReal)) return denyOutput();
+    if (!isEqualCanonical(config.expectedFixtureRootReal, cwdReal)) return denyDiagnostic('cwd_not_fixture_root');
 
     const toolInput = payload.tool_input;
-    if (toolInput == null || typeof toolInput !== 'object') return denyOutput();
+    if (toolInput == null || typeof toolInput !== 'object' || Array.isArray(toolInput)) return denyDiagnostic('tool_input_invalid');
     const knownKeys = new Set(['command', 'description', 'timeout', 'run_in_background']);
     for (const k of Object.keys(toolInput)) {
-      if (!knownKeys.has(k)) return denyOutput();
+      if (!knownKeys.has(k)) return denyDiagnostic('tool_input_unrecognized_field');
     }
-    if ('description' in toolInput && typeof toolInput.description !== 'string') return denyOutput();
-    if ('run_in_background' in toolInput && toolInput.run_in_background !== false) return denyOutput();
+    if ('description' in toolInput && typeof toolInput.description !== 'string') return denyDiagnostic('description_invalid');
+    if ('run_in_background' in toolInput && toolInput.run_in_background !== false) return denyDiagnostic('background_not_allowed');
     if ('timeout' in toolInput) {
       const t = toolInput.timeout;
-      if (typeof t !== 'number' || !Number.isFinite(t) || t <= 0 || t > MAX_TIMEOUT_MS) return denyOutput();
+      if (typeof t !== 'number' || !Number.isFinite(t) || t <= 0) return denyDiagnostic('timeout_invalid');
+      if (t > MAX_TIMEOUT_MS) return denyDiagnostic('timeout_exceeded');
     }
 
     const command = toolInput.command;
-    if (typeof command !== 'string' || command.length === 0) return denyOutput();
+    if (typeof command !== 'string' || command.length === 0) return denyDiagnostic('command_missing');
 
     // Claude commonly appends this non-mutating stderr merge while capturing CLI output. Strip
     // only the exact terminal form for policy evaluation; every other shell operator remains in
@@ -341,24 +353,30 @@ export function decide(raw, env = process.env) {
     const commandToEvaluate = stderrMergeMatch?.[1] ?? command;
     const hasStderrMerge = stderrMergeMatch != null;
 
-    if (DANGEROUS_SUBSTRING_RE.test(commandToEvaluate)) return denyOutput();
-    if (ENV_ASSIGNMENT_PREFIX_RE.test(commandToEvaluate)) return denyOutput();
+    if (DANGEROUS_SUBSTRING_RE.test(commandToEvaluate)) return denyDiagnostic('shell_operator_or_expansion');
+    if (ENV_ASSIGNMENT_PREFIX_RE.test(commandToEvaluate)) return denyDiagnostic('env_assignment_prefix');
 
     const tokens = tokenize(commandToEvaluate);
-    if (tokens == null || tokens.length === 0) return denyOutput();
-    if (SHELL_WRAPPER_TOKENS.has(tokens[0].toLowerCase())) return denyOutput();
+    if (tokens == null || tokens.length === 0) return denyDiagnostic('tokenization_failed');
+    if (SHELL_WRAPPER_TOKENS.has(tokens[0].toLowerCase())) return denyDiagnostic('shell_wrapper_denied');
 
     if (tokens[0] === 'kmp-test') {
-      return evaluateKmpTest(tokens, cwdReal, config) ? allowOutput() : denyOutput();
+      const result = evaluateKmpTestDetailed(tokens, cwdReal, config);
+      return result.allowed ? allowDiagnostic() : denyDiagnostic(result.reasonCode);
     }
-    if (hasStderrMerge) return denyOutput();
+    if (hasStderrMerge) return denyDiagnostic('stderr_merge_not_supported');
     if (GRADLE_LEADING_TOKENS.has(tokens[0])) {
-      return evaluateGradle(tokens, cwdReal, config) ? allowOutput() : denyOutput();
+      const result = evaluateGradleDetailed(tokens, cwdReal, config);
+      return result.allowed ? allowDiagnostic() : denyDiagnostic(result.reasonCode);
     }
-    return denyOutput();
+    return denyDiagnostic('command_not_allowlisted');
   } catch {
-    return denyOutput(); // any unexpected parser/logic error -- fail closed
+    return denyDiagnostic('internal_error'); // any unexpected parser/logic error -- fail closed
   }
+}
+
+export function decide(raw, env = process.env) {
+  return decideWithDiagnostics(raw, env).output;
 }
 
 // process.stdout.write() is asynchronous when stdout is a pipe (always true here -- Claude
@@ -397,7 +415,7 @@ function writeAndExit(output) {
  * this function's own try/catch still swallows every failure, so an await never risks leaking an
  * exception into the caller.
  */
-export async function recordDecisionSideEffect(raw, output, env = process.env) {
+export async function recordDecisionSideEffect(raw, output, env = process.env, diagnostics = null) {
   try {
     const evidenceDirRaw = env.KMP_EVAL_JUNIT_EVIDENCE_DIR;
     if (!evidenceDirRaw) return;
@@ -420,6 +438,13 @@ export async function recordDecisionSideEffect(raw, output, env = process.env) {
     }
     const decision = decisionOutput?.hookSpecificOutput?.permissionDecision;
     if (decision !== 'allow' && decision !== 'deny') return;
+    const reasonCode = diagnostics != null
+      && diagnostics.output === output
+      && diagnostics.decision === decision
+      && typeof diagnostics.reasonCode === 'string'
+      && /^[a-z0-9_]+$/.test(diagnostics.reasonCode)
+      ? diagnostics.reasonCode
+      : null;
     let evidenceDirReal;
     try {
       evidenceDirReal = fs.realpathSync(evidenceDirRaw);
@@ -428,8 +453,9 @@ export async function recordDecisionSideEffect(raw, output, env = process.env) {
     }
     const { sha256Hex, writeSidecarRecord } = await import('./junit-evidence-io.mjs');
     const idHash = sha256Hex(toolUseId);
+    const record = reasonCode == null ? { decision, command } : { decision, command, reason_code: reasonCode };
     writeSidecarRecord(
-      path.join(evidenceDirReal, 'decisions'), idHash, { decision, command },
+      path.join(evidenceDirReal, 'decisions'), idHash, record,
       path.join(evidenceDirReal, 'anomalies'), 'duplicate_decision_write',
     );
   } catch {
@@ -442,8 +468,9 @@ function runAsHook() {
   let finished = false;
   let overflowed = false;
   const HARD_TIMEOUT_MS = 3000;
+  const timeoutOutput = denyDiagnostic('hook_timeout').output;
   const timer = setTimeout(() => {
-    if (!finished) { finished = true; writeAndExit(denyOutput()); }
+    if (!finished) { finished = true; writeAndExit(timeoutOutput); }
   }, HARD_TIMEOUT_MS);
   timer.unref?.();
 
@@ -452,22 +479,22 @@ function runAsHook() {
     raw += chunk;
     if (Buffer.byteLength(raw, 'utf8') > MAX_STDIN_BYTES) {
       overflowed = true;
-      if (!finished) { finished = true; clearTimeout(timer); writeAndExit(denyOutput()); }
+      if (!finished) { finished = true; clearTimeout(timer); writeAndExit(denyDiagnostic('input_too_large').output); }
     }
   });
   process.stdin.on('end', async () => {
     if (finished) return;
     finished = true;
     clearTimeout(timer);
-    const output = decide(raw);
-    await recordDecisionSideEffect(raw, output);
-    writeAndExit(output);
+    const diagnostics = decideWithDiagnostics(raw);
+    await recordDecisionSideEffect(raw, diagnostics.output, process.env, diagnostics);
+    writeAndExit(diagnostics.output);
   });
   process.stdin.on('error', () => {
     if (finished) return;
     finished = true;
     clearTimeout(timer);
-    writeAndExit(denyOutput());
+    writeAndExit(denyDiagnostic('stdin_error').output);
   });
 }
 

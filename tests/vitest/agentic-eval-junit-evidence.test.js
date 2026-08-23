@@ -228,8 +228,8 @@ function makeEvidenceDir() {
   mkdirSync(path.join(dir, 'anomalies'), { recursive: true });
   return dir;
 }
-function writeDecision(dir, id, decision, command) {
-  writeFileSync(path.join(dir, 'decisions', `${sha256Hex(id)}.json`), JSON.stringify({ decision, command }));
+function writeDecision(dir, id, decision, command, extra = {}) {
+  writeFileSync(path.join(dir, 'decisions', `${sha256Hex(id)}.json`), JSON.stringify({ decision, command, ...extra }));
 }
 function writeEvidence(dir, id, command, result) {
   writeFileSync(path.join(dir, 'evidence', `${sha256Hex(id)}.json`), JSON.stringify({ command, ...result }));
@@ -245,6 +245,21 @@ describe('attributeCondition -- deny exclusion', () => {
     const dir = makeEvidenceDir();
     try {
       writeDecision(dir, 't1', 'deny', GRADLE_CMD);
+      const bashResults = [{ index: 1, id: 't1', command: GRADLE_CMD }];
+      const result = attributeCondition(dir, SCENARIO, bashResults);
+      expect(result.decisionByAttempt.get('t1')).toBe('deny');
+      expect(result.perAttemptJunit.has('t1')).toBe(false);
+      expect(result.captureIncomplete).toBe(false);
+      expect(result.ambiguousJunitEvidence).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts additive policy-hook reason_code fields without changing attribution semantics', () => {
+    const dir = makeEvidenceDir();
+    try {
+      writeDecision(dir, 't1', 'deny', GRADLE_CMD, { reason_code: 'gradle_task_not_allowlisted' });
       const bashResults = [{ index: 1, id: 't1', command: GRADLE_CMD }];
       const result = attributeCondition(dir, SCENARIO, bashResults);
       expect(result.decisionByAttempt.get('t1')).toBe('deny');

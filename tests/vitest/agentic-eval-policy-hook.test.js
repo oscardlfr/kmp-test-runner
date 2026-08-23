@@ -9,6 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   decide,
+  decideWithDiagnostics,
   loadConfig,
   parsePolicyList,
   tokenize,
@@ -70,6 +71,10 @@ function decision(raw, env = baseEnv()) {
   return out.hookSpecificOutput.permissionDecision;
 }
 
+function diagnostic(raw, env = baseEnv()) {
+  return decideWithDiagnostics(raw, env);
+}
+
 describe('policy-hook grammar -- approved shapes', () => {
   it.each([
     'kmp-test --version',
@@ -98,6 +103,29 @@ describe('policy-hook grammar -- approved shapes', () => {
   // denied on every platform (not just non-Windows) -- there is no host on which it's safe.
   it('denies: .\\gradlew.bat build on every platform (bash reinterprets the backslash as an escape, not a path separator)', () => {
     expect(decision(payload('.\\gradlew.bat build'))).toBe('deny');
+  });
+});
+
+describe('policy-hook diagnostics -- closed reason codes, generic visible denial text', () => {
+  it.each([
+    ['kmp-test parallel --min-missed-lines=50', 'kmp_test_numeric_flag_combined_form'],
+    ['kmp-test parallel --exec whoami', 'kmp_test_flag_not_allowlisted'],
+    ['powershell -c kmp-test --version', 'shell_wrapper_denied'],
+    ['kmp-test --version && whoami', 'shell_operator_or_expansion'],
+    ['kmp-test --version', 'timeout_exceeded', { timeout: 999999999 }],
+  ])('diagnoses %s as %s without changing the visible permissionDecisionReason', (cmd, reasonCode, overrides = {}) => {
+    const result = diagnostic(payload(cmd, overrides));
+    const visible = JSON.parse(result.output).hookSpecificOutput;
+    expect(result).toMatchObject({ decision: 'deny', reasonCode });
+    expect(visible.permissionDecision).toBe('deny');
+    expect(visible.permissionDecisionReason).toBe('Command not permitted by evaluation harness policy.');
+  });
+
+  it('reports allowed for an approved command', () => {
+    const result = diagnostic(payload('kmp-test parallel --min-missed-lines 50 --json'));
+    const visible = JSON.parse(result.output).hookSpecificOutput;
+    expect(result).toMatchObject({ decision: 'allow', reasonCode: 'allowed' });
+    expect(visible.permissionDecisionReason).toBe('Command permitted by evaluation harness policy.');
   });
 });
 
@@ -568,16 +596,23 @@ describe('recordDecisionSideEffect', () => {
 
   it('records a real "allow" decision, keyed by sha256(tool_use_id), reading the decision from decide()\'s own output (never re-derived)', async () => {
     const raw = rawInput('kmp-test --version', 'toolu_allow1');
-    const output = decide(raw, baseEnv());
-    await recordDecisionSideEffect(raw, output, decisionEnv());
-    expect(readSidecarRecord(path.join(evidenceDir, 'decisions'), sha256Hex('toolu_allow1'))).toEqual({ decision: 'allow', command: 'kmp-test --version' });
+    const diagnostics = decideWithDiagnostics(raw, baseEnv());
+    await recordDecisionSideEffect(raw, diagnostics.output, decisionEnv(), diagnostics);
+    expect(readSidecarRecord(path.join(evidenceDir, 'decisions'), sha256Hex('toolu_allow1'))).toEqual({ decision: 'allow', command: 'kmp-test --version', reason_code: 'allowed' });
   });
 
   it('records a real "deny" decision identically', async () => {
     const raw = rawInput('whoami', 'toolu_deny1');
+    const diagnostics = decideWithDiagnostics(raw, baseEnv());
+    await recordDecisionSideEffect(raw, diagnostics.output, decisionEnv(), diagnostics);
+    expect(readSidecarRecord(path.join(evidenceDir, 'decisions'), sha256Hex('toolu_deny1'))).toEqual({ decision: 'deny', command: 'whoami', reason_code: 'command_not_allowlisted' });
+  });
+
+  it('preserves backward-compatible decision records when diagnostics are not supplied', async () => {
+    const raw = rawInput('whoami', 'toolu_legacy_shape');
     const output = decide(raw, baseEnv());
     await recordDecisionSideEffect(raw, output, decisionEnv());
-    expect(readSidecarRecord(path.join(evidenceDir, 'decisions'), sha256Hex('toolu_deny1'))).toEqual({ decision: 'deny', command: 'whoami' });
+    expect(readSidecarRecord(path.join(evidenceDir, 'decisions'), sha256Hex('toolu_legacy_shape'))).toEqual({ decision: 'deny', command: 'whoami' });
   });
 
   it('never throws for invalid raw JSON (returns before output is ever inspected)', async () => {
