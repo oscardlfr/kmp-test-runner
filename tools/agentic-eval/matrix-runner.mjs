@@ -445,7 +445,7 @@ export function isJunitEvidenceOutcome(outcomeKind) {
 export async function runScenarioMatrix({
   scenario, repeats, seed, model, allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha,
   runPluginValidator, materializeFixture, cleanupFixture, targetPluginName, targetSkillName, timeoutMs,
-  journal = null, runtimeAdapter, executionProfile = null,
+  journal = null, runtimeAdapter, executionProfile = null, maxBudgetUsd = 0.60,
 }) {
   // Decision attribution (allow/deny per Bash attempt) is needed for EVERY scenario regardless of
   // outcome_kind (round-7 fix): a no_applicable_tests condition's denied kmp-test-parallel
@@ -474,7 +474,7 @@ export async function runScenarioMatrix({
     // repetition index runs at each time-slot (see this function's own doc comment).
     const repetitionSlots = buildRunMatrix([scenario.id], ['trial'], repeats, seed);
     const conditionOrders = buildConditionOrders(repeats, seed);
-    const baseArgv = runtimeAdapter.buildInvocation({ prompt: scenario.prompt, model, settingsPath: shared.settingsPath, executionProfile });
+    const baseArgv = runtimeAdapter.buildInvocation({ prompt: scenario.prompt, model, settingsPath: shared.settingsPath, executionProfile, maxBudgetUsd });
 
     let fixtureDir;
     let fixtureCleanupQueued = false;
@@ -663,7 +663,7 @@ export async function runScenarioMatrix({
 export async function runScenarioCampaign({
   scenario, campaignPlan, seed, model, allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha,
   runPluginValidator, materializeFixture, cleanupFixture, targetPluginName, targetSkillName, timeoutMs,
-  journal = null, selectionsByProfileId,
+  journal = null, selectionsByProfileId, maxBudgetUsd = 0.60,
 }) {
   const decisionAttributionEnabled = true;
   const junitEvidenceEnabled = isJunitEvidenceOutcome(scenario.expected?.outcome_kind);
@@ -719,6 +719,7 @@ export async function runScenarioCampaign({
       baseArgvByProfileId[profileId] = shared.runtimeAdapter.buildInvocation({
         prompt: scenario.prompt, model, settingsPath: shared.settingsPath,
         executionProfile: selectionsByProfileId[profileId].executionProfile,
+        maxBudgetUsd,
       });
     }
 

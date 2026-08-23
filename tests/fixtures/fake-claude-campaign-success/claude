@@ -38,14 +38,20 @@ fs.writeFileSync(path.join(dir, idHash + ".json"), recordJson);
 HAS_PLUGIN_DIR=0
 PLUGIN_DIR_VALUE=""
 PERMISSION_MODE=""
+MAX_BUDGET_USD=""
 PREV_ARG=""
 for arg in "$@"; do
   if [ "$PREV_ARG" = "--plugin-dir" ]; then HAS_PLUGIN_DIR=1; PLUGIN_DIR_VALUE="$arg"; fi
   if [ "$PREV_ARG" = "--permission-mode" ]; then PERMISSION_MODE="$arg"; fi
+  if [ "$PREV_ARG" = "--max-budget-usd" ]; then MAX_BUDGET_USD="$arg"; fi
   PREV_ARG="$arg"
 done
 if [ "$PERMISSION_MODE" != "dontAsk" ] && [ "$PERMISSION_MODE" != "bypassPermissions" ]; then
   echo "fake-claude-campaign-success: expected --permission-mode dontAsk|bypassPermissions, got: $PERMISSION_MODE" >&2
+  exit 1
+fi
+if [ -n "${KMP_FAKE_EXPECT_MAX_BUDGET_USD:-}" ] && [ "$MAX_BUDGET_USD" != "$KMP_FAKE_EXPECT_MAX_BUDGET_USD" ]; then
+  echo "fake-claude-campaign-success: expected --max-budget-usd $KMP_FAKE_EXPECT_MAX_BUDGET_USD, got: $MAX_BUDGET_USD" >&2
   exit 1
 fi
 

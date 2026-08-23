@@ -269,18 +269,21 @@ describe('runConditionPair -- propagates skillSnapshotArtifact on both outcomes'
   it('complete pair (both conditions run): skillSnapshotArtifact is present and well-formed', async () => {
     const { runConditionPair } = await import('../../tools/agentic-eval/cli.mjs');
     const { claudeCodeRuntimeAdapter } = await import('../../tools/agentic-eval/runtimes/claude-code.mjs');
+    const adapter = spyableAdapter(claudeCodeRuntimeAdapter, ['buildInvocation']);
     await withIsolatedTmp(() => withFakeClaudePath('success', async () => {
       const result = await runConditionPair({
         prompt: 'irrelevant', model: 'fake-model-x',
         allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor', 'describe'],
         materializeFixture: () => { const dir = mkdtempSync(path.join(os.tmpdir(), 'aessp-fixture-')); return { fixtureDir: dir }; },
         cleanupFixture: (dir) => rmSync(dir, { recursive: true, force: true }),
-        runtimeAdapter: claudeCodeRuntimeAdapter,
+        runtimeAdapter: adapter,
+        maxBudgetUsd: 1.75,
       });
       try {
         expect(result.matrixComplete).toBe(true);
         expect(result.skillSnapshotArtifact).toBeTruthy();
         expect(result.skillSnapshotArtifact.snapshot_sha256).toMatch(/^[0-9a-f]{64}$/);
+        expect(adapter.buildInvocation.mock.calls[0][0].maxBudgetUsd).toBe(1.75);
       } finally {
         await result.cleanup();
       }
@@ -290,13 +293,15 @@ describe('runConditionPair -- propagates skillSnapshotArtifact on both outcomes'
   it('fail-fast pair (B rejected, A never spawns): skillSnapshotArtifact is STILL present -- acquisition happened before B ever ran', async () => {
     const { runConditionPair } = await import('../../tools/agentic-eval/cli.mjs');
     const { claudeCodeRuntimeAdapter } = await import('../../tools/agentic-eval/runtimes/claude-code.mjs');
+    const adapter = spyableAdapter(claudeCodeRuntimeAdapter, ['buildInvocation']);
     await withIsolatedTmp(() => withFakeClaudePath('unexpected-tool', async () => {
       const result = await runConditionPair({
         prompt: 'irrelevant', model: 'fake-model-x',
         allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor', 'describe'],
         materializeFixture: () => { const dir = mkdtempSync(path.join(os.tmpdir(), 'aessp-fixture-')); return { fixtureDir: dir }; },
         cleanupFixture: (dir) => rmSync(dir, { recursive: true, force: true }),
-        runtimeAdapter: claudeCodeRuntimeAdapter,
+        runtimeAdapter: adapter,
+        maxBudgetUsd: 1.75,
       });
       try {
         expect(result.matrixComplete).toBe(false);
@@ -337,6 +342,7 @@ describe('runScenarioMatrix -- propagates skillSnapshotArtifact on both outcomes
     const { runScenarioMatrix } = await import('../../tools/agentic-eval/matrix-runner.mjs');
     const { claudeCodeRuntimeAdapter } = await import('../../tools/agentic-eval/runtimes/claude-code.mjs');
     const { runValidator: runPluginValidator } = await import('../../tools/validate-plugin.mjs');
+    const adapter = spyableAdapter(claudeCodeRuntimeAdapter, ['buildInvocation']);
     await withIsolatedTmp(() => withFakeClaudePath('run-scenario-success', async () => {
       const matrix = await runScenarioMatrix({
         scenario: SCENARIO, repeats: 1, seed: 1, model: 'fake-model-x',
@@ -347,12 +353,14 @@ describe('runScenarioMatrix -- propagates skillSnapshotArtifact on both outcomes
         cleanupFixture: (dir) => rmSync(dir, { recursive: true, force: true }),
         targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME,
         timeoutMs: 30000,
-        runtimeAdapter: claudeCodeRuntimeAdapter,
+        runtimeAdapter: adapter,
+        maxBudgetUsd: 2.25,
       });
       try {
         expect(matrix.matrixComplete).toBe(true);
         expect(matrix.skillSnapshotArtifact).toBeTruthy();
         expect(matrix.skillSnapshotArtifact.snapshot_sha256).toMatch(/^[0-9a-f]{64}$/);
+        expect(adapter.buildInvocation.mock.calls[0][0].maxBudgetUsd).toBe(2.25);
       } finally {
         await matrix.cleanup();
       }
@@ -363,6 +371,7 @@ describe('runScenarioMatrix -- propagates skillSnapshotArtifact on both outcomes
     const { runScenarioMatrix } = await import('../../tools/agentic-eval/matrix-runner.mjs');
     const { claudeCodeRuntimeAdapter } = await import('../../tools/agentic-eval/runtimes/claude-code.mjs');
     const { runValidator: runPluginValidator } = await import('../../tools/validate-plugin.mjs');
+    const adapter = spyableAdapter(claudeCodeRuntimeAdapter, ['buildInvocation']);
     await withIsolatedTmp(() => withFakeClaudePath('auth-ok-pre-inference-failure', async () => {
       const matrix = await runScenarioMatrix({
         scenario: SCENARIO, repeats: 1, seed: 1, model: 'fake-model-x',
@@ -373,7 +382,8 @@ describe('runScenarioMatrix -- propagates skillSnapshotArtifact on both outcomes
         cleanupFixture: (dir) => rmSync(dir, { recursive: true, force: true }),
         targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME,
         timeoutMs: 30000,
-        runtimeAdapter: claudeCodeRuntimeAdapter,
+        runtimeAdapter: adapter,
+        maxBudgetUsd: 2.25,
       });
       try {
         expect(matrix.matrixComplete).toBe(false);
