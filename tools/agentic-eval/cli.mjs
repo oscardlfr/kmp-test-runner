@@ -161,25 +161,27 @@ const HELP = `tools/agentic-eval/cli.mjs -- reproducible skill evaluation harnes
 
 Usage:
   node tools/agentic-eval/cli.mjs calibrate [--runtime <id>] [--model <name>]
-                                             [--execution-profile <id>]
-                                             [--private-patterns-file <path>]
-                                             [--measurement-scope-file <path>]
+                                              [--execution-profile <id>]
+                                              [--max-budget-usd <usd>]
+                                              [--private-patterns-file <path>]
+                                              [--measurement-scope-file <path>]
   node tools/agentic-eval/cli.mjs smoke --source-repo-dir <local-clone> --pinned-commit <sha>
-                                         [--project-alias <alias>] [--runtime <id>]
-                                         [--model <name>] [--execution-profile <id>]
-                                         [--private-patterns-file <path>]
-                                         [--measurement-scope-file <path>]
+                                          [--project-alias <alias>] [--runtime <id>]
+                                          [--model <name>] [--execution-profile <id>]
+                                          [--max-budget-usd <usd>]
+                                          [--private-patterns-file <path>]
+                                          [--measurement-scope-file <path>]
   node tools/agentic-eval/cli.mjs run --scenario <id> --source-repo-dir <local-clone> --seed <n>
-                                       [--repeats <n>] [--runtime <id>] [--model <name>]
-                                       [--execution-profile <id>] [--dry-run]
-                                       [--private-patterns-file <path>]
-                                       [--measurement-scope-file <path>]
+                                        [--repeats <n>] [--runtime <id>] [--model <name>]
+                                        [--execution-profile <id>] [--max-budget-usd <usd>] [--dry-run]
+                                        [--private-patterns-file <path>]
+                                        [--measurement-scope-file <path>]
   node tools/agentic-eval/cli.mjs run --scenario <id> --source-repo-dir <local-clone> --seed <n>
-                                       --campaign-design claude-2x2-williams-v1
-                                       --isolation-attestation-file <path> [--dry-run]
-                                       [--runtime <id>] [--model <name>]
-                                       [--private-patterns-file <path>]
-                                       [--measurement-scope-file <path>]
+                                        --campaign-design claude-2x2-williams-v1
+                                        --isolation-attestation-file <path> [--dry-run]
+                                        [--runtime <id>] [--model <name>] [--max-budget-usd <usd>]
+                                        [--private-patterns-file <path>]
+                                        [--measurement-scope-file <path>]
   node tools/agentic-eval/cli.mjs scope init --out <path>
   node tools/agentic-eval/cli.mjs corpus validate
   node tools/agentic-eval/cli.mjs aggregate --runs-dir <dir>
@@ -199,6 +201,10 @@ longitudinal aggregate -- omitting it preserves today's exact per-invocation beh
 README.md's "Measurement scope" section for creation/reuse/rotation/privacy semantics. No
 evidence is committable until
 schema, policy-hash freshness, privacy, and the run-kind's hard acceptance gate all pass.
+
+--max-budget-usd <usd> is passed directly to Claude Code's per-session --max-budget-usd flag
+(default: 0.60, max: 5.00). It is validated before any live session is spawned; dry-run output
+prints the resolved value so operator authorization can bind to the actual runtime budget.
 
 run --campaign-design <id> expands one scenario into a closed, pre-registered multi-profile
 campaign plan spanning BOTH execution profile and skill condition in one invocation (today: the
@@ -275,9 +281,9 @@ function parseArgs(argv) {
 // --private-patterns-file disabled redaction with no error and reported the run as 'public'. This
 // allowlist closes that: any flag not in the current subcommand's list is a hard error.
 const SUBCOMMAND_SHAPES = {
-  calibrate: { flags: ['runtime', 'model', 'execution-profile', 'isolation-attestation-file', 'private-patterns-file', 'measurement-scope-file'], extraPositionals: 0 },
-  smoke: { flags: ['runtime', 'model', 'execution-profile', 'isolation-attestation-file', 'source-repo-dir', 'pinned-commit', 'project-alias', 'private-patterns-file', 'measurement-scope-file'], extraPositionals: 0 },
-  run: { flags: ['scenario', 'source-repo-dir', 'seed', 'repeats', 'runtime', 'model', 'execution-profile', 'campaign-design', 'isolation-attestation-file', 'dry-run', 'private-patterns-file', 'measurement-scope-file'], extraPositionals: 0 },
+  calibrate: { flags: ['runtime', 'model', 'execution-profile', 'max-budget-usd', 'isolation-attestation-file', 'private-patterns-file', 'measurement-scope-file'], extraPositionals: 0 },
+  smoke: { flags: ['runtime', 'model', 'execution-profile', 'max-budget-usd', 'isolation-attestation-file', 'source-repo-dir', 'pinned-commit', 'project-alias', 'private-patterns-file', 'measurement-scope-file'], extraPositionals: 0 },
+  run: { flags: ['scenario', 'source-repo-dir', 'seed', 'repeats', 'runtime', 'model', 'execution-profile', 'campaign-design', 'isolation-attestation-file', 'max-budget-usd', 'dry-run', 'private-patterns-file', 'measurement-scope-file'], extraPositionals: 0 },
   corpus: { flags: [], extraPositionals: 1 }, // corpus <validate>
   aggregate: { flags: ['runs-dir'], extraPositionals: 0 },
   analyze: { flags: ['runs-dir'], extraPositionals: 0 },
@@ -340,6 +346,30 @@ function resolveMeasurementScopeOrFail(measurementScopeFile) {
   } catch (err) {
     return { ok: false, reason: `--measurement-scope-file is invalid: ${err.message}` };
   }
+}
+
+const DEFAULT_MAX_BUDGET_USD = 0.60;
+const MAX_MAX_BUDGET_USD = 5.00;
+
+/** Resolves Claude Code's per-session --max-budget-usd before any spawn. The default preserves
+ * the historical launcher argv exactly; a supplied value is intentionally bounded so a typo cannot
+ * silently authorize an order-of-magnitude spend across a multi-cell campaign. */
+function resolveMaxBudgetUsdOrFail(rawValue) {
+  if (rawValue == null) {
+    return { ok: true, maxBudgetUsd: DEFAULT_MAX_BUDGET_USD, source: 'default' };
+  }
+  const raw = String(rawValue).trim();
+  if (!/^(?:[1-9]\d*|0?\.\d+|[1-9]\d*\.\d+)$/.test(raw)) {
+    return { ok: false, reason: `--max-budget-usd must be a positive decimal dollar value, got: ${rawValue}` };
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    return { ok: false, reason: `--max-budget-usd must be a positive decimal dollar value, got: ${rawValue}` };
+  }
+  if (value > MAX_MAX_BUDGET_USD) {
+    return { ok: false, reason: `--max-budget-usd ${raw} exceeds the maximum of ${MAX_MAX_BUDGET_USD.toFixed(2)}; split the run or make a separately reviewed budget change if this is intentional` };
+  }
+  return { ok: true, maxBudgetUsd: value, source: 'supplied' };
 }
 
 /** Resolves the (runtime, model, execution-profile) selection for calibrate/smoke/run -- the ONE
@@ -833,7 +863,7 @@ function reasonTextFor(err) {
 
 async function runConditionPair({
   prompt, model, allowedGradleTasks, allowedKmpTestSubcommands, materializeFixture, cleanupFixture,
-  timeoutMs, journal = null, runtimeAdapter, executionProfile = null,
+  timeoutMs, journal = null, runtimeAdapter, executionProfile = null, maxBudgetUsd = DEFAULT_MAX_BUDGET_USD,
 }) {
   // Thin wrapper over matrix-runner.mjs's acquireSharedEvalResources/runSingleCondition (extracted
   // so a scenario-matrix run, which repeats this same acquire-then-run shape N times instead of
@@ -869,7 +899,7 @@ async function runConditionPair({
     // shared.runtimeAdapter is the RESOLVED instance (default or test-injected) --
     // acquireSharedEvalResources returns it specifically so this call site never needs to import
     // runtimes/claude-code.mjs itself (cli.mjs is a core consumer; only matrix-runner.mjs may).
-    const baseArgv = shared.runtimeAdapter.buildInvocation({ prompt, model, settingsPath: shared.settingsPath, executionProfile });
+    const baseArgv = shared.runtimeAdapter.buildInvocation({ prompt, model, settingsPath: shared.settingsPath, executionProfile, maxBudgetUsd });
 
     let fixtureDir;
     let fixtureCleanupQueued = false;
@@ -2826,6 +2856,11 @@ async function cmdCalibrate(args) {
   const model = modelEntry.model_id;
   const privatePatternsFile = args['private-patterns-file'] ?? null;
   const privacyStatus = privatePatternsFile ? 'redacted-private' : 'public';
+  const budgetCheck = resolveMaxBudgetUsdOrFail(args['max-budget-usd'] ?? null);
+  if (!budgetCheck.ok) {
+    console.error(budgetCheck.reason);
+    return 1;
+  }
   const patternsCheck = validatePrivatePatternsFileOrFail(privatePatternsFile);
   if (!patternsCheck.ok) {
     console.error(patternsCheck.reason);
@@ -2889,6 +2924,7 @@ async function cmdCalibrate(args) {
       journal,
       runtimeAdapter: adapter,
       executionProfile,
+      maxBudgetUsd: budgetCheck.maxBudgetUsd,
     });
   } catch (err) {
     const incidentResult = finalizeIncident({
@@ -3155,6 +3191,11 @@ async function cmdSmoke(args) {
   const projectAlias = args['project-alias'] ?? 'kampkit';
   const privatePatternsFile = args['private-patterns-file'] ?? null;
   const privacyStatus = privatePatternsFile ? 'redacted-private' : 'public';
+  const budgetCheck = resolveMaxBudgetUsdOrFail(args['max-budget-usd'] ?? null);
+  if (!budgetCheck.ok) {
+    console.error(budgetCheck.reason);
+    return 1;
+  }
   if (!sourceRepoDir || !pinnedCommit) {
     console.error('smoke requires --source-repo-dir <local clone> --pinned-commit <sha> [--project-alias <alias>]');
     return 1;
@@ -3223,6 +3264,7 @@ async function cmdSmoke(args) {
       journal,
       runtimeAdapter: adapter,
       executionProfile,
+      maxBudgetUsd: budgetCheck.maxBudgetUsd,
     });
   } catch (err) {
     const incidentResult = finalizeIncident({
@@ -3506,6 +3548,11 @@ async function cmdRunCampaign(args, campaignDesignId) {
   const privatePatternsFile = args['private-patterns-file'] ?? null;
   const privacyStatus = privatePatternsFile ? 'redacted-private' : 'public';
   const isDryRun = args['dry-run'] === true;
+  const budgetCheck = resolveMaxBudgetUsdOrFail(args['max-budget-usd'] ?? null);
+  if (!budgetCheck.ok) {
+    console.error(budgetCheck.reason);
+    return 1;
+  }
 
   if (!scenarioId || !sourceRepoDir) {
     console.error('run --campaign-design requires --scenario <id> --source-repo-dir <local clone> --seed <n> [--runtime <id>] [--model <name>] --isolation-attestation-file <path> [--dry-run] [--private-patterns-file <path>]');
@@ -3619,6 +3666,7 @@ async function cmdRunCampaign(args, campaignDesignId) {
     console.log(JSON.stringify({
       dry_run: true, scenario_id: scenario.id, campaign_design_id: campaignDesignId, repeats: campaignPlan.repeats, seed,
       runtime_id: runtime.runtime_id, model_id: model, model_vendor_expected: modelEntry.model_vendor_expected,
+      max_budget_usd: budgetCheck.maxBudgetUsd,
       planned_sessions: campaignPlan.planned_sessions, policy: scenario.policy, plan: cellsForDryRun, ...measurementScope,
     }, null, 2));
     return 0;
@@ -3659,6 +3707,7 @@ async function cmdRunCampaign(args, campaignDesignId) {
       timeoutMs: 600000,
       journal,
       selectionsByProfileId,
+      maxBudgetUsd: budgetCheck.maxBudgetUsd,
     });
   } catch (err) {
     const incidentResult = finalizeIncident({
@@ -3799,9 +3848,14 @@ async function cmdRun(args) {
   const privatePatternsFile = args['private-patterns-file'] ?? null;
   const privacyStatus = privatePatternsFile ? 'redacted-private' : 'public';
   const isDryRun = args['dry-run'] === true;
+  const budgetCheck = resolveMaxBudgetUsdOrFail(args['max-budget-usd'] ?? null);
+  if (!budgetCheck.ok) {
+    console.error(budgetCheck.reason);
+    return 1;
+  }
 
   if (!scenarioId || !sourceRepoDir) {
-    console.error('run requires --scenario <id> --source-repo-dir <local clone> --seed <n> [--repeats <n>] [--runtime <id>] [--model <name>] [--execution-profile <id>] [--dry-run] [--private-patterns-file <path>]');
+    console.error('run requires --scenario <id> --source-repo-dir <local clone> --seed <n> [--repeats <n>] [--runtime <id>] [--model <name>] [--execution-profile <id>] [--max-budget-usd <usd>] [--dry-run] [--private-patterns-file <path>]');
     return 1;
   }
   if (args.seed == null) {
@@ -3877,6 +3931,7 @@ async function cmdRun(args) {
       dry_run: true, scenario_id: scenario.id, repeats, seed,
       runtime_id: runtime.runtime_id, model_id: modelEntry.model_id, model_vendor_expected: modelEntry.model_vendor_expected,
       execution_profile_id: executionProfile.id, execution_profile_sha256: executionProfileSha256,
+      max_budget_usd: budgetCheck.maxBudgetUsd,
       ...attestationFields,
       total_live_sessions: repeats * 2, policy: scenario.policy, plan, ...measurementScope,
     }, null, 2));
@@ -3925,6 +3980,7 @@ async function cmdRun(args) {
       journal,
       runtimeAdapter: adapter,
       executionProfile,
+      maxBudgetUsd: budgetCheck.maxBudgetUsd,
     });
   } catch (err) {
     const incidentResult = finalizeIncident({
@@ -4354,4 +4410,4 @@ if (isMain) {
   });
 }
 
-export { parseArgs, BOOLEAN_FLAGS, validateSubcommandArgs, validatePrivatePatternsFileOrFail, resolveMeasurementScopeOrFail, cmdCorpusValidate, cmdScopeInit, cmdAggregate, cmdAnalyze, cmdValidate, validateRunRecordFile, cmdCalibrate, cmdSmoke, cmdRun, buildRunRecord, nullableMetric, runConditionPair, finalizeAndWriteRecords, finalizeAndWriteMatrixRecords, writeRunRecordEvidence, writeRunMatrixRecordEvidence, findMatrixCompletenessGap, validateTranscriptsByRunId, calibrationHardGate, smokeHardGate, scenarioCellIntegrityOk, scenarioHardGate, realizedStartCounts, scenarioMatrixIsBenchmarkEligible, verifyExactCommandsSucceeded, resolveHarnessProvenance, findBlockingHarnessToolingDirty, isRunsRootDefault, checkScenarioFilenameMatchesId, findDuplicateScenarioIds, loadScenarioFile, validateLoadedScenarios, loadScenarioById, verifySourceRepoForScenario, buildScenarioRunPlan, normalizeGitRemoteForComparison, SMOKE_EXPECTED_COMMANDS, SUBCOMMAND_SHAPES, PINNED_SKILL_SHA, readJournalRawFor, journalRawExactlyMatchesRejectionManifest, discardJournalIfRedundant, incidentPhaseOf, reasonTextFor, buildStderrByRunId };
+export { parseArgs, BOOLEAN_FLAGS, validateSubcommandArgs, validatePrivatePatternsFileOrFail, resolveMeasurementScopeOrFail, resolveMaxBudgetUsdOrFail, cmdCorpusValidate, cmdScopeInit, cmdAggregate, cmdAnalyze, cmdValidate, validateRunRecordFile, cmdCalibrate, cmdSmoke, cmdRun, buildRunRecord, nullableMetric, runConditionPair, finalizeAndWriteRecords, finalizeAndWriteMatrixRecords, writeRunRecordEvidence, writeRunMatrixRecordEvidence, findMatrixCompletenessGap, validateTranscriptsByRunId, calibrationHardGate, smokeHardGate, scenarioCellIntegrityOk, scenarioHardGate, realizedStartCounts, scenarioMatrixIsBenchmarkEligible, verifyExactCommandsSucceeded, resolveHarnessProvenance, findBlockingHarnessToolingDirty, isRunsRootDefault, checkScenarioFilenameMatchesId, findDuplicateScenarioIds, loadScenarioFile, validateLoadedScenarios, loadScenarioById, verifySourceRepoForScenario, buildScenarioRunPlan, normalizeGitRemoteForComparison, SMOKE_EXPECTED_COMMANDS, SUBCOMMAND_SHAPES, PINNED_SKILL_SHA, readJournalRawFor, journalRawExactlyMatchesRejectionManifest, discardJournalIfRedundant, incidentPhaseOf, reasonTextFor, buildStderrByRunId };

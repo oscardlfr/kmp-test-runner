@@ -10,7 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readdirSync } from 'node:fs';
 import os from 'node:os';
-import { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, resolveMeasurementScopeOrFail, nullableMetric, resolveHarnessProvenance, verifyExactCommandsSucceeded, writeRunRecordEvidence, buildRunRecord, finalizeAndWriteRecords, finalizeAndWriteMatrixRecords, findBlockingHarnessToolingDirty, isRunsRootDefault, cmdAggregate, validateRunRecordFile, SUBCOMMAND_SHAPES, discardJournalIfRedundant, buildStderrByRunId } from '../../tools/agentic-eval/cli.mjs';
+import { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, resolveMeasurementScopeOrFail, resolveMaxBudgetUsdOrFail, nullableMetric, resolveHarnessProvenance, verifyExactCommandsSucceeded, writeRunRecordEvidence, buildRunRecord, finalizeAndWriteRecords, finalizeAndWriteMatrixRecords, findBlockingHarnessToolingDirty, isRunsRootDefault, cmdAggregate, validateRunRecordFile, SUBCOMMAND_SHAPES, discardJournalIfRedundant, buildStderrByRunId } from '../../tools/agentic-eval/cli.mjs';
 import { computePolicySha256 } from '../../tools/agentic-eval/policy-config.mjs';
 import { buildAcceptedRunAuditSidecar, finalizeAcceptedRunAuditSidecar, acceptedAuditRelativePathFor, crossValidateAcceptedRunAuditAgainstRecord } from '../../tools/agentic-eval/accepted-run-audit.mjs';
 import { canonicalJsonSha256 as canonicalJsonSha256Local } from '../../tools/agentic-eval/canonical-json.mjs';
@@ -265,6 +265,22 @@ describe('validateSubcommandArgs', () => {
     const args = parseArgs(['validate', '--run', 'x.json', '--runtime', 'claude-code']);
     const errors = validateSubcommandArgs('validate', args);
     expect(errors.some((e) => e.includes('--runtime'))).toBe(true);
+  });
+
+  it('accepts --max-budget-usd only for commands that can spend live runtime sessions', () => {
+    for (const sub of ['calibrate', 'smoke', 'run']) {
+      expect(SUBCOMMAND_SHAPES[sub].flags).toContain('max-budget-usd');
+    }
+    for (const sub of ['aggregate', 'analyze', 'validate', 'corpus', 'scope']) {
+      expect(SUBCOMMAND_SHAPES[sub].flags).not.toContain('max-budget-usd');
+    }
+    const args = parseArgs(['run', '--scenario', 'x', '--source-repo-dir', 'repo', '--seed', '1', '--max-budget-usd', '1.25']);
+    expect(validateSubcommandArgs('run', args)).toEqual([]);
+  });
+
+  it('duplicating --max-budget-usd is still a hard parseArgs error', () => {
+    const args = parseArgs(['run', '--max-budget-usd', '1', '--max-budget-usd', '2']);
+    expect(args.errors.some((e) => e.includes('--max-budget-usd') && e.includes('more than once'))).toBe(true);
   });
 
   it('rejects --execution-profile for aggregate/analyze/validate/corpus/scope', () => {
@@ -546,6 +562,26 @@ describe('verifyExactCommandsSucceeded', () => {
       { command: 'kmp-test doctor --json', resultFound: true, resultIsError: false },
     ];
     expect(verifyExactCommandsSucceeded(bashResults, DOCTOR_DESCRIBE)).toBe(true);
+  });
+});
+
+describe('resolveMaxBudgetUsdOrFail', () => {
+  it('preserves the historical 0.60 default when the flag is omitted', () => {
+    expect(resolveMaxBudgetUsdOrFail(null)).toEqual({ ok: true, maxBudgetUsd: 0.60, source: 'default' });
+    expect(resolveMaxBudgetUsdOrFail(undefined)).toEqual({ ok: true, maxBudgetUsd: 0.60, source: 'default' });
+  });
+
+  it('accepts positive decimal and integer dollar values inside the reviewed cap', () => {
+    expect(resolveMaxBudgetUsdOrFail('1.25')).toEqual({ ok: true, maxBudgetUsd: 1.25, source: 'supplied' });
+    expect(resolveMaxBudgetUsdOrFail('5')).toEqual({ ok: true, maxBudgetUsd: 5, source: 'supplied' });
+  });
+
+  it('rejects zero, negatives, non-decimal notation, and values above the reviewed cap', () => {
+    for (const value of ['0', '-1', '1e3', 'Infinity', 'NaN', '', '5.01']) {
+      const result = resolveMaxBudgetUsdOrFail(value);
+      expect(result.ok).toBe(false);
+      expect(result.reason).toContain('--max-budget-usd');
+    }
   });
 });
 

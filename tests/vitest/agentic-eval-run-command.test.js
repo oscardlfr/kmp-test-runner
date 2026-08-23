@@ -225,7 +225,7 @@ function runArgs(extra = []) {
 describe('cli.mjs run --dry-run -- zero-spawn plan preview', () => {
   it('prints the resolved plan and spawns nothing, even with a nonexistent --source-repo-dir', async () => {
     const result = await runCli(
-      ['run', '--scenario', SCENARIO_ID, '--source-repo-dir', '/definitely/does/not/exist', '--seed', '7', '--repeats', '2', '--dry-run'],
+      ['run', '--scenario', SCENARIO_ID, '--source-repo-dir', '/definitely/does/not/exist', '--seed', '7', '--repeats', '2', '--max-budget-usd', '1.50', '--dry-run'],
       fakeClaudeEnv('run-scenario-success'),
     );
     expect(result.status).toBe(0);
@@ -234,6 +234,7 @@ describe('cli.mjs run --dry-run -- zero-spawn plan preview', () => {
     expect(result.parsed.scenario_id).toBe(SCENARIO_ID);
     expect(result.parsed.repeats).toBe(2);
     expect(result.parsed.seed).toBe(7);
+    expect(result.parsed.max_budget_usd).toBe(1.5);
     expect(result.parsed.plan.length).toBe(4);
     // order_index is a contiguous 0..3 range; every (repetition_index, condition) pair present
     // exactly once -- the SAME identity proof findMatrixCompletenessGap enforces on real records.

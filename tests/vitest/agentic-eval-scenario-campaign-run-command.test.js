@@ -239,7 +239,7 @@ describe('1. cli.mjs run --campaign-design -- dry-run plan preview', () => {
   it('prints 16 planned cells and spawns nothing, even with a nonexistent --source-repo-dir', async () => {
     const attestationPath = writeValidAttestation();
     const result = await runCli(
-      ['run', '--scenario', SCENARIO_ID, '--source-repo-dir', '/definitely/does/not/exist', '--seed', '7', ...CAMPAIGN_FLAGS(attestationPath), '--dry-run'],
+      ['run', '--scenario', SCENARIO_ID, '--source-repo-dir', '/definitely/does/not/exist', '--seed', '7', '--max-budget-usd', '1.50', ...CAMPAIGN_FLAGS(attestationPath), '--dry-run'],
       fakeClaudeEnv('run-scenario-success'),
     );
     expect(result.status).toBe(0);
@@ -248,6 +248,7 @@ describe('1. cli.mjs run --campaign-design -- dry-run plan preview', () => {
     expect(result.parsed.scenario_id).toBe(SCENARIO_ID);
     expect(result.parsed.campaign_design_id).toBe(DESIGN_ID);
     expect(result.parsed.repeats).toBe(4);
+    expect(result.parsed.max_budget_usd).toBe(1.5);
     expect(result.parsed.planned_sessions).toBe(16);
     expect(Array.isArray(result.parsed.plan)).toBe(true);
     expect(result.parsed.plan.length).toBe(16);
@@ -399,7 +400,11 @@ describe('3. cli.mjs run --execution-profile -- legacy bookend (byte-for-byte un
 describe('4. cli.mjs run --campaign-design -- fake-runtime campaign execution (real subprocess against fake claude)', () => {
   it('happy path: all 16 cells accepted, each record matches its own pre-registered plan cell exactly, no cross-contamination between profiles', async () => {
     const attestationPath = writeValidAttestation();
-    const result = await runCli(runArgs(['--seed', '11', ...CAMPAIGN_FLAGS(attestationPath)]), fakeClaudeEnv('campaign-success'), 120000);
+    const result = await runCli(
+      runArgs(['--seed', '11', '--max-budget-usd', '1.25', ...CAMPAIGN_FLAGS(attestationPath)]),
+      { ...fakeClaudeEnv('campaign-success'), KMP_FAKE_EXPECT_MAX_BUDGET_USD: '1.25' },
+      120000,
+    );
     expect(result.status).toBe(0);
     expect(result.parsed).not.toBeNull();
     const { records } = result.parsed;
