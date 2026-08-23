@@ -28,6 +28,7 @@ import { join } from 'node:path';
 import { RUNS_ROOT, isRawDirSafeFromAccidentalCommit, promoteTargetsAtomically } from './evidence-io.mjs';
 import { redactAndVerify, assertCleanOrThrowObject } from './privacy.mjs';
 import { AGENTIC_EVAL_INCIDENT_PHASES } from './durable-journal.mjs';
+import { validateCorrelationObservability } from './correlation-observability.mjs';
 
 // One pre-approved, closed fallback code per phase -- used ONLY when the real reason text can't be
 // verified clean by the redaction pipeline. Never the raw text in that case, committed or local.
@@ -86,6 +87,16 @@ function isValidJournalSummary(s) {
   const planned = new Set(s.cellOrdinals.planned);
   if (s.cellOrdinals.spawn_started.some((o) => !planned.has(o))) return false;
   if (failed.some((o) => !planned.has(o))) return false;
+  if (s.correlationSummaries !== undefined) {
+    if (s.correlationSummaries == null || typeof s.correlationSummaries !== 'object'
+      || Array.isArray(s.correlationSummaries)) return false;
+    const evaluated = new Set(s.cellOrdinals.evaluated);
+    for (const [key, value] of Object.entries(s.correlationSummaries)) {
+      const ordinal = Number(key);
+      if (!Number.isInteger(ordinal) || ordinal < 0 || String(ordinal) !== key
+        || !evaluated.has(ordinal) || !validateCorrelationObservability(value).ok) return false;
+    }
+  }
   return true;
 }
 
@@ -163,10 +174,11 @@ function buildMessage(runKind, phase, summary, safeReason) {
 // non-integer or negative counter, or an unexpected provenance key must never reach disk, whether
 // the cause is a caller bug or a corrupted journal summary.
 const VALID_RUN_KINDS = new Set(['calibration', 'smoke', 'scenario']);
-const DIAGNOSTIC_ALLOWED_KEYS = new Set([
+const DIAGNOSTIC_SCHEMA_1_KEYS = new Set([
   'schema', 'incident_id', 'run_kind', 'phase', 'reason', 'counts', 'planned_cell_count',
   'emergency_raw_persisted', 'emergency_raw_write_error', 'provenance', 'created_at',
 ]);
+const DIAGNOSTIC_SCHEMA_2_KEYS = new Set([...DIAGNOSTIC_SCHEMA_1_KEYS, 'failed_cell_correlation']);
 const COUNTS_ALLOWED_KEYS = new Set(['planned', 'spawn_started', 'spawn_completed', 'raw_persisted', 'parsed', 'evaluated', 'spawn_failed']);
 // Union of every provenance shape actually passed at any of this repo's 12 finalizeIncident call
 // sites (cmdCalibrate: model_requested+scenario_id; cmdSmoke: +project_alias+project_commit;
@@ -194,8 +206,10 @@ function isValidProvenance(p) {
 function isValidIncidentDiagnostic(d) {
   if (d == null || typeof d !== 'object' || Array.isArray(d)) return false;
   const keys = Object.keys(d);
-  if (keys.length !== DIAGNOSTIC_ALLOWED_KEYS.size || keys.some((k) => !DIAGNOSTIC_ALLOWED_KEYS.has(k))) return false;
-  if (d.schema !== 1) return false;
+  const allowedKeys = d.schema === 1 ? DIAGNOSTIC_SCHEMA_1_KEYS
+    : d.schema === 2 ? DIAGNOSTIC_SCHEMA_2_KEYS : null;
+  if (allowedKeys == null || keys.length !== allowedKeys.size || keys.some((k) => !allowedKeys.has(k))) return false;
+  if (d.schema === 2 && !validateCorrelationObservability(d.failed_cell_correlation).ok) return false;
   if (typeof d.incident_id !== 'string' || d.incident_id.length === 0) return false;
   if (!VALID_RUN_KINDS.has(d.run_kind)) return false;
   if (!AGENTIC_EVAL_INCIDENT_PHASES.includes(d.phase)) return false;
@@ -237,8 +251,8 @@ function isValidIncidentDiagnostic(d) {
  * @param {string} opts.phase - one of durable-journal.mjs's AGENTIC_EVAL_INCIDENT_PHASES
  * @param {string} opts.reasonText - a caught error's message/stack, or finalizeAndWrite*'s
  *   result.reason -- NEVER assumed already safe (see safeReasonText).
- * @param {number|null} [opts.cellOrdinal] - present only when a raw payload might need the
- *   emergency fallback (phase === 'persisting_cell_journal').
+ * @param {number|null} [opts.cellOrdinal] - failed-cell selector and, when a raw payload exists,
+ *   emergency-fallback ordinal (phase === 'persisting_cell_journal').
  * @param {string|null} [opts.rawStdout] - present only for the same case.
  * @param {object} [opts.provenance] - already-safe identity fields (repo_commit, scenario_id,
  *   project_alias, project_commit, seed, model, planned-cell descriptors, toolchain version).
@@ -256,6 +270,9 @@ export function finalizeIncident({
   const summary = safeSummarize(journal);
   const safeReason = safeReasonText(reasonText, phase, { privatePatternsFile, redactReasonFn });
   const message = buildMessage(runKind, phase, summary, safeReason);
+  const failedCellCorrelation = Number.isInteger(cellOrdinal) && cellOrdinal >= 0
+    ? summary.correlationSummaries?.[cellOrdinal] ?? null
+    : null;
 
   // Emergency raw fallback -- its own independent, best-effort local transaction. Only attempted
   // for phase:'persisting_cell_journal' (the only phase that ever attaches a raw payload in the
@@ -288,7 +305,7 @@ export function finalizeIncident({
   }
 
   const diagnostic = {
-    schema: 1,
+    schema: failedCellCorrelation == null ? 1 : 2,
     incident_id: incidentId,
     run_kind: runKind,
     phase,
@@ -299,6 +316,7 @@ export function finalizeIncident({
     emergency_raw_write_error: emergencyRawWriteError,
     provenance,
     created_at: new Date().toISOString(),
+    ...(failedCellCorrelation == null ? {} : { failed_cell_correlation: failedCellCorrelation }),
   };
 
   // A guaranteed-valid stand-in -- built fresh each time it's needed (created_at must reflect

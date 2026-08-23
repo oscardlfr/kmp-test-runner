@@ -10,6 +10,26 @@ function freshRunsRoot() {
   return mkdtempSync(join(tmpdir(), 'aedj-runs-root-'));
 }
 
+function correlationSummary() {
+  return {
+    schema: 1,
+    condition: 'no-skill',
+    policy_mode: 'not_applicable',
+    tool_use_counts_by_kind: { shell: 1, skill: 0, other: 0 },
+    missing_id_counts_by_kind: { shell: 0, skill: 0, other: 0 },
+    missing_result_counts_by_kind: { shell: 1, skill: 0, other: 0 },
+    dispatch_status_counts: {
+      hook_evaluated: 0, pre_dispatch_blocked: 0, result_correlated_no_policy: 0,
+      unaccounted: 1, unclassified: 0,
+    },
+    correlation_issue_counts: {
+      duplicate_tool_use_id: 0, orphan_tool_result_missing_id: 0,
+      orphan_tool_result_unknown_id: 0, duplicate_tool_result: 0, malformed_stream_line: 0,
+    },
+    timeout_tolerance_applied: false,
+  };
+}
+
 describe('createInvocationJournal -- creation, preflight, planned events', () => {
   it('creates a journal directory under agentic-eval-journal/<invocation-id>/ with a planned event per cell, written before any spawn', async () => {
     const { createInvocationJournal } = await import('../../tools/agentic-eval/durable-journal.mjs');
@@ -58,6 +78,41 @@ describe('journal transition state machine -- the normal branch', () => {
       });
 
       expect(journal.readRawFor(0)).toBe('{"line":1}\n');
+    } finally {
+      rmSync(runsRootOverride, { recursive: true, force: true });
+    }
+  });
+
+  it('persists a validated count-only correlation summary in the evaluated event and exposes it by ordinal', async () => {
+    const { createInvocationJournal } = await import('../../tools/agentic-eval/durable-journal.mjs');
+    const runsRootOverride = freshRunsRoot();
+    try {
+      const journal = createInvocationJournal({ runKind: 'scenario', plannedCellCount: 1, runsRootOverride });
+      journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'x', stderr: '' });
+      journal.recordParsed(0);
+      journal.recordEvaluated(0, correlationSummary());
+
+      expect(journal.summarize().correlationSummaries).toEqual({ 0: correlationSummary() });
+      const evaluatedFile = readdirSync(join(journal.journalDir, 'events')).find((name) => name.endsWith('-evaluated.json'));
+      const event = JSON.parse(readFileSync(join(journal.journalDir, 'events', evaluatedFile), 'utf8'));
+      expect(event.meta).toEqual({ correlation_observability: correlationSummary() });
+      expect(JSON.stringify(event)).not.toMatch(/toolu-|command|prompt|response|raw|stderr|[A-Za-z]:\\/i);
+    } finally {
+      rmSync(runsRootOverride, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a malformed/expanded correlation summary before transitioning, while legacy callers may still omit it', async () => {
+    const { createInvocationJournal } = await import('../../tools/agentic-eval/durable-journal.mjs');
+    const runsRootOverride = freshRunsRoot();
+    try {
+      const journal = createInvocationJournal({ runKind: 'scenario', plannedCellCount: 1, runsRootOverride });
+      journal.persistSpawnOutcome(0, { didSpawn: true, spawnStartedAt: Date.now(), rawStdout: 'x', stderr: '' });
+      journal.recordParsed(0);
+      expect(() => journal.recordEvaluated(0, { ...correlationSummary(), raw: 'forbidden' })).toThrow(/correlation observability/i);
+      expect(journal.summarize().counts.evaluated).toBe(0);
+      journal.recordEvaluated(0);
+      expect(journal.summarize().correlationSummaries).toEqual({});
     } finally {
       rmSync(runsRootOverride, { recursive: true, force: true });
     }

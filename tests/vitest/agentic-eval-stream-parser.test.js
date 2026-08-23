@@ -82,6 +82,43 @@ describe('parseStreamJsonl', () => {
     expect(malformedLines.length).toBe(4);
     for (const m of malformedLines) expect(m.error).toContain('must be a JSON object');
   });
+
+  it('isolates assistant/user events whose nested message.content is not an array, instead of letting downstream correlation throw', () => {
+    const raw = [
+      '{"type":"system","subtype":"init"}',
+      '{"type":"assistant","message":{"content":{"type":"tool_use","id":"x"}}}',
+      '{"type":"user","message":{"content":[null]}}',
+      '{"type":"result","subtype":"success"}',
+    ].join('\n');
+    const { events, malformedLines } = parseStreamJsonl(raw);
+    expect(events.map((event) => event.type)).toEqual(['system', 'result']);
+    expect(malformedLines).toHaveLength(2);
+    expect(malformedLines.every((line) => line.error === 'stream event message.content must be an array of objects')).toBe(true);
+    expect(() => findIncompleteToolResults(events)).not.toThrow();
+  });
+});
+
+describe('tool-result correlation ids', () => {
+  it('never correlates an empty tool_use id with an empty tool_result id', () => {
+    const raw = [
+      '{"type":"system","subtype":"init"}',
+      '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"","name":"Bash","input":{"command":"echo hidden"}}]}}',
+      '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"","content":"hidden"}]}}',
+      '{"type":"result","subtype":"success"}',
+    ].join('\n');
+    const { events } = parseStreamJsonl(raw);
+
+    expect(findIncompleteToolResults(events)).toEqual([
+      expect.objectContaining({ name: 'Bash', id: null }),
+    ]);
+    expect(findBashToolUsesWithResults(events)).toEqual([
+      expect.objectContaining({ id: '', resultFound: false }),
+    ]);
+    expect(findTranscriptStructuralIssues(events)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'empty_tool_use_id' }),
+      expect.objectContaining({ type: 'orphan_tool_result' }),
+    ]));
+  });
 });
 
 // Characterization freeze (runtime-contract PR): ONE literal structural photograph per sanitized

@@ -49,6 +49,12 @@ export function parseStreamJsonl(rawJsonl, { taggedLines } = {}) {
       malformedLines.push({ line, error: 'stream event must be a JSON object' });
       continue;
     }
+    const content = parsed.message?.content;
+    if (content !== undefined && (!Array.isArray(content)
+      || content.some((block) => block == null || typeof block !== 'object' || Array.isArray(block)))) {
+      malformedLines.push({ line, error: 'stream event message.content must be an array of objects' });
+      continue;
+    }
     parsed._receiptNs = receiptNs;
     events.push(parsed);
   }
@@ -90,6 +96,7 @@ export function isSkillAvailable(initEvent, pluginName) {
  * `tool_use_result` is event-level rather than per-block, it is only unambiguously attributable to
  * this tool_result when the event carries exactly one block. */
 function findToolResultById(events, toolUseId, fromIndex) {
+  if (typeof toolUseId !== 'string' || toolUseId.length === 0) return null;
   for (let i = fromIndex; i < events.length; i++) {
     const ev = events[i];
     if (ev.type !== 'user') continue;
@@ -602,7 +609,7 @@ export function findIncompleteToolResults(events) {
     if (ev.type !== 'assistant') continue;
     for (const c of ev.message?.content ?? []) {
       if (c.type !== 'tool_use') continue;
-      if (c.id == null) {
+      if (typeof c.id !== 'string' || c.id.length === 0) {
         out.push({ index: i, receiptNs: ev._receiptNs, name: c.name, id: null });
         continue;
       }
