@@ -338,9 +338,10 @@ matrix is rejected anyway.
   attempt actually produced it, and a genuinely ambiguous case (two policy-allowed producers) could
   only be resolved by rejecting the whole condition outright. `junit-evidence.mjs`'s
   `attributeCondition()` replaces this with real per-attempt correlation:
-  - **Decision records** (`decisions/<sha256(tool_use_id)>.json = {decision, command}`), written by
-    `policy-hook.mjs`'s existing `decide()` result via a new `recordDecisionSideEffect()` call —
-    `decide()` itself is untouched; no JUnit XML is read here at all.
+  - **Decision records** (`decisions/<sha256(tool_use_id)>.json = {decision, command, reason_code?}`),
+    written by `policy-hook.mjs`'s existing `decide()` result via `recordDecisionSideEffect()` --
+    `reason_code` is an additive, closed diagnostic code for policy-denial analysis; no JUnit XML
+    is read here at all.
   - **Evidence records** (`evidence/<sha256(tool_use_id)>.json = {command, status, junit?, reason?}`),
     written by a new, additive `junit-evidence-hook.mjs`, registered on `PostToolUse`/
     `PostToolUseFailure` (matcher `Bash`) — the only two new hook registrations this mechanism
