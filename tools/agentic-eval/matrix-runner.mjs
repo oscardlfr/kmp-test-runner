@@ -83,18 +83,19 @@ function pathEntriesEqual(a, b) {
   return normalize(a) === normalize(b);
 }
 
-function pathEnvKey(env) {
-  return Object.keys(env).find((k) => k.toLowerCase() === 'path') ?? 'PATH';
+function pathEnvKeys(env) {
+  return Object.keys(env).filter((k) => k.toLowerCase() === 'path');
 }
 
 function envWithoutPathEntry(env, entryToRemove) {
-  const key = pathEnvKey(env);
-  const value = env[key];
-  if (typeof value !== 'string' || typeof entryToRemove !== 'string' || entryToRemove.length === 0) return { ...env };
-  return {
-    ...env,
-    [key]: value.split(pathDelimiter).filter((entry) => !pathEntriesEqual(entry, entryToRemove)).join(pathDelimiter),
-  };
+  if (typeof entryToRemove !== 'string' || entryToRemove.length === 0) return { ...env };
+  const result = { ...env };
+  for (const key of pathEnvKeys(env)) {
+    const value = env[key];
+    if (typeof value !== 'string') continue;
+    result[key] = value.split(pathDelimiter).filter((entry) => !pathEntriesEqual(entry, entryToRemove)).join(pathDelimiter);
+  }
+  return result;
 }
 
 function envWithoutProductHarnessSurface(env) {
@@ -117,7 +118,7 @@ function assertFreeBaselinePreflight({ productAccessMode, fixtureDir, conditionE
   if (!result.ok) {
     const summary = summarizeProductAccessPreflight(result);
     throw tagIncidentPhase(
-      new Error(`free-baseline product-access preflight failed: observed_product_access_mode=${summary.observed_product_access_mode}, failed_check_count=${summary.failed_check_count}`),
+      new Error(`free-baseline product-access preflight failed: observed_product_access_mode=${summary.observed_product_access_mode}, failed_check_count=${summary.failed_check_count}, failed_check_ids=${summary.failed_check_ids.join(',')}`),
       'materializing_cell',
       cellOrdinal ?? undefined,
     );

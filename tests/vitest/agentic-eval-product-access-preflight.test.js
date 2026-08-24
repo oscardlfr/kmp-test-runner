@@ -178,6 +178,7 @@ describe('evaluateProductAccessPreflight -- free-baseline-no-product', () => {
       product_access_mode: 'free-baseline-no-product',
       observed_product_access_mode: 'contaminated-baseline',
       failed_check_count: 2,
+      failed_check_ids: ['workspace_product_markers_absent', 'env_product_vars_absent'],
       check_count: result.checks.length,
     });
   });

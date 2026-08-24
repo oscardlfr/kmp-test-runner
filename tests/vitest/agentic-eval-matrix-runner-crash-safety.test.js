@@ -148,6 +148,8 @@ describe('runSingleCondition -- free-baseline-no-product strips product surface 
     let capturedEnv = null;
 
     try {
+      writeFileSync(path.join(shimDir, 'kmp-test'), '');
+      writeFileSync(path.join(shimDir, 'kmp-test.cmd'), '');
       const adapter = makeEnvCaptureAdapter({
         onCollect: ({ env }) => { capturedEnv = env; },
       });
@@ -159,6 +161,7 @@ describe('runSingleCondition -- free-baseline-no-product strips product surface 
         resetGradleToSnapshot: () => {},
         kmpEvalTempHome,
         sharedEnv: {
+          Path: cleanPathDir,
           PATH: `${shimDir}${path.delimiter}${cleanPathDir}`,
           KMP_EVAL_EXPECTED_FIXTURE_ROOT: 'must-not-leak',
           KMP_EVAL_JUNIT_EVIDENCE_DIR: 'must-not-leak',
@@ -185,6 +188,8 @@ describe('runSingleCondition -- free-baseline-no-product strips product surface 
       expect(Object.keys(capturedEnv).filter((k) => /^KMP_(EVAL|TEST)_/i.test(k))).toEqual([]);
       expect(capturedEnv.PATH.split(path.delimiter)).not.toContain(shimDir);
       expect(capturedEnv.PATH.split(path.delimiter)).toContain(cleanPathDir);
+      expect(capturedEnv.Path.split(path.delimiter)).not.toContain(shimDir);
+      expect(capturedEnv.Path.split(path.delimiter)).toContain(cleanPathDir);
       expect(result.didSpawn).toBe(true);
     } finally {
       for (const dir of cleanupDirs) rmSync(dir, { recursive: true, force: true });
@@ -231,6 +236,7 @@ describe('runSingleCondition -- free-baseline-no-product strips product surface 
       expect(caught.agenticEvalPhase).toBe('materializing_cell');
       expect(caught.message).toMatch(/free-baseline product-access preflight failed/);
       expect(caught.message).toMatch(/observed_product_access_mode=contaminated-baseline/);
+      expect(caught.message).toMatch(/failed_check_ids=workspace_product_markers_absent/);
       expect(caught.message).not.toContain(fixtureDir);
       expect(collected).toBe(false);
     } finally {

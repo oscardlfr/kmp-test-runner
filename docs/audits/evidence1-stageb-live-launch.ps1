@@ -23,10 +23,11 @@ if ($RunId) {
   Import-Module $contractPath -Force
 }
 
-$HarnessCommit = 'e5f5974d980faaadda5bd48ef53564a08043cdcf'
-$HarnessTree = '79fe454c9156775ea2d6115cae289132895b91bb'
+$HarnessCommit = '66c5f3d02996142cbd0c16c26a2607fb96ecde33'
+$HarnessTree = 'f1eb21847b90d9eece55298eb9dd142d5752e24f'
 $ClaudeVersion = '2.1.238'
 $MaxBudgetUsd = '2.00'
+$CampaignDesignId = 'claude-product-vs-free-baseline-v1'
 $HarnessDir = 'C:\kmp-eval\agentic-evidence1-claude-2x2-windows-stage-b-readiness-v1'
 $SourceDir = 'C:\kmp-eval\NowInAndroid-evidence1-coverage-threshold-windows-stageb-v1'
 $AttestationFile = 'C:\kmp-eval\measurement-scopes\evidence1-claude-windows-isolation-attestation-stageb-v1.json'
@@ -68,6 +69,14 @@ function Refresh-StageBPath {
   $env:Path = @($paths + $env:Path | Where-Object { $_ }) -join ';'
 }
 
+function Set-StageBClaudeNetworkEnvironment {
+  $env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1'
+  $env:DISABLE_TELEMETRY = '1'
+  $env:DISABLE_ERROR_REPORTING = '1'
+  $env:ENABLE_CLAUDEAI_MCP_SERVERS = 'false'
+  $env:CLAUDE_CODE_DISABLE_ARTIFACT = '1'
+}
+
 function Invoke-Git([string[]]$Args) {
   & git.exe @Args
   if ($LASTEXITCODE -ne 0) {
@@ -95,7 +104,9 @@ function Invoke-CurlProbe([string]$Uri, [int]$MaxTimeSeconds) {
 function Assert-RestrictedNetwork {
   $allowedUris = @(
     'https://api.anthropic.com',
-    'https://platform.claude.com'
+    'https://platform.claude.com',
+    'https://claude.ai',
+    'https://claude.com'
   )
   foreach ($uri in $allowedUris) {
     $allowedProbe = Invoke-CurlProbe $uri 15
@@ -191,6 +202,18 @@ function Read-ReadinessLedger {
       $ledgerCommitExpected = $ledgerCommitActual
       $ledgerTreeExpected = $ledgerTreeActual
     }
+  } elseif ($ledger.PSObject.Properties.Name -contains 'r2_harness') {
+    $anchors = Require-JsonProperty $ledger 'r2_harness' 'readiness ledger'
+    $ledgerCommitActual = Require-JsonProperty $anchors 'harness_commit' 'readiness r2_harness'
+    $ledgerTreeActual = Require-JsonProperty $anchors 'harness_tree' 'readiness r2_harness'
+    $ledgerCommitExpected = $ledgerCommitActual
+    $ledgerTreeExpected = $ledgerTreeActual
+  } elseif ($ledger.PSObject.Properties.Name -contains 'harness') {
+    $anchors = Require-JsonProperty $ledger 'harness' 'readiness ledger'
+    $ledgerCommitActual = Require-JsonProperty $anchors 'commit' 'readiness harness'
+    $ledgerTreeActual = Require-JsonProperty $anchors 'tree' 'readiness harness'
+    $ledgerCommitExpected = $ledgerCommitActual
+    $ledgerTreeExpected = $ledgerTreeActual
   } else {
     $anchors = Require-JsonProperty $ledger 'harness_anchor' 'readiness ledger'
     $ledgerCommitActual = Require-JsonProperty $anchors 'commit' 'readiness harness_anchor'
@@ -209,6 +232,8 @@ function Read-ReadinessLedger {
     $r7 = Require-JsonProperty $ledger 'R7_campaign_dry_run' 'readiness ledger'
   } elseif ($ledger.PSObject.Properties.Name -contains 'campaign_dry_run') {
     $r7 = Require-JsonProperty $ledger 'campaign_dry_run' 'readiness ledger'
+  } elseif ($ledger.PSObject.Properties.Name -contains 'dry_run_campaign') {
+    $r7 = Require-JsonProperty $ledger 'dry_run_campaign' 'readiness ledger'
   } else {
     $r7 = Require-JsonProperty $ledger 'r7_campaign_dry_run' 'readiness ledger'
   }
@@ -233,6 +258,10 @@ function Read-ReadinessLedger {
     [int]$campaign.strict_cells_with_attestation_hash
   } elseif ($campaign.PSObject.Properties.Name -contains 'strict_cells_carry_attestation_hash') {
     if ($campaign.strict_cells_carry_attestation_hash -eq $true) { 8 } else { 0 }
+  } elseif ($campaign.PSObject.Properties.Name -contains 'strict_cells_carry_no_attestation_hash') {
+    if ($campaign.strict_cells_carry_no_attestation_hash -eq $true) { 0 } else { 8 }
+  } elseif ([int]$campaign.strict_cell_count -eq 0) {
+    0
   } else {
     Fail 'readiness campaign dry-run missing strict attestation placement field'
   }
@@ -242,6 +271,8 @@ function Read-ReadinessLedger {
     if ([int]$campaign.unrestricted_distinct_attestation_hash_count -eq 1) { 8 } else { 0 }
   } elseif ($campaign.PSObject.Properties.Name -contains 'unrestricted_unique_attestation_hash_count') {
     if ([int]$campaign.unrestricted_unique_attestation_hash_count -eq 1) { [int]$campaign.unrestricted_cell_count } else { 0 }
+  } elseif ($campaign.PSObject.Properties.Name -contains 'distinct_isolation_attestation_hashes_on_unrestricted_cells') {
+    if ([int]$campaign.distinct_isolation_attestation_hashes_on_unrestricted_cells -eq 1) { [int]$campaign.unrestricted_cell_count } else { 0 }
   } else {
     Fail 'readiness campaign dry-run missing unrestricted attestation placement field'
   }
@@ -251,6 +282,8 @@ function Read-ReadinessLedger {
     [int]$campaign.unrestricted_distinct_attestation_hash_count
   } elseif ($campaign.PSObject.Properties.Name -contains 'unrestricted_unique_attestation_hash_count') {
     [int]$campaign.unrestricted_unique_attestation_hash_count
+  } elseif ($campaign.PSObject.Properties.Name -contains 'distinct_isolation_attestation_hashes_on_unrestricted_cells') {
+    [int]$campaign.distinct_isolation_attestation_hashes_on_unrestricted_cells
   } else {
     Fail 'readiness campaign dry-run missing unrestricted attestation hash cardinality field'
   }
@@ -260,6 +293,8 @@ function Read-ReadinessLedger {
     $campaign.attestation_path_leaked
   } elseif ($campaign.PSObject.Properties.Name -contains 'attestation_path_or_content_or_timestamps_leaked') {
     $campaign.attestation_path_or_content_or_timestamps_leaked
+  } elseif ($campaign.PSObject.Properties.Name -contains 'attestation_path_absent_from_output') {
+    -not $campaign.attestation_path_absent_from_output
   } else {
     Fail 'readiness campaign dry-run missing attestation path leak field'
   }
@@ -271,6 +306,8 @@ function Read-ReadinessLedger {
     $campaign.attestation_filename_leaked_in_output -or $campaign.attestation_campaign_id_leaked_in_output -or $campaign.attestation_boundary_kind_leaked_in_output
   } elseif ($campaign.PSObject.Properties.Name -contains 'attestation_path_or_content_or_timestamps_leaked') {
     $campaign.attestation_path_or_content_or_timestamps_leaked
+  } elseif ($campaign.PSObject.Properties.Name -contains 'attestation_content_absent_from_output') {
+    -not $campaign.attestation_content_absent_from_output
   } else {
     Fail 'readiness campaign dry-run missing attestation content leak field'
   }
@@ -280,6 +317,8 @@ function Read-ReadinessLedger {
     $campaign.attestation_timestamps_leaked
   } elseif ($campaign.PSObject.Properties.Name -contains 'attestation_path_or_content_or_timestamps_leaked') {
     $campaign.attestation_path_or_content_or_timestamps_leaked
+  } elseif ($campaign.PSObject.Properties.Name -contains 'attestation_timestamps_absent_from_output') {
+    -not $campaign.attestation_timestamps_absent_from_output
   } else {
     Fail 'readiness campaign dry-run missing attestation timestamp leak field'
   }
@@ -291,12 +330,20 @@ function Read-ReadinessLedger {
     $campaign.unrestricted_hash_matches_r5_validation
   } elseif ($campaign.PSObject.Properties.Name -contains 'attestation_hash_matches_loader') {
     $campaign.attestation_hash_matches_loader
+  } elseif ($campaign.PSObject.Properties.Name -contains 'unrestricted_attestation_hash_matches_loader') {
+    $campaign.unrestricted_attestation_hash_matches_loader
+  } elseif ($campaign.PSObject.Properties.Name -contains 'shared_isolation_attestation_sha256') {
+    [string]$campaign.shared_isolation_attestation_sha256 -match '^[0-9a-f]{64}$'
   } else {
     Fail 'readiness campaign dry-run missing attestation hash match field'
   }
 
-  if ([int]$campaign.planned_sessions -ne 16 -or [int]$campaign.plan_length -ne 16) {
-    Fail "readiness campaign dry-run is not the 16-cell design: planned=$($campaign.planned_sessions), plan=$($campaign.plan_length)"
+  if ($campaign.PSObject.Properties.Name -contains 'campaign_design_id' -and
+      $campaign.campaign_design_id -ne $CampaignDesignId) {
+    Fail "readiness campaign dry-run design drifted: $($campaign.campaign_design_id)"
+  }
+  if ([int]$campaign.planned_sessions -ne 8 -or [int]$campaign.plan_length -ne 8) {
+    Fail "readiness campaign dry-run is not the 8-cell product/free-baseline design: planned=$($campaign.planned_sessions), plan=$($campaign.plan_length)"
   }
   if ($campaign.PSObject.Properties.Name -contains 'label_order_matches_expected') {
     foreach ($booleanGate in @(
@@ -310,20 +357,28 @@ function Read-ReadinessLedger {
     }
   } else {
     Assert-SequenceEquals (Require-JsonProperty $campaign 'label_order' 'readiness campaign dry-run') @(
-      'A', 'B', 'D', 'C', 'B', 'C', 'A', 'D', 'C', 'D', 'B', 'A', 'D', 'A', 'C', 'B'
+      'A', 'B', 'B', 'A', 'B', 'A', 'A', 'B'
     ) 'readiness campaign label order'
     Assert-SequenceEquals (Require-JsonProperty $campaign 'profile_order' 'readiness campaign dry-run') @(
-      'strict-policy-v1', 'strict-policy-v1', 'sandboxed-unrestricted-v1', 'sandboxed-unrestricted-v1',
-      'strict-policy-v1', 'sandboxed-unrestricted-v1', 'strict-policy-v1', 'sandboxed-unrestricted-v1',
-      'sandboxed-unrestricted-v1', 'sandboxed-unrestricted-v1', 'strict-policy-v1', 'strict-policy-v1',
-      'sandboxed-unrestricted-v1', 'strict-policy-v1', 'sandboxed-unrestricted-v1', 'strict-policy-v1'
+      'sandboxed-unrestricted-v1', 'sandboxed-unrestricted-v1',
+      'sandboxed-unrestricted-v1', 'sandboxed-unrestricted-v1',
+      'sandboxed-unrestricted-v1', 'sandboxed-unrestricted-v1',
+      'sandboxed-unrestricted-v1', 'sandboxed-unrestricted-v1'
     ) 'readiness campaign profile order'
     Assert-SequenceEquals (Require-JsonProperty $campaign 'condition_order' 'readiness campaign dry-run') @(
-      'no-skill', 'current-skill', 'current-skill', 'no-skill',
-      'current-skill', 'no-skill', 'no-skill', 'current-skill',
-      'no-skill', 'current-skill', 'current-skill', 'no-skill',
-      'current-skill', 'no-skill', 'no-skill', 'current-skill'
+      'current-skill', 'no-skill',
+      'no-skill', 'current-skill',
+      'no-skill', 'current-skill',
+      'current-skill', 'no-skill'
     ) 'readiness campaign condition order'
+    if ($campaign.PSObject.Properties.Name -contains 'product_access_order') {
+      Assert-SequenceEquals $campaign.product_access_order @(
+        'product-assisted', 'free-baseline-no-product',
+        'free-baseline-no-product', 'product-assisted',
+        'free-baseline-no-product', 'product-assisted',
+        'product-assisted', 'free-baseline-no-product'
+      ) 'readiness campaign product-access order'
+    }
   }
   if ($attestationHashMatchesFresh -ne $true) {
     Fail 'readiness campaign dry-run attestation hash does not match the fresh attestation'
@@ -333,7 +388,7 @@ function Read-ReadinessLedger {
       $attestationTimestampsLeaked -ne $false) {
     Fail 'readiness campaign dry-run leaked attestation path/content/timestamp'
   }
-  if ([int]$campaign.strict_cell_count -ne 8 -or [int]$campaign.unrestricted_cell_count -ne 8) {
+  if ([int]$campaign.strict_cell_count -ne 0 -or [int]$campaign.unrestricted_cell_count -ne 8) {
     Fail "readiness campaign dry-run cell counts drifted: strict=$($campaign.strict_cell_count), unrestricted=$($campaign.unrestricted_cell_count)"
   }
   if ($strictCellsWithAttestationHash -ne 0 -or $unrestrictedCellsWithAttestationHash -ne 8) {
@@ -367,7 +422,7 @@ const args = [
   '--source-repo-dir', 'C:\\kmp-eval\\NowInAndroid-evidence1-coverage-threshold-windows-stageb-v1',
   '--seed', '20260821',
   '--runtime', 'claude-code',
-  '--campaign-design', 'claude-2x2-williams-v1',
+  '--campaign-design', '__CAMPAIGN_DESIGN_ID__',
   '--max-budget-usd', '__MAX_BUDGET_USD__',
   '--isolation-attestation-file', 'C:\\kmp-eval\\measurement-scopes\\evidence1-claude-windows-isolation-attestation-stageb-v1.json',
   '--dry-run',
@@ -388,6 +443,7 @@ process.stdout.write(JSON.stringify(summary));
 process.exit(result.status ?? 125);
 '@
   $js = $js.Replace('__MAX_BUDGET_USD__', $MaxBudgetUsd)
+  $js = $js.Replace('__CAMPAIGN_DESIGN_ID__', $CampaignDesignId)
 
   $dryRunRaw = & $NodeCommand --input-type=module -e $js
   $dryRunExit = $LASTEXITCODE
@@ -414,6 +470,7 @@ process.exit(result.status ?? 125);
 }
 
 Refresh-StageBPath
+Set-StageBClaudeNetworkEnvironment
 New-Item -ItemType Directory -Force -Path $ScratchDir | Out-Null
 
 $node = Command-Source 'node.exe'
@@ -457,6 +514,8 @@ try {
     $readiness.R7_campaign_dry_run.pass_dry_run
   } elseif ($readiness.PSObject.Properties.Name -contains 'campaign_dry_run') {
     $readiness.campaign_dry_run.pass_dry_run
+  } elseif ($readiness.PSObject.Properties.Name -contains 'dry_run_campaign') {
+    $readiness.dry_run_campaign.pass_dry_run
   } else {
     $readiness.r7_campaign_dry_run.pass_dry_run
   }
@@ -470,12 +529,18 @@ try {
   } catch {
     Fail 'attestation validation returned invalid JSON'
   }
-  if ($readiness.PSObject.Properties.Name -contains 'R5_attestation') {
+  if ($readiness.PSObject.Properties.Name -contains 'r5_attestation') {
+    $readinessAttestation = Require-JsonProperty $readiness 'r5_attestation' 'readiness ledger'
+    $readinessAttestationHash = Require-JsonProperty $readinessAttestation 'attestation_sha256' 'readiness r5_attestation'
+  } elseif ($readiness.PSObject.Properties.Name -contains 'R5_attestation') {
     $readinessAttestation = Require-JsonProperty $readiness 'R5_attestation' 'readiness ledger'
     $readinessAttestationHash = Require-JsonProperty $readinessAttestation 'attestation_sha256' 'readiness attestation'
   } elseif ($readiness.PSObject.Properties.Name -contains 'isolation_attestation') {
     $readinessAttestation = Require-JsonProperty $readiness 'isolation_attestation' 'readiness ledger'
     $readinessAttestationHash = Require-JsonProperty $readinessAttestation 'sha256' 'readiness isolation_attestation'
+  } elseif ($readiness.PSObject.Properties.Name -contains 'attestation') {
+    $readinessAttestation = Require-JsonProperty $readiness 'attestation' 'readiness ledger'
+    $readinessAttestationHash = Require-JsonProperty $readinessAttestation 'sha256' 'readiness attestation'
   } else {
     $readinessAttestation = Require-JsonProperty $readiness 'r5_network_seal_and_attestation' 'readiness ledger'
     $readinessAttestationHash = Require-JsonProperty $readinessAttestation 'attestation_sha256' 'readiness r5_network_seal_and_attestation'
@@ -518,7 +583,7 @@ try {
     '--source-repo-dir', $SourceDir,
     '--seed', '20260821',
     '--runtime', 'claude-code',
-    '--campaign-design', 'claude-2x2-williams-v1',
+    '--campaign-design', $CampaignDesignId,
     '--max-budget-usd', $MaxBudgetUsd,
     '--isolation-attestation-file', $AttestationFile
   )
