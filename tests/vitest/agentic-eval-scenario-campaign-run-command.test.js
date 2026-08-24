@@ -242,7 +242,7 @@ describe('1. cli.mjs run --campaign-design -- dry-run plan preview', () => {
       ['run', '--scenario', SCENARIO_ID, '--source-repo-dir', '/definitely/does/not/exist', '--seed', '7', '--max-budget-usd', '1.50', ...CAMPAIGN_FLAGS(attestationPath), '--dry-run'],
       fakeClaudeEnv('run-scenario-success'),
     );
-    expect(result.status).toBe(0);
+    expect(result.status, result.stderr || result.stdout).toBe(0);
     expect(result.parsed).not.toBeNull();
     expect(result.parsed.dry_run).toBe(true);
     expect(result.parsed.scenario_id).toBe(SCENARIO_ID);
@@ -260,7 +260,7 @@ describe('1. cli.mjs run --campaign-design -- dry-run plan preview', () => {
       ['run', '--scenario', SCENARIO_ID, '--source-repo-dir', '/definitely/does/not/exist', '--seed', '7', ...CAMPAIGN_FLAGS(attestationPath), '--dry-run'],
       fakeClaudeEnv('run-scenario-success'),
     );
-    expect(result.status).toBe(0);
+    expect(result.status, result.stderr || result.stdout).toBe(0);
     const sorted = [...result.parsed.plan].sort((a, b) => a.order_index - b.order_index);
     expect(sorted.map((c) => c.campaign_cell_label)).toEqual(EXPECTED_LABEL_ORDER);
     expect(sorted.map((c) => c.execution_profile_id)).toEqual(EXPECTED_LABEL_ORDER.map((l) => CELL_DEFINITIONS[l].execution_profile_id));

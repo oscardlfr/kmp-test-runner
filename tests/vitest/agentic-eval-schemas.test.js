@@ -1797,12 +1797,12 @@ describe('schema v6 (agentic-eval-runtime-neutral-records-v1) -- agent_runtime/e
   });
 
   // accepted_audit compatibility matrix (Section E): a schema:5 record accepts only a v1/v2
-  // sidecar (frozen); a schema:6+ record accepts only v3 (the version that stamps
+  // sidecar (frozen); a schema:6+ record accepts only v3/v4/v5 (the versions that stamp
   // run_provenance_sha256). Symmetric with the v1-v5 describe block's own
   // `it.each([0, 3, -1, '1', 1.5, null])('REJECTS an unsupported sidecar schema (%j)')`, which
   // already covers the v5-rejects-3 direction as one case among several out-of-range values --
   // this block makes both directions of the v5/v6 pairing explicit and independently readable.
-  describe('accepted_audit -- v6 requires sidecar schema 3 (never 1 or 2)', () => {
+  describe('accepted_audit -- v6 requires sidecar schema 3, 4, or 5 (never 1 or 2)', () => {
     function v6ScenarioBase(overrides = {}) {
       return v6Base({
         run_kind: 'scenario', benchmark_eligible: true, scenario_id: 'kampkit-android-host-test-discovery',
@@ -1812,22 +1812,22 @@ describe('schema v6 (agentic-eval-runtime-neutral-records-v1) -- agent_runtime/e
       });
     }
 
-    it('ACCEPTS sidecar schema 3 for a schema:6 scenario record', () => {
-      const run = v6ScenarioBase({ accepted_audit: { schema: 3, relative_path: 'audit/scenario-current-skill-abcd1234.json', sha256: 'a'.repeat(64) } });
+    it.each([3, 4, 5])('ACCEPTS sidecar schema %i for a schema:6 scenario record', (schema) => {
+      const run = v6ScenarioBase({ accepted_audit: { schema, relative_path: 'audit/scenario-current-skill-abcd1234.json', sha256: 'a'.repeat(64) } });
       expect(validateRun(run).errors.some((e) => e.field === 'accepted_audit.schema')).toBe(false);
     });
 
-    it.each([1, 2])('REJECTS sidecar schema %i for a schema:6 scenario record (v6 requires exactly v3)', (schema) => {
+    it.each([1, 2])('REJECTS sidecar schema %i for a schema:6 scenario record (v6 requires v3/v4/v5)', (schema) => {
       const run = v6ScenarioBase({ accepted_audit: { schema, relative_path: 'audit/scenario-current-skill-abcd1234.json', sha256: 'a'.repeat(64) } });
       expect(validateRun(run).errors.some((e) => e.field === 'accepted_audit.schema')).toBe(true);
     });
 
-    it('REJECTS sidecar schema 3 for a schema:5 scenario record (v5 requires v1 or v2, never v3)', () => {
+    it.each([3, 4, 5])('REJECTS sidecar schema %i for a schema:5 scenario record (v5 requires v1 or v2)', (schema) => {
       const run = v5Base({
         run_kind: 'scenario', benchmark_eligible: true, scenario_id: 'kampkit-android-host-test-discovery',
         grading_checks: { value: GRADING_CHECK_NAMES.map((name) => ({ name, passed: true, detail: 'ok', evidence_event_indices: [] })), reason: null },
         repetition_index: 0, run_id: 'scenario-current-skill-abcd1234',
-        accepted_audit: { schema: 3, relative_path: 'audit/scenario-current-skill-abcd1234.json', sha256: 'a'.repeat(64) },
+        accepted_audit: { schema, relative_path: 'audit/scenario-current-skill-abcd1234.json', sha256: 'a'.repeat(64) },
       });
       expect(validateRun(run).errors.some((e) => e.field === 'accepted_audit.schema')).toBe(true);
     });

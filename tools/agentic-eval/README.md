@@ -450,8 +450,14 @@ matrix is rejected anyway.
   own `policy_allowed_*` list, and even then only that allowed value, never an arbitrary one),
   `plan_only`, `policy_decision` (`allow|deny|missing|not-applicable`), `result_status`
   (`success|error|missing`), `phase` (`pre-signal|produced-signal|post-signal|no-signal`), and — in
-  schema 2 and 3 — `dispatch_status`
-  (`hook_evaluated|pre_dispatch_blocked|unaccounted|not_applicable`) — plus
+  schema 2 and later — `dispatch_status`
+  (`hook_evaluated|pre_dispatch_blocked|result_correlated_no_policy|unaccounted|not_applicable`).
+  Schema 5 additionally carries `recognized_operation`, a closed structural `kmp-test` subcommand
+  bucket (`parallel`, `describe`, `doctor`, etc., or `"other"`) used only for privacy-safe
+  observability when `policy_mode:"not_applicable"` makes the record's policy allowlists null by
+  design. It does not replace `operation`: `operation` remains the policy/allowlist-sensitive
+  field, while `recognized_operation` is structural and never includes argv, module filters, paths,
+  task names, or unknown raw subcommand tokens. The sidecar also carries
   each entry's own `tool_use_event_index`/`tool_result_event_index` (integers, not timestamps) and a
   stable `ordinal` (`0..N-1`, transcript order, including multiple calls dispatched in one assistant
   turn). The sidecar's own `terminal_authoritative_event` comes directly from the grader's own
@@ -472,16 +478,18 @@ matrix is rejected anyway.
   **not** independently prove the original raw transcript's own content, which was never committed
   in the first place and is not recoverable from the sidecar.
 
-  **Schema versions, and the construction-time vs at-rest evidentiary boundary.** Three versions
+  **Schema versions, and the construction-time vs at-rest evidentiary boundary.** Five versions
   coexist: **v1** (frozen — the 92 historical committed sidecars), **v2** (frozen — the 64 committed
   sidecars written since, adding per-call `dispatch_status` and `summary.pre_dispatch_blocked_total`;
-  both v1 and v2 still require literally `run_schema: 5`), and **v3** (current, for schema-v6
-  records). Validation dispatches on the sidecar's own real version and fails closed on anything
-  outside `{1, 2, 3}`; a record's `accepted_audit.schema` must equal the schema of the sidecar it
-  points at, checked during cross-validation — a schema-v5 record accepts only sidecar schema 1 or
-  2, a schema-v6 record accepts only sidecar schema 3 (never the reverse in either direction, so a
-  future schema bump can never silently borrow the wrong version's shape). That equality was
-  implicit while only one version existed and is now asserted per the compatible pair.
+  both v1 and v2 still require literally `run_schema: 5`), **v3** (schema-v6 policy-required
+  records), **v4** (frozen legacy schema-v6 no-policy sidecars), and **v5** (current schema-v6
+  no-policy sidecars, v4 plus `recognized_operation`). Validation dispatches on the sidecar's own
+  real version and fails closed on anything outside `{1, 2, 3, 4, 5}`; a record's
+  `accepted_audit.schema` must equal the schema of the sidecar it points at, checked during
+  cross-validation. A schema-v5 run record accepts only sidecar schema 1 or 2; a schema-v6
+  policy-required record produces sidecar schema 3; a schema-v6 no-policy record now produces
+  sidecar schema 5 while schema 4 remains accepted for already-written legacy artifacts. That
+  equality was implicit while only one version existed and is now asserted per the compatible pair.
 
   **v3** conserves v2's `tool_calls`/`summary` shape verbatim (no re-litigating the
   `dispatch_status` contract below), requires literally `run_schema: 6`, and adds exactly one new
