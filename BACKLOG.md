@@ -154,6 +154,15 @@
   of PR #434/#435 evidence are OUT of v1. This backlog entry and its plan authorize no live calls,
   raw reads, pin advance, merge, or implementation by themselves.
 
+- **Agentic-eval privacy-safe correlation observability** - implemented by the dedicated
+  observability PR after the first isolated Evidence 1 campaign exposed a failed cell with
+  `hookAccountingOk:false` and `toolResultsCompleteOk:false` but no safe lower-level discriminator.
+  Evaluated journal events now retain a closed count-only projection by tool kind, dispatch status,
+  correlation issue, and timeout-tolerance state; incident schema 2 may attach exactly that
+  validated projection for the failed cell. It never stores ids, commands, paths, transcript or
+  prompt/response content, or timestamps, and it does not alter any acceptance gate. No additional
+  live sessions are authorized or executed by this item.
+
 - 🔧 **Mixed-profile campaign rejection diagnostics schema** — opened 2026-08-20 during
   `feature/agentic-eval-multi-profile-campaigns-v1` (adds `run --campaign-design
   claude-2x2-williams-v1`, the offline multi-profile scenario-campaign planner/runner unblocking

@@ -521,9 +521,27 @@ describe('4. cli.mjs run --campaign-design -- fake-runtime campaign execution (r
     // that the fields we happen to check look clean.
     expect(Object.keys(incident).sort()).toEqual([
       'counts', 'created_at', 'emergency_raw_persisted', 'emergency_raw_write_error', 'incident_id',
-      'phase', 'planned_cell_count', 'provenance', 'reason', 'run_kind', 'schema',
+      'failed_cell_correlation', 'phase', 'planned_cell_count', 'provenance', 'reason', 'run_kind', 'schema',
     ].sort());
 
+    expect(incident.schema).toBe(2);
+    expect(incident.failed_cell_correlation).toEqual({
+      schema: 1,
+      condition: 'current-skill',
+      policy_mode: 'not_applicable',
+      tool_use_counts_by_kind: { shell: 1, skill: 1, other: 0 },
+      missing_id_counts_by_kind: { shell: 0, skill: 0, other: 0 },
+      missing_result_counts_by_kind: { shell: 1, skill: 0, other: 0 },
+      dispatch_status_counts: {
+        hook_evaluated: 0, pre_dispatch_blocked: 0, result_correlated_no_policy: 0,
+        unaccounted: 1, unclassified: 0,
+      },
+      correlation_issue_counts: {
+        duplicate_tool_use_id: 0, orphan_tool_result_missing_id: 0,
+        orphan_tool_result_unknown_id: 0, duplicate_tool_result: 0, malformed_stream_line: 0,
+      },
+      timeout_tolerance_applied: false,
+    });
     expect(incident.run_kind).toBe('scenario');
     expect(incident.phase).toBe('finalizing_matrix');
     expect(incident.planned_cell_count).toBe(16);
@@ -540,6 +558,8 @@ describe('4. cli.mjs run --campaign-design -- fake-runtime campaign execution (r
     expect(incident.provenance.scenario_id).toBe(SCENARIO_ID);
     expect(JSON.stringify(incident)).not.toContain(sourceRepoDir);
     expect(JSON.stringify(incident)).not.toContain(runsRoot);
+    expect(JSON.stringify(incident)).not.toContain('toolu_fakebash1');
+    expect(JSON.stringify(incident)).not.toContain('kmp-test parallel');
   }, 60000);
 
   it('attestation failure: a campaign with unrestricted cells and a missing attestation fails before the first fake session, even for the real (non-dry-run) path', async () => {

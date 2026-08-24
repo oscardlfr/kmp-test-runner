@@ -29,6 +29,7 @@ import { buildRunMatrix, buildConditionOrders } from './randomizer.mjs';
 import { attributeCondition } from './junit-evidence.mjs';
 import { buildBashDispatchAccounting } from './dispatch-accounting.mjs';
 import { cellTranscriptIntegrityOk } from './cell-integrity.mjs';
+import { buildCorrelationObservability } from './correlation-observability.mjs';
 import { tagIncidentPhase } from './durable-journal.mjs';
 import { validateRuntimeAdapter, validateObservation, freezeObservation, selectShellAttempts } from './runtimes/contract.mjs';
 // registries.mjs is now the ONE module allowed to import runtimes/claude-code.mjs directly
@@ -566,7 +567,10 @@ export async function runScenarioMatrix({
               policyMode,
             })
           : null;
-        fullConditionResult = { ...conditionResult, junitAttribution, dispatchAccounting };
+        const correlationObservability = buildCorrelationObservability({
+          condition, policyMode, observation: conditionResult.observation, dispatchAccounting,
+        });
+        fullConditionResult = { ...conditionResult, junitAttribution, dispatchAccounting, correlationObservability };
         // Fail-fast integrity check -- evaluated for EVERY executed cell (not only ones that fail),
         // so a caller building a partial rejection diagnostic has a real verdict for every cell
         // that ran, never just the one that stopped the matrix.
@@ -582,7 +586,7 @@ export async function runScenarioMatrix({
       }
       if (journal && conditionResult.didSpawn) {
         try {
-          journal.recordEvaluated(orderIndex);
+          journal.recordEvaluated(orderIndex, fullConditionResult.correlationObservability);
         } catch (err) {
           throw tagIncidentPhase(err, 'persisting_cell_journal', orderIndex);
         }
@@ -796,14 +800,17 @@ export async function runScenarioCampaign({
               policyMode,
             })
           : null;
-        fullConditionResult = { ...conditionResult, junitAttribution, dispatchAccounting };
+        const correlationObservability = buildCorrelationObservability({
+          condition, policyMode, observation: conditionResult.observation, dispatchAccounting,
+        });
+        fullConditionResult = { ...conditionResult, junitAttribution, dispatchAccounting, correlationObservability };
         localIntegrity = cellTranscriptIntegrityOk(fullConditionResult, { targetPluginName, targetSkillName, requireDispatchAccounting: true });
       } catch (err) {
         throw tagIncidentPhase(err, 'parsing_or_attributing_cell', orderIndex);
       }
       if (journal && conditionResult.didSpawn) {
         try {
-          journal.recordEvaluated(orderIndex);
+          journal.recordEvaluated(orderIndex, fullConditionResult.correlationObservability);
         } catch (err) {
           throw tagIncidentPhase(err, 'persisting_cell_journal', orderIndex);
         }

@@ -34,6 +34,7 @@ import { join } from 'node:path';
 import { RUNS_ROOT, isRawDirSafeFromAccidentalCommit, promoteTargetsAtomically } from './evidence-io.mjs';
 import { removeDirRobust } from './materialize.mjs';
 import { redactAndVerify } from './privacy.mjs';
+import { validateCorrelationObservability } from './correlation-observability.mjs';
 
 /** Closed vocabulary an incident's thrown error is tagged with (agenticEvalPhase), so
  * incident-diagnostics.mjs's finalizeIncident() never has to guess which phase failed. */
@@ -131,6 +132,7 @@ export function createInvocationJournal({ runKind, plannedCellCount, runsRootOve
   // discardJournalIfRedundant's content-correspondence checks during the SAME process invocation,
   // never needs to survive a restart.
   const stderrMetaByOrdinal = new Map();
+  const correlationSummaryByOrdinal = new Map();
 
   function writeEvent(cellOrdinal, transitionName, meta) {
     const thisSeq = seq;
@@ -242,8 +244,18 @@ export function createInvocationJournal({ runKind, plannedCellCount, runsRootOve
       transitionTo(cellOrdinal, 'parsed');
     },
 
-    recordEvaluated(cellOrdinal) {
-      transitionTo(cellOrdinal, 'evaluated');
+    recordEvaluated(cellOrdinal, correlationObservability = null) {
+      if (correlationObservability == null) {
+        transitionTo(cellOrdinal, 'evaluated');
+        return;
+      }
+      const validation = validateCorrelationObservability(correlationObservability);
+      if (!validation.ok) throw new Error('journal: invalid correlation observability summary');
+      // Clone before custody transfer: later caller mutation cannot alter summarize()'s view of
+      // the count-only payload already written into this immutable event.
+      const safeSummary = JSON.parse(JSON.stringify(correlationObservability));
+      transitionTo(cellOrdinal, 'evaluated', { correlation_observability: safeSummary });
+      correlationSummaryByOrdinal.set(cellOrdinal, safeSummary);
     },
 
     /** Real counts + cellOrdinal sets per transition -- the source of truth for both
@@ -257,7 +269,10 @@ export function createInvocationJournal({ runKind, plannedCellCount, runsRootOve
       const counts = Object.fromEntries(TRANSITIONS.map((t) => [t, cellOrdinalsByTransition[t].size]));
       const cellOrdinals = Object.fromEntries(TRANSITIONS.map((t) => [t, [...cellOrdinalsByTransition[t]]]));
       const stderrMeta = Object.fromEntries(stderrMetaByOrdinal.entries());
-      return { plannedCellCount, counts, cellOrdinals, stderrMeta };
+      const correlationSummaries = Object.fromEntries(
+        [...correlationSummaryByOrdinal.entries()].map(([ordinal, summary]) => [ordinal, JSON.parse(JSON.stringify(summary))]),
+      );
+      return { plannedCellCount, counts, cellOrdinals, stderrMeta, correlationSummaries };
     },
 
     /** Reads a cell's own already-persisted raw back, or `null` if it never reached

@@ -973,6 +973,13 @@ planned -> spawn_started -> spawn_completed -> raw_persisted -> parsed -> evalua
 planned -> spawn_failed                                                    (terminal)
 ```
 
+An `evaluated` transition may additionally carry `correlation_observability`, a closed schema
+containing only the condition/profile enums, counts by tool kind, counts by dispatch/correlation
+status, and a timeout-tolerance boolean. It deliberately cannot contain tool-use/result ids,
+commands, paths, transcript or prompt/response content, or timestamps. The strict missing-result
+count remains visible even when the existing timeout tolerance makes the effective gate complete;
+the summary reports that distinction but does not change the gate verdict.
+
 `spawn_started`/`spawn_failed` are determined from `condition-launcher.mjs`'s `spawnCondition`
 gaining one optional `onSpawned` callback wired to the real `child.on('spawn')` event — which
 performs **zero I/O and can never throw** (Node's EventEmitter dispatch does not protect a
@@ -1015,6 +1022,11 @@ fallback, that is reported truthfully rather than silently claimed as preserved.
 previous unconditional `"...threw before any cell completed: ${err.stack || err.message}"` lines —
 both the false claim (never checked how many cells actually ran) and the raw stack trace (which
 can and does carry absolute paths) printed straight to stderr.
+
+Incident schema 1 remains the byte-compatible shape for legacy callers and incidents without a
+validated failed-cell summary. Schema 2 adds exactly one field, `failed_cell_correlation`, selected
+by the failed cell ordinal from the journal and revalidated before and after redaction. A malformed
+or non-evaluated summary fails closed to schema 1; arbitrary metadata is never copied through.
 
 **Discard policy**: the journal is deleted (`promoteAndDiscard()`) only once the command has
 proven the real evidence it was a safety net for is durably elsewhere — full acceptance, or a
@@ -1763,7 +1775,9 @@ file — `buildRejectionDiagnostics` (`rejection-diagnostics.mjs`) still assumes
 profile per whole batch (true by construction for the legacy matrix, not for a campaign). The
 harness still fails closed with zero evidence promoted and a specific, privacy-safe reason — it
 falls back to the same `finalizeIncident`/`reportIncident` path calibrate/smoke/run already use for
-every other unexpected-shape failure, just without the richer schema-v3/v4 rejection shape. See
+every other unexpected-shape failure. That incident now includes the failed cell's privacy-safe,
+count-only correlation summary when available, but still does not claim the richer schema-v3/v4
+rejection shape. See
 `BACKLOG.md`'s "Mixed-profile campaign rejection diagnostics schema" entry.
 
 This machinery is offline-only: no live Claude Code invocation, no `tools/runs/**` evidence, no

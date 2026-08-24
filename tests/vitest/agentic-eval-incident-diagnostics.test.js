@@ -20,6 +20,33 @@ function fakeJournalSummary(overrides = {}) {
     ...overrides,
   };
 }
+
+function correlationSummary(overrides = {}) {
+  return {
+    schema: 1,
+    condition: 'no-skill',
+    policy_mode: 'not_applicable',
+    tool_use_counts_by_kind: { shell: 1, skill: 0, other: 0 },
+    missing_id_counts_by_kind: { shell: 0, skill: 0, other: 0 },
+    missing_result_counts_by_kind: { shell: 1, skill: 0, other: 0 },
+    dispatch_status_counts: {
+      hook_evaluated: 0,
+      pre_dispatch_blocked: 0,
+      result_correlated_no_policy: 0,
+      unaccounted: 1,
+      unclassified: 0,
+    },
+    correlation_issue_counts: {
+      duplicate_tool_use_id: 0,
+      orphan_tool_result_missing_id: 0,
+      orphan_tool_result_unknown_id: 0,
+      duplicate_tool_result: 0,
+      malformed_stream_line: 0,
+    },
+    timeout_tolerance_applied: false,
+    ...overrides,
+  };
+}
 function fakeJournal(summaryOverrides = {}) {
   return { summarize: () => fakeJournalSummary(summaryOverrides) };
 }
@@ -159,6 +186,56 @@ describe('finalizeIncident -- committed + local diagnostic tiers', () => {
 
       const localPath = join(runsRootOverride, 'agentic-eval-incident', 'raw', `${result.incidentId}.json`);
       expect(existsSync(localPath)).toBe(true);
+    } finally {
+      rmSync(runsRootOverride, { recursive: true, force: true });
+    }
+  });
+
+  it('writes schema 2 with only the failed cell count summary when the journal provides a valid correlation projection', async () => {
+    const { finalizeIncident } = await import('../../tools/agentic-eval/incident-diagnostics.mjs');
+    const runsRootOverride = freshRunsRoot();
+    try {
+      const result = finalizeIncident({
+        runKind: 'scenario',
+        journal: fakeJournal({ correlationSummaries: { 0: correlationSummary() } }),
+        phase: 'finalizing_matrix',
+        reasonText: 'clean reason',
+        cellOrdinal: 0,
+        provenance: {},
+        runsRootOverride,
+      });
+      const committed = JSON.parse(readFileSync(join(runsRootOverride, result.committedRelativePath), 'utf8'));
+      expect(committed.schema).toBe(2);
+      expect(committed.failed_cell_correlation).toEqual(correlationSummary());
+      expect(Object.keys(committed).sort()).toEqual([
+        'counts', 'created_at', 'emergency_raw_persisted', 'emergency_raw_write_error',
+        'failed_cell_correlation', 'incident_id', 'phase', 'planned_cell_count', 'provenance',
+        'reason', 'run_kind', 'schema',
+      ].sort());
+    } finally {
+      rmSync(runsRootOverride, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed to legacy schema 1 when a correlation summary is malformed', async () => {
+    const { finalizeIncident } = await import('../../tools/agentic-eval/incident-diagnostics.mjs');
+    const runsRootOverride = freshRunsRoot();
+    try {
+      const result = finalizeIncident({
+        runKind: 'scenario',
+        journal: fakeJournal({
+          correlationSummaries: { 0: { ...correlationSummary(), tool_use_id: 'must-not-persist' } },
+        }),
+        phase: 'finalizing_matrix',
+        reasonText: 'clean reason',
+        cellOrdinal: 0,
+        provenance: {},
+        runsRootOverride,
+      });
+      const committed = JSON.parse(readFileSync(join(runsRootOverride, result.committedRelativePath), 'utf8'));
+      expect(committed.schema).toBe(1);
+      expect(committed).not.toHaveProperty('failed_cell_correlation');
+      expect(JSON.stringify(committed)).not.toContain('must-not-persist');
     } finally {
       rmSync(runsRootOverride, { recursive: true, force: true });
     }

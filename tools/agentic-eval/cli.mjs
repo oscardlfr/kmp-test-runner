@@ -3794,6 +3794,7 @@ async function cmdRunCampaign(args, campaignDesignId) {
       if (result.rejectionId == null) {
         const incidentResult = finalizeIncident({
           runKind: 'scenario', journal, phase: 'finalizing_matrix', reasonText: result.reason,
+          cellOrdinal: matrix.failFastStop?.orderIndex ?? null,
           provenance: { scenario_id: scenario.id, project_alias: scenario.project_alias, project_commit: scenario.project_commit, seed, model_requested: model },
           privatePatternsFile,
         });
@@ -4106,6 +4107,7 @@ async function cmdRun(args) {
         // finalizeAndWriteMatrixRecords' own body).
         const incidentResult = finalizeIncident({
           runKind: 'scenario', journal, phase: 'finalizing_matrix', reasonText: result.reason,
+          cellOrdinal: matrix.failFastStop?.orderIndex ?? null,
           provenance: { scenario_id: scenario.id, project_alias: scenario.project_alias, project_commit: scenario.project_commit, seed, model_requested: model },
           privatePatternsFile,
         });
