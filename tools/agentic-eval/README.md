@@ -1774,6 +1774,23 @@ not a free/no-product baseline. A true `free-baseline-no-product` control requir
 campaign or environment where product files, commands, docs, and generated artifacts are hidden and
 then attested as absent.
 
+Before a future free-baseline/no-product run is accepted, run the offline product-access preflight
+from the harness against the source-only workspace:
+
+```bash
+node tools/agentic-eval/cli.mjs product-access preflight \
+  --mode free-baseline-no-product \
+  --workspace <source-only-workspace>
+```
+
+The preflight checks the local surface only: product markers in the workspace, `kmp-test` or
+`kmp-test-runner` executables visible on `PATH`, `kmp-test-runner` package manifest dependencies,
+and product-specific `KMP_EVAL_*`/`KMP_TEST_*` environment variables. It exits non-zero and reports
+`observed_product_access_mode:"contaminated-baseline"` on any finding. Output is privacy-safe
+counts/statuses only, never raw paths or environment values. This gate proves the baseline
+workspace/process surface is not product-visible; it does **not** prove the model lacks latent
+knowledge of `kmp-test-runner`.
+
 Execution acquires one independent shared-resource bundle (shim/skill-snapshot/Gradle-home/
 settings/env) **per distinct execution profile** the plan uses, never one bundle reused across
 profiles — a strict cell can never observe unrestricted resources or vice versa. Every per-cell

@@ -22,6 +22,9 @@
 //   node tools/agentic-eval/cli.mjs aggregate --runs-dir <dir>
 //   node tools/agentic-eval/cli.mjs analyze --runs-dir <dir>
 //   node tools/agentic-eval/cli.mjs validate --run <path-to-run.json>
+//   node tools/agentic-eval/cli.mjs product-access preflight
+//                                        --mode free-baseline-no-product
+//                                        --workspace <source-only-workspace>
 //   node tools/agentic-eval/cli.mjs --help
 //
 // calibrate/smoke always produce benchmark_eligible:false -- foundation-harness runs proving the
@@ -83,6 +86,7 @@ import { finalizeIncident, reportIncident } from './incident-diagnostics.mjs';
 // cmdAggregate, and this file's own tests) unchanged.
 import { validateRunRecordFile } from './run-record-loader.mjs';
 import { analyzeRunsDir } from './analysis.mjs';
+import { evaluateProductAccessPreflight } from './product-access-preflight.mjs';
 
 // dirname(fileURLToPath(...)), not import.meta.dirname -- the latter needs Node 20.11+/21.2+,
 // but package.json declares "node": ">=18" (confirmed to actually matter on a real ubuntu-latest
@@ -187,6 +191,9 @@ Usage:
   node tools/agentic-eval/cli.mjs aggregate --runs-dir <dir>
   node tools/agentic-eval/cli.mjs analyze --runs-dir <dir>
   node tools/agentic-eval/cli.mjs validate --run <path>
+  node tools/agentic-eval/cli.mjs product-access preflight
+                                        --mode free-baseline-no-product
+                                        --workspace <source-only-workspace>
   node tools/agentic-eval/cli.mjs --help
 
 calibrate/smoke always produce benchmark_eligible:false -- foundation-harness runs proving the
@@ -220,6 +227,12 @@ deterministic per-run + summary breakdown across 5 separated axes (activation, p
 execution, policy interaction, authoritative evidence, final outcome) plus one closed-vocabulary
 failure_class per run -- see tools/agentic-eval/analysis.mjs and README.md's "Axis-separated
 analysis" section.
+
+product-access preflight is an offline, privacy-safe gate for future true free-baseline/no-product
+controls. It checks local process/workspace exposure (product markers in the workspace, kmp-test
+executables on PATH, product-specific env vars) and prints counts/statuses, never raw paths or
+credential values. It does not launch Claude and does not prove an agent lacks latent knowledge;
+it proves the local baseline surface is not product-visible.
 `;
 
 /** Flags that are pure presence/absence booleans -- never consume the next token as a value.
@@ -289,6 +302,7 @@ const SUBCOMMAND_SHAPES = {
   analyze: { flags: ['runs-dir'], extraPositionals: 0 },
   validate: { flags: ['run'], extraPositionals: 0 },
   scope: { flags: ['out'], extraPositionals: 1 }, // scope <init>
+  'product-access': { flags: ['mode', 'workspace'], extraPositionals: 1 }, // product-access <preflight>
 };
 
 /** Validates a parsed `args` against SUBCOMMAND_SHAPES[sub] -- unknown flags and unexpected
@@ -4366,6 +4380,20 @@ function cmdValidate(args) {
   return errors.length > 0 ? 1 : 0;
 }
 
+function cmdProductAccessPreflight(args) {
+  if (args._[1] !== 'preflight') {
+    process.stderr.write('usage: product-access preflight --mode free-baseline-no-product --workspace <source-only-workspace>\n');
+    return 1;
+  }
+  if (!args.mode || !args.workspace) {
+    process.stderr.write('usage: product-access preflight --mode free-baseline-no-product --workspace <source-only-workspace>\n');
+    return 1;
+  }
+  const result = evaluateProductAccessPreflight({ mode: args.mode, workspaceDir: args.workspace, env: process.env });
+  console.log(JSON.stringify(result, null, 2));
+  return result.ok ? 0 : 1;
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   const args = parseArgs(argv);
@@ -4391,6 +4419,7 @@ async function main() {
     case 'aggregate': return cmdAggregate(args);
     case 'analyze': return cmdAnalyze(args);
     case 'validate': return cmdValidate(args);
+    case 'product-access': return cmdProductAccessPreflight(args);
     case 'smoke': return cmdSmoke(args);
     case 'run': return cmdRun(args);
     default:

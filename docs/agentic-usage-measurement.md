@@ -224,6 +224,24 @@ The current Evidence 1 campaign intentionally contains eight
 must therefore be a separate control with its own isolation/preflight evidence,
 not a reinterpretation of the existing `no-skill` rows.
 
+Before any future `free-baseline-no-product` live run is accepted as such, the
+operator must run the offline product-access preflight against the source-only
+workspace:
+
+```bash
+node tools/agentic-eval/cli.mjs product-access preflight \
+  --mode free-baseline-no-product \
+  --workspace <source-only-workspace>
+```
+
+The preflight fails closed as `contaminated-baseline` if it can observe product
+workspace markers, a `kmp-test`/`kmp-test-runner` executable on `PATH`, a
+`kmp-test-runner` package manifest dependency, or product-specific
+`KMP_EVAL_*`/`KMP_TEST_*` environment variables. Its JSON reports closed
+status/count fields only; it deliberately does not print workspace paths, PATH
+entries, or environment values. This is an environment-surface gate, not a
+claim that the model has no latent knowledge of the product.
+
 Product usage mode is derived from structured accepted-audit tool-kind counts,
 not from raw transcript text. It distinguishes product CLI use from direct build
 tool use and from mixed sessions. This lets reports say, for example, "the
