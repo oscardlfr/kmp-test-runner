@@ -13,6 +13,7 @@ import { describe, it, expect } from 'vitest';
 import {
   resolveScenarioCampaignDesign, buildScenarioCampaignPlan, assertValidScenarioCampaignPlan,
 } from '../../tools/agentic-eval/scenario-campaign-plan.mjs';
+import { PRODUCT_ACCESS_MODE_VALUES } from '../../tools/agentic-eval/product-access.mjs';
 
 const DESIGN_ID = 'claude-2x2-williams-v1';
 const STRICT = 'strict-policy-v1';
@@ -23,10 +24,10 @@ const KNOWN_CONDITIONS = ['current-skill', 'no-skill'];
 // The runbook's own literal "Total cells" table -- order_index 0..15, by label.
 const EXPECTED_LABEL_ORDER = ['A', 'B', 'D', 'C', 'B', 'C', 'A', 'D', 'C', 'D', 'B', 'A', 'D', 'A', 'C', 'B'];
 const CELL_DEFINITIONS = {
-  A: { execution_profile_id: STRICT, condition: 'no-skill' },
-  B: { execution_profile_id: STRICT, condition: 'current-skill' },
-  C: { execution_profile_id: UNRESTRICTED, condition: 'no-skill' },
-  D: { execution_profile_id: UNRESTRICTED, condition: 'current-skill' },
+  A: { execution_profile_id: STRICT, condition: 'no-skill', product_access_mode: 'product-visible-no-skill' },
+  B: { execution_profile_id: STRICT, condition: 'current-skill', product_access_mode: 'product-assisted' },
+  C: { execution_profile_id: UNRESTRICTED, condition: 'no-skill', product_access_mode: 'product-visible-no-skill' },
+  D: { execution_profile_id: UNRESTRICTED, condition: 'current-skill', product_access_mode: 'product-assisted' },
 };
 const EXPECTED_REPETITION_INDEX = [0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3];
 
@@ -127,6 +128,30 @@ describe('buildScenarioCampaignPlan -- claude-2x2-williams-v1 shape', () => {
     const noSkillCount = plan.cells.filter((c) => c.condition === 'no-skill').length;
     expect(currentSkillCount).toBe(8);
     expect(noSkillCount).toBe(8);
+  });
+
+  it('declares product access explicitly: no-skill cells are product-visible, not free-baseline', () => {
+    const plan = buildValidPlanOrThrow();
+    const sorted = [...plan.cells].sort((a, b) => a.order_index - b.order_index);
+    expect(sorted.map((c) => c.product_access_mode)).toEqual(EXPECTED_LABEL_ORDER.map((l) => CELL_DEFINITIONS[l].product_access_mode));
+    expect(plan.cells.filter((c) => c.product_access_mode === 'product-assisted')).toHaveLength(8);
+    expect(plan.cells.filter((c) => c.product_access_mode === 'product-visible-no-skill')).toHaveLength(8);
+    expect(plan.cells.filter((c) => c.product_access_mode === 'free-baseline-no-product')).toHaveLength(0);
+  });
+
+  it('keeps product access independent from execution profile: strict and unrestricted each contain both product modes', () => {
+    const plan = buildValidPlanOrThrow();
+    for (const executionProfileId of [STRICT, UNRESTRICTED]) {
+      const modes = new Set(plan.cells.filter((c) => c.execution_profile_id === executionProfileId).map((c) => c.product_access_mode));
+      expect([...modes].sort()).toEqual(['product-assisted', 'product-visible-no-skill']);
+    }
+  });
+
+  it('uses only the closed product-access vocabulary', () => {
+    const plan = buildValidPlanOrThrow();
+    for (const cell of plan.cells) {
+      expect(PRODUCT_ACCESS_MODE_VALUES).toContain(cell.product_access_mode);
+    }
   });
 
   it('is deterministic across repeated calls -- never depends on Math.random or wall-clock', () => {
@@ -240,7 +265,7 @@ describe('assertValidScenarioCampaignPlan', () => {
     // Swap repetition 0's 4th cell's label to duplicate repetition 0's 1st label ('A'), breaking
     // the "each label exactly once per repetition" invariant while every other structural
     // invariant (order_index contiguity, cell count, dedup-by-order_index) stays intact.
-    const cells = plan.cells.map((c) => (c.order_index === 3 ? { ...c, campaign_cell_label: 'A', execution_profile_id: CELL_DEFINITIONS.A.execution_profile_id, condition: CELL_DEFINITIONS.A.condition } : c));
+    const cells = plan.cells.map((c) => (c.order_index === 3 ? { ...c, campaign_cell_label: 'A', execution_profile_id: CELL_DEFINITIONS.A.execution_profile_id, condition: CELL_DEFINITIONS.A.condition, product_access_mode: CELL_DEFINITIONS.A.product_access_mode } : c));
     expect(() => assertValidScenarioCampaignPlan({ ...plan, cells })).toThrow();
   });
 
@@ -256,14 +281,20 @@ describe('assertValidScenarioCampaignPlan', () => {
     expect(() => assertValidScenarioCampaignPlan({ ...plan, cells })).toThrow();
   });
 
+  it('throws when a cell product_access_mode disagrees with its own label definition', () => {
+    const plan = buildValidPlanOrThrow();
+    const cells = plan.cells.map((c) => (c.campaign_cell_label === 'A' ? { ...c, product_access_mode: 'free-baseline-no-product' } : c));
+    expect(() => assertValidScenarioCampaignPlan({ ...plan, cells })).toThrow(/product_access_mode/);
+  });
+
   it('throws when a repetition\'s realized label sequence does not match the pre-registered literal order', () => {
     const plan = buildValidPlanOrThrow();
     // Repetition 0 must dispatch A,B,D,C in that literal order_index sequence -- swap the label at
     // order_index 0 and order_index 1 (A<->B) while leaving every label's own execution_profile_id/
     // condition/order_index/repetition_index internally self-consistent, so only SEQUENCE is wrong.
     const cells = plan.cells.map((c) => {
-      if (c.order_index === 0) return { ...c, campaign_cell_label: 'B', execution_profile_id: CELL_DEFINITIONS.B.execution_profile_id, condition: CELL_DEFINITIONS.B.condition };
-      if (c.order_index === 1) return { ...c, campaign_cell_label: 'A', execution_profile_id: CELL_DEFINITIONS.A.execution_profile_id, condition: CELL_DEFINITIONS.A.condition };
+      if (c.order_index === 0) return { ...c, campaign_cell_label: 'B', execution_profile_id: CELL_DEFINITIONS.B.execution_profile_id, condition: CELL_DEFINITIONS.B.condition, product_access_mode: CELL_DEFINITIONS.B.product_access_mode };
+      if (c.order_index === 1) return { ...c, campaign_cell_label: 'A', execution_profile_id: CELL_DEFINITIONS.A.execution_profile_id, condition: CELL_DEFINITIONS.A.condition, product_access_mode: CELL_DEFINITIONS.A.product_access_mode };
       return c;
     });
     expect(() => assertValidScenarioCampaignPlan({ ...plan, cells })).toThrow();

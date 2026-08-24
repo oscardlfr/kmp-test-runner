@@ -216,6 +216,14 @@ future baseline where the agent can see only the target repository and standard
 toolchain. `contaminated-baseline` is reserved for any supposed free baseline
 where product files, commands, docs, or generated artifacts are discoverable.
 
+`run --campaign-design claude-2x2-williams-v1 --dry-run` now makes this
+contract structural by printing `product_access_mode` for every planned cell.
+The current Evidence 1 campaign intentionally contains eight
+`product-assisted` cells and eight `product-visible-no-skill` cells, and zero
+`free-baseline-no-product` cells. A future free-baseline/no-product campaign
+must therefore be a separate control with its own isolation/preflight evidence,
+not a reinterpretation of the existing `no-skill` rows.
+
 Product usage mode is derived from structured accepted-audit tool-kind counts,
 not from raw transcript text. It distinguishes product CLI use from direct build
 tool use and from mixed sessions. This lets reports say, for example, "the

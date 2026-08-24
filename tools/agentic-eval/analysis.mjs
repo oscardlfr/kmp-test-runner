@@ -45,6 +45,11 @@ import { validateRunRecordFile } from './run-record-loader.mjs';
 import { HARD_PARTITION_FIELDS, canonicalStructuredValue, findScenarioBenchmarkCompletenessViolations } from './schemas.mjs';
 import { redactObjectAndVerify } from './privacy.mjs';
 import { withPartitionView, agentRuntimeView, executionProfileView, skillObservationView, usageView, targetSkillInvokedView } from './run-record-view.mjs';
+import {
+  PRODUCT_ACCESS_MODE_VALUES,
+  PRODUCT_USAGE_MODE_VALUES,
+  productAccessModeForSkillCondition,
+} from './product-access.mjs';
 
 // v1 -> v2 (Section F, agentic-eval-runtime-neutral-records-v1): per-run entries and group
 // summaries both gained agent_runtime/execution_profile/skill_observation/usage reporting fields,
@@ -74,14 +79,7 @@ export const FAILURE_CLASS_VALUES = [
   'no-authoritative-evidence', 'wrong-target', 'outcome-mismatch', 'final-answer-mismatch', 'unclassified',
 ];
 
-export const PRODUCT_ACCESS_MODE_VALUES = [
-  'product-assisted', 'product-visible-no-skill', 'free-baseline-no-product',
-  'contaminated-baseline', 'product-access-not-recorded',
-];
-
-export const PRODUCT_USAGE_MODE_VALUES = [
-  'product-cli', 'direct-build-tool', 'mixed-product-and-build-tool', 'manual-other', 'none',
-];
+export { PRODUCT_ACCESS_MODE_VALUES, PRODUCT_USAGE_MODE_VALUES };
 
 const CHECK_EVIDENCE_WELL_FORMED = 'authoritative_evidence_well_formed';
 const CHECK_TARGET_MATCHES = 'authoritative_target_matches_expected';
@@ -416,9 +414,7 @@ function buildUsageSourceCounts(entries) {
 }
 
 function productAccessModeFor(record) {
-  if (record.condition === 'current-skill') return 'product-assisted';
-  if (record.condition === 'no-skill') return 'product-visible-no-skill';
-  return 'product-access-not-recorded';
+  return productAccessModeForSkillCondition(record?.condition);
 }
 
 function deriveProductUsage(sidecar) {
