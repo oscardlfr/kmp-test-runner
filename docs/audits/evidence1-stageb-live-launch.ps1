@@ -23,8 +23,8 @@ if ($RunId) {
   Import-Module $contractPath -Force
 }
 
-$HarnessCommit = 'a4a37b8d86097be2a64ee2ec34344f8bed47b1b4'
-$HarnessTree = 'adcbd09e1f0b6bd2ea55fb5261b617796b7bf8c6'
+$HarnessCommit = 'e5f5974d980faaadda5bd48ef53564a08043cdcf'
+$HarnessTree = '79fe454c9156775ea2d6115cae289132895b91bb'
 $ClaudeVersion = '2.1.238'
 $MaxBudgetUsd = '2.00'
 $HarnessDir = 'C:\kmp-eval\agentic-evidence1-claude-2x2-windows-stage-b-readiness-v1'
