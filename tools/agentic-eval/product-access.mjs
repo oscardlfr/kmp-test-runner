@@ -28,6 +28,16 @@ export function productAccessModeForSkillCondition(condition) {
   return 'product-access-not-recorded';
 }
 
+export function productAccessModesForSkillCondition(condition) {
+  if (condition === 'current-skill' || condition === 'candidate-skill') return Object.freeze(['product-assisted']);
+  if (condition === 'no-skill') return Object.freeze(['product-visible-no-skill', 'free-baseline-no-product']);
+  return Object.freeze(['product-access-not-recorded']);
+}
+
+export function isProductAccessModeCompatibleWithSkillCondition({ condition, productAccessMode }) {
+  return productAccessModesForSkillCondition(condition).includes(productAccessMode);
+}
+
 export function isProductAccessMode(value) {
   return PRODUCT_ACCESS_MODE_VALUES.includes(value);
 }

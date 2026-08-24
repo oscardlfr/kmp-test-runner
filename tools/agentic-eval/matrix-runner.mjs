@@ -20,7 +20,7 @@
 // are logically distinct, even where (as in this harness) their literal string values coincide.
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter as pathDelimiter, join, normalize } from 'node:path';
 
 import { buildPathShim } from './path-shim.mjs';
 import { materializeSkillSnapshot, materializeGradleUserHome, realpath, applyFixtureSetup } from './materialize.mjs';
@@ -32,6 +32,8 @@ import { cellTranscriptIntegrityOk } from './cell-integrity.mjs';
 import { buildCorrelationObservability } from './correlation-observability.mjs';
 import { tagIncidentPhase } from './durable-journal.mjs';
 import { validateRuntimeAdapter, validateObservation, freezeObservation, selectShellAttempts } from './runtimes/contract.mjs';
+import { evaluateProductAccessPreflight, summarizeProductAccessPreflight } from './product-access-preflight.mjs';
+import { productAccessModeForSkillCondition } from './product-access.mjs';
 // registries.mjs is now the ONE module allowed to import runtimes/claude-code.mjs directly
 // (agentic-eval-runtime-neutral-records-v1) -- this module no longer defaults runtimeAdapter to
 // the Claude singleton; every caller must resolve a selection (registries.mjs's resolveSelection)
@@ -73,6 +75,53 @@ function createCleanupAccumulator() {
     return failures;
   }
   return { registerCleanup, runCleanup };
+}
+
+function pathEntriesEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  if (process.platform === 'win32') return normalize(a).toLowerCase() === normalize(b).toLowerCase();
+  return normalize(a) === normalize(b);
+}
+
+function pathEnvKey(env) {
+  return Object.keys(env).find((k) => k.toLowerCase() === 'path') ?? 'PATH';
+}
+
+function envWithoutPathEntry(env, entryToRemove) {
+  const key = pathEnvKey(env);
+  const value = env[key];
+  if (typeof value !== 'string' || typeof entryToRemove !== 'string' || entryToRemove.length === 0) return { ...env };
+  return {
+    ...env,
+    [key]: value.split(pathDelimiter).filter((entry) => !pathEntriesEqual(entry, entryToRemove)).join(pathDelimiter),
+  };
+}
+
+function envWithoutProductHarnessSurface(env) {
+  return Object.fromEntries(Object.entries(env).filter(([key]) => !/^KMP_(EVAL|TEST)_/i.test(key)));
+}
+
+function buildConditionEnv({ condition, sharedEnv, fixtureDir, productAccessMode, shimDir }) {
+  if (productAccessMode === 'free-baseline-no-product') {
+    if (condition !== 'no-skill') {
+      throw new Error('free-baseline-no-product requires condition:no-skill');
+    }
+    return envWithoutPathEntry(envWithoutProductHarnessSurface(sharedEnv), shimDir);
+  }
+  return { ...sharedEnv, KMP_EVAL_EXPECTED_FIXTURE_ROOT: realpath(fixtureDir) };
+}
+
+function assertFreeBaselinePreflight({ productAccessMode, fixtureDir, conditionEnv, cellOrdinal }) {
+  if (productAccessMode !== 'free-baseline-no-product') return;
+  const result = evaluateProductAccessPreflight({ mode: productAccessMode, workspaceDir: fixtureDir, env: conditionEnv });
+  if (!result.ok) {
+    const summary = summarizeProductAccessPreflight(result);
+    throw tagIncidentPhase(
+      new Error(`free-baseline product-access preflight failed: observed_product_access_mode=${summary.observed_product_access_mode}, failed_check_count=${summary.failed_check_count}`),
+      'materializing_cell',
+      cellOrdinal ?? undefined,
+    );
+  }
 }
 
 /**
@@ -234,7 +283,7 @@ export async function acquireSharedEvalResources({
  *   acquireSharedEvalResources); the scratch directory's removal is queued on it IMMEDIATELY after
  *   creation, before spawnCondition runs, so a failure anywhere later in this call is still covered.
  */
-export async function runSingleCondition({ condition, materializeFixture, previousFixtureDir, cleanupFixtureOnce, resetGradleToSnapshot, kmpEvalTempHome, sharedEnv, baseArgv, snapshotDir, targetPluginName, targetSkillName, timeoutMs, decisionAttributionEnabled = false, junitEvidenceEnabled = false, evidenceTask = null, allowedInvocations = null, registerCleanup = null, fixtureSetup = null, journal = null, cellOrdinal = null, runtimeAdapter, executionProfile = null }) {
+export async function runSingleCondition({ condition, materializeFixture, previousFixtureDir, cleanupFixtureOnce, resetGradleToSnapshot, kmpEvalTempHome, sharedEnv, baseArgv, snapshotDir, targetPluginName, targetSkillName, timeoutMs, decisionAttributionEnabled = false, junitEvidenceEnabled = false, evidenceTask = null, allowedInvocations = null, registerCleanup = null, fixtureSetup = null, journal = null, cellOrdinal = null, runtimeAdapter, executionProfile = null, productAccessMode = productAccessModeForSkillCondition(condition), shimDir = null }) {
   // Validated BEFORE any per-condition resource is created (P1 architectural review): every
   // condition within a matrix reuses the SAME runtimeAdapter acquireSharedEvalResources already
   // validated once upfront, but this function's own materialization work (fixture materialize,
@@ -268,7 +317,12 @@ export async function runSingleCondition({ condition, materializeFixture, previo
   } catch (err) {
     throw tagIncidentPhase(err, 'materializing_cell', cellOrdinal ?? undefined);
   }
-  let conditionEnv = { ...sharedEnv, KMP_EVAL_EXPECTED_FIXTURE_ROOT: realpath(fixtureDir) };
+  let conditionEnv;
+  try {
+    conditionEnv = buildConditionEnv({ condition, sharedEnv, fixtureDir, productAccessMode, shimDir });
+  } catch (err) {
+    throw tagIncidentPhase(err, 'materializing_cell', cellOrdinal ?? undefined);
+  }
   // Per-condition JUnit-evidence scratch directory -- a fresh mkdtempSync per condition (never
   // reused/wiped like fixtureDir/GRADLE_USER_HOME, since there is no expensive resource here worth
   // preserving), matching this codebase's existing `kmp-agentic-eval-*` scratch-resource naming
@@ -279,8 +333,10 @@ export async function runSingleCondition({ condition, materializeFixture, previo
   if (decisionAttributionEnabled) {
     evidenceDir = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-junit-'));
     if (registerCleanup) registerCleanup(() => rmSync(evidenceDir, { recursive: true, force: true }));
-    conditionEnv = { ...conditionEnv, KMP_EVAL_JUNIT_EVIDENCE_DIR: evidenceDir };
-    if (junitEvidenceEnabled) {
+    if (productAccessMode !== 'free-baseline-no-product') {
+      conditionEnv = { ...conditionEnv, KMP_EVAL_JUNIT_EVIDENCE_DIR: evidenceDir };
+    }
+    if (junitEvidenceEnabled && productAccessMode !== 'free-baseline-no-product') {
       conditionEnv = {
         ...conditionEnv,
         KMP_EVAL_JUNIT_EVIDENCE_TASK: evidenceTask,
@@ -288,6 +344,7 @@ export async function runSingleCondition({ condition, materializeFixture, previo
       };
     }
   }
+  assertFreeBaselinePreflight({ productAccessMode, fixtureDir, conditionEnv, cellOrdinal });
   const argv = runtimeAdapter.prepareSkillDelivery(baseArgv, condition, condition === 'current-skill' ? snapshotDir : null);
   const startedAt = new Date();
   // onSpawned performs ZERO I/O and can never throw -- Node's EventEmitter dispatch does not
@@ -769,6 +826,8 @@ export async function runScenarioCampaign({
         cellOrdinal: orderIndex,
         runtimeAdapter: shared.runtimeAdapter,
         executionProfile,
+        productAccessMode: planCell.product_access_mode,
+        shimDir: shared.shimDir,
       });
       fixtureDir = conditionResult.fixtureDir;
 
@@ -818,6 +877,7 @@ export async function runScenarioCampaign({
       cellResults.push({
         repetitionIndex, orderIndex, seed, conditionResult: fullConditionResult, localIntegrity,
         executionProfileId: profileId,
+        productAccessMode: planCell.product_access_mode,
       });
       if (!localIntegrity.ok) {
         failFastStop = { orderIndex, repetitionIndex, condition, reason: localIntegrity.reason };

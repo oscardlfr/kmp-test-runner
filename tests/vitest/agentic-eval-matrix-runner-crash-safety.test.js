@@ -60,6 +60,47 @@ function restoreEnvVar(key, value) {
   else process.env[key] = value;
 }
 
+function validSyntheticObservation(runtimeId = 'fake-env-capture-adapter') {
+  return {
+    schema: 1,
+    runtime: { id: runtimeId, protocolVersion: 1 },
+    process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 10n },
+    session: { initPresent: true, modelResolved: null, sessionIdObserved: null, runtimeVersion: null, toolProfileMatchesExpected: true },
+    transcript: { malformedLineCount: 0, strictStructuralIssues: [{ type: 'result_count', count: 0 }], effectiveStructuralIssues: [{ type: 'result_count', count: 0 }], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+    terminal: { present: false, isError: null, turnCount: null, finalText: null, resultSubtype: null, usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
+    toolAttempts: [],
+    skill: { available: false, profileMatchesCondition: true, snapshotBindingMatches: true, targetInvocation: null, foreignInvocations: [], ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true } },
+    hookStats: { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: true },
+    byteMetrics: { outputBytes: 0, streamJsonBytes: 0 },
+    timing: { receiptNsByEventIndex: new Map() },
+  };
+}
+
+function makeEnvCaptureAdapter({ runtimeId = 'fake-env-capture-adapter', onCollect = () => {} } = {}) {
+  return {
+    id: runtimeId,
+    protocolVersion: 1,
+    capabilities: {
+      observationSources: ['fake'], structuredTranscript: true, correlatedToolResults: true,
+      skillDeliveryModes: [], skillStateEvidence: true, usageDimensions: ['input'], softPermissionDenial: true,
+    },
+    supportsModelConfiguration() { return true; },
+    supportsExecutionProfile() { return true; },
+    async probeInstallation() { return {}; },
+    async preflight() { return { ok: true, terminated: false, exitCode: 0, loggedIn: true, reasonCode: null }; },
+    async prepareIsolatedHome() { return { sharedEnv: {}, settingsPath: null, cleanupPaths: [] }; },
+    prepareSkillDelivery(baseArgv) { return baseArgv; },
+    buildInvocation() { return []; },
+    async collectObservationSources(_argv, options) {
+      onCollect(options);
+      options.onSpawned();
+      return { process: { terminated: false, terminationReason: null }, capture: { primaryText: '{}', stderrText: '' }, providerSources: {} };
+    },
+    normalizeObservations() { return validSyntheticObservation(runtimeId); },
+    redactRuntimeDiagnostics(v) { return v; },
+  };
+}
+
 /** Prepends a fake-claude-<scenario> fixture directory to process.env.PATH for the duration of
  * `fn`, always restoring the exact original value afterward -- see this file's own header
  * comment for why this is a safe, PATH-only override that can never reach the real claude binary. */
@@ -96,6 +137,110 @@ const SCENARIO = {
   first_useful_signal_predicate: { description: 'irrelevant -- this test never reaches grading' },
   tags: ['train'],
 };
+
+describe('runSingleCondition -- free-baseline-no-product strips product surface before spawn', () => {
+  it('removes the kmp-test shim and all KMP_EVAL/KMP_TEST variables from the child environment', async () => {
+    const kmpEvalTempHome = mkdtempSync(path.join(os.tmpdir(), 'aemr-free-baseline-home-'));
+    const fixtureDir = mkdtempSync(path.join(os.tmpdir(), 'aemr-free-baseline-fixture-'));
+    const shimDir = mkdtempSync(path.join(os.tmpdir(), 'aemr-free-baseline-shim-'));
+    const cleanPathDir = mkdtempSync(path.join(os.tmpdir(), 'aemr-free-baseline-clean-path-'));
+    const cleanupDirs = [kmpEvalTempHome, fixtureDir, shimDir, cleanPathDir];
+    let capturedEnv = null;
+
+    try {
+      const adapter = makeEnvCaptureAdapter({
+        onCollect: ({ env }) => { capturedEnv = env; },
+      });
+      const result = await runSingleCondition({
+        condition: 'no-skill',
+        materializeFixture: () => ({ fixtureDir }),
+        previousFixtureDir: undefined,
+        cleanupFixtureOnce: () => {},
+        resetGradleToSnapshot: () => {},
+        kmpEvalTempHome,
+        sharedEnv: {
+          PATH: `${shimDir}${path.delimiter}${cleanPathDir}`,
+          KMP_EVAL_EXPECTED_FIXTURE_ROOT: 'must-not-leak',
+          KMP_EVAL_JUNIT_EVIDENCE_DIR: 'must-not-leak',
+          KMP_TEST_OUTPUT_DIR: 'must-not-leak',
+          JAVA_HOME: 'C:\\Java\\jdk',
+        },
+        baseArgv: ['fake'],
+        snapshotDir: null,
+        targetPluginName: 'kmp-test-runner',
+        targetSkillName: 'kmp-test-runner',
+        timeoutMs: 30000,
+        decisionAttributionEnabled: true,
+        junitEvidenceEnabled: true,
+        evidenceTask: ':app:test',
+        allowedInvocations: [':app:test'],
+        runtimeAdapter: adapter,
+        productAccessMode: 'free-baseline-no-product',
+        shimDir,
+        cellOrdinal: 0,
+      });
+      if (result.evidenceDir) cleanupDirs.push(result.evidenceDir);
+
+      expect(capturedEnv).not.toBeNull();
+      expect(Object.keys(capturedEnv).filter((k) => /^KMP_(EVAL|TEST)_/i.test(k))).toEqual([]);
+      expect(capturedEnv.PATH.split(path.delimiter)).not.toContain(shimDir);
+      expect(capturedEnv.PATH.split(path.delimiter)).toContain(cleanPathDir);
+      expect(result.didSpawn).toBe(true);
+    } finally {
+      for (const dir of cleanupDirs) rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it('fails closed before spawn when a free-baseline workspace still contains product markers', async () => {
+    const kmpEvalTempHome = mkdtempSync(path.join(os.tmpdir(), 'aemr-free-baseline-contam-home-'));
+    const fixtureDir = mkdtempSync(path.join(os.tmpdir(), 'aemr-free-baseline-contam-fixture-'));
+    const shimDir = mkdtempSync(path.join(os.tmpdir(), 'aemr-free-baseline-contam-shim-'));
+    const cleanPathDir = mkdtempSync(path.join(os.tmpdir(), 'aemr-free-baseline-contam-path-'));
+    mkdirSync(path.join(fixtureDir, '.skills', 'kmp-test-runner'), { recursive: true });
+    let collected = false;
+
+    try {
+      const adapter = makeEnvCaptureAdapter({
+        onCollect: () => { collected = true; },
+      });
+      let caught = null;
+      try {
+        await runSingleCondition({
+          condition: 'no-skill',
+          materializeFixture: () => ({ fixtureDir }),
+          previousFixtureDir: undefined,
+          cleanupFixtureOnce: () => {},
+          resetGradleToSnapshot: () => {},
+          kmpEvalTempHome,
+          sharedEnv: { PATH: `${shimDir}${path.delimiter}${cleanPathDir}` },
+          baseArgv: ['fake'],
+          snapshotDir: null,
+          targetPluginName: 'kmp-test-runner',
+          targetSkillName: 'kmp-test-runner',
+          timeoutMs: 30000,
+          runtimeAdapter: adapter,
+          productAccessMode: 'free-baseline-no-product',
+          shimDir,
+          cellOrdinal: 0,
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).not.toBeNull();
+      expect(caught.agenticEvalPhase).toBe('materializing_cell');
+      expect(caught.message).toMatch(/free-baseline product-access preflight failed/);
+      expect(caught.message).toMatch(/observed_product_access_mode=contaminated-baseline/);
+      expect(caught.message).not.toContain(fixtureDir);
+      expect(collected).toBe(false);
+    } finally {
+      rmSync(kmpEvalTempHome, { recursive: true, force: true });
+      rmSync(fixtureDir, { recursive: true, force: true });
+      rmSync(shimDir, { recursive: true, force: true });
+      rmSync(cleanPathDir, { recursive: true, force: true });
+    }
+  }, 30000);
+});
 
 describe("runScenarioMatrix -- crash-safety journal preserves an earlier cell across a later cell's materialization exception", () => {
   it("cell 0 spawns and completes for real; cell 1's materializeFixture throws -- cell 0's raw survives, tagged materializing_cell/cellOrdinal:1", async () => {

@@ -10,6 +10,10 @@ import {
   evaluateProductAccessPreflight,
   summarizeProductAccessPreflight,
 } from '../../tools/agentic-eval/product-access-preflight.mjs';
+import {
+  isProductAccessModeCompatibleWithSkillCondition,
+  productAccessModesForSkillCondition,
+} from '../../tools/agentic-eval/product-access.mjs';
 
 const tempRoots = [];
 
@@ -21,6 +25,39 @@ function tempDir(prefix = 'ae-product-access-') {
 
 afterEach(() => {
   for (const dir of tempRoots.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+describe('product access mode compatibility', () => {
+  it('keeps current-skill closed to product-assisted only', () => {
+    expect(productAccessModesForSkillCondition('current-skill')).toEqual(['product-assisted']);
+    expect(isProductAccessModeCompatibleWithSkillCondition({
+      condition: 'current-skill',
+      productAccessMode: 'product-assisted',
+    })).toBe(true);
+    expect(isProductAccessModeCompatibleWithSkillCondition({
+      condition: 'current-skill',
+      productAccessMode: 'free-baseline-no-product',
+    })).toBe(false);
+  });
+
+  it('allows no-skill to mean either product-visible or true free baseline', () => {
+    expect(productAccessModesForSkillCondition('no-skill')).toEqual([
+      'product-visible-no-skill',
+      'free-baseline-no-product',
+    ]);
+    expect(isProductAccessModeCompatibleWithSkillCondition({
+      condition: 'no-skill',
+      productAccessMode: 'product-visible-no-skill',
+    })).toBe(true);
+    expect(isProductAccessModeCompatibleWithSkillCondition({
+      condition: 'no-skill',
+      productAccessMode: 'free-baseline-no-product',
+    })).toBe(true);
+    expect(isProductAccessModeCompatibleWithSkillCondition({
+      condition: 'no-skill',
+      productAccessMode: 'product-assisted',
+    })).toBe(false);
+  });
 });
 
 describe('evaluateProductAccessPreflight -- free-baseline-no-product', () => {

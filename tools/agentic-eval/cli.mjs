@@ -16,7 +16,7 @@
 //                                        [--execution-profile <id>] [--dry-run]
 //                                        [--private-patterns-file <path>]
 //   node tools/agentic-eval/cli.mjs run --scenario <id> --source-repo-dir <local-clone> --seed <n>
-//                                        --campaign-design claude-2x2-williams-v1
+//                                        --campaign-design <id>
 //                                        --isolation-attestation-file <path> [--dry-run]
 //   node tools/agentic-eval/cli.mjs corpus validate
 //   node tools/agentic-eval/cli.mjs aggregate --runs-dir <dir>
@@ -181,7 +181,7 @@ Usage:
                                         [--private-patterns-file <path>]
                                         [--measurement-scope-file <path>]
   node tools/agentic-eval/cli.mjs run --scenario <id> --source-repo-dir <local-clone> --seed <n>
-                                        --campaign-design claude-2x2-williams-v1
+                                        --campaign-design <id>
                                         --isolation-attestation-file <path> [--dry-run]
                                         [--runtime <id>] [--model <name>] [--max-budget-usd <usd>]
                                         [--private-patterns-file <path>]
@@ -214,12 +214,13 @@ schema, policy-hash freshness, privacy, and the run-kind's hard acceptance gate 
 prints the resolved value so operator authorization can bind to the actual runtime budget.
 
 run --campaign-design <id> expands one scenario into a closed, pre-registered multi-profile
-campaign plan spanning BOTH execution profile and skill condition in one invocation (today: the
-4x4 Williams-style claude-2x2-williams-v1 design, 16 sessions total) -- mutually exclusive with
---execution-profile/--repeats (the design resolves its own profiles and fixes its own repeat
-count). Requires --isolation-attestation-file <path> whenever the design includes
-sandboxed-unrestricted-v1 cells (claude-2x2-williams-v1 always does); see
-tools/agentic-eval/scenario-campaign-plan.mjs and README.md's "Multi-profile campaigns" section.
+campaign plan in one invocation. Supported ids: claude-2x2-williams-v1 (policy profile x skill
+condition, 16 sessions) and claude-product-vs-free-baseline-v1 (product-assisted vs true
+free-baseline/no-product, 8 sessions). Mutually exclusive with --execution-profile/--repeats (the
+design resolves its own profiles and fixes its own repeat count). Requires
+--isolation-attestation-file <path> whenever the design includes sandboxed-unrestricted-v1 cells;
+see tools/agentic-eval/scenario-campaign-plan.mjs and README.md's "Multi-profile campaigns"
+section.
 
 analyze reads ONLY already-committed schema-v5 scenario run records + their validated accepted-
 run-audit sidecars under --runs-dir (never a raw transcript, never a live Claude call) and emits a
