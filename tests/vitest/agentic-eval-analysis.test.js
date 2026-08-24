@@ -23,7 +23,8 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import os from 'node:os';
 import {
-  ANALYSIS_SCHEMA, FAILURE_CLASS_VALUES, classifyFailure, deriveSkillRelativeFields,
+  ANALYSIS_SCHEMA, FAILURE_CLASS_VALUES, PRODUCT_ACCESS_MODE_VALUES, PRODUCT_USAGE_MODE_VALUES,
+  classifyFailure, deriveSkillRelativeFields,
   analyzeRunRecord, buildSummary, analyzeRunsDir,
 } from '../../tools/agentic-eval/analysis.mjs';
 import { cmdAnalyze } from '../../tools/agentic-eval/cli.mjs';
@@ -283,6 +284,18 @@ describe('classifyFailure -- explicit, non-causal closed-vocabulary precedence',
     for (const input of singleAxisFailures) {
       expect(classifyFailure(input)).not.toBe('unclassified');
     }
+  });
+});
+
+describe('product access / usage layer contract', () => {
+  it('publishes the closed vocabularies that separate product access from answer success', () => {
+    expect(PRODUCT_ACCESS_MODE_VALUES).toEqual([
+      'product-assisted', 'product-visible-no-skill', 'free-baseline-no-product',
+      'contaminated-baseline', 'product-access-not-recorded',
+    ]);
+    expect(PRODUCT_USAGE_MODE_VALUES).toEqual([
+      'product-cli', 'direct-build-tool', 'mixed-product-and-build-tool', 'manual-other', 'none',
+    ]);
   });
 });
 
@@ -670,6 +683,14 @@ describe('analyzeRunRecord -- required end-to-end scenario coverage', () => {
     expect(ok).toBe(true);
     expect(entry.expected_outcome_matched).toBe(true);
     expect(entry.final_answer_consistent).toBe(false);
+    expect(entry.product_access_mode).toBe('product-assisted');
+    expect(entry.product_cli_command_count).toBe(1);
+    expect(entry.direct_build_tool_command_count).toBe(0);
+    expect(entry.other_bash_command_count).toBe(0);
+    expect(entry.product_usage_mode).toBe('product-cli');
+    expect(entry.product_cli_used).toBe(true);
+    expect(entry.programmatic_product_outcome_matched).toBe(true);
+    expect(entry.final_answer_protocol_only_failure).toBe(true);
     expect(entry.failure_class).toBe('final-answer-mismatch');
   });
 
@@ -688,7 +709,54 @@ describe('analyzeRunRecord -- required end-to-end scenario coverage', () => {
     expect(entry.pre_skill_tool_calls).toBeNull();
     expect(entry.pre_skill_policy_denials).toBeNull();
     expect(entry.post_skill_tool_calls_total).toBeNull();
+    expect(entry.product_access_mode).toBe('product-visible-no-skill');
+    expect(entry.product_cli_command_count).toBe(1);
+    expect(entry.direct_build_tool_command_count).toBe(0);
+    expect(entry.product_usage_mode).toBe('product-cli');
+    expect(entry.product_cli_used).toBe(true);
     expect(entry.failure_class).toBe('success');
+  });
+
+  it('no-skill with direct Gradle evidence stays distinct from product CLI usage', () => {
+    const record = scenarioRecord({
+      condition: 'no-skill', skill_invoked: { value: false, reason: null }, skill_invocation_event: null,
+      success: { value: false, reason: null }, expected_outcome_matched: { value: true, reason: null },
+      grading_checks: gradingChecks({
+        final_answer_consistent_with_evidence: { passed: false, detail: 'final answer did not follow the requested reporting contract' },
+      }),
+    });
+    const sidecar = sidecarFor(record, { entries: [bashEntry(0, { kind: 'gradle', operation: 'allowed-task' })], terminalAuthoritativeEvent: { type: 'user.tool_result', index: 1 } });
+    const { ok, entry } = analyzeRunRecord(record, sidecar);
+    expect(ok).toBe(true);
+    expect(entry.product_access_mode).toBe('product-visible-no-skill');
+    expect(entry.product_cli_command_count).toBe(0);
+    expect(entry.direct_build_tool_command_count).toBe(1);
+    expect(entry.other_bash_command_count).toBe(0);
+    expect(entry.product_usage_mode).toBe('direct-build-tool');
+    expect(entry.product_cli_used).toBe(false);
+    expect(entry.programmatic_product_outcome_matched).toBe(false);
+    expect(entry.final_answer_protocol_only_failure).toBe(true);
+    expect(entry.failure_class).toBe('final-answer-mismatch');
+  });
+
+  it('mixed product and direct Gradle usage is reported as its own usage mode', () => {
+    const record = scenarioRecord({
+      expected_outcome_matched: { value: false, reason: null },
+      skill_invocation_event: { type: 'assistant.tool_use.Skill', index: 0 },
+    });
+    const sidecar = sidecarFor(record, {
+      entries: [
+        targetSkillEntry(0),
+        bashEntry(1, { kind: 'kmp-test', operation: 'parallel' }),
+        bashEntry(3, { kind: 'gradle', operation: 'allowed-task' }),
+      ],
+      terminalAuthoritativeEvent: { type: 'user.tool_result', index: 2 },
+    });
+    const { ok, entry } = analyzeRunRecord(record, sidecar);
+    expect(ok).toBe(true);
+    expect(entry.product_usage_mode).toBe('mixed-product-and-build-tool');
+    expect(entry.product_cli_command_count).toBe(1);
+    expect(entry.direct_build_tool_command_count).toBe(1);
   });
 
   it('fails closed when grading_checks is missing one or more required check names', () => {
@@ -735,7 +803,16 @@ describe('buildSummary', () => {
       post_signal_tool_calls: null, first_useful_signal_present: false,
       terminal_authoritative_evidence_present: true, terminal_authoritative_evidence_well_formed: true,
       expected_outcome_matched: true, final_answer_consistent: true, success: true,
-      failure_class: 'success', ...entryOverrides,
+      failure_class: 'success',
+      product_access_mode: 'product-assisted',
+      product_usage_mode: 'product-cli',
+      product_cli_command_count: 1,
+      direct_build_tool_command_count: 0,
+      other_bash_command_count: 0,
+      product_cli_used: true,
+      programmatic_product_outcome_matched: true,
+      final_answer_protocol_only_failure: false,
+      ...entryOverrides,
     };
     return { record, entry };
   }
@@ -834,6 +911,45 @@ describe('buildSummary', () => {
     expect(summary.groups[0].failure_class_counts.success).toBe(1);
     expect(summary.groups[0].failure_class_counts['wrong-target']).toBe(1);
     expect(summary.groups[0].failure_class_counts['policy-denial-observed-without-terminal-evidence']).toBe(0);
+  });
+
+  it('reports product access, product usage, and final-answer-only failures as independent summary axes', () => {
+    const pairs = [
+      pair({ run_id: 'r1' }, {
+        product_access_mode: 'product-assisted',
+        product_usage_mode: 'product-cli',
+        product_cli_used: true,
+        programmatic_product_outcome_matched: true,
+        final_answer_protocol_only_failure: true,
+        success: false,
+        failure_class: 'final-answer-mismatch',
+      }),
+      pair({ run_id: 'r2' }, {
+        product_access_mode: 'product-visible-no-skill',
+        product_usage_mode: 'direct-build-tool',
+        product_cli_used: false,
+        programmatic_product_outcome_matched: false,
+        final_answer_protocol_only_failure: true,
+        success: false,
+        failure_class: 'final-answer-mismatch',
+      }),
+    ];
+    const summary = buildSummary(pairs);
+    const [group] = summary.groups;
+    expect(group.product_access_mode_distribution).toEqual({
+      'product-assisted': 1,
+      'product-visible-no-skill': 1,
+    });
+    expect(group.product_usage_mode_distribution).toEqual({
+      'product-cli': 1,
+      'direct-build-tool': 1,
+    });
+    expect(group.product_cli_used_count).toBe(1);
+    expect(group.product_cli_used_rate).toBe(0.5);
+    expect(group.programmatic_product_outcome_matched_count).toBe(1);
+    expect(group.programmatic_product_outcome_matched_rate).toBe(0.5);
+    expect(group.final_answer_protocol_only_failure_count).toBe(2);
+    expect(group.final_answer_protocol_only_failure_rate).toBe(1);
   });
 
   it('handles an empty input without throwing', () => {

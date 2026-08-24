@@ -193,6 +193,54 @@ Both conditions must use the same runtime, runtime version, model profile,
 execution profile, platform, repository commit, task prompt, machine class,
 tool permissions, and cache policy, in isolated worktrees.
 
+### Product access and product usage
+
+The skill-condition axis is not the same thing as product access. A `no-skill`
+run in the current two-condition harness means the pinned skill snapshot was
+absent, but it does **not** by itself prove that the product CLI was hidden from
+the agent. Treating that row as a free baseline would overstate the evidence.
+
+Analysis therefore records two separate layers:
+
+| Layer | Question | Closed values |
+|-------|----------|---------------|
+| Product access mode | What product surface was available to the agent? | `product-assisted`, `product-visible-no-skill`, `free-baseline-no-product`, `contaminated-baseline`, `product-access-not-recorded` |
+| Product usage mode | What kind of terminal evidence path did the agent actually use? | `product-cli`, `direct-build-tool`, `mixed-product-and-build-tool`, `manual-other`, `none` |
+
+`product-assisted` is the current-skill/product-visible condition: the pinned
+skill and product CLI are both part of the treatment. `product-visible-no-skill`
+means the skill is absent but the product may still be discoverable in the
+workspace. It is useful for measuring discoverability without guidance, but it
+is **not** a no-product baseline. `free-baseline-no-product` is reserved for the
+future baseline where the agent can see only the target repository and standard
+toolchain. `contaminated-baseline` is reserved for any supposed free baseline
+where product files, commands, docs, or generated artifacts are discoverable.
+
+Product usage mode is derived from structured accepted-audit tool-kind counts,
+not from raw transcript text. It distinguishes product CLI use from direct build
+tool use and from mixed sessions. This lets reports say, for example, "the
+programmatic product outcome matched but the final answer protocol failed"
+without converting that into "the product failed."
+
+In analysis schema v3, `success` remains the full harness success criterion:
+correct target, correct expected outcome, usable evidence, and final answer
+consistency. It must not be used alone as the product-quality metric. The
+product-specific diagnostic fields are:
+
+| Field | Meaning |
+|-------|---------|
+| `product_cli_used` / `product_cli_command_count` | Whether and how often the product CLI was observed in the accepted audit sidecar |
+| `direct_build_tool_command_count` | Direct build-tool invocations observed without naming a concrete private or project-specific command in the public analysis output |
+| `programmatic_product_outcome_matched` | Product CLI was used and the structured terminal evidence matched the expected outcome |
+| `final_answer_protocol_only_failure` | The expected outcome matched, but the final answer did not satisfy the reporting protocol |
+
+This separation is mandatory for Evidence 1 interpretation. A run with
+`success:false` and `programmatic_product_outcome_matched:true` is not evidence
+that the product failed; it is evidence that the product-side result and the
+agent's final reporting behavior diverged. Conversely, a no-skill run that
+uses the product CLI is not a free baseline; it is a product-visible/no-skill
+observation.
+
 ### Metrics
 
 Prefer metrics that can be captured automatically and interpreted without
