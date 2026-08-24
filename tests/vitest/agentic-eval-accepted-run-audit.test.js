@@ -9,6 +9,7 @@ import {
   ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2,
   ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3,
   ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4,
+  ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5,
   LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA,
   SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS,
   acceptedAuditRelativePathFor,
@@ -211,12 +212,12 @@ describe('buildAcceptedRunAuditSidecar -- top-level identity + shape', () => {
   it('freezes the sidecar schema constants and the nested summary / tool_calls[] field inventories', () => {
     expect(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1).toBe(1);
     expect(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2).toBe(2);
-    // PR 4: LATEST is now 4 (v4, the new policy_mode:"not_applicable" sidecar) -- this record has
+    // PR 4 follow-up: LATEST is now 5 (v5, the new policy_mode:"not_applicable" sidecar) -- this record has
     // no not_applicable execution_profile, so it still produces a byte-for-byte v3 sidecar below
     // (expectedAcceptedAuditSchemaFor's own fallback), proving LATEST advancing never silently
     // redirects a strict/policy-required record away from v3.
-    expect(LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA).toBe(4);
-    expect([...SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS]).toEqual([1, 2, 3, 4]);
+    expect(LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA).toBe(5);
+    expect([...SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS]).toEqual([1, 2, 3, 4, 5]);
 
     const record = baseRecord({
       hook_call_count: 1,
@@ -1135,8 +1136,8 @@ describe('crossValidateAcceptedRunAuditAgainstRecord -- run_provenance_sha256 (v
   });
 });
 
-// PR 4 (agentic-eval-isolated-unrestricted-profile-v1): sidecar v4 -- exclusive to a schema:6
-// record whose execution_profile.policy_mode is "not_applicable".
+// PR 4 follow-up: sidecar v5 is now the produced no-policy sidecar. v4 remains supported as a
+// frozen legacy no-policy sidecar.
 describe('expectedAcceptedAuditSchemaFor -- explicit per-record/profile dispatch (Decision H)', () => {
   it('schema<6 always resolves to v2, regardless of any execution_profile content', () => {
     expect(expectedAcceptedAuditSchemaFor(baseRecord())).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2);
@@ -1145,17 +1146,17 @@ describe('expectedAcceptedAuditSchemaFor -- explicit per-record/profile dispatch
     expect(expectedAcceptedAuditSchemaFor(v6Record())).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3);
     expect(expectedAcceptedAuditSchemaFor({ schema: 6 })).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3);
   });
-  it('schema:6 with policy_mode:"not_applicable" resolves to v4', () => {
+  it('schema:6 with policy_mode:"not_applicable" resolves to v5', () => {
     const record = v6Record({ execution_profile: { ...v6Record().execution_profile, policy_mode: 'not_applicable' } });
-    expect(expectedAcceptedAuditSchemaFor(record)).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4);
+    expect(expectedAcceptedAuditSchemaFor(record)).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5);
   });
-  it('never uses LATEST as a selector -- LATEST=4 today, but a required-policy schema:6 record still resolves to v3', () => {
-    expect(LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA).toBe(4);
+  it('never uses LATEST as a selector -- LATEST=5 today, but a required-policy schema:6 record still resolves to v3', () => {
+    expect(LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA).toBe(5);
     expect(expectedAcceptedAuditSchemaFor(v6Record())).toBe(3);
   });
 });
 
-describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / crossValidateAcceptedRunAuditAgainstRecord -- sidecar v4 (PR 4)', () => {
+describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / crossValidateAcceptedRunAuditAgainstRecord -- sidecar v5 no-policy observability', () => {
   const FAKE_ATTESTATION_SHA256 = 'f'.repeat(64);
 
   // Mirrors what buildRunRecord (cli.mjs) actually produces for a policy_mode:"not_applicable"
@@ -1186,22 +1187,73 @@ describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / cross
     return conditionResultFrom(events, { decisionByAttempt: new Map(), dispatchAccounting: { dispatchStatusByAttempt } });
   }
 
-  it('builds schema 4 with the 3 new top-level fields and dispatch_unaccounted_total; the 4 policy summary fields are exactly null', () => {
+  it('builds schema 5 with the 3 no-policy top-level fields, dispatch_unaccounted_total, and structural recognized_operation', () => {
     const record = notApplicableRecord();
     const cr = notApplicableConditionResult([initEventStub(), bashToolUseEvent('t1', 'kmp-test doctor --json'), toolResultEvent('t1'), resultEventStub()]);
     const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
-    expect(sidecar.schema).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4);
+    expect(sidecar.schema).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5);
     expect(sidecar.execution_profile_id).toBe('sandboxed-unrestricted-v1');
     expect(sidecar.policy_mode).toBe('not_applicable');
     expect(sidecar.isolation_attestation_sha256).toBe(FAKE_ATTESTATION_SHA256);
     expect(sidecar.run_provenance_sha256).toBe(computeRunProvenanceSha256(record));
     expect(sidecar.tool_calls[0].dispatch_status).toBe('result_correlated_no_policy');
     expect(sidecar.tool_calls[0].policy_decision).toBe('not-applicable');
+    expect(sidecar.tool_calls[0].operation).toBe('other');
+    expect(sidecar.tool_calls[0].recognized_operation).toBe('doctor');
     expect(sidecar.summary.dispatch_unaccounted_total).toBe(0);
     expect(sidecar.summary.policy_denials_total).toBeNull();
     expect(sidecar.summary.policy_decisions_missing).toBeNull();
     expect(sidecar.summary.policy_denials_before_first_signal).toBeNull();
     expect(sidecar.summary.policy_denials_after_first_signal).toBeNull();
+  });
+
+  it('keeps no-policy operation allowlist-neutral while exposing a privacy-safe recognized kmp-test subcommand', () => {
+    const record = notApplicableRecord();
+    const cr = notApplicableConditionResult([
+      initEventStub(),
+      bashToolUseEvent('t1', 'kmp-test parallel --module-filter secretmodule123 --json'),
+      toolResultEvent('t1'),
+      bashToolUseEvent('t2', 'kmp-test describe --project-root C:/secret/project --json'),
+      toolResultEvent('t2'),
+      resultEventStub(),
+    ]);
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+
+    expect(sidecar.schema).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5);
+    expect(sidecar.tool_calls[0]).toMatchObject({ tool_kind: 'kmp-test', operation: 'other', recognized_operation: 'parallel' });
+    expect(sidecar.tool_calls[1]).toMatchObject({ tool_kind: 'kmp-test', operation: 'other', recognized_operation: 'describe' });
+    expect(validateAcceptedRunAuditSidecar(sidecar).errors).toEqual([]);
+    expect(JSON.stringify(sidecar)).not.toContain('secretmodule123');
+    expect(JSON.stringify(sidecar)).not.toContain('--module-filter');
+    expect(JSON.stringify(sidecar)).not.toContain('C:/secret/project');
+  });
+
+  it('maps unknown kmp-test subcommands to the closed structural "other" bucket, never the raw token', () => {
+    const record = notApplicableRecord();
+    const cr = notApplicableConditionResult([initEventStub(), bashToolUseEvent('t1', 'kmp-test private-secret-subcommand --json'), toolResultEvent('t1'), resultEventStub()]);
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    expect(sidecar.tool_calls[0]).toMatchObject({ tool_kind: 'kmp-test', operation: 'other', recognized_operation: 'other' });
+    expect(JSON.stringify(sidecar)).not.toContain('private-secret-subcommand');
+  });
+
+  it('still accepts a frozen legacy v4 no-policy sidecar without recognized_operation', () => {
+    const record = notApplicableRecord();
+    const cr = notApplicableConditionResult([initEventStub(), bashToolUseEvent('t1', 'kmp-test doctor --json'), toolResultEvent('t1'), resultEventStub()]);
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const legacyV4 = {
+      ...sidecar,
+      schema: ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4,
+      tool_calls: sidecar.tool_calls.map(({ recognized_operation: _recognizedOperation, ...tc }) => tc),
+    };
+    expect(validateAcceptedRunAuditSidecar(legacyV4).errors).toEqual([]);
+  });
+
+  it('rejects a schema 5 recognized_operation outside the closed privacy-safe vocabulary', () => {
+    const record = notApplicableRecord();
+    const cr = notApplicableConditionResult([initEventStub(), bashToolUseEvent('t1', 'kmp-test doctor --json'), toolResultEvent('t1'), resultEventStub()]);
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const tampered = { ...sidecar, tool_calls: [{ ...sidecar.tool_calls[0], recognized_operation: 'secretmodule123' }] };
+    expect(validateAcceptedRunAuditSidecar(tampered).errors.some((e) => e.field.endsWith('.recognized_operation'))).toBe(true);
   });
 
   it('validates with zero errors, and cross-validates cleanly against the record', () => {
@@ -1236,7 +1288,7 @@ describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / cross
     expect(errors.some((e) => e.field === 'summary.dispatch_unaccounted_total')).toBe(true);
   });
 
-  it('hook_evaluated can never appear on a v4 sidecar, even if fabricated directly', () => {
+  it('hook_evaluated can never appear on a v5 sidecar, even if fabricated directly', () => {
     const record = notApplicableRecord();
     const cr = notApplicableConditionResult([initEventStub(), bashToolUseEvent('t1', 'kmp-test doctor --json'), toolResultEvent('t1'), resultEventStub()]);
     const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
@@ -1265,7 +1317,7 @@ describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / cross
     });
   }
 
-  it('a schema:6 policy-required record never produces a v4 sidecar, even with a real Bash attempt', () => {
+  it('a schema:6 policy-required record never produces a no-policy sidecar, even with a real Bash attempt', () => {
     const record = v6Record();
     const cr = conditionResultFrom(
       [initEventStub(), bashToolUseEvent('t1', 'kmp-test doctor --json'), toolResultEvent('t1'), resultEventStub()],
