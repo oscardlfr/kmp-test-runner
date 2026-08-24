@@ -35,6 +35,7 @@ const CLI_PATH = path.join(REPO_ROOT, 'tools', 'agentic-eval', 'cli.mjs');
 const FIXTURES_DIR = path.join(__dirname, '..', 'fixtures');
 
 const DESIGN_ID = 'claude-2x2-williams-v1';
+const FREE_BASELINE_DESIGN_ID = 'claude-product-vs-free-baseline-v1';
 const STRICT = 'strict-policy-v1';
 const UNRESTRICTED = 'sandboxed-unrestricted-v1';
 const EXPECTED_LABEL_ORDER = ['A', 'B', 'D', 'C', 'B', 'C', 'A', 'D', 'C', 'D', 'B', 'A', 'D', 'A', 'C', 'B'];
@@ -43,6 +44,11 @@ const CELL_DEFINITIONS = {
   B: { execution_profile_id: STRICT, condition: 'current-skill', product_access_mode: 'product-assisted' },
   C: { execution_profile_id: UNRESTRICTED, condition: 'no-skill', product_access_mode: 'product-visible-no-skill' },
   D: { execution_profile_id: UNRESTRICTED, condition: 'current-skill', product_access_mode: 'product-assisted' },
+};
+const FREE_BASELINE_EXPECTED_LABEL_ORDER = ['A', 'B', 'B', 'A', 'B', 'A', 'A', 'B'];
+const FREE_BASELINE_CELL_DEFINITIONS = {
+  A: { execution_profile_id: UNRESTRICTED, condition: 'current-skill', product_access_mode: 'product-assisted' },
+  B: { execution_profile_id: UNRESTRICTED, condition: 'no-skill', product_access_mode: 'free-baseline-no-product' },
 };
 
 let runsRoot;
@@ -234,6 +240,7 @@ function runArgs(extra = []) {
 }
 
 const CAMPAIGN_FLAGS = (attestationPath) => ['--campaign-design', DESIGN_ID, '--isolation-attestation-file', attestationPath];
+const FREE_BASELINE_CAMPAIGN_FLAGS = (attestationPath) => ['--campaign-design', FREE_BASELINE_DESIGN_ID, '--isolation-attestation-file', attestationPath];
 
 describe('1. cli.mjs run --campaign-design -- dry-run plan preview', () => {
   it('prints 16 planned cells and spawns nothing, even with a nonexistent --source-repo-dir', async () => {
@@ -283,6 +290,26 @@ describe('1. cli.mjs run --campaign-design -- dry-run plan preview', () => {
     await runCli(['run', '--scenario', SCENARIO_ID, '--source-repo-dir', '/definitely/does/not/exist', '--seed', '1', ...CAMPAIGN_FLAGS(attestationPath), '--dry-run'], fakeClaudeEnv('run-scenario-success'));
     expect(listEvidenceFiles('scenario').length).toBe(0);
     expect(existsSync(path.join(runsRoot, 'agentic-eval-rejected'))).toBe(false);
+  });
+
+  it('prints the true free-baseline campaign as 8 unrestricted cells with no product-visible no-skill cells', async () => {
+    const attestationPath = writeValidAttestation();
+    const result = await runCli(
+      ['run', '--scenario', SCENARIO_ID, '--source-repo-dir', '/definitely/does/not/exist', '--seed', '7', ...FREE_BASELINE_CAMPAIGN_FLAGS(attestationPath), '--dry-run'],
+      fakeClaudeEnv('run-scenario-success'),
+    );
+    expect(result.status, result.stderr || result.stdout).toBe(0);
+    expect(result.parsed.campaign_design_id).toBe(FREE_BASELINE_DESIGN_ID);
+    expect(result.parsed.planned_sessions).toBe(8);
+    expect(result.parsed.plan).toHaveLength(8);
+    const sorted = [...result.parsed.plan].sort((a, b) => a.order_index - b.order_index);
+    expect(sorted.map((c) => c.campaign_cell_label)).toEqual(FREE_BASELINE_EXPECTED_LABEL_ORDER);
+    expect(sorted.map((c) => c.execution_profile_id)).toEqual(FREE_BASELINE_EXPECTED_LABEL_ORDER.map((l) => FREE_BASELINE_CELL_DEFINITIONS[l].execution_profile_id));
+    expect(sorted.map((c) => c.condition)).toEqual(FREE_BASELINE_EXPECTED_LABEL_ORDER.map((l) => FREE_BASELINE_CELL_DEFINITIONS[l].condition));
+    expect(sorted.map((c) => c.product_access_mode)).toEqual(FREE_BASELINE_EXPECTED_LABEL_ORDER.map((l) => FREE_BASELINE_CELL_DEFINITIONS[l].product_access_mode));
+    expect(sorted.filter((c) => c.product_access_mode === 'product-assisted')).toHaveLength(4);
+    expect(sorted.filter((c) => c.product_access_mode === 'free-baseline-no-product')).toHaveLength(4);
+    expect(sorted.filter((c) => c.product_access_mode === 'product-visible-no-skill')).toHaveLength(0);
   });
 });
 

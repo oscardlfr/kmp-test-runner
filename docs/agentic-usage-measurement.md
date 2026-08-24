@@ -216,15 +216,22 @@ future baseline where the agent can see only the target repository and standard
 toolchain. `contaminated-baseline` is reserved for any supposed free baseline
 where product files, commands, docs, or generated artifacts are discoverable.
 
-`run --campaign-design claude-2x2-williams-v1 --dry-run` now makes this
-contract structural by printing `product_access_mode` for every planned cell.
-The current Evidence 1 campaign intentionally contains eight
-`product-assisted` cells and eight `product-visible-no-skill` cells, and zero
-`free-baseline-no-product` cells. A future free-baseline/no-product campaign
-must therefore be a separate control with its own isolation/preflight evidence,
-not a reinterpretation of the existing `no-skill` rows.
+`run --campaign-design claude-2x2-williams-v1 --dry-run` makes this contract
+structural by printing `product_access_mode` for every planned cell. That
+historical Evidence 1 campaign intentionally contains eight `product-assisted`
+cells and eight `product-visible-no-skill` cells, and zero
+`free-baseline-no-product` cells.
 
-Before any future `free-baseline-no-product` live run is accepted as such, the
+`run --campaign-design claude-product-vs-free-baseline-v1 --dry-run` is the
+separate free-baseline control: eight unrestricted cells comparing
+`current-skill/product-assisted` against `no-skill/free-baseline-no-product`.
+For the free-baseline cells, the runner removes the `kmp-test` shim from the
+child `PATH`, strips `KMP_EVAL_*`/`KMP_TEST_*` variables from the child
+environment, never delivers the skill, and runs the product-access preflight
+against the materialized source workspace before spawning. A contaminated
+baseline fails closed before any live session starts.
+
+Before any `free-baseline-no-product` live run is accepted as such, the
 operator must run the offline product-access preflight against the source-only
 workspace:
 

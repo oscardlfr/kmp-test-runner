@@ -17,7 +17,7 @@
 // `registries` parameter in registries.mjs) -- the real CLI passes the resolved runtime registry's
 // actual ids; tests pass synthetic arrays. This keeps the whole module trivially vendor-neutral and
 // independently unit-testable without ever touching a real registry file.
-import { isProductAccessMode, productAccessModeForSkillCondition } from './product-access.mjs';
+import { isProductAccessMode, isProductAccessModeCompatibleWithSkillCondition } from './product-access.mjs';
 
 /** The two skill-condition values this harness ever varies -- see randomizer.mjs's own
  * buildConditionOrders, which this module deliberately does NOT import (no seed/shuffle dependency
@@ -28,7 +28,7 @@ const SKILL_CONDITION_VALUES = Object.freeze(['current-skill', 'no-skill']);
  * condition) cell definition set (`cellDefinitions`, keyed by a short label) plus a literal,
  * pre-registered per-repetition dispatch ORDER of those labels (`order`, one array per repetition,
  * left-to-right = real dispatch sequence within that repetition) -- never derived from a seed or
- * shuffle. Adding a second design later is additive (a new key here); this PR ships exactly one. */
+ * shuffle. Adding a new design is additive (a new key here); existing ids are never reinterpreted. */
 const CAMPAIGN_DESIGNS = Object.freeze({
   'claude-2x2-williams-v1': Object.freeze({
     id: 'claude-2x2-williams-v1',
@@ -44,6 +44,20 @@ const CAMPAIGN_DESIGNS = Object.freeze({
       Object.freeze(['B', 'C', 'A', 'D']),
       Object.freeze(['C', 'D', 'B', 'A']),
       Object.freeze(['D', 'A', 'C', 'B']),
+    ]),
+  }),
+  'claude-product-vs-free-baseline-v1': Object.freeze({
+    id: 'claude-product-vs-free-baseline-v1',
+    repeats: 4,
+    cellDefinitions: Object.freeze({
+      A: Object.freeze({ execution_profile_id: 'sandboxed-unrestricted-v1', condition: 'current-skill', product_access_mode: 'product-assisted' }),
+      B: Object.freeze({ execution_profile_id: 'sandboxed-unrestricted-v1', condition: 'no-skill', product_access_mode: 'free-baseline-no-product' }),
+    }),
+    order: Object.freeze([
+      Object.freeze(['A', 'B']),
+      Object.freeze(['B', 'A']),
+      Object.freeze(['B', 'A']),
+      Object.freeze(['A', 'B']),
     ]),
   }),
 });
@@ -100,9 +114,8 @@ export function buildScenarioCampaignPlan({ designId, repeats, executionProfiles
     if (!isProductAccessMode(def.product_access_mode)) {
       return { ok: false, reason: `campaign design ${JSON.stringify(designId)} cell ${label} has unsupported product_access_mode ${JSON.stringify(def.product_access_mode)}` };
     }
-    const expectedProductAccessMode = productAccessModeForSkillCondition(def.condition);
-    if (def.product_access_mode !== expectedProductAccessMode) {
-      return { ok: false, reason: `campaign design ${JSON.stringify(designId)} cell ${label} product_access_mode ${JSON.stringify(def.product_access_mode)} does not match condition ${JSON.stringify(def.condition)}'s expected ${JSON.stringify(expectedProductAccessMode)}` };
+    if (!isProductAccessModeCompatibleWithSkillCondition({ condition: def.condition, productAccessMode: def.product_access_mode })) {
+      return { ok: false, reason: `campaign design ${JSON.stringify(designId)} cell ${label} product_access_mode ${JSON.stringify(def.product_access_mode)} is not compatible with condition ${JSON.stringify(def.condition)}` };
     }
   }
 

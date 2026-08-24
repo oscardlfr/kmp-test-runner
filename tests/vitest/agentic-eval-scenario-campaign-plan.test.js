@@ -16,6 +16,7 @@ import {
 import { PRODUCT_ACCESS_MODE_VALUES } from '../../tools/agentic-eval/product-access.mjs';
 
 const DESIGN_ID = 'claude-2x2-williams-v1';
+const FREE_BASELINE_DESIGN_ID = 'claude-product-vs-free-baseline-v1';
 const STRICT = 'strict-policy-v1';
 const UNRESTRICTED = 'sandboxed-unrestricted-v1';
 const KNOWN_PROFILES = [STRICT, UNRESTRICTED];
@@ -30,6 +31,11 @@ const CELL_DEFINITIONS = {
   D: { execution_profile_id: UNRESTRICTED, condition: 'current-skill', product_access_mode: 'product-assisted' },
 };
 const EXPECTED_REPETITION_INDEX = [0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3];
+const FREE_BASELINE_EXPECTED_LABEL_ORDER = ['A', 'B', 'B', 'A', 'B', 'A', 'A', 'B'];
+const FREE_BASELINE_CELL_DEFINITIONS = {
+  A: { execution_profile_id: UNRESTRICTED, condition: 'current-skill', product_access_mode: 'product-assisted' },
+  B: { execution_profile_id: UNRESTRICTED, condition: 'no-skill', product_access_mode: 'free-baseline-no-product' },
+};
 
 function buildValidPlanOrThrow(overrides = {}) {
   const result = buildScenarioCampaignPlan({
@@ -39,11 +45,26 @@ function buildValidPlanOrThrow(overrides = {}) {
   return result.plan;
 }
 
+function buildFreeBaselinePlanOrThrow(overrides = {}) {
+  const result = buildScenarioCampaignPlan({
+    designId: FREE_BASELINE_DESIGN_ID, repeats: 4, executionProfiles: KNOWN_PROFILES, skillConditions: KNOWN_CONDITIONS, ...overrides,
+  });
+  if (!result.ok) throw new Error(`test setup: expected a valid free-baseline plan, got rejection: ${result.reason}`);
+  return result.plan;
+}
+
 describe('resolveScenarioCampaignDesign', () => {
   it('resolves the known claude-2x2-williams-v1 design', () => {
     const result = resolveScenarioCampaignDesign(DESIGN_ID);
     expect(result.ok).toBe(true);
     expect(result.design.id).toBe(DESIGN_ID);
+    expect(result.design.repeats).toBe(4);
+  });
+
+  it('resolves the known claude-product-vs-free-baseline-v1 design', () => {
+    const result = resolveScenarioCampaignDesign(FREE_BASELINE_DESIGN_ID);
+    expect(result.ok).toBe(true);
+    expect(result.design.id).toBe(FREE_BASELINE_DESIGN_ID);
     expect(result.design.repeats).toBe(4);
   });
 
@@ -58,6 +79,44 @@ describe('resolveScenarioCampaignDesign', () => {
     expect(resolveScenarioCampaignDesign(null).ok).toBe(false);
     expect(resolveScenarioCampaignDesign(undefined).ok).toBe(false);
     expect(resolveScenarioCampaignDesign('').ok).toBe(false);
+  });
+});
+
+describe('buildScenarioCampaignPlan -- claude-product-vs-free-baseline-v1 shape', () => {
+  it('expands to exactly 8 unrestricted cells, planned_sessions:8', () => {
+    const plan = buildFreeBaselinePlanOrThrow();
+    expect(plan.campaign_design_id).toBe(FREE_BASELINE_DESIGN_ID);
+    expect(plan.repeats).toBe(4);
+    expect(plan.planned_sessions).toBe(8);
+    expect(plan.cells).toHaveLength(8);
+    expect(plan.cells.every((c) => c.execution_profile_id === UNRESTRICTED)).toBe(true);
+  });
+
+  it('produces the exact pre-registered A/B, B/A, B/A, A/B label order', () => {
+    const plan = buildFreeBaselinePlanOrThrow();
+    const sorted = [...plan.cells].sort((a, b) => a.order_index - b.order_index);
+    expect(sorted.map((c) => c.campaign_cell_label)).toEqual(FREE_BASELINE_EXPECTED_LABEL_ORDER);
+    expect(sorted.map((c) => `${c.condition}:${c.product_access_mode}`)).toEqual(
+      FREE_BASELINE_EXPECTED_LABEL_ORDER.map((label) => {
+        const def = FREE_BASELINE_CELL_DEFINITIONS[label];
+        return `${def.condition}:${def.product_access_mode}`;
+      }),
+    );
+  });
+
+  it('compares product-assisted current-skill against a true no-product baseline, not product-visible no-skill', () => {
+    const plan = buildFreeBaselinePlanOrThrow();
+    expect(plan.cells.filter((c) => c.condition === 'current-skill')).toHaveLength(4);
+    expect(plan.cells.filter((c) => c.product_access_mode === 'product-assisted')).toHaveLength(4);
+    expect(plan.cells.filter((c) => c.condition === 'no-skill')).toHaveLength(4);
+    expect(plan.cells.filter((c) => c.product_access_mode === 'free-baseline-no-product')).toHaveLength(4);
+    expect(plan.cells.filter((c) => c.product_access_mode === 'product-visible-no-skill')).toHaveLength(0);
+  });
+
+  it('validates as a normal campaign plan and remains JSON-serializable', () => {
+    const plan = buildFreeBaselinePlanOrThrow();
+    expect(() => assertValidScenarioCampaignPlan(plan)).not.toThrow();
+    expect(JSON.parse(JSON.stringify(plan))).toEqual(plan);
   });
 });
 

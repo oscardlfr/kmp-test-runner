@@ -1724,11 +1724,11 @@ planning/execution machinery `scenario-campaign-plan.mjs` (a pure, dependency-fr
 `--execution-profile` matrix (`run --execution-profile <id>` keeps working completely unchanged;
 see "Isolation" above for the profile registry itself).
 
-The only supported design today is `claude-2x2-williams-v1`: a genuine 2×2 (execution profile ×
-skill condition) design, 4 repetitions, 16 sessions total, expanded via a literal, pre-registered
-4×4 Williams-style counterbalanced order — never shuffled, never dependent on `--seed` (the flag
-is still required and recorded on every resulting record, for compatibility, but the campaign's
-own dispatch order is fixed at design time):
+Two campaign designs are currently supported. `claude-2x2-williams-v1` is the original genuine
+2×2 (execution profile × skill condition) design, 4 repetitions, 16 sessions total, expanded via
+a literal, pre-registered 4×4 Williams-style counterbalanced order — never shuffled, never
+dependent on `--seed` (the flag is still required and recorded on every resulting record, for
+compatibility, but the campaign's own dispatch order is fixed at design time):
 
 ```text
 cell A = strict-policy-v1           / no-skill      / product-visible-no-skill
@@ -1770,11 +1770,35 @@ in the campaign; strict cells never consult it.
 
 The `no-skill` cells in this design are explicitly `product-visible-no-skill`: the pinned skill is
 absent, but the product surface may still be discoverable through the harness/workspace. They are
-not a free/no-product baseline. A true `free-baseline-no-product` control requires a separate
-campaign or environment where product files, commands, docs, and generated artifacts are hidden and
-then attested as absent.
+not a free/no-product baseline.
 
-Before a future free-baseline/no-product run is accepted, run the offline product-access preflight
+`claude-product-vs-free-baseline-v1` is the separate product-value control: it holds the execution
+profile fixed at `sandboxed-unrestricted-v1` and compares the product-assisted treatment against a
+true no-product baseline, 4 repetitions, 8 sessions total:
+
+```text
+cell A = sandboxed-unrestricted-v1 / current-skill / product-assisted
+cell B = sandboxed-unrestricted-v1 / no-skill      / free-baseline-no-product
+
+rep 0: A B
+rep 1: B A
+rep 2: B A
+rep 3: A B
+```
+
+```bash
+node tools/agentic-eval/cli.mjs run --scenario <id> --source-repo-dir <local-clone> --seed <n> \
+  --campaign-design claude-product-vs-free-baseline-v1 \
+  --isolation-attestation-file <path> \
+  --dry-run
+```
+
+For each `free-baseline-no-product` cell, the runner strips the harness/product surface from the
+child process environment before spawn: no skill delivery, no `kmp-test` shim on `PATH`, and no
+`KMP_EVAL_*`/`KMP_TEST_*` variables. It then runs the same product-access preflight against the
+materialized source workspace and fails closed before spawn if the baseline is contaminated.
+
+Before a free-baseline/no-product run is accepted, run the offline product-access preflight
 from the harness against the source-only workspace:
 
 ```bash
@@ -1812,10 +1836,11 @@ count-only correlation summary when available, but still does not claim the rich
 rejection shape. See
 `BACKLOG.md`'s "Mixed-profile campaign rejection diagnostics schema" entry.
 
-This machinery is offline-only: no live Claude Code invocation, no `tools/runs/**` evidence, no
-raw transcript access outside fake test fixtures. It exists to unblock a future, separately
-authorized live pilot (see `docs/audits/agentic-eval-claude-codex-v1-plan.md`'s "Evidence 1"
-section) — shipping it does not itself constitute running that pilot.
+The tests for this machinery remain offline-only: no live Claude Code invocation, no
+`tools/runs/**` evidence, no raw transcript access outside fake test fixtures. Shipping or editing
+the campaign harness does not itself constitute running an Evidence 1 pilot; any live pilot still
+requires separate operator authorization and the isolation/readiness gates described in the audit
+runbooks.
 
 ## Explicit limitations
 
