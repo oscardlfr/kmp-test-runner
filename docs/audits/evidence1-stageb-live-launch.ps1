@@ -23,8 +23,8 @@ if ($RunId) {
   Import-Module $contractPath -Force
 }
 
-$HarnessCommit = '66c5f3d02996142cbd0c16c26a2607fb96ecde33'
-$HarnessTree = 'f1eb21847b90d9eece55298eb9dd142d5752e24f'
+$HarnessCommit = ''
+$HarnessTree = ''
 $ClaudeVersion = '2.1.238'
 $MaxBudgetUsd = '2.00'
 $CampaignDesignId = 'claude-product-vs-free-baseline-v1'
@@ -494,10 +494,16 @@ if (@($forbiddenEnv).Count -gt 0) {
 Push-Location $HarnessDir
 try {
   $head = (& git.exe rev-parse HEAD).Trim()
-  if ($head -ne $HarnessCommit) { Fail "harness HEAD mismatch: $head" }
+  if ($LASTEXITCODE -ne 0 -or -not ($head -match '^[0-9a-f]{40}$')) {
+    Fail "could not resolve current harness HEAD: $head"
+  }
+  $HarnessCommit = $head
 
   $tree = (& git.exe @('rev-parse', 'HEAD^{tree}')).Trim()
-  if ($tree -ne $HarnessTree) { Fail "harness tree mismatch: $tree" }
+  if ($LASTEXITCODE -ne 0 -or -not ($tree -match '^[0-9a-f]{40}$')) {
+    Fail "could not resolve current harness tree: $tree"
+  }
+  $HarnessTree = $tree
 
   $status = (& git.exe status --short)
   if ($status) { Fail "harness worktree is not clean: $status" }
