@@ -41,12 +41,15 @@ Describe 'Evidence1 Hyper-V live observability scripts' {
         $content | Should -Match '\$PSScriptRoot'
     }
 
-    It 'consumes the Startup entry before invoking the live wrapper' {
+    It 'does not delete the Startup entry before invoking the live wrapper' {
         $content = Get-Content -LiteralPath $script:PlacePath -Raw
         $deleteIndex = $content.IndexOf('del "%SELF%"', [StringComparison]::Ordinal)
         $invokeIndex = $content.IndexOf('-File "$wrapperGuestPath"', [StringComparison]::Ordinal)
         $deleteIndex | Should -BeGreaterOrEqual 0
-        $invokeIndex | Should -BeGreaterThan $deleteIndex
+        $invokeIndex | Should -BeGreaterOrEqual 0
+        $deleteIndex | Should -BeGreaterThan $invokeIndex
+        $content | Should -Match 'set "WRAPPER_EXIT=%ERRORLEVEL%"'
+        $content | Should -Match 'exit /b %WRAPPER_EXIT%'
     }
 
     It 'does not collect process command lines or inspect operational logs' {

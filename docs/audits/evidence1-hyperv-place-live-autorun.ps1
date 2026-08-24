@@ -102,9 +102,11 @@ try {
     Set-Content -LiteralPath $startupPath -Encoding ASCII -Value @"
 @echo off
 set "SELF=%~f0"
+C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$wrapperGuestPath" -RunId "$runId" -ShutdownOnExit
+set "WRAPPER_EXIT=%ERRORLEVEL%"
 del "%SELF%" >nul 2>nul
 if exist "%SELF%" exit /b 91
-C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$wrapperGuestPath" -RunId "$runId" -ShutdownOnExit
+exit /b %WRAPPER_EXIT%
 "@
 
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ReportPath) | Out-Null
@@ -117,7 +119,7 @@ C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionP
         launcher_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $LiveLauncherSourcePath).Hash.ToLowerInvariant()
         wrapper_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $LiveWrapperSourcePath).Hash.ToLowerInvariant()
         contract_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $ContractSourcePath).Hash.ToLowerInvariant()
-        launch_policy = 'one-shot Startup entry is consumed before the wrapper starts; every state record is bound to run_id'
+        launch_policy = 'one-shot Startup entry is consumed after the wrapper process exits; every state record is bound to run_id'
     }
     $report | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $ReportPath -Encoding UTF8
     Write-Host "[hyperv-place-live-autorun] PASS: $ReportPath"
