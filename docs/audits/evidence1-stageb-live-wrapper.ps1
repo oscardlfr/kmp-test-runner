@@ -163,11 +163,6 @@ try {
         if ($launcherRecord.valid) {
             $exitCode = $launcherRecord.exit_code
             $exitCodeSource = 'launcher_record'
-            $stop = Stop-Evidence1ProcessTree -ProcessId $process.Id -TimeoutMilliseconds $StopTimeoutMilliseconds
-            if (-not $stop.stopped) {
-                throw 'launcher process tree did not terminate after publishing its terminal record'
-            }
-            $state = 'terminated_after_launcher_exit'
             break
         }
         Start-Sleep -Seconds $HeartbeatSeconds
@@ -175,7 +170,18 @@ try {
 
     $currentStage = 'wait_for_launcher_exit'
     if (-not $process.WaitForExit($StopTimeoutMilliseconds)) {
-        throw 'launcher process did not exit within the bounded wait'
+        $launcherRecord = Read-Evidence1TerminalRecord -Path $launcherTerminalPath -ExpectedRunId $RunId
+        if ($launcherRecord.valid) {
+            $exitCode = $launcherRecord.exit_code
+            $exitCodeSource = 'launcher_record'
+            $stop = Stop-Evidence1ProcessTree -ProcessId $process.Id -TimeoutMilliseconds $StopTimeoutMilliseconds
+            if (-not $stop.stopped) {
+                throw 'launcher process tree did not terminate after publishing its terminal record'
+            }
+            $state = 'terminated_after_launcher_exit'
+        } else {
+            throw 'launcher process did not exit within the bounded wait'
+        }
     }
     $process.WaitForExit()
     Complete-RedirectedStreams

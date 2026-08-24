@@ -95,6 +95,8 @@ $direct = [ordered]@{
     connected = $false
     reason = $null
     progress = (Test-Evidence1ProgressRecord -Record $null -Source 'powershell_direct' -ExpectedRunId $runId)
+    terminal = (Read-Evidence1TerminalRecord -Path (Join-Path $GuestOpsDir 'STAGE-B-live.exit.json') -ExpectedRunId $runId)
+    launcher_terminal = (Read-Evidence1TerminalRecord -Path (Join-Path $GuestOpsDir 'STAGE-B-live.launcher-exit.json') -ExpectedRunId $runId)
     process_facts = @()
 }
 
@@ -124,12 +126,30 @@ if ($vm.State -eq 'Running' -and (Test-Path -LiteralPath $GuestCredentialPath -P
             $guest = Invoke-Command -Session $session -ScriptBlock {
                 param($OpsDir)
                 $statusPath = Join-Path $OpsDir 'STAGE-B-live.status.json'
+                $terminalPath = Join-Path $OpsDir 'STAGE-B-live.exit.json'
+                $launcherTerminalPath = Join-Path $OpsDir 'STAGE-B-live.launcher-exit.json'
                 $status = $null
+                $terminal = $null
+                $launcherTerminal = $null
                 if (Test-Path -LiteralPath $statusPath -PathType Leaf) {
                     try {
                         $status = Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json
                     } catch {
                         $status = [ordered]@{ parse_error = $_.Exception.Message }
+                    }
+                }
+                if (Test-Path -LiteralPath $terminalPath -PathType Leaf) {
+                    try {
+                        $terminal = Get-Content -LiteralPath $terminalPath -Raw | ConvertFrom-Json
+                    } catch {
+                        $terminal = [ordered]@{ parse_error = $_.Exception.Message }
+                    }
+                }
+                if (Test-Path -LiteralPath $launcherTerminalPath -PathType Leaf) {
+                    try {
+                        $launcherTerminal = Get-Content -LiteralPath $launcherTerminalPath -Raw | ConvertFrom-Json
+                    } catch {
+                        $launcherTerminal = [ordered]@{ parse_error = $_.Exception.Message }
                     }
                 }
                 $processFacts = @(Get-CimInstance Win32_Process |
@@ -146,11 +166,13 @@ if ($vm.State -eq 'Running' -and (Test-Path -LiteralPath $GuestCredentialPath -P
                             cpu_seconds = if ($process) { $process.CPU } else { $null }
                         }
                     })
-                [ordered]@{ status = $status; process_facts = $processFacts }
+                [ordered]@{ status = $status; terminal = $terminal; launcher_terminal = $launcherTerminal; process_facts = $processFacts }
             } -ArgumentList $GuestOpsDir
             $direct.connected = $true
             $direct.reason = $null
             $direct.progress = Test-Evidence1ProgressRecord -Record $guest.status -Source 'powershell_direct' -ExpectedRunId $runId
+            $direct.terminal = Test-Evidence1TerminalRecordObject -Record $guest.terminal -Source 'powershell_direct_terminal' -ExpectedRunId $runId
+            $direct.launcher_terminal = Test-Evidence1TerminalRecordObject -Record $guest.launcher_terminal -Source 'powershell_direct_launcher_terminal' -ExpectedRunId $runId
             $direct.process_facts = $guest.process_facts
         } catch {
             $direct.reason = 'powershell_direct_read_failed'
@@ -164,12 +186,16 @@ if ($vm.State -eq 'Running' -and (Test-Path -LiteralPath $GuestCredentialPath -P
     $direct.reason = 'guest_credential_missing'
 }
 
-$authoritative = if ($direct.progress.valid) {
+$authoritative = if ($direct.terminal.valid) {
+    $direct.terminal
+} elseif ($direct.launcher_terminal.valid) {
+    $direct.launcher_terminal
+} elseif ($direct.progress.valid) {
     $direct.progress
 } elseif ($kvpProgress.valid) {
     $kvpProgress
 } else {
-    [ordered]@{ valid = $false; source = $null; reason = 'no_run_scoped_progress'; record = $null }
+    [ordered]@{ valid = $false; source = $null; reason = 'no_run_scoped_progress_or_terminal'; record = $null }
 }
 
 $report = [ordered]@{
