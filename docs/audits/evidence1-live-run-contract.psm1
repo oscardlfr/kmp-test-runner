@@ -80,6 +80,56 @@ function Read-Evidence1TerminalRecord {
     }
 }
 
+function Test-Evidence1TerminalRecordObject {
+    [CmdletBinding()]
+    param(
+        $Record,
+
+        [Parameter(Mandatory)]
+        [string]$Source,
+
+        [Parameter(Mandatory)]
+        [string]$ExpectedRunId
+    )
+
+    $expectedGuid = [guid]::Empty
+    if (-not [guid]::TryParseExact($ExpectedRunId, 'D', [ref]$expectedGuid)) {
+        throw 'ExpectedRunId must be a canonical D-format GUID'
+    }
+    if ($null -eq $Record) {
+        return [ordered]@{ valid = $false; source = $Source; reason = 'not_found'; exit_code = $null; record = $null }
+    }
+
+    $required = @('schema', 'run_id', 'state', 'exit_code', 'exit_code_source')
+    $propertyNames = @($Record.PSObject.Properties.Name)
+    if (@($required | Where-Object { $_ -notin $propertyNames }).Count -gt 0) {
+        return [ordered]@{ valid = $false; source = $Source; reason = 'invalid_shape'; exit_code = $null; record = $Record }
+    }
+    if ($Record.schema -ne 1) {
+        return [ordered]@{ valid = $false; source = $Source; reason = 'invalid_schema'; exit_code = $null; record = $Record }
+    }
+    if ($Record.run_id -ne $ExpectedRunId) {
+        return [ordered]@{ valid = $false; source = $Source; reason = 'run_id_mismatch'; exit_code = $null; record = $Record }
+    }
+    if ($Record.state -notin @('exited', 'wrapper_error', 'terminated_after_launcher_exit')) {
+        return [ordered]@{ valid = $false; source = $Source; reason = 'non_terminal_state'; exit_code = $null; record = $Record }
+    }
+    if ($Record.exit_code -isnot [int] -and $Record.exit_code -isnot [long]) {
+        return [ordered]@{ valid = $false; source = $Source; reason = 'invalid_exit_code'; exit_code = $null; record = $Record }
+    }
+    if ($Record.exit_code_source -notin @('launcher_record', 'process_exit_code', 'wrapper_error')) {
+        return [ordered]@{ valid = $false; source = $Source; reason = 'invalid_exit_code_source'; exit_code = $null; record = $Record }
+    }
+
+    return [ordered]@{
+        valid = $true
+        source = $Source
+        reason = $null
+        exit_code = [int]$Record.exit_code
+        record = $Record
+    }
+}
+
 function Test-Evidence1ProgressRecord {
     [CmdletBinding()]
     param(
@@ -165,6 +215,7 @@ function Stop-Evidence1ProcessTree {
 Export-ModuleMember -Function @(
     'Write-Evidence1JsonAtomically',
     'Read-Evidence1TerminalRecord',
+    'Test-Evidence1TerminalRecordObject',
     'Test-Evidence1ProgressRecord',
     'Stop-Evidence1ProcessTree'
 )
