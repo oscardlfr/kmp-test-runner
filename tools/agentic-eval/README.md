@@ -1731,10 +1731,10 @@ is still required and recorded on every resulting record, for compatibility, but
 own dispatch order is fixed at design time):
 
 ```text
-cell A = strict-policy-v1           / no-skill
-cell B = strict-policy-v1           / current-skill
-cell C = sandboxed-unrestricted-v1  / no-skill
-cell D = sandboxed-unrestricted-v1  / current-skill
+cell A = strict-policy-v1           / no-skill      / product-visible-no-skill
+cell B = strict-policy-v1           / current-skill / product-assisted
+cell C = sandboxed-unrestricted-v1  / no-skill      / product-visible-no-skill
+cell D = sandboxed-unrestricted-v1  / current-skill / product-assisted
 
 rep 0: A B D C
 rep 1: B C A D
@@ -1750,9 +1750,10 @@ node tools/agentic-eval/cli.mjs run --scenario <id> --source-repo-dir <local-clo
 ```
 
 `--dry-run` prints all 16 planned cells (`order_index`, `repetition_index`, `campaign_cell_label`,
-`condition`, `execution_profile_id`, plus each cell's own resolved `execution_profile_sha256` and,
-for unrestricted cells, the same isolation-attestation fields a bare `--execution-profile
-sandboxed-unrestricted-v1 --dry-run` already shows) and never spawns a live runtime/Claude session
+`condition`, `product_access_mode`, `execution_profile_id`, plus each cell's own resolved
+`execution_profile_sha256` and, for unrestricted cells, the same isolation-attestation fields a
+bare `--execution-profile sandboxed-unrestricted-v1 --dry-run` already shows) and never spawns a
+live runtime/Claude session
 — but, unlike the legacy path's bare (no-`--measurement-scope-file`) `--dry-run`, this is **not** a
 zero-subprocess preview: because `claude-2x2-williams-v1` always includes
 `sandboxed-unrestricted-v1` cells, isolation-attestation resolution always runs
@@ -1766,6 +1767,12 @@ value). Because `claude-2x2-williams-v1` always includes `sandboxed-unrestricted
 `--isolation-attestation-file <path>` is always required — the identical attestation file used for
 a bare unrestricted `run` (see "Isolation"), validated once and shared by every unrestricted cell
 in the campaign; strict cells never consult it.
+
+The `no-skill` cells in this design are explicitly `product-visible-no-skill`: the pinned skill is
+absent, but the product surface may still be discoverable through the harness/workspace. They are
+not a free/no-product baseline. A true `free-baseline-no-product` control requires a separate
+campaign or environment where product files, commands, docs, and generated artifacts are hidden and
+then attested as absent.
 
 Execution acquires one independent shared-resource bundle (shim/skill-snapshot/Gradle-home/
 settings/env) **per distinct execution profile** the plan uses, never one bundle reused across

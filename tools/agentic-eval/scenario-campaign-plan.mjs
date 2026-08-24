@@ -17,6 +17,7 @@
 // `registries` parameter in registries.mjs) -- the real CLI passes the resolved runtime registry's
 // actual ids; tests pass synthetic arrays. This keeps the whole module trivially vendor-neutral and
 // independently unit-testable without ever touching a real registry file.
+import { isProductAccessMode, productAccessModeForSkillCondition } from './product-access.mjs';
 
 /** The two skill-condition values this harness ever varies -- see randomizer.mjs's own
  * buildConditionOrders, which this module deliberately does NOT import (no seed/shuffle dependency
@@ -33,10 +34,10 @@ const CAMPAIGN_DESIGNS = Object.freeze({
     id: 'claude-2x2-williams-v1',
     repeats: 4,
     cellDefinitions: Object.freeze({
-      A: Object.freeze({ execution_profile_id: 'strict-policy-v1', condition: 'no-skill' }),
-      B: Object.freeze({ execution_profile_id: 'strict-policy-v1', condition: 'current-skill' }),
-      C: Object.freeze({ execution_profile_id: 'sandboxed-unrestricted-v1', condition: 'no-skill' }),
-      D: Object.freeze({ execution_profile_id: 'sandboxed-unrestricted-v1', condition: 'current-skill' }),
+      A: Object.freeze({ execution_profile_id: 'strict-policy-v1', condition: 'no-skill', product_access_mode: 'product-visible-no-skill' }),
+      B: Object.freeze({ execution_profile_id: 'strict-policy-v1', condition: 'current-skill', product_access_mode: 'product-assisted' }),
+      C: Object.freeze({ execution_profile_id: 'sandboxed-unrestricted-v1', condition: 'no-skill', product_access_mode: 'product-visible-no-skill' }),
+      D: Object.freeze({ execution_profile_id: 'sandboxed-unrestricted-v1', condition: 'current-skill', product_access_mode: 'product-assisted' }),
     }),
     order: Object.freeze([
       Object.freeze(['A', 'B', 'D', 'C']),
@@ -96,6 +97,13 @@ export function buildScenarioCampaignPlan({ designId, repeats, executionProfiles
     if (!skillConditions.includes(def.condition)) {
       return { ok: false, reason: `campaign design ${JSON.stringify(designId)} cell ${label} requires skill condition ${JSON.stringify(def.condition)}, which is not a supported skill condition (known: ${skillConditions.join(', ') || '(none)'})` };
     }
+    if (!isProductAccessMode(def.product_access_mode)) {
+      return { ok: false, reason: `campaign design ${JSON.stringify(designId)} cell ${label} has unsupported product_access_mode ${JSON.stringify(def.product_access_mode)}` };
+    }
+    const expectedProductAccessMode = productAccessModeForSkillCondition(def.condition);
+    if (def.product_access_mode !== expectedProductAccessMode) {
+      return { ok: false, reason: `campaign design ${JSON.stringify(designId)} cell ${label} product_access_mode ${JSON.stringify(def.product_access_mode)} does not match condition ${JSON.stringify(def.condition)}'s expected ${JSON.stringify(expectedProductAccessMode)}` };
+    }
   }
 
   const cells = [];
@@ -110,6 +118,7 @@ export function buildScenarioCampaignPlan({ designId, repeats, executionProfiles
         campaign_design_id: designId,
         execution_profile_id: def.execution_profile_id,
         condition: def.condition,
+        product_access_mode: def.product_access_mode,
       });
       orderIndex++;
     }
@@ -188,6 +197,9 @@ export function assertValidScenarioCampaignPlan(plan) {
     }
     if (cell.condition !== expectedDef.condition) {
       throw new Error(`assertValidScenarioCampaignPlan: cell ${cell.campaign_cell_label} condition ${JSON.stringify(cell.condition)} does not match design's ${JSON.stringify(expectedDef.condition)}`);
+    }
+    if (cell.product_access_mode !== expectedDef.product_access_mode) {
+      throw new Error(`assertValidScenarioCampaignPlan: cell ${cell.campaign_cell_label} product_access_mode ${JSON.stringify(cell.product_access_mode)} does not match design's ${JSON.stringify(expectedDef.product_access_mode)}`);
     }
 
     if (!labelsByRepetition.has(cell.repetition_index)) labelsByRepetition.set(cell.repetition_index, new Map());

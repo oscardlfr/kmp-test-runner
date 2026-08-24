@@ -39,10 +39,10 @@ const STRICT = 'strict-policy-v1';
 const UNRESTRICTED = 'sandboxed-unrestricted-v1';
 const EXPECTED_LABEL_ORDER = ['A', 'B', 'D', 'C', 'B', 'C', 'A', 'D', 'C', 'D', 'B', 'A', 'D', 'A', 'C', 'B'];
 const CELL_DEFINITIONS = {
-  A: { execution_profile_id: STRICT, condition: 'no-skill' },
-  B: { execution_profile_id: STRICT, condition: 'current-skill' },
-  C: { execution_profile_id: UNRESTRICTED, condition: 'no-skill' },
-  D: { execution_profile_id: UNRESTRICTED, condition: 'current-skill' },
+  A: { execution_profile_id: STRICT, condition: 'no-skill', product_access_mode: 'product-visible-no-skill' },
+  B: { execution_profile_id: STRICT, condition: 'current-skill', product_access_mode: 'product-assisted' },
+  C: { execution_profile_id: UNRESTRICTED, condition: 'no-skill', product_access_mode: 'product-visible-no-skill' },
+  D: { execution_profile_id: UNRESTRICTED, condition: 'current-skill', product_access_mode: 'product-assisted' },
 };
 
 let runsRoot;
@@ -265,6 +265,8 @@ describe('1. cli.mjs run --campaign-design -- dry-run plan preview', () => {
     expect(sorted.map((c) => c.campaign_cell_label)).toEqual(EXPECTED_LABEL_ORDER);
     expect(sorted.map((c) => c.execution_profile_id)).toEqual(EXPECTED_LABEL_ORDER.map((l) => CELL_DEFINITIONS[l].execution_profile_id));
     expect(sorted.map((c) => c.condition)).toEqual(EXPECTED_LABEL_ORDER.map((l) => CELL_DEFINITIONS[l].condition));
+    expect(sorted.map((c) => c.product_access_mode)).toEqual(EXPECTED_LABEL_ORDER.map((l) => CELL_DEFINITIONS[l].product_access_mode));
+    expect(sorted.filter((c) => c.product_access_mode === 'free-baseline-no-product')).toHaveLength(0);
     expect(sorted.map((c) => c.order_index)).toEqual(Array.from({ length: 16 }, (_, i) => i));
     expect(sorted.map((c) => c.repetition_index)).toEqual([0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3]);
   });

@@ -3658,6 +3658,7 @@ async function cmdRunCampaign(args, campaignDesignId) {
       return {
         order_index: cell.order_index, repetition_index: cell.repetition_index,
         campaign_cell_label: cell.campaign_cell_label, condition: cell.condition,
+        product_access_mode: cell.product_access_mode,
         execution_profile_id: cell.execution_profile_id,
         execution_profile_sha256: selectionsByProfileId[cell.execution_profile_id].executionProfileSha256,
         ...attestationFields,
