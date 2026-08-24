@@ -183,7 +183,17 @@ describe('validateSubcommandArgs', () => {
   });
 
   it('SUBCOMMAND_SHAPES covers every real subcommand main() actually dispatches', () => {
-    expect(Object.keys(SUBCOMMAND_SHAPES).sort()).toEqual(['aggregate', 'analyze', 'calibrate', 'corpus', 'run', 'scope', 'smoke', 'validate']);
+    expect(Object.keys(SUBCOMMAND_SHAPES).sort()).toEqual([
+      'aggregate',
+      'analyze',
+      'calibrate',
+      'corpus',
+      'product-access',
+      'run',
+      'scope',
+      'smoke',
+      'validate',
+    ]);
   });
 
   // --measurement-scope-file: added to calibrate/smoke/run so an existing, sanity-checked
