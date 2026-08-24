@@ -53,7 +53,13 @@ import { withPartitionView, agentRuntimeView, executionProfileView, skillObserva
 // distributions plus usage_source_counts. No historical committed analysis-output files exist to
 // preserve compatibility with (analysis output is always computed on demand), so this is a plain
 // constant bump, not a versioned dispatch.
-export const ANALYSIS_SCHEMA = 2;
+//
+// v2 -> v3 (Evidence 1 measurement-contract hardening): per-run entries and group summaries gain
+// product-access / product-usage reporting fields so product behavior, baseline behavior, and
+// final-answer protocol compliance stay separate axes. Every new field is derived only from
+// already-validated record fields and accepted-run-audit tool-kind counts; no raw transcript
+// content is read.
+export const ANALYSIS_SCHEMA = 3;
 
 /** Closed vocabulary for `failure_class` -- exactly one per run, resolved by classifyFailure's own
  * documented precedence. `success` is not a "failure" in the literal sense; it is included so every
@@ -66,6 +72,15 @@ export const ANALYSIS_SCHEMA = 2;
 export const FAILURE_CLASS_VALUES = [
   'success', 'target-skill-not-invoked', 'policy-denial-observed-without-terminal-evidence',
   'no-authoritative-evidence', 'wrong-target', 'outcome-mismatch', 'final-answer-mismatch', 'unclassified',
+];
+
+export const PRODUCT_ACCESS_MODE_VALUES = [
+  'product-assisted', 'product-visible-no-skill', 'free-baseline-no-product',
+  'contaminated-baseline', 'product-access-not-recorded',
+];
+
+export const PRODUCT_USAGE_MODE_VALUES = [
+  'product-cli', 'direct-build-tool', 'mixed-product-and-build-tool', 'manual-other', 'none',
 ];
 
 const CHECK_EVIDENCE_WELL_FORMED = 'authoritative_evidence_well_formed';
@@ -287,6 +302,8 @@ export function analyzeRunRecord(record, sidecar) {
 
   const skillFields = deriveSkillRelativeFields(record, sidecar, activation_expected, target_skill_invoked);
   if (!skillFields.ok) return { ok: false, error: skillFields.error };
+  const productUsage = deriveProductUsage(sidecar);
+  if (!productUsage.ok) return { ok: false, error: productUsage.error };
 
   const checks = record.grading_checks?.value ?? null;
   const evidenceCheck = findCheck(checks, CHECK_EVIDENCE_WELL_FORMED);
@@ -304,6 +321,13 @@ export function analyzeRunRecord(record, sidecar) {
   const final_answer_consistent = finalAnswerCheck.passed === true;
   const success = record.success?.value ?? null;
   const post_signal_tool_calls = record.post_signal_tool_calls?.value ?? null;
+  const programmatic_product_outcome_matched = productUsage.product_cli_used === true
+    && terminal_authoritative_evidence_present === true
+    && terminal_authoritative_evidence_well_formed === true
+    && expected_outcome_matched === true;
+  const final_answer_protocol_only_failure = expected_outcome_matched === true
+    && final_answer_consistent === false
+    && success === false;
 
   const failure_class = classifyFailure({
     success,
@@ -341,6 +365,14 @@ export function analyzeRunRecord(record, sidecar) {
       final_answer_consistent,
       success,
       failure_class,
+      product_access_mode: productAccessModeFor(record),
+      product_usage_mode: productUsage.product_usage_mode,
+      product_cli_command_count: productUsage.product_cli_command_count,
+      direct_build_tool_command_count: productUsage.direct_build_tool_command_count,
+      other_bash_command_count: productUsage.other_bash_command_count,
+      product_cli_used: productUsage.product_cli_used,
+      programmatic_product_outcome_matched,
+      final_answer_protocol_only_failure,
       // agent_runtime/execution_profile/skill_observation (Section F): the FULL real object for
       // schema>=6, or the literal "not-recorded" sentinel below schema 6 -- never narrowed the way
       // aggregate.mjs's own partition-key projection is, since these are human-readable reporting
@@ -383,6 +415,33 @@ function buildUsageSourceCounts(entries) {
   return counts;
 }
 
+function productAccessModeFor(record) {
+  if (record.condition === 'current-skill') return 'product-assisted';
+  if (record.condition === 'no-skill') return 'product-visible-no-skill';
+  return 'product-access-not-recorded';
+}
+
+function deriveProductUsage(sidecar) {
+  const toolCalls = Array.isArray(sidecar?.tool_calls) ? sidecar.tool_calls : null;
+  if (toolCalls == null) return { ok: false, error: 'accepted-run-audit sidecar tool_calls is missing or not an array' };
+  const productCount = toolCalls.filter((tc) => tc?.tool_kind === 'kmp-test').length;
+  const gradleCount = toolCalls.filter((tc) => tc?.tool_kind === 'gradle').length;
+  const otherBashCount = toolCalls.filter((tc) => tc?.tool_kind === 'other-bash').length;
+  let product_usage_mode = 'none';
+  if (productCount > 0 && gradleCount > 0) product_usage_mode = 'mixed-product-and-build-tool';
+  else if (productCount > 0) product_usage_mode = 'product-cli';
+  else if (gradleCount > 0) product_usage_mode = 'direct-build-tool';
+  else if (otherBashCount > 0) product_usage_mode = 'manual-other';
+  return {
+    ok: true,
+    product_usage_mode,
+    product_cli_command_count: productCount,
+    direct_build_tool_command_count: gradleCount,
+    other_bash_command_count: otherBashCount,
+    product_cli_used: productCount > 0,
+  };
+}
+
 function buildGroupSummary(groupKey, entries, record) {
   const total = entries.length;
   const activationExpectedEntries = entries.filter((e) => e.activation_expected === true);
@@ -397,6 +456,9 @@ function buildGroupSummary(groupKey, entries, record) {
   const evidenceWellFormedCount = entries.filter((e) => e.terminal_authoritative_evidence_well_formed === true).length;
   const outcomeMatchedCount = entries.filter((e) => e.expected_outcome_matched === true).length;
   const successCount = entries.filter((e) => e.success === true).length;
+  const productCliUsedCount = entries.filter((e) => e.product_cli_used === true).length;
+  const programmaticProductOutcomeMatchedCount = entries.filter((e) => e.programmatic_product_outcome_matched === true).length;
+  const finalAnswerProtocolOnlyFailureCount = entries.filter((e) => e.final_answer_protocol_only_failure === true).length;
 
   const failure_class_counts = {};
   for (const cls of FAILURE_CLASS_VALUES) failure_class_counts[cls] = 0;
@@ -445,6 +507,14 @@ function buildGroupSummary(groupKey, entries, record) {
     expected_outcome_matched_rate: rate(outcomeMatchedCount, total),
     success_count: successCount,
     success_rate: rate(successCount, total),
+    product_access_mode_distribution: buildDistribution(entries.map((e) => e.product_access_mode)),
+    product_usage_mode_distribution: buildDistribution(entries.map((e) => e.product_usage_mode)),
+    product_cli_used_count: productCliUsedCount,
+    product_cli_used_rate: rate(productCliUsedCount, total),
+    programmatic_product_outcome_matched_count: programmaticProductOutcomeMatchedCount,
+    programmatic_product_outcome_matched_rate: rate(programmaticProductOutcomeMatchedCount, total),
+    final_answer_protocol_only_failure_count: finalAnswerProtocolOnlyFailureCount,
+    final_answer_protocol_only_failure_rate: rate(finalAnswerProtocolOnlyFailureCount, total),
     failure_class_counts,
     target_skill_invocation_ordinal_distribution: buildDistribution(entries.map((e) => e.target_skill_invocation_ordinal)),
     target_skill_attempt_ordinal_distribution: buildDistribution(entries.map((e) => e.target_skill_attempt_ordinal)),
