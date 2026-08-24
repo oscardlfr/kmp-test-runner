@@ -99,12 +99,13 @@ function pathFromEnv(env) {
 }
 
 export function summarizeProductAccessPreflight(result) {
-  const failed = Array.isArray(result?.checks) ? result.checks.filter((c) => c.ok !== true).length : 0;
+  const failedChecks = Array.isArray(result?.checks) ? result.checks.filter((c) => c.ok !== true) : [];
   return {
     ok: result?.ok === true,
     product_access_mode: result?.product_access_mode ?? 'product-access-not-recorded',
     observed_product_access_mode: result?.observed_product_access_mode ?? 'product-access-not-recorded',
-    failed_check_count: failed,
+    failed_check_count: failedChecks.length,
+    failed_check_ids: failedChecks.map((c) => c.id).filter((id) => typeof id === 'string' && id.length > 0),
     check_count: Array.isArray(result?.checks) ? result.checks.length : 0,
   };
 }
