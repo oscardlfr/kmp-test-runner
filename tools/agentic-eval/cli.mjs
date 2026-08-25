@@ -44,7 +44,7 @@
 // record, never confusable with real evidence by aggregate/validate) -- see
 // rejection-diagnostics.mjs.
 import { readFileSync, readdirSync, existsSync, rmSync, statSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -3542,6 +3542,22 @@ function buildScenarioGradlePrewarm({ sourceRepoDir, pinnedCommit, scenario }) {
   };
 }
 
+function resolveGradleUserHomeSeedDirFromEnv() {
+  const value = process.env.KMP_AGENTIC_EVAL_GRADLE_USER_HOME_SEED_DIR;
+  if (value == null || value === '') return null;
+  const seedDir = resolve(value);
+  let stats;
+  try {
+    stats = statSync(seedDir);
+  } catch (err) {
+    throw new Error(`KMP_AGENTIC_EVAL_GRADLE_USER_HOME_SEED_DIR is not readable: ${seedDir}`);
+  }
+  if (!stats.isDirectory()) {
+    throw new Error(`KMP_AGENTIC_EVAL_GRADLE_USER_HOME_SEED_DIR is not a directory: ${seedDir}`);
+  }
+  return seedDir;
+}
+
 /**
  * Builds the full resolved execution plan (which repetition/condition runs at each order_index)
  * exactly the way runScenarioMatrix itself will -- shared by --dry-run's preview and (implicitly,
@@ -3768,6 +3784,7 @@ async function cmdRunCampaign(args, campaignDesignId) {
   let matrix;
   try {
     const gradlePrewarm = buildScenarioGradlePrewarm({ sourceRepoDir, pinnedCommit: scenario.project_commit, scenario });
+    const gradleUserHomeSeedDir = resolveGradleUserHomeSeedDirFromEnv();
     matrix = await runScenarioCampaign({
       scenario, campaignPlan, seed, model,
       allowedGradleTasks: scenario.policy.allowed_gradle_tasks,
@@ -3782,6 +3799,7 @@ async function cmdRunCampaign(args, campaignDesignId) {
       selectionsByProfileId,
       maxBudgetUsd: budgetCheck.maxBudgetUsd,
       gradlePrewarm,
+      gradleUserHomeSeedDir,
     });
   } catch (err) {
     const incidentResult = finalizeIncident({
@@ -4046,6 +4064,7 @@ async function cmdRun(args) {
   let matrix;
   try {
     const gradlePrewarm = buildScenarioGradlePrewarm({ sourceRepoDir, pinnedCommit: scenario.project_commit, scenario });
+    const gradleUserHomeSeedDir = resolveGradleUserHomeSeedDirFromEnv();
     matrix = await runScenarioMatrix({
       scenario, repeats, seed, model,
       allowedGradleTasks: scenario.policy.allowed_gradle_tasks,
@@ -4061,6 +4080,7 @@ async function cmdRun(args) {
       executionProfile,
       maxBudgetUsd: budgetCheck.maxBudgetUsd,
       gradlePrewarm,
+      gradleUserHomeSeedDir,
     });
   } catch (err) {
     const incidentResult = finalizeIncident({

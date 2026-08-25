@@ -33,6 +33,7 @@ $SourceDir = 'C:\kmp-eval\NowInAndroid-evidence1-coverage-threshold-windows-stag
 $AttestationFile = 'C:\kmp-eval\measurement-scopes\evidence1-claude-windows-isolation-attestation-stageb-v1.json'
 $ScratchDir = 'C:\kmp-eval\scratch\agentic-evidence1-claude-2x2-windows-stage-b-readiness-v1'
 $LogPath = Join-Path $ScratchDir 'STAGE-B-live.log'
+$GradleUserHomeSeedDir = Join-Path $env:USERPROFILE '.gradle'
 $ReadinessLedgerPath = Join-Path $ScratchDir 'READINESS.json'
 
 function Fail($Message) {
@@ -483,6 +484,9 @@ if (-not $claude) { Fail 'claude command not found' }
 if (-not (Test-Path -LiteralPath $HarnessDir)) { Fail 'harness directory missing' }
 if (-not (Test-Path -LiteralPath $SourceDir)) { Fail 'source directory missing' }
 if (-not (Test-Path -LiteralPath $AttestationFile)) { Fail 'attestation file missing' }
+if (-not (Test-Path -LiteralPath $GradleUserHomeSeedDir -PathType Container)) {
+  Fail "prewarmed Gradle user-home seed directory missing: $GradleUserHomeSeedDir"
+}
 
 $forbiddenEnv = Get-ChildItem Env: |
   Where-Object { $_.Name -match 'ANTHROPIC_API_KEY|OPENAI_API_KEY|GOOGLE_API_KEY|AZURE_OPENAI_API_KEY|GH_TOKEN|GITHUB_TOKEN|COPILOT_' } |
@@ -573,6 +577,8 @@ try {
     campaign_dry_run = $dryRunCheck
     max_budget_usd = $MaxBudgetUsd
     source_dir = $SourceDir
+    gradle_user_home_seed_dir_configured = $true
+    gradle_user_home_seed_dir_kind = 'vm-user-gradle-cache'
     launch_policy = 'single authorized live campaign; no retries/replacements/respawns'
   } | ConvertTo-Json -Depth 4
 
@@ -650,6 +656,7 @@ try {
   $psi.UseShellExecute = $false
   $psi.RedirectStandardOutput = $true
   $psi.RedirectStandardError = $true
+  $psi.Environment['KMP_AGENTIC_EVAL_GRADLE_USER_HOME_SEED_DIR'] = $GradleUserHomeSeedDir
   $argumentListProperty = $psi.GetType().GetProperty('ArgumentList')
   if ($null -ne $argumentListProperty) {
     foreach ($argument in $args) { [void]$psi.ArgumentList.Add($argument) }

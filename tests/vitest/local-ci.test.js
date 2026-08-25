@@ -21,7 +21,10 @@ describe('local CI cost gate', () => {
     expect(node18Stage).toContain('openjdk-17-jdk-headless');
     expect(dockerfile).toContain('shellcheck');
     expect(dockerfile).toContain('bats@1.13.0');
-    expect(ci.match(/node-version: '24\.18\.0'/g)?.length).toBe(6);
+    // Hosted CI uses Node 24 in the full heavy matrix plus the focused
+    // agentic-eval lane; this count intentionally catches unreviewed runtime
+    // drift while allowing the cost-saving lane to exist.
+    expect(ci.match(/node-version: '24\.18\.0'/g)?.length).toBe(7);
     expect(ci).toContain("node-version: '18.20.8'");
   });
 

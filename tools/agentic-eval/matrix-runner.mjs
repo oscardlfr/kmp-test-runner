@@ -142,6 +142,7 @@ function assertFreeBaselinePreflight({ productAccessMode, fixtureDir, conditionE
 export async function acquireSharedEvalResources({
   allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator,
   junitEvidenceEnabled = false, runtimeAdapter, executionProfile = null, gradlePrewarm = null,
+  gradleUserHomeSeedDir = null,
 }) {
   // Validated BEFORE any resource below is created (post-review hardening, round 1): the default
   // (claudeCodeRuntimeAdapter) is already validated once, at module load, by defineRuntimeAdapter
@@ -182,6 +183,7 @@ export async function acquireSharedEvalResources({
     // Gradle module's own snapshot directory was never captured at all and leaked on every run.
     const { gradleUserHome, snapshotDir: gradleSnapshotDir, resetToSnapshot, daemonPolicy } = materializeGradleUserHome({
       runPrewarm: gradlePrewarm ?? undefined,
+      seedFromDir: gradleUserHomeSeedDir ?? undefined,
     });
     registerCleanup(() => rmSync(gradleUserHome, { recursive: true, force: true }));
     registerCleanup(() => rmSync(gradleSnapshotDir, { recursive: true, force: true }));
@@ -507,6 +509,7 @@ export async function runScenarioMatrix({
   scenario, repeats, seed, model, allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha,
   runPluginValidator, materializeFixture, cleanupFixture, targetPluginName, targetSkillName, timeoutMs,
   journal = null, runtimeAdapter, executionProfile = null, maxBudgetUsd = 0.60, gradlePrewarm = null,
+  gradleUserHomeSeedDir = null,
 }) {
   // Decision attribution (allow/deny per Bash attempt) is needed for EVERY scenario regardless of
   // outcome_kind (round-7 fix): a no_applicable_tests condition's denied kmp-test-parallel
@@ -526,7 +529,10 @@ export async function runScenarioMatrix({
   const evidenceTask = scenario.expected?.gradle?.evidence_task ?? null;
   const allowedInvocations = scenario.expected?.gradle?.allowed_invocations ?? null;
   const fixtureSetup = scenario.fixture_setup ?? null;
-  const shared = await acquireSharedEvalResources({ allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, junitEvidenceEnabled, runtimeAdapter, executionProfile, gradlePrewarm });
+  const shared = await acquireSharedEvalResources({
+    allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator,
+    junitEvidenceEnabled, runtimeAdapter, executionProfile, gradlePrewarm, gradleUserHomeSeedDir,
+  });
   const { registerCleanup, runCleanup } = shared;
 
   try {
@@ -728,6 +734,7 @@ export async function runScenarioCampaign({
   scenario, campaignPlan, seed, model, allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha,
   runPluginValidator, materializeFixture, cleanupFixture, targetPluginName, targetSkillName, timeoutMs,
   journal = null, selectionsByProfileId, maxBudgetUsd = 0.60, gradlePrewarm = null,
+  gradleUserHomeSeedDir = null,
 }) {
   const decisionAttributionEnabled = true;
   const junitEvidenceEnabled = isJunitEvidenceOutcome(scenario.expected?.outcome_kind);
@@ -757,10 +764,10 @@ export async function runScenarioCampaign({
       // both call it that).
       const { adapter: runtimeAdapter, executionProfile } = selectionsByProfileId[profileId];
       // eslint-disable-next-line no-await-in-loop
-      const shared = await acquireSharedEvalResources({
-        allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator,
-        junitEvidenceEnabled, runtimeAdapter, executionProfile, gradlePrewarm,
-      });
+        const shared = await acquireSharedEvalResources({
+          allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator,
+          junitEvidenceEnabled, runtimeAdapter, executionProfile, gradlePrewarm, gradleUserHomeSeedDir,
+        });
       sharedByProfileId[profileId] = shared;
       acquiredProfileIds.push(profileId);
     }

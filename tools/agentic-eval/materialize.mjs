@@ -6,7 +6,7 @@
 // symlink/wrapper resolution). Nothing under this module ever runs a measured session with a
 // cwd inside this repo or any repo/config-ancestor tree -- every fixture is copied/checked out
 // into a fresh temp directory immediately before use.
-import { mkdtempSync, rmSync, mkdirSync, cpSync, writeFileSync, appendFileSync, realpathSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, cpSync, writeFileSync, appendFileSync, realpathSync, existsSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, basename } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -317,15 +317,25 @@ export function materializeScenarioProject({ sourceRepoDir, pinnedCommit, existi
  * temp GRADLE_USER_HOME itself, so the policy applies regardless of which gradle-invoking
  * command the agent types.
  *
- * runPrewarm is OPTIONAL. Without it, the "snapshot" is of an otherwise-empty directory (just
- * gradle.properties). With it, the caller's writes are captured in the snapshot before it's
- * taken. The isolation guarantee (byte-identical reset between conditions) holds either way.
- * @param {{runPrewarm?: (gradleUserHome: string) => void}} [opts]
+ * seedFromDir is OPTIONAL. When present, it is copied into the fresh GRADLE_USER_HOME before
+ * runPrewarm runs, so offline/restricted-network evaluations can start from a VM-prewarmed cache
+ * while still snapshotting a temp, run-owned directory. runPrewarm is also OPTIONAL. Without it,
+ * the "snapshot" is of the seeded or otherwise-empty directory plus gradle.properties. With it,
+ * the caller's writes are captured in the snapshot before it's taken. The isolation guarantee
+ * (byte-identical reset between conditions) holds either way.
+ * @param {{runPrewarm?: (gradleUserHome: string) => void, seedFromDir?: string | null}} [opts]
  */
-export function materializeGradleUserHome({ runPrewarm } = {}) {
+export function materializeGradleUserHome({ runPrewarm, seedFromDir = null } = {}) {
   const gradleUserHome = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-gradle-'));
   let snapshotDir;
   try {
+    if (seedFromDir) {
+      const seedStat = statSync(seedFromDir);
+      if (!seedStat.isDirectory()) {
+        throw new Error(`GRADLE_USER_HOME seed is not a directory: ${seedFromDir}`);
+      }
+      cpSync(seedFromDir, gradleUserHome, { recursive: true });
+    }
     writeFileSync(join(gradleUserHome, 'gradle.properties'), 'org.gradle.daemon=false\n');
     snapshotDir = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-gradle-snapshot-'));
     if (runPrewarm) runPrewarm(gradleUserHome);

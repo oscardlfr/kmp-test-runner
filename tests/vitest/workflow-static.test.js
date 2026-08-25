@@ -259,6 +259,37 @@ describe('ci.yml PR-19 guards', () => {
     expect(section).toMatch(/npm ci/);
     expect(section).toMatch(/cache:\s+'?npm'?/);
   });
+
+  it('decide exposes an agentic_eval output distinct from heavy', () => {
+    const section = jobSection(wf['ci.yml'], 'decide');
+    expect(section).not.toBeNull();
+    expect(section).toMatch(/agentic_eval:/);
+    expect(section).toMatch(/steps\.filter\.outputs\.agentic_eval/);
+  });
+
+  it('release/main validation always forces the heavy matrix', () => {
+    const section = jobSection(wf['ci.yml'], 'decide');
+    expect(section).not.toBeNull();
+    expect(section).toMatch(/PR_BASE_REF/);
+    expect(section).toMatch(/refs\/heads\/main/);
+    expect(section).toMatch(/Release\/main validation -- heavy=true/);
+  });
+
+  it('agentic-eval-only diffs run a focused agentic-eval job instead of the full heavy matrix', () => {
+    const decide = jobSection(wf['ci.yml'], 'decide');
+    const agentic = jobSection(wf['ci.yml'], 'agentic-eval');
+    expect(decide).not.toBeNull();
+    expect(agentic).not.toBeNull();
+    expect(decide).toMatch(/AGENTIC_EVAL_RE/);
+    expect(decide).toMatch(/tools\/agentic-eval/);
+    expect(decide).toMatch(/tests\/vitest\/agentic-eval-\[\^\/\]\*\\\.test\\\.js/);
+    expect(decide).toMatch(/tests\/fixtures\/fake-claude/);
+    expect(decide).toMatch(/docs\/audits/);
+    expect(agentic).toMatch(/needs\.decide\.outputs\.agentic_eval == 'true'/);
+    expect(agentic).toMatch(/find tests\/vitest -maxdepth 1 -name 'agentic-eval-\*\.test\.js'/);
+    expect(agentic).toMatch(/check-line-endings\.mjs/);
+    expect(agentic).toMatch(/check-executable-fixtures\.mjs/);
+  });
 });
 
 describe('macos-validation.yml', () => {
