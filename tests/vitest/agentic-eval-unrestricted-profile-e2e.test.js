@@ -34,7 +34,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveBash } from '../../tools/agentic-eval/resolve-bash.mjs';
 import { validateAcceptedRunAuditSidecar, crossValidateAcceptedRunAuditAgainstRecord } from '../../tools/agentic-eval/accepted-run-audit.mjs';
-import { validateRejectionRow, REJECTION_DIAGNOSTICS_SCHEMA_V4 } from '../../tools/agentic-eval/rejection-diagnostics.mjs';
+import { validateRejectionRow, REJECTION_DIAGNOSTICS_SCHEMA_V5 } from '../../tools/agentic-eval/rejection-diagnostics.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -411,12 +411,12 @@ describe('5. run -- a genuinely missing tool_result fails the WHOLE matrix close
   // caught that throw but never assigned `rejectionId`, so cli.mjs's own `result.rejectionId == null`
   // branch misclassified a normal, well-understood rejection as a generic "finalizing_matrix"
   // incident instead of the clean "RUN FAILED: <reason>" strict already produces. Fixed by adding
-  // rejection-diagnostics schema 4 (REJECTION_DIAGNOSTICS_SCHEMA_V4): exclusive to a batch whose
+  // rejection-diagnostics schema 5 (REJECTION_DIAGNOSTICS_SCHEMA_V5): exclusive to a batch whose
   // every record is schema>=6 with execution_profile.policy_mode:"not_applicable", policy_sha256
-  // exactly null, and 3 new fields (execution_profile_id/policy_mode/isolation_attestation_sha256)
-  // reporting which profile/attestation actually applied -- v2/v3 stay completely frozen. This test
-  // now proves the FULL, correct, end-to-end rejection shape.
-  it('zero records written for ANY cell, fail-fast reported via the normal RUN FAILED path, a sanitized schema-4 rejection diagnostic written, no accepted-run-audit sidecar anywhere', async () => {
+  // exactly null, profile/attestation fields reporting which profile actually applied, and
+  // privacy-safe per-cell observability for run-record error codes + correlation counts. v2/v3/v4
+  // stay frozen. This test now proves the FULL, correct, end-to-end rejection shape.
+  it('zero records written for ANY cell, fail-fast reported via the normal RUN FAILED path, a sanitized schema-5 rejection diagnostic written, no accepted-run-audit sidecar anywhere', async () => {
     const attestationPath = writeValidAttestation();
     const result = await runCli(
       runArgs(['--seed', '1', '--repeats', '1', ...UNRESTRICTED_EXECUTION_PROFILE_FLAGS(attestationPath)]),
@@ -433,7 +433,7 @@ describe('5. run -- a genuinely missing tool_result fails the WHOLE matrix close
     expect(existsSync(path.join(evidenceDirFor('scenario'), 'audit'))).toBe(false);
 
     const committed = readCommittedRejectionDiagnostic();
-    expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V4);
+    expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V5);
     expect(committed.execution_profile_id).toBe('sandboxed-unrestricted-v1');
     expect(committed.policy_mode).toBe('not_applicable');
     expect(committed.isolation_attestation_sha256).toMatch(/^[0-9a-f]{64}$/);
@@ -468,11 +468,11 @@ describe('6. run -- auth failure and a malformed stream still follow their curre
     expect(listEvidenceFiles('scenario')).toEqual([]);
   }, 30000);
 
-  // Same fixed rejection-diagnostics schema-4 contract as block 5's own test above (see its header
+  // Same fixed rejection-diagnostics schema-5 contract as block 5's own test above (see its header
   // comment for the full root-cause trace) -- a malformed-transcript rejection is ALSO a genuine
-  // fail-fast/hard-gate rejection, so it exercises the identical schema-4 path with a different
+  // fail-fast/hard-gate rejection, so it exercises the identical schema-5 path with a different
   // specific reason (cleanTranscriptOk:false here, toolResultsCompleteOk:false there).
-  it('a harness-integrity failure (malformed transcript) blocks the WHOLE matrix, identically under sandboxed-unrestricted-v1, with a sanitized schema-4 rejection diagnostic written', async () => {
+  it('a harness-integrity failure (malformed transcript) blocks the WHOLE matrix, identically under sandboxed-unrestricted-v1, with a sanitized schema-5 rejection diagnostic written', async () => {
     const attestationPath = writeValidAttestation();
     const result = await runCli(
       runArgs(['--seed', '1', '--repeats', '1', ...UNRESTRICTED_EXECUTION_PROFILE_FLAGS(attestationPath)]),
@@ -487,7 +487,7 @@ describe('6. run -- auth failure and a malformed stream still follow their curre
     expect(listEvidenceFiles('scenario')).toEqual([]);
 
     const committed = readCommittedRejectionDiagnostic();
-    expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V4);
+    expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V5);
     expect(committed.policy_mode).toBe('not_applicable');
     expect(committed.policy_sha256).toBeNull();
     expect(validateRejectionRow(committed).errors).toEqual([]);

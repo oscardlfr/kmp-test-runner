@@ -58,6 +58,7 @@ import { join, resolve, sep } from 'node:path';
 import { resolveRejectedDiagnosticsDir, isRawDirSafeFromAccidentalCommit, promoteTargetsAtomically } from './evidence-io.mjs';
 import { assertCleanOrThrowObject, redactAndVerify } from './privacy.mjs';
 import { RUN_KIND_VALUES, CONDITION_VALUES, PLATFORM_VALUES, PRIVACY_STATUS_VALUES } from './schemas.mjs';
+import { validateCorrelationObservability } from './correlation-observability.mjs';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -73,20 +74,26 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // bump: the moment a real schema:4 file is ever committed to this repo's own git history, the NEXT
 // bump must follow this same dispatch pattern rather than reverting to a plain constant bump.
 //
-// schema 4 (sandboxed-unrestricted-v1 rejection support): the ONE shape exclusive to a batch whose
+// schema 4 (sandboxed-unrestricted-v1 rejection support): the first shape exclusive to a batch whose
 // every record is schema>=6 with execution_profile.policy_mode==="not_applicable" -- no policy
 // hook ever governed such a batch, so policy_sha256 is honestly null (never a stale/synthetic
 // hash) and three new fields (execution_profile_id/policy_mode/isolation_attestation_sha256)
 // report which profile/attestation actually applied. Every OTHER batch (policy-required, or a
 // pre-schema-6 legacy record) still builds v3 exactly as before -- see buildRejectionDiagnostics'
-// own inline dispatch (its `policyModes`/`buildingV4`/`schema` locals), which never selects a
+// own inline dispatch (its `policyModes`/`buildingNotApplicable`/`schema` locals), which never selects a
 // schema via LATEST_REJECTION_DIAGNOSTICS_SCHEMA (a future LATEST bump must never silently
 // redirect an unrelated, policy-required batch away from schema 3).
+//
+// schema 5: the current emitted sandboxed-unrestricted-v1 rejection shape. It keeps schema 4's
+// batch-wide not_applicable fields and adds two per-cell, privacy-safe observability surfaces:
+// closed run-record error codes and correlation-observability v1 count summaries. It still carries
+// no raw transcript content, tool IDs, commands, paths, prompts, responses, or timestamps.
 export const REJECTION_DIAGNOSTICS_SCHEMA_V2 = 2;
 export const REJECTION_DIAGNOSTICS_SCHEMA_V3 = 3;
 export const REJECTION_DIAGNOSTICS_SCHEMA_V4 = 4;
-export const SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS = [REJECTION_DIAGNOSTICS_SCHEMA_V2, REJECTION_DIAGNOSTICS_SCHEMA_V3, REJECTION_DIAGNOSTICS_SCHEMA_V4];
-export const LATEST_REJECTION_DIAGNOSTICS_SCHEMA = REJECTION_DIAGNOSTICS_SCHEMA_V4;
+export const REJECTION_DIAGNOSTICS_SCHEMA_V5 = 5;
+export const SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS = [REJECTION_DIAGNOSTICS_SCHEMA_V2, REJECTION_DIAGNOSTICS_SCHEMA_V3, REJECTION_DIAGNOSTICS_SCHEMA_V4, REJECTION_DIAGNOSTICS_SCHEMA_V5];
+export const LATEST_REJECTION_DIAGNOSTICS_SCHEMA = REJECTION_DIAGNOSTICS_SCHEMA_V5;
 
 // Mirrors registries.mjs's own ID_RE exactly (a small, local copy -- not imported, matching this
 // module's and isolation-attestation.mjs's own established convention of keeping such small
@@ -119,6 +126,10 @@ const CELL_CANONICAL_FIELDS_V2 = [
 // summarizeUnexpectedToolUses) that the calling hard gate already computed -- never reparsed or
 // recomputed by this module.
 const CELL_CANONICAL_FIELDS_V3 = [...CELL_CANONICAL_FIELDS_V2, 'unexpected_tool_uses_count'];
+const CELL_CANONICAL_FIELDS_V5 = [
+  ...CELL_CANONICAL_FIELDS_V3,
+  'record_error_codes', 'correlation_observability',
+];
 
 // Explicit if-chain, never a ternary/fallthrough -- mirrors schemas.mjs's runCanonicalFieldsFor
 // rationale: a naive fallthrough would silently validate an unrecognized future schema against the
@@ -126,6 +137,7 @@ const CELL_CANONICAL_FIELDS_V3 = [...CELL_CANONICAL_FIELDS_V2, 'unexpected_tool_
 // fields are all batch-wide, never per-cell) -- never REJECTION_DIAGNOSTICS_SCHEMA_V4 falling
 // through to the v2 cell shape by accident.
 function cellCanonicalFieldsFor(schema) {
+  if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V5) return CELL_CANONICAL_FIELDS_V5;
   if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V4 || schema === REJECTION_DIAGNOSTICS_SCHEMA_V3) return CELL_CANONICAL_FIELDS_V3;
   return CELL_CANONICAL_FIELDS_V2;
 }
@@ -166,8 +178,10 @@ const REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V4 = [
   ...REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V3,
   'execution_profile_id', 'policy_mode', 'isolation_attestation_sha256',
 ];
+const REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V5 = [...REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V4];
 
 function rejectionCanonicalFieldsFor(schema) {
+  if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V5) return REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V5;
   if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V4) return REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V4;
   if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V3) return REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V3;
   return REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V2;
@@ -529,7 +543,7 @@ function validateAmbientProfileMatrixOk(row) {
   const errors = [];
   if (RUN_KIND_VALUES.includes(row.run_kind)) {
     if (row.run_kind === 'scenario') {
-      if ((row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V3 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V4) && row.matrix_complete === false) {
+      if ((row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V3 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V4 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V5) && row.matrix_complete === false) {
         if (row.ambient_profile_matrix_ok !== null) {
           errors.push({ field: 'ambient_profile_matrix_ok', message: `must be null when matrix_complete is false -- a matrix that fail-fast stopped before finishing never actually evaluated a real cross-cell consensus` });
         }
@@ -602,6 +616,9 @@ export function validateRejectionRow(row) {
   const errors = [];
   const isV3 = row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V3;
   const isV4 = row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V4;
+  const isV5 = row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V5;
+  const isV3OrLater = isV3 || isV4 || isV5;
+  const isNotApplicableSchema = isV4 || isV5;
   const allowedKeys = new Set(rejectionCanonicalFieldsFor(row.schema));
   for (const k of Object.keys(row)) if (!allowedKeys.has(k)) errors.push({ field: k, message: 'unrecognized field' });
   for (const k of allowedKeys) if (!(k in row)) errors.push({ field: k, message: 'missing required field' });
@@ -627,38 +644,38 @@ export function validateRejectionRow(row) {
   errors.push(...validateProvenanceForRunKind(row));
   errors.push(...validateAmbientProfileMatrixOk(row));
   // policy_sha256: a real hash for every policy-required batch (v2, v3, and any future
-  // policy-required schema), but EXACTLY null for a schema:4 (policy_mode:"not_applicable") batch
+  // policy-required schema), but EXACTLY null for a schema:4/5 (policy_mode:"not_applicable") batch
   // -- no policy hook ever governed it, so a real-looking hash there would misrepresent what
   // actually happened. Never converted to "", 0, a synthetic hash, or any other sentinel.
-  if (isV4) {
+  if (isNotApplicableSchema) {
     if (row.policy_sha256 !== null) {
-      errors.push({ field: 'policy_sha256', message: `must be exactly null for schema:${REJECTION_DIAGNOSTICS_SCHEMA_V4} (policy_mode:"not_applicable" -- no policy hook ever governed this batch)` });
+      errors.push({ field: 'policy_sha256', message: `must be exactly null for schema:${row.schema} (policy_mode:"not_applicable" -- no policy hook ever governed this batch)` });
     }
   } else if (typeof row.policy_sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(row.policy_sha256)) {
     errors.push({ field: 'policy_sha256', message: 'must be a lowercase 64-char hex SHA-256 string' });
   }
 
-  // Schema 4-only top-level fields: exclusive to the policy_mode:"not_applicable" shape. Never
+  // Schema 4/5-only top-level fields: exclusive to the policy_mode:"not_applicable" shape. Never
   // checked for v2/v3 here -- rejectionCanonicalFieldsFor/the closed-key loop above already
   // enforces that a v2/v3 row must NOT carry them (they are simply absent from those field lists).
-  if (isV4) {
+  if (isNotApplicableSchema) {
     if (typeof row.execution_profile_id !== 'string' || !EXECUTION_PROFILE_ID_RE.test(row.execution_profile_id)) {
       errors.push({ field: 'execution_profile_id', message: `must be a non-empty lowercase id matching ${EXECUTION_PROFILE_ID_RE}` });
     }
     if (row.policy_mode !== 'not_applicable') {
-      errors.push({ field: 'policy_mode', message: `must be exactly "not_applicable" for schema:${REJECTION_DIAGNOSTICS_SCHEMA_V4}` });
+      errors.push({ field: 'policy_mode', message: `must be exactly "not_applicable" for schema:${row.schema}` });
     }
     if (typeof row.isolation_attestation_sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(row.isolation_attestation_sha256)) {
       errors.push({ field: 'isolation_attestation_sha256', message: 'must be a lowercase 64-char hex SHA-256 string' });
     }
   }
 
-  // Schema 3/4-only top-level fields: matrix_complete/planned_cell_count/executed_cell_count/
-  // raw_transcripts_persisted. Gated on isV3||isV4 -- a schema:2 row (including the two preserved
+  // Schema 3/4/5 top-level fields: matrix_complete/planned_cell_count/executed_cell_count/
+  // raw_transcripts_persisted. Gated on isV3OrLater -- a schema:2 row (including the two preserved
   // incident files) never has these keys at all, and rejectionCanonicalFieldsFor/the closed-key
   // loop above already enforces that a v2 row must NOT carry them. Schema 4 inherits this whole
   // block from schema 3 unchanged -- fail-fast partial-matrix support is orthogonal to policy_mode.
-  if (isV3 || isV4) {
+  if (isV3OrLater) {
     if (typeof row.matrix_complete !== 'boolean') {
       errors.push({ field: 'matrix_complete', message: 'must be a boolean' });
     }
@@ -767,7 +784,7 @@ export function validateRejectionRow(row) {
       errors.push(...validateForeignSkillSummary(cell.foreign_skill_summary, `cells[${i}].foreign_skill_summary`));
       errors.push(...validateAmbientSkillProfile(cell.ambient_skill_profile, `cells[${i}].ambient_skill_profile`));
 
-      // Schema 3-only per-cell field: unexpected_tool_uses_count, plus the single most important
+      // Schema 3/4/5 per-cell field: unexpected_tool_uses_count, plus the single most important
       // invariant this whole fix adds -- a strict BICONDITIONAL with failed_checks containing
       // 'noUnexpectedToolsOk'. noUnexpectedToolsOk is defined (cell-integrity.mjs) as exactly
       // `findUnexpectedToolUses(...).length === 0`, and this count IS that same `.length` --
@@ -775,7 +792,7 @@ export function validateRejectionRow(row) {
       // attributed to noUnexpectedToolsOk that records zero unexpected tools anywhere" -- the
       // precise, unrecoverable shape of the 2026-08 canary incident -- structurally impossible to
       // write ever again.
-      if (isV3 || isV4) {
+      if (isV3OrLater) {
         if (!(Number.isInteger(cell.unexpected_tool_uses_count) && cell.unexpected_tool_uses_count >= 0)) {
           errors.push({ field: `cells[${i}].unexpected_tool_uses_count`, message: 'must be a non-negative integer' });
         } else if (cellFailedChecksOk) {
@@ -791,11 +808,29 @@ export function validateRejectionRow(row) {
           }
         }
       }
+      if (isV5) {
+        if (!Array.isArray(cell.record_error_codes) || cell.record_error_codes.some((code) => typeof code !== 'string' || !/^[a-z][a-z0-9_]*$/.test(code))) {
+          errors.push({ field: `cells[${i}].record_error_codes`, message: 'must be an array of closed lowercase snake_case error-code strings' });
+        } else if (new Set(cell.record_error_codes).size !== cell.record_error_codes.length || JSON.stringify([...cell.record_error_codes].sort()) !== JSON.stringify(cell.record_error_codes)) {
+          errors.push({ field: `cells[${i}].record_error_codes`, message: 'must be sorted and unique for canonical committed diagnostics' });
+        }
+        const correlationValidation = validateCorrelationObservability(cell.correlation_observability);
+        if (!correlationValidation.ok) {
+          errors.push({ field: `cells[${i}].correlation_observability`, message: `must match correlation-observability schema v1 (${JSON.stringify(correlationValidation.errors)})` });
+        } else {
+          if (cell.correlation_observability.condition !== cell.condition) {
+            errors.push({ field: `cells[${i}].correlation_observability.condition`, message: 'must match the rejection cell condition exactly' });
+          }
+          if (cell.correlation_observability.policy_mode !== row.policy_mode) {
+            errors.push({ field: `cells[${i}].correlation_observability.policy_mode`, message: 'must match the rejection batch policy_mode exactly' });
+          }
+        }
+      }
     }
     if (!anyCellHasFailedCheck) {
       errors.push({ field: 'cells', message: 'at least one cell must have a non-empty failed_checks -- a rejection diagnostic with no recorded failure anywhere is not a real rejection' });
     }
-    if ((isV3 || isV4) && Number.isInteger(row.executed_cell_count) && row.executed_cell_count !== row.cells.length) {
+    if (isV3OrLater && Number.isInteger(row.executed_cell_count) && row.executed_cell_count !== row.cells.length) {
       errors.push({ field: 'executed_cell_count', message: `must equal cells.length (${row.cells.length}) -- only executed cells ever produce a record, and every record produces exactly one cell` });
     }
     if (runIdsOk) {
@@ -840,7 +875,7 @@ export function validateRejectionRow(row) {
  * (evaluateNamedChecks' failedChecks/failedChecksA/failedChecksB, scenarioHardGate's cellResults,
  * cell-integrity.mjs's unexpectedToolUsesCount/unexpectedTools) -- see cli.mjs's own call sites for
  * how each run_kind maps its own shape into the uniform inputs here. Constructs schema
- * REJECTION_DIAGNOSTICS_SCHEMA_V4 when every record in the batch is schema>=6 with
+ * REJECTION_DIAGNOSTICS_SCHEMA_V5 when every record in the batch is schema>=6 with
  * execution_profile.policy_mode==="not_applicable" (see the dispatch this function runs, right
  * after the existing BATCH_WIDE_FIELDS agreement check, for the exact rule -- NEVER
  * LATEST_REJECTION_DIAGNOSTICS_SCHEMA used as that selector), REJECTION_DIAGNOSTICS_SCHEMA_V3
@@ -866,6 +901,10 @@ export function validateRejectionRow(row) {
  *   run_id -> the shared cell-integrity evaluation's own unexpectedTools list for that cell.
  *   Required, exact-set. Never deduplicated/sorted (unlike foreign_skill_names) -- transcript
  *   ORDER and DUPLICATE occurrences are themselves the forensic signal.
+ * @param {Record<string, object>|null} [correlationObservabilityByRunId] - run_id -> the
+ *   correlation-observability schema v1 count-only projection already produced by matrix-runner.
+ *   Required, exact-set, for schema:5. Never contains tool ids, commands, transcript content,
+ *   paths, prompts, responses, or timestamps.
  * @param {Record<string, number>} captureOrdinalByRunId - run_id -> a non-negative integer
  *   execution-position ordinal used to derive that cell's transcript_filename via
  *   deriveTranscriptFilename. Required, exact-set of run_ids, and the value set must form the
@@ -887,6 +926,7 @@ export function buildRejectionDiagnostics({
   unexpectedToolsByRunId, captureOrdinalByRunId, rawTranscriptsPersisted,
   foreignSkillNamesByRunId = {}, ambientProfileMatrixOk = null,
   plannedCellCount = null, executedCellCount = null, matrixComplete = null,
+  correlationObservabilityByRunId = null,
 }) {
   if (!Array.isArray(records) || records.length === 0) {
     throw new Error('buildRejectionDiagnostics: records must be a non-empty array');
@@ -957,8 +997,17 @@ export function buildRejectionDiagnostics({
   if (policyModes.size !== 1) {
     throw new Error(`buildRejectionDiagnostics: records disagree on execution_profile.policy_mode (${JSON.stringify([...policyModes])}) -- one harness invocation always resolves exactly one execution profile for its whole batch`);
   }
-  const buildingV4 = [...policyModes][0] === 'not_applicable';
-  const schema = buildingV4 ? REJECTION_DIAGNOSTICS_SCHEMA_V4 : REJECTION_DIAGNOSTICS_SCHEMA_V3;
+  const buildingNotApplicable = [...policyModes][0] === 'not_applicable';
+  const schema = buildingNotApplicable ? REJECTION_DIAGNOSTICS_SCHEMA_V5 : REJECTION_DIAGNOSTICS_SCHEMA_V3;
+  if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V5) {
+    requireExactRunIdKeys(correlationObservabilityByRunId, 'correlationObservabilityByRunId');
+    for (const [runId, summary] of Object.entries(correlationObservabilityByRunId)) {
+      const validation = validateCorrelationObservability(summary);
+      if (!validation.ok) {
+        throw new Error(`buildRejectionDiagnostics: correlationObservabilityByRunId['${runId}'] must be a valid correlation-observability schema v1 object (${JSON.stringify(validation.errors)})`);
+      }
+    }
+  }
 
   // v4-only batch-wide fields -- copied EXCLUSIVELY from records[].execution_profile (never
   // consulted from a live registry, never derived from policy_sha256:null, never accepted as a
@@ -966,7 +1015,7 @@ export function buildRejectionDiagnostics({
   // themselves actually carry). Batch-wide agreement is proven the SAME way as BATCH_WIDE_FIELDS
   // above -- a mismatch fails closed with a specific reason, never silently picks the first value.
   let executionProfileBatchWide = {};
-  if (buildingV4) {
+  if (buildingNotApplicable) {
     const profileIds = new Set(records.map((r) => r.execution_profile.id));
     if (profileIds.size !== 1) {
       throw new Error(`buildRejectionDiagnostics: records disagree on execution_profile.id (${JSON.stringify([...profileIds])}) within one not_applicable batch`);
@@ -1016,6 +1065,10 @@ export function buildRejectionDiagnostics({
     foreign_skill_summary: r.foreign_skill_summary,
     ambient_skill_profile: r.ambient_skill_profile,
     unexpected_tool_uses_count: unexpectedToolUsesCountByRunId[r.run_id],
+    ...(schema === REJECTION_DIAGNOSTICS_SCHEMA_V5 ? {
+      record_error_codes: [...new Set((r.errors ?? []).map((e) => e?.code).filter((code) => typeof code === 'string' && code.length > 0))].sort(),
+      correlation_observability: JSON.parse(JSON.stringify(correlationObservabilityByRunId[r.run_id])),
+    } : {}),
   }));
 
   const foreignSkillSummary = { rejected: 0, confirmed: 0, incomplete: 0 };

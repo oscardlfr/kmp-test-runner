@@ -17,6 +17,7 @@ import {
   REJECTION_DIAGNOSTICS_SCHEMA_V2,
   REJECTION_DIAGNOSTICS_SCHEMA_V3,
   REJECTION_DIAGNOSTICS_SCHEMA_V4,
+  REJECTION_DIAGNOSTICS_SCHEMA_V5,
   buildRejectionDiagnostics,
   validateRejectionRow,
   validateRejectionLocalRow,
@@ -52,6 +53,7 @@ function zeroToolDefaultsFor(records) {
     unexpectedToolUsesCountByRunId: Object.fromEntries(ids.map((id) => [id, 0])),
     unexpectedToolsByRunId: Object.fromEntries(ids.map((id) => [id, []])),
     captureOrdinalByRunId: Object.fromEntries(ids.map((id, i) => [id, i])),
+    correlationObservabilityByRunId: Object.fromEntries(records.map((r) => [r.run_id, correlationSummary(r.condition, r.execution_profile?.policy_mode ?? 'required')])),
   };
 }
 function buildDiag(opts) {
@@ -143,7 +145,34 @@ function unrestrictedScenarioRecord(overrides = {}) {
   return scenarioRecord({ schema: 6, execution_profile: unrestrictedProfile(), policy_sha256: null, ...overrides });
 }
 
-// Schema 2 -> 3 -> 4 (preserve rejected matrix forensics; sandboxed-unrestricted-v1 support): v2
+function correlationSummary(condition = 'no-skill', policyMode = 'not_applicable', overrides = {}) {
+  return {
+    schema: 1,
+    condition,
+    policy_mode: policyMode,
+    tool_use_counts_by_kind: { shell: 0, skill: 0, other: 0 },
+    missing_id_counts_by_kind: { shell: 0, skill: 0, other: 0 },
+    missing_result_counts_by_kind: { shell: 0, skill: 0, other: 0 },
+    dispatch_status_counts: {
+      hook_evaluated: 0,
+      pre_dispatch_blocked: 0,
+      result_correlated_no_policy: 0,
+      unaccounted: 0,
+      unclassified: 0,
+    },
+    correlation_issue_counts: {
+      duplicate_tool_use_id: 0,
+      orphan_tool_result_missing_id: 0,
+      orphan_tool_result_unknown_id: 0,
+      duplicate_tool_result: 0,
+      malformed_stream_line: 0,
+    },
+    timeout_tolerance_applied: false,
+    ...overrides,
+  };
+}
+
+// Schema 2 -> 3 -> 4 -> 5 (preserve rejected matrix forensics; sandboxed-unrestricted-v1 support): v2
 // gained per-cell unexpected_tool_uses_count + top-level matrix_complete/planned_cell_count/
 // executed_cell_count/raw_transcripts_persisted going to v3; v3 gained execution_profile_id/
 // policy_mode/isolation_attestation_sha256 going to v4, EXCLUSIVE to a policy_mode:"not_applicable"
@@ -153,12 +182,13 @@ function unrestrictedScenarioRecord(overrides = {}) {
 // declared incident evidence that must keep validating, and v2/v3 stay frozen forever (their own
 // field sets, and policy_sha256's own real-hex64 requirement, never change again). The builder
 // picks v3 or v4 per batch (see buildRejectionDiagnostics' own dispatch) -- never emits v2.
-it('LATEST_REJECTION_DIAGNOSTICS_SCHEMA is 4, and the validator still supports 2 and 3', () => {
+it('LATEST_REJECTION_DIAGNOSTICS_SCHEMA is 5, and the validator still supports 2, 3, and 4', () => {
   expect(REJECTION_DIAGNOSTICS_SCHEMA_V2).toBe(2);
   expect(REJECTION_DIAGNOSTICS_SCHEMA_V3).toBe(3);
   expect(REJECTION_DIAGNOSTICS_SCHEMA_V4).toBe(4);
-  expect(LATEST_REJECTION_DIAGNOSTICS_SCHEMA).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V4);
-  expect(SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS).toEqual([REJECTION_DIAGNOSTICS_SCHEMA_V2, REJECTION_DIAGNOSTICS_SCHEMA_V3, REJECTION_DIAGNOSTICS_SCHEMA_V4]);
+  expect(REJECTION_DIAGNOSTICS_SCHEMA_V5).toBe(5);
+  expect(LATEST_REJECTION_DIAGNOSTICS_SCHEMA).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V5);
+  expect(SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS).toEqual([REJECTION_DIAGNOSTICS_SCHEMA_V2, REJECTION_DIAGNOSTICS_SCHEMA_V3, REJECTION_DIAGNOSTICS_SCHEMA_V4, REJECTION_DIAGNOSTICS_SCHEMA_V5]);
 });
 
 describe('buildRejectionDiagnostics -- pure construction', () => {
@@ -172,7 +202,7 @@ describe('buildRejectionDiagnostics -- pure construction', () => {
       foreignSkillNamesByRunId: { [recordA.run_id]: ['some-other-skill'], [recordB.run_id]: [] },
     });
     // record() carries no execution_profile (a real, policy-required calibration record) --
-    // schema 3, never the current LATEST (which now means something else: schema 4, exclusive to
+    // schema 3, never the current LATEST (which now means something else: schema 5, exclusive to
     // a policy_mode:"not_applicable" batch neither recordA nor recordB is).
     expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V3);
     expect(committed.run_kind).toBe('calibration');
@@ -383,7 +413,7 @@ describe('validateRejectionRow -- schema validation', () => {
     const cellB = { run_id: 'r2', condition: 'current-skill', repetition_index: null, order_index: null, skill_source_sha: 'a'.repeat(40), model_resolved: 'claude-sonnet-5-fake-resolved', claude_code_version: '1.2.3-fake', failed_checks: [], foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 }, ambient_skill_profile: AMBIENT_PROFILE_FIXTURE, unexpected_tool_uses_count: 0 };
     return {
       // Explicitly v3 (a real policy_sha256 below, no execution_profile) -- never
-      // LATEST_REJECTION_DIAGNOSTICS_SCHEMA, which now means schema 4 and requires
+      // LATEST_REJECTION_DIAGNOSTICS_SCHEMA, which now means schema 5 and requires
       // policy_sha256:null instead.
       schema: REJECTION_DIAGNOSTICS_SCHEMA_V3,
       rejection_id: '11111111-1111-1111-1111-111111111111',
@@ -1695,17 +1725,18 @@ describe('buildRejectionDiagnostics -- schema-3 fields (preserve rejected matrix
 });
 
 // ---------------------------------------------------------------------------
-// Rejection-diagnostics schema 4 (sandboxed-unrestricted-v1 support). Authorized scope expansion,
+// Rejection-diagnostics schema 4/5 (sandboxed-unrestricted-v1 support). Authorized scope expansion,
 // mid-session, after the fake E2E suite (agentic-eval-unrestricted-profile-e2e.test.js) proved a
 // genuine rejection under the new execution profile was silently misclassified: policy_sha256 is
 // honestly null for a policy_mode:"not_applicable" batch (Decision F/G, PR 4's own established
 // pattern), but the pre-existing validator unconditionally required a real hex64 hash, so
 // writeRejectedRunDiagnostics() threw internally on every such rejection and cli.mjs's own
 // `result.rejectionId == null` branch silently fell back to a generic "finalizing_matrix" incident
-// instead of the clean "RUN FAILED: <specific reason>" strict already produces. Schema 4 reports
+// instead of the clean "RUN FAILED: <specific reason>" strict already produces. Schema 4 reported
 // the real facts instead: execution_profile_id/policy_mode/isolation_attestation_sha256, and an
-// honestly-null policy_sha256 -- v2 and v3 stay frozen exactly as they were (their own field sets
-// unchanged, policy_sha256 still a required real hex64 for either).
+// honestly-null policy_sha256. Schema 5 keeps that shape and adds privacy-safe per-cell
+// record_error_codes + correlation_observability summaries. v2/v3/v4 stay frozen exactly as they
+// were (their own field sets unchanged, policy_sha256 still a required real hex64 for v2/v3).
 // ---------------------------------------------------------------------------
 describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mode:"not_applicable") support', () => {
   describe('v2 and v3 stay frozen -- policy_sha256 is still a required real hex64 hash for either', () => {
@@ -1740,7 +1771,7 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
     });
   });
 
-  describe('buildRejectionDiagnostics -- dispatches to v3 or v4, never via LATEST_REJECTION_DIAGNOSTICS_SCHEMA', () => {
+  describe('buildRejectionDiagnostics -- dispatches to v3 or v5, never via LATEST_REJECTION_DIAGNOSTICS_SCHEMA', () => {
     it('a policy-required (schema<6, or no execution_profile) batch still builds v3, byte-identical to before this addition', () => {
       const r = record();
       const { committed } = buildDiag({ runKind: 'calibration', records: [r], failedChecksByRunId: { [r.run_id]: [] } });
@@ -1751,18 +1782,20 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
       expect('isolation_attestation_sha256' in committed).toBe(false);
     });
 
-    it('a policy_mode:"not_applicable" batch builds v4, with policy_sha256 honestly null and the 3 new fields populated from records[].execution_profile', () => {
+    it('a policy_mode:"not_applicable" batch builds v5, with policy_sha256 honestly null, execution-profile facts, error codes, and correlation observability', () => {
       const r = unrestrictedRecord();
       const { committed } = buildDiag({ runKind: 'calibration', records: [r], failedChecksByRunId: { [r.run_id]: ['skillSelectionOk'] } });
-      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V4);
+      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V5);
       expect(committed.policy_sha256).toBeNull();
       expect(committed.execution_profile_id).toBe('sandboxed-unrestricted-v1');
       expect(committed.policy_mode).toBe('not_applicable');
       expect(committed.isolation_attestation_sha256).toBe('e'.repeat(64));
+      expect(committed.cells[0].record_error_codes).toEqual([]);
+      expect(committed.cells[0].correlation_observability.policy_mode).toBe('not_applicable');
       expect(validateRejectionRow(committed).errors).toEqual([]);
     });
 
-    it('a not_applicable scenario batch (2 cells) also builds v4 cleanly, matching the real fail-fast-rejection shape', () => {
+    it('a not_applicable scenario batch (2 cells) also builds v5 cleanly, matching the real fail-fast-rejection shape', () => {
       const r1 = unrestrictedScenarioRecord();
       const r2 = unrestrictedScenarioRecord({ run_id: 'kampkit-current-skill-bbbb2222', condition: 'current-skill', skill_source_sha: 'a'.repeat(40), repetition_index: 0, order_index: 1 });
       const { committed } = buildDiag({
@@ -1772,11 +1805,73 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
         unexpectedToolsByRunId: { [r1.run_id]: [], [r2.run_id]: [{ name: 'Read', event_index: 3 }] },
         plannedCellCount: 4, executedCellCount: 2, ambientProfileMatrixOk: null,
       });
-      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V4);
+      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V5);
       expect(committed.matrix_complete).toBe(false);
       expect(committed.policy_sha256).toBeNull();
       expect(committed.execution_profile_id).toBe('sandboxed-unrestricted-v1');
       expect(validateRejectionRow(committed).errors).toEqual([]);
+    });
+
+    it('preserves junit evidence capture error codes as closed per-cell metadata, never raw messages', () => {
+      const r = unrestrictedScenarioRecord({
+        errors: [
+          { code: 'junit_evidence_capture_incomplete', message: 'raw explanatory text that must not be copied' },
+        ],
+      });
+      const { committed } = buildDiag({
+        runKind: 'scenario',
+        records: [r],
+        failedChecksByRunId: { [r.run_id]: ['junitCaptureCompleteOk'] },
+        plannedCellCount: 1,
+        executedCellCount: 1,
+        ambientProfileMatrixOk: true,
+      });
+      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V5);
+      expect(committed.cells[0].record_error_codes).toEqual(['junit_evidence_capture_incomplete']);
+      expect(JSON.stringify(committed)).not.toContain('raw explanatory text');
+      expect(validateRejectionRow(committed).errors).toEqual([]);
+    });
+
+    it('preserves dispatch-accounting counts for a hookAccountingOk rejection without tool ids or commands', () => {
+      const r = unrestrictedScenarioRecord();
+      const correlation = correlationSummary('no-skill', 'not_applicable', {
+        tool_use_counts_by_kind: { shell: 2, skill: 0, other: 0 },
+        dispatch_status_counts: {
+          hook_evaluated: 0,
+          pre_dispatch_blocked: 0,
+          result_correlated_no_policy: 1,
+          unaccounted: 1,
+          unclassified: 0,
+        },
+      });
+      const { committed } = buildDiag({
+        runKind: 'scenario',
+        records: [r],
+        failedChecksByRunId: { [r.run_id]: ['hookAccountingOk'] },
+        plannedCellCount: 1,
+        executedCellCount: 1,
+        ambientProfileMatrixOk: true,
+        correlationObservabilityByRunId: { [r.run_id]: correlation },
+      });
+      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V5);
+      expect(committed.cells[0].correlation_observability.dispatch_status_counts.unaccounted).toBe(1);
+      expect(committed.cells[0].correlation_observability.tool_use_counts_by_kind.shell).toBe(2);
+      expect(JSON.stringify(committed)).not.toMatch(/toolu_|kmp-test|gradle|\\.jsonl/);
+      expect(validateRejectionRow(committed).errors).toEqual([]);
+    });
+
+    it('throws instead of writing a v5 diagnostic when correlation observability is missing for one run', () => {
+      const r1 = unrestrictedScenarioRecord();
+      const r2 = unrestrictedScenarioRecord({ run_id: 'kampkit-no-skill-cccc3333', repetition_index: 0, order_index: 1 });
+      expect(() => buildDiag({
+        runKind: 'scenario',
+        records: [r1, r2],
+        failedChecksByRunId: { [r1.run_id]: ['hookAccountingOk'], [r2.run_id]: [] },
+        plannedCellCount: 2,
+        executedCellCount: 2,
+        ambientProfileMatrixOk: true,
+        correlationObservabilityByRunId: { [r1.run_id]: correlationSummary('no-skill', 'not_applicable') },
+      })).toThrow(/correlationObservabilityByRunId/);
     });
 
     it('throws a specific, closed reason when records disagree on execution_profile.policy_mode (a caller-assembled inconsistency, never a real production shape)', () => {
@@ -1955,6 +2050,35 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
       row.cells = row.cells.map((c) => ({ ...c, repetition_index: 0, order_index: 0 }));
       const { errors } = validateRejectionRow(row);
       expect(errors.some((e) => e.field === 'ambient_profile_matrix_ok')).toBe(true);
+    });
+
+    function unrestrictedValidV5Row() {
+      const row = unrestrictedValidRow({ schema: REJECTION_DIAGNOSTICS_SCHEMA_V5 });
+      row.cells = row.cells.map((cell) => ({
+        ...cell,
+        record_error_codes: [],
+        correlation_observability: correlationSummary(cell.condition, row.policy_mode),
+      }));
+      return row;
+    }
+
+    it('accepts a well-formed schema-5 row with per-cell observability cleanly', () => {
+      expect(validateRejectionRow(unrestrictedValidV5Row()).errors).toEqual([]);
+    });
+
+    it('rejects schema-5 record_error_codes when they are duplicated or not canonical sorted order', () => {
+      const row = unrestrictedValidV5Row();
+      row.cells[0].record_error_codes = ['zeta_code', 'alpha_code', 'alpha_code'];
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'cells[0].record_error_codes' && /sorted and unique/.test(e.message))).toBe(true);
+    });
+
+    it('rejects schema-5 correlation_observability when condition or policy_mode drift from the owning cell', () => {
+      const row = unrestrictedValidV5Row();
+      row.cells[0].correlation_observability = correlationSummary('current-skill', 'required');
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'cells[0].correlation_observability.condition')).toBe(true);
+      expect(errors.some((e) => e.field === 'cells[0].correlation_observability.policy_mode')).toBe(true);
     });
   });
 });
