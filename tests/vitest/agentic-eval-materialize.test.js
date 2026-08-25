@@ -46,13 +46,16 @@ afterEach(() => {
 });
 
 describe('materializeSkillSnapshot', () => {
+  // In GitHub's default shallow checkout this historical SHA may require a real bounded
+  // `git fetch` before archive validation. Keep the assertion strict, but give Git IO
+  // enough room that runner/network jitter is not reported as a semantic failure.
   it('extracts and validates a real pinned-SHA snapshot from this repo', async () => {
     const { snapshotDir, validation } = await materializeSkillSnapshot({ repoRoot: REPO_ROOT, sha: KNOWN_SHA, validateFn: runValidator });
     cleanupDirs.push(snapshotDir);
     expect(validation.ok).toBe(true);
     expect(existsSync(path.join(snapshotDir, '.claude-plugin', 'plugin.json'))).toBe(true);
     expect(existsSync(path.join(snapshotDir, '.skills', 'kmp-test-runner', 'SKILL.md'))).toBe(true);
-  });
+  }, 15_000);
 
   // Uses the live HEAD (not KNOWN_SHA above, which is intentionally a fixed historical pin for
   // mechanism-only tests) because this test's whole point is content-sensitive: it proves the
