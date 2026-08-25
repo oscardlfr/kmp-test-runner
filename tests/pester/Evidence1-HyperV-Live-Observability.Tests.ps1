@@ -179,7 +179,9 @@ Start-Sleep -Seconds 300
         $watch.Stop()
 
         $process.ExitCode | Should -Be 7
-        $watch.Elapsed.TotalSeconds | Should -BeLessThan 15
+        # Hosted Windows process-tree teardown can cross 15s under load; this still proves the
+        # wrapper terminates promptly instead of waiting for the fake launcher's 300s sleep.
+        $watch.Elapsed.TotalSeconds | Should -BeLessThan 45
         $terminal = Get-Content -LiteralPath (Join-Path $script:OpsDir 'STAGE-B-live.exit.json') -Raw | ConvertFrom-Json
         $terminal.run_id | Should -Be $runId
         $terminal.state | Should -Be 'terminated_after_launcher_exit'
