@@ -4,10 +4,10 @@
 // idiom of real subprocess tests over mocking.
 import { describe, it, expect, afterEach } from 'vitest';
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   materializeSkillSnapshot,
   materializeCalibrationProject,
@@ -549,6 +549,56 @@ describe('materializeSkillSnapshot', () => {
   }, 30000); // real init + 2 commits + a --no-local shallow clone + backfill-and-archive: several
   // real git subprocess spawns, slow enough on Windows CI runners to trip vitest's default 5000ms
   // per-test timeout (observed: build (windows-latest) timing out here with no other failure).
+
+  it('serializes concurrent shallow backfills against the same clone', async () => {
+    const originDir = mkdtempSync(path.join(os.tmpdir(), 'aemat-origin-'));
+    cleanupDirs.push(originDir);
+    gitViaBash(['init', '-q'], originDir);
+    gitViaBash(['config', 'user.email', 'test@example.com'], originDir);
+    gitViaBash(['config', 'user.name', 'Test'], originDir);
+    mkdirSync(path.join(originDir, '.claude-plugin'), { recursive: true });
+    mkdirSync(path.join(originDir, '.skills', 'kmp-test-runner'), { recursive: true });
+    writeFileSync(path.join(originDir, '.claude-plugin', 'plugin.json'), '{}\n');
+    writeFileSync(path.join(originDir, '.skills', 'kmp-test-runner', 'SKILL.md'), '# stub\n');
+    gitViaBash(['add', '-A'], originDir);
+    gitViaBash(['commit', '-q', '-m', 'first'], originDir);
+    const firstSha = gitViaBash(['rev-parse', 'HEAD'], originDir).trim();
+    writeFileSync(path.join(originDir, 'marker2.txt'), 'second commit\n');
+    gitViaBash(['add', '-A'], originDir);
+    gitViaBash(['commit', '-q', '-m', 'second'], originDir);
+
+    const shallowDir = mkdtempSync(path.join(os.tmpdir(), 'aemat-shallow-concurrent-'));
+    rmSync(shallowDir, { recursive: true, force: true });
+    gitViaBash(['clone', '-q', '--depth', '1', '--no-local', toPosixPath(originDir), toPosixPath(shallowDir)], os.tmpdir());
+    cleanupDirs.push(shallowDir);
+
+    const materializeUrl = pathToFileURL(path.join(REPO_ROOT, 'tools', 'agentic-eval', 'materialize.mjs')).href;
+    const childScript = `
+      import { rmSync } from 'node:fs';
+      import { materializeSkillSnapshot } from ${JSON.stringify(materializeUrl)};
+      const [repoRoot, sha] = process.argv.slice(1);
+      const result = await materializeSkillSnapshot({
+        repoRoot,
+        sha,
+        validateFn: async () => ({ ok: true, summary: 'stub' }),
+      });
+      rmSync(result.snapshotDir, { recursive: true, force: true });
+    `;
+
+    const runs = Array.from({ length: 4 }, () => new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, ['--input-type=module', '-e', childScript, shallowDir, firstSha], {
+        cwd: REPO_ROOT,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stderr = '';
+      child.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
+      child.on('error', reject);
+      child.on('close', (status) => resolve({ status, stderr }));
+    }));
+
+    const results = await Promise.all(runs);
+    expect(results).toEqual(Array.from({ length: 4 }, () => ({ status: 0, stderr: '' })));
+  }, 30000);
 });
 
 describe('materializeCalibrationProject', () => {
