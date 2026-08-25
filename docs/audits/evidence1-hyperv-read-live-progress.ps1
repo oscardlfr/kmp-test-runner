@@ -153,7 +153,7 @@ if ($vm.State -eq 'Running' -and (Test-Path -LiteralPath $GuestCredentialPath -P
                     }
                 }
                 $processFacts = @(Get-CimInstance Win32_Process |
-                    Where-Object { $_.Name -match '^(node|claude|powershell|pwsh)\.exe$' } |
+                    Where-Object { $_.Name -match '^(node|claude|powershell|pwsh|java|javaw|gradle|cmd|conhost)\.exe$' } |
                     ForEach-Object {
                         $process = Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue
                         [pscustomobject]@{

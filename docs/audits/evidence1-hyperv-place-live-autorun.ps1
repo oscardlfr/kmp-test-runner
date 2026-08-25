@@ -8,15 +8,16 @@ param(
     [string]$ContractSourcePath = (Join-Path $PSScriptRoot 'evidence1-live-run-contract.psm1'),
     [string]$GuestOpsDir = 'C:\Evidence1Ops',
     [string]$ReportPath = 'C:\kmp-eval\scratch\hyperv-place-live-autorun\HYPERV-PLACE-LIVE-AUTORUN.json',
-    [string]$LiveAuthorizationPhrase = ''
+    [string]$LiveAuthorizationPhrase = '',
+    [switch]$SkipStartupEntry
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $RequiredLivePhrase = (
-    'AUTORIZO HASTA 16 SESIONES LIVE NUEVAS DEL EVIDENCE' +
-    '1 CLAUDE WINDOWS 2X2 COVERAGE-THRESHOLD POST-CAMPAIGN EN ESTE ENTORNO AISLADO, SIN REINTENTOS, REEMPLAZOS NI RESPAWNS'
+    'AUTORIZO HASTA 8 SESIONES LIVE NUEVAS DEL EVIDENCE' +
+    '1 CLAUDE WINDOWS PRODUCT-VS-FREE-BASELINE COVERAGE-THRESHOLD EN ESTE ENTORNO AISLADO, SIN REINTENTOS, REEMPLAZOS NI RESPAWNS'
 )
 
 function Fail([string]$Message) {
@@ -99,7 +100,8 @@ try {
 
     $startupPath = Join-Path $startupDir 'Evidence1RunLive.cmd'
     $wrapperGuestPath = Join-Path $GuestOpsDir 'evidence1-stageb-live-wrapper.ps1'
-    Set-Content -LiteralPath $startupPath -Encoding ASCII -Value @"
+    if (-not $SkipStartupEntry) {
+        Set-Content -LiteralPath $startupPath -Encoding ASCII -Value @"
 @echo off
 set "SELF=%~f0"
 C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$wrapperGuestPath" -RunId "$runId" -ShutdownOnExit
@@ -108,6 +110,7 @@ del "%SELF%" >nul 2>nul
 if exist "%SELF%" exit /b 91
 exit /b %WRAPPER_EXIT%
 "@
+    }
 
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ReportPath) | Out-Null
     $report = [ordered]@{
@@ -119,7 +122,12 @@ exit /b %WRAPPER_EXIT%
         launcher_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $LiveLauncherSourcePath).Hash.ToLowerInvariant()
         wrapper_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $LiveWrapperSourcePath).Hash.ToLowerInvariant()
         contract_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $ContractSourcePath).Hash.ToLowerInvariant()
-        launch_policy = 'one-shot Startup entry is consumed after the wrapper process exits; every state record is bound to run_id'
+        startup_entry_created = -not $SkipStartupEntry.IsPresent
+        launch_policy = if ($SkipStartupEntry) {
+            'assets staged and run_id generated without Startup entry; launch must use the direct one-shot runner'
+        } else {
+            'one-shot Startup entry is consumed after the wrapper process exits; every state record is bound to run_id'
+        }
     }
     $report | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $ReportPath -Encoding UTF8
     Write-Host "[hyperv-place-live-autorun] PASS: $ReportPath"
