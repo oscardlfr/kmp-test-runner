@@ -3759,6 +3759,7 @@ async function cmdRunCampaign(args, campaignDesignId) {
     const records = [];
     const conditionResults = [];
     const terminalAuthoritativeEventIndices = [];
+    const terminalEvidenceDiagnostics = [];
     const localIntegrityByRunId = {};
     const transcriptsByRunId = {};
     const runPromptArtifact = computePromptArtifact(scenario.prompt);
@@ -3787,6 +3788,7 @@ async function cmdRunCampaign(args, campaignDesignId) {
       records.push(record);
       conditionResults.push(cell.conditionResult);
       terminalAuthoritativeEventIndices.push(gradeResult.terminalAuthoritativeEventIndex);
+      terminalEvidenceDiagnostics.push(gradeResult.terminalEvidence);
       localIntegrityByRunId[record.run_id] = cell.localIntegrity;
       transcriptsByRunId[record.run_id] = readJournalRawFor(cell.conditionResult, journal);
     }
@@ -3800,6 +3802,7 @@ async function cmdRunCampaign(args, campaignDesignId) {
         const builtSidecar = buildAcceptedRunAuditSidecar({
           record, conditionResult: condResults[i],
           terminalAuthoritativeEventIndex: terminalAuthoritativeEventIndices[i],
+          terminalEvidence: terminalEvidenceDiagnostics[i] ?? null,
         });
         const sidecarResult = finalizeAcceptedRunAuditSidecar(builtSidecar, { privatePatternsFile });
         if (!sidecarResult.ok) {
@@ -4045,6 +4048,7 @@ async function cmdRun(args) {
     // gate has even run -- both wastes work on a matrix that may be rejected anyway, and (per a
     // review finding) risks a sidecar problem masking the real rejection reason.
     const terminalAuthoritativeEventIndices = [];
+    const terminalEvidenceDiagnostics = [];
     // localIntegrityByRunId: parallel to records -- finalizeAndWriteMatrixRecords cannot read
     // `matrix` directly (only this function has it), so on a fail-fast (matrix.matrixComplete ===
     // false) rejection it needs this map instead, keyed by the same run_id every other by-run-id
@@ -4081,6 +4085,7 @@ async function cmdRun(args) {
       records.push(record);
       conditionResults.push(cell.conditionResult);
       terminalAuthoritativeEventIndices.push(gradeResult.terminalAuthoritativeEventIndex);
+      terminalEvidenceDiagnostics.push(gradeResult.terminalEvidence);
       localIntegrityByRunId[record.run_id] = cell.localIntegrity;
       transcriptsByRunId[record.run_id] = readJournalRawFor(cell.conditionResult, journal);
     }
@@ -4098,6 +4103,7 @@ async function cmdRun(args) {
         const builtSidecar = buildAcceptedRunAuditSidecar({
           record, conditionResult: condResults[i],
           terminalAuthoritativeEventIndex: terminalAuthoritativeEventIndices[i],
+          terminalEvidence: terminalEvidenceDiagnostics[i] ?? null,
         });
         const sidecarResult = finalizeAcceptedRunAuditSidecar(builtSidecar, { privatePatternsFile });
         if (!sidecarResult.ok) {

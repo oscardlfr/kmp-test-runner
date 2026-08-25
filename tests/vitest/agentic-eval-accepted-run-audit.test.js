@@ -10,6 +10,7 @@ import {
   ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3,
   ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4,
   ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5,
+  ACCEPTED_AUDIT_SIDECAR_SCHEMA_V6,
   LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA,
   SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS,
   acceptedAuditRelativePathFor,
@@ -172,6 +173,32 @@ function conditionResultFrom(events, { decisionByAttempt = new Map(), endedHrtim
   };
 }
 
+function terminalEvidence(overrides = {}) {
+  return {
+    present: true,
+    provider: 'kmp-test',
+    tool_result_event_index: 2,
+    evidence_well_formed: true,
+    target_matches_expected: true,
+    outcome_matches_expected: true,
+    malformed: false,
+    parallel_evidence_invalid: false,
+    changed_evidence_invalid: false,
+    observed_result: {
+      outcome_kind: 'tests_executed',
+      module_matches_expected: true,
+      total: 4,
+      passed: 4,
+      failed: 0,
+      missed_lines: null,
+      threshold: null,
+      modules_contributing: null,
+    },
+    final_answer_block: { found: true, parsed: true, ambiguous: false, matches_observed: true },
+    ...overrides,
+  };
+}
+
 describe('acceptedAuditRelativePathFor', () => {
   it('is exactly "audit/<run_id>.json", POSIX-style', () => {
     expect(acceptedAuditRelativePathFor('scenario-current-skill-abcd1234')).toBe('audit/scenario-current-skill-abcd1234.json');
@@ -182,7 +209,7 @@ describe('buildAcceptedRunAuditSidecar -- top-level identity + shape', () => {
   it('carries schema/run_id/run_schema/run_kind/condition/scenario_id mirrored from the record', () => {
     const record = baseRecord();
     const cr = conditionResultFrom([initEventStub(), resultEventStub()]);
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     // baseRecord() is schema:5 (still the only run schema a v1/v2 sidecar is compatible with) --
     // the schema-aware builder therefore emits v2 here, never LATEST (which now means "v3, for a
     // schema:6+ record only"). See the dedicated schema:6 describe block below for the v3 case.
@@ -212,12 +239,13 @@ describe('buildAcceptedRunAuditSidecar -- top-level identity + shape', () => {
   it('freezes the sidecar schema constants and the nested summary / tool_calls[] field inventories', () => {
     expect(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1).toBe(1);
     expect(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2).toBe(2);
-    // PR 4 follow-up: LATEST is now 5 (v5, the new policy_mode:"not_applicable" sidecar) -- this record has
+    // PR 4/observability follow-up: LATEST is now 6 (v6, the new policy_mode:"not_applicable"
+    // sidecar with terminal evidence) -- this record has
     // no not_applicable execution_profile, so it still produces a byte-for-byte v3 sidecar below
     // (expectedAcceptedAuditSchemaFor's own fallback), proving LATEST advancing never silently
     // redirects a strict/policy-required record away from v3.
-    expect(LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA).toBe(5);
-    expect([...SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS]).toEqual([1, 2, 3, 4, 5]);
+    expect(LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA).toBe(6);
+    expect([...SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS]).toEqual([1, 2, 3, 4, 5, 6]);
 
     const record = baseRecord({
       hook_call_count: 1,
@@ -265,14 +293,14 @@ describe('buildAcceptedRunAuditSidecar -- top-level identity + shape', () => {
   it('first_useful_signal_event mirrors the record\'s own field exactly (or null)', () => {
     const record = baseRecord({ first_useful_signal_event: { type: 'user.tool_result', index: 2 } });
     const cr = conditionResultFrom([initEventStub(), bashToolUseEvent('t1', 'kmp-test doctor --json'), toolResultEvent('t1'), resultEventStub()]);
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: 2, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: 2, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     expect(sidecar.first_useful_signal_event).toEqual({ type: 'user.tool_result', index: 2 });
   });
 
   it('terminal_authoritative_event is null when terminalAuthoritativeEventIndex is null', () => {
     const record = baseRecord();
     const cr = conditionResultFrom([initEventStub(), resultEventStub()]);
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     expect(sidecar.terminal_authoritative_event).toBeNull();
   });
 
@@ -290,7 +318,7 @@ describe('buildAcceptedRunAuditSidecar -- top-level identity + shape', () => {
       toolResultEvent('t2'),
       resultEventStub(),
     ]);
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: 2, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: 2, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     expect(sidecar.terminal_authoritative_event).toEqual({ type: 'user.tool_result', index: 2 });
     expect(sidecar.terminal_authoritative_event.index).not.toBe(4); // NOT the later call's own result index
   });
@@ -300,7 +328,7 @@ describe('buildAcceptedRunAuditSidecar -- tool_calls[] classification', () => {
   it('classifies a target-Skill call WITHOUT storing the raw skill name anywhere', () => {
     const record = baseRecord();
     const cr = conditionResultFrom([initEventStub(), skillToolUseEvent('t1', TARGET_SKILL_NAME), toolResultEvent('t1'), resultEventStub()]);
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     expect(sidecar.tool_calls[0].tool_kind).toBe('target-skill');
     expect(sidecar.tool_calls[0].operation).toBeNull();
     expect(sidecar.tool_calls[0].plan_only).toBeNull();
@@ -311,7 +339,7 @@ describe('buildAcceptedRunAuditSidecar -- tool_calls[] classification', () => {
   it('classifies a non-target-Skill call WITHOUT storing the raw (foreign) skill name anywhere', () => {
     const record = baseRecord();
     const cr = conditionResultFrom([initEventStub(), skillToolUseEvent('t1', 'some-other-secret-skill-xyz'), toolResultEvent('t1', { isError: true }), resultEventStub()]);
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     expect(sidecar.tool_calls[0].tool_kind).toBe('non-target-skill');
     expect(sidecar.tool_calls[0].result_status).toBe('error');
     expect(JSON.stringify(sidecar)).not.toContain('some-other-secret-skill-xyz');
@@ -320,7 +348,7 @@ describe('buildAcceptedRunAuditSidecar -- tool_calls[] classification', () => {
   it('classifies an unexpected tool (name outside Bash/Skill) as unexpected-tool, not-applicable decision', () => {
     const record = baseRecord();
     const cr = conditionResultFrom([initEventStub(), otherToolUseEvent('t1', 'Read'), toolResultEvent('t1'), resultEventStub()]);
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     expect(sidecar.tool_calls[0].tool_kind).toBe('unexpected-tool');
     expect(sidecar.tool_calls[0].operation).toBeNull();
     expect(sidecar.tool_calls[0].plan_only).toBeNull();
@@ -338,7 +366,7 @@ describe('buildAcceptedRunAuditSidecar -- tool_calls[] classification', () => {
       toolResultEvent('t2'),
       resultEventStub(),
     ], { decisionByAttempt });
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     expect(sidecar.tool_calls[0]).toMatchObject({ tool_kind: 'kmp-test', operation: 'parallel', plan_only: false, policy_decision: 'allow' });
     expect(sidecar.tool_calls[1]).toMatchObject({ tool_kind: 'kmp-test', operation: 'other', policy_decision: 'allow' });
     expect(JSON.stringify(sidecar)).not.toContain('secretmodule123');
@@ -356,7 +384,7 @@ describe('buildAcceptedRunAuditSidecar -- tool_calls[] classification', () => {
       toolResultEvent('t2', { content: 'BUILD SUCCESSFUL in 1s' }),
       resultEventStub(),
     ], { decisionByAttempt });
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     expect(sidecar.tool_calls[0]).toMatchObject({ tool_kind: 'gradle', operation: 'allowed-task' });
     expect(sidecar.tool_calls[1]).toMatchObject({ tool_kind: 'gradle', operation: 'other' });
     expect(JSON.stringify(sidecar)).not.toContain('secretmodule123');
@@ -367,7 +395,7 @@ describe('buildAcceptedRunAuditSidecar -- tool_calls[] classification', () => {
     const record = baseRecord();
     const decisionByAttempt = new Map([['t1', 'deny']]);
     const cr = conditionResultFrom([initEventStub(), bashToolUseEvent('t1', 'ls -la /some/secret/path'), toolResultEvent('t1', { isError: true }), resultEventStub()], { decisionByAttempt });
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     expect(sidecar.tool_calls[0]).toMatchObject({ tool_kind: 'other-bash', operation: null, plan_only: false, policy_decision: 'deny', result_status: 'error' });
     expect(JSON.stringify(sidecar)).not.toContain('/some/secret/path');
   });
@@ -376,14 +404,14 @@ describe('buildAcceptedRunAuditSidecar -- tool_calls[] classification', () => {
     const record = baseRecord();
     const decisionByAttempt = new Map([['t1', 'allow']]);
     const cr = conditionResultFrom([initEventStub(), bashToolUseEvent('t1', 'kmp-test parallel --module-filter shared --dry-run --json'), toolResultEvent('t1'), resultEventStub()], { decisionByAttempt });
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     expect(sidecar.tool_calls[0].plan_only).toBe(true);
   });
 
   it('policy_decision is "missing" when decisionByAttempt has no entry for this attempt (never invents allow)', () => {
     const record = baseRecord();
     const cr = conditionResultFrom([initEventStub(), bashToolUseEvent('t1', 'kmp-test doctor --json'), toolResultEvent('t1'), resultEventStub()]); // empty decisionByAttempt
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     expect(sidecar.tool_calls[0].policy_decision).toBe('missing');
   });
 
@@ -396,7 +424,7 @@ describe('buildAcceptedRunAuditSidecar -- tool_calls[] classification', () => {
       toolResultEvent('t2', { isError: true }),
       resultEventStub(),
     ]);
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     expect(sidecar.tool_calls[0].result_status).toBe('missing');
     expect(sidecar.tool_calls[0].tool_result_event_index).toBeNull();
     expect(sidecar.tool_calls[1].result_status).toBe('error');
@@ -411,7 +439,7 @@ describe('buildAcceptedRunAuditSidecar -- tool_calls[] classification', () => {
       toolResultEvent('a2'),
       resultEventStub(),
     ]);
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     expect(sidecar.tool_calls.length).toBe(2);
     expect(sidecar.tool_calls[0].tool_use_event_index).toBe(sidecar.tool_calls[1].tool_use_event_index);
     expect(sidecar.tool_calls[0].ordinal).toBe(0);
@@ -423,7 +451,7 @@ describe('buildAcceptedRunAuditSidecar -- phase classification', () => {
   it('every entry is "no-signal" when there is no first-useful-signal boundary at all', () => {
     const record = baseRecord({ first_useful_signal_event: null });
     const cr = conditionResultFrom([initEventStub(), bashToolUseEvent('t1', 'kmp-test doctor --json'), toolResultEvent('t1'), resultEventStub()]);
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     expect(sidecar.tool_calls.every((tc) => tc.phase === 'no-signal')).toBe(true);
   });
 
@@ -438,7 +466,7 @@ describe('buildAcceptedRunAuditSidecar -- phase classification', () => {
       toolResultEvent('t2'),
       resultEventStub(),
     ]);
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: 4, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: 4, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     expect(sidecar.tool_calls[0].phase).toBe('produced-signal'); // t1: its OWN result IS the signal
     expect(sidecar.tool_calls[1].phase).toBe('post-signal'); // t2: dispatched at index 3 > signal index 2
   });
@@ -455,7 +483,7 @@ describe('buildAcceptedRunAuditSidecar -- phase classification', () => {
       resultEventStub(),
     ];
     const cr = conditionResultFrom(events);
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: 3, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: 3, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     const t1Entry = sidecar.tool_calls.find((tc) => tc.tool_use_event_index === 1);
     expect(t1Entry.phase).toBe('pre-signal'); // dispatched (index 1) before the boundary (index 3), regardless of when its result lands
   });
@@ -470,7 +498,7 @@ describe('buildAcceptedRunAuditSidecar -- summary', () => {
       skillToolUseEvent('t2', TARGET_SKILL_NAME), toolResultEvent('t2'),
       resultEventStub(),
     ]);
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     expect(sidecar.summary.tool_calls_total).toBe(2);
     expect(sidecar.summary.shell_commands_total).toBe(1);
   });
@@ -485,7 +513,7 @@ describe('buildAcceptedRunAuditSidecar -- summary', () => {
       bashToolUseEvent('t3', 'kmp-test parallel --module-filter shared --json'), toolResultEvent('t3'), // allowed
       resultEventStub(),
     ], { decisionByAttempt });
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     expect(sidecar.summary.policy_denials_total).toBe(1);
     expect(sidecar.summary.policy_decisions_missing).toBe(1);
   });
@@ -493,7 +521,7 @@ describe('buildAcceptedRunAuditSidecar -- summary', () => {
   it('post_signal_ms/post_signal_tool_calls/policy_denials_{before,after}_first_signal are all null when there is no boundary', () => {
     const record = baseRecord();
     const cr = conditionResultFrom([initEventStub(), resultEventStub()]);
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     expect(sidecar.summary.post_signal_ms).toBeNull();
     expect(sidecar.summary.post_signal_tool_calls).toBeNull();
     expect(sidecar.summary.policy_denials_before_first_signal).toBeNull();
@@ -512,7 +540,7 @@ describe('buildAcceptedRunAuditSidecar -- summary', () => {
       resultEventStub(),
     ];
     const cr = conditionResultFrom(events, { decisionByAttempt, endedHrtimeNs: undefined });
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: 2, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: 2, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     expect(sidecar.summary.post_signal_tool_calls).toBe(1); // only t2 (index 3 > 2)
     expect(sidecar.summary.policy_denials_before_first_signal).toBe(0);
     expect(sidecar.summary.policy_denials_after_first_signal).toBe(1);
@@ -555,7 +583,7 @@ describe('buildAcceptedRunAuditSidecar -> validateAcceptedRunAuditSidecar (popul
       resultEventStub(),
     ];
     const cr = conditionResultFrom(events, { decisionByAttempt: new Map([['k1', 'allow'], ['k2', 'allow'], ['g1', 'allow'], ['g2', 'deny'], ['o1', 'allow']]) });
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: 6, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: 6, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     const { errors } = validateAcceptedRunAuditSidecar(sidecar);
     expect(errors).toEqual([]);
     // Sanity on the fixture itself -- proves the test actually exercises every tool_kind/phase it
@@ -822,7 +850,7 @@ describe('crossValidateAcceptedRunAuditAgainstRecord', () => {
     // the sidecar actually re-derives, not an arbitrarily hand-picked number.
     const record = baseRecord({ first_useful_signal_event: { type: 'user.tool_result', index: 2 }, tool_calls_total: { value: 1, reason: null }, shell_commands_total: { value: 1, reason: null }, post_signal_ms: { value: null, reason: 'not recorded' }, post_signal_tool_calls: { value: 0, reason: null }, policy_denials_before_first_signal: { value: 0, reason: null }, policy_denials_after_first_signal: { value: 0, reason: null } });
     const cr = conditionResultFrom([initEventStub(), bashToolUseEvent('t1', 'kmp-test parallel --module-filter shared --json'), toolResultEvent('t1'), resultEventStub()], { endedHrtimeNs: undefined });
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: 2, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: 2, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     // Mirrors production ordering exactly: cli.mjs's buildSidecarsFn attaches the pointer (with the
     // BUILT sidecar's own schema) before finalizeAndWriteMatrixRecords cross-validates the pair.
     record.accepted_audit = { schema: sidecar.schema, relative_path: `audit/${record.run_id}.json`, sha256: 'f'.repeat(64) };
@@ -832,7 +860,7 @@ describe('crossValidateAcceptedRunAuditAgainstRecord', () => {
   it('rejects a record pointing at a different sidecar schema than the sidecar itself carries', () => {
     const record = baseRecord();
     const cr = conditionResultFrom([initEventStub(), resultEventStub()], { endedHrtimeNs: undefined });
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     // baseRecord() is schema:5 -- the schema-aware builder emits v2 here (see the note on the first
     // test in this describe block for why this is not LATEST).
     expect(sidecar.schema).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2);
@@ -931,7 +959,7 @@ describe('finalizeAcceptedRunAuditSidecar -- validate -> redact -> revalidate ->
   it('returns ok:true with a redacted text and a real sha256 for a clean sidecar', () => {
     const record = baseRecord();
     const cr = conditionResultFrom([initEventStub(), resultEventStub()]);
-    const built = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const built = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     const result = finalizeAcceptedRunAuditSidecar(built);
     expect(result.ok).toBe(true);
     expect(typeof result.redactedText).toBe('string');
@@ -942,7 +970,7 @@ describe('finalizeAcceptedRunAuditSidecar -- validate -> redact -> revalidate ->
     const { createHash } = await import('node:crypto');
     const record = baseRecord();
     const cr = conditionResultFrom([initEventStub(), resultEventStub()]);
-    const built = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const built = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     const result = finalizeAcceptedRunAuditSidecar(built);
     const recomputed = createHash('sha256').update(result.redactedText, 'utf8').digest('hex');
     expect(recomputed).toBe(result.sha256);
@@ -963,7 +991,7 @@ describe('finalizeAcceptedRunAuditSidecar -- validate -> redact -> revalidate ->
       writeFileSync(patternsFile, JSON.stringify([{ class: 'test_scenario_id', literal: 'kampkit-android-host-test-discovery', replacement: '<redacted-scenario>' }]));
       const record = baseRecord();
       const cr = conditionResultFrom([initEventStub(), resultEventStub()]);
-      const built = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+      const built = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
       expect(built.scenario_id).toBe('kampkit-android-host-test-discovery');
       const result = finalizeAcceptedRunAuditSidecar(built, { privatePatternsFile: patternsFile });
       expect(result.ok).toBe(true);
@@ -986,7 +1014,7 @@ describe('buildAcceptedRunAuditSidecar -- schema:6 record produces a v3 sidecar'
   it('stamps sidecar schema 3, run_schema 6, and a real run_provenance_sha256; keys are exactly the v1/v2 set plus run_provenance_sha256', () => {
     const record = v6Record();
     const cr = conditionResultFrom([initEventStub(), resultEventStub()]);
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     // PR 4: explicitly V3, never LATEST (now 4) -- this record's execution_profile.policy_mode is
     // "required" (v6Record()'s own default), so it must always produce v3, byte-identically,
     // regardless of what LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA happens to equal.
@@ -1004,14 +1032,14 @@ describe('buildAcceptedRunAuditSidecar -- schema:6 record produces a v3 sidecar'
   it('the built sidecar validates with zero errors', () => {
     const record = v6Record();
     const cr = conditionResultFrom([initEventStub(), resultEventStub()]);
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     expect(validateAcceptedRunAuditSidecar(sidecar).errors).toEqual([]);
   });
 
   it('cross-validates with zero errors against its own source record (including run_provenance_sha256)', () => {
     const record = v6Record();
     const cr = conditionResultFrom([initEventStub(), resultEventStub()]);
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     record.accepted_audit = { schema: sidecar.schema, relative_path: `audit/${record.run_id}.json`, sha256: 'f'.repeat(64) };
     expect(crossValidateAcceptedRunAuditAgainstRecord(sidecar, record)).toEqual([]);
   });
@@ -1022,7 +1050,7 @@ describe('validateAcceptedRunAuditSidecar -- v3-specific run_provenance_sha256 s
     const record = v6Record();
     const sidecar = buildAcceptedRunAuditSidecar({
       record, conditionResult: conditionResultFrom([initEventStub(), resultEventStub()]),
-      terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME,
+      terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME,
     });
     return { ...sidecar, ...overrides };
   }
@@ -1052,7 +1080,7 @@ describe('validateAcceptedRunAuditSidecar -- v3-specific run_provenance_sha256 s
     const record = baseRecord(); // schema:5
     const v2Sidecar = buildAcceptedRunAuditSidecar({
       record, conditionResult: conditionResultFrom([initEventStub(), resultEventStub()]),
-      terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME,
+      terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME,
     });
     const tampered = { ...v2Sidecar, run_provenance_sha256: 'a'.repeat(64) };
     expect(validateAcceptedRunAuditSidecar(tampered).errors.some((e) => e.field === '(root).run_provenance_sha256')).toBe(true);
@@ -1110,14 +1138,14 @@ describe('crossValidateAcceptedRunAuditAgainstRecord -- run_provenance_sha256 (v
   it('accepts a v3 sidecar whose run_provenance_sha256 matches the recomputed value', () => {
     const record = v6Record();
     const cr = conditionResultFrom([initEventStub(), resultEventStub()]);
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     expect(crossValidateAcceptedRunAuditAgainstRecord(sidecar, record).some((e) => e.field === 'run_provenance_sha256')).toBe(false);
   });
 
   it('rejects a syntactically well-formed but WRONG run_provenance_sha256 -- self-consistent alone, but points at a different record', () => {
     const record = v6Record();
     const cr = conditionResultFrom([initEventStub(), resultEventStub()]);
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     // Individually well-formed (64 lowercase hex) -- passes validateAcceptedRunAuditSidecar's own
     // shape check in isolation -- but was not actually derived from THIS record (e.g. copied from a
     // sibling run's sidecar by mistake). Only the record-comparison half can catch this.
@@ -1130,14 +1158,14 @@ describe('crossValidateAcceptedRunAuditAgainstRecord -- run_provenance_sha256 (v
   it('is not checked at all for a v1/v2 sidecar (no such field exists on the sidecar or the check)', () => {
     const record = baseRecord(); // schema:5
     const cr = conditionResultFrom([initEventStub(), resultEventStub()]);
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     record.accepted_audit = { schema: sidecar.schema, relative_path: `audit/${record.run_id}.json`, sha256: 'f'.repeat(64) };
     expect(crossValidateAcceptedRunAuditAgainstRecord(sidecar, record).some((e) => e.field === 'run_provenance_sha256')).toBe(false);
   });
 });
 
-// PR 4 follow-up: sidecar v5 is now the produced no-policy sidecar. v4 remains supported as a
-// frozen legacy no-policy sidecar.
+// PR 4 follow-up: sidecar v6 is now the produced no-policy sidecar. v4/v5 remain supported as
+// frozen legacy no-policy sidecars.
 describe('expectedAcceptedAuditSchemaFor -- explicit per-record/profile dispatch (Decision H)', () => {
   it('schema<6 always resolves to v2, regardless of any execution_profile content', () => {
     expect(expectedAcceptedAuditSchemaFor(baseRecord())).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2);
@@ -1146,17 +1174,17 @@ describe('expectedAcceptedAuditSchemaFor -- explicit per-record/profile dispatch
     expect(expectedAcceptedAuditSchemaFor(v6Record())).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3);
     expect(expectedAcceptedAuditSchemaFor({ schema: 6 })).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3);
   });
-  it('schema:6 with policy_mode:"not_applicable" resolves to v5', () => {
+  it('schema:6 with policy_mode:"not_applicable" resolves to v6', () => {
     const record = v6Record({ execution_profile: { ...v6Record().execution_profile, policy_mode: 'not_applicable' } });
-    expect(expectedAcceptedAuditSchemaFor(record)).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5);
+    expect(expectedAcceptedAuditSchemaFor(record)).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V6);
   });
-  it('never uses LATEST as a selector -- LATEST=5 today, but a required-policy schema:6 record still resolves to v3', () => {
-    expect(LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA).toBe(5);
+  it('never uses LATEST as a selector -- LATEST=6 today, but a required-policy schema:6 record still resolves to v3', () => {
+    expect(LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA).toBe(6);
     expect(expectedAcceptedAuditSchemaFor(v6Record())).toBe(3);
   });
 });
 
-describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / crossValidateAcceptedRunAuditAgainstRecord -- sidecar v5 no-policy observability', () => {
+describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / crossValidateAcceptedRunAuditAgainstRecord -- sidecar v6 no-policy observability', () => {
   const FAKE_ATTESTATION_SHA256 = 'f'.repeat(64);
 
   // Mirrors what buildRunRecord (cli.mjs) actually produces for a policy_mode:"not_applicable"
@@ -1187,11 +1215,11 @@ describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / cross
     return conditionResultFrom(events, { decisionByAttempt: new Map(), dispatchAccounting: { dispatchStatusByAttempt } });
   }
 
-  it('builds schema 5 with the 3 no-policy top-level fields, dispatch_unaccounted_total, and structural recognized_operation', () => {
+  it('builds schema 6 with the 3 no-policy top-level fields, dispatch_unaccounted_total, structural recognized_operation, and terminal_evidence', () => {
     const record = notApplicableRecord();
     const cr = notApplicableConditionResult([initEventStub(), bashToolUseEvent('t1', 'kmp-test doctor --json'), toolResultEvent('t1'), resultEventStub()]);
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
-    expect(sidecar.schema).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5);
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    expect(sidecar.schema).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V6);
     expect(sidecar.execution_profile_id).toBe('sandboxed-unrestricted-v1');
     expect(sidecar.policy_mode).toBe('not_applicable');
     expect(sidecar.isolation_attestation_sha256).toBe(FAKE_ATTESTATION_SHA256);
@@ -1205,6 +1233,7 @@ describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / cross
     expect(sidecar.summary.policy_decisions_missing).toBeNull();
     expect(sidecar.summary.policy_denials_before_first_signal).toBeNull();
     expect(sidecar.summary.policy_denials_after_first_signal).toBeNull();
+    expect(sidecar.terminal_evidence).toEqual(terminalEvidence());
   });
 
   it('keeps no-policy operation allowlist-neutral while exposing a privacy-safe recognized kmp-test subcommand', () => {
@@ -1217,9 +1246,9 @@ describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / cross
       toolResultEvent('t2'),
       resultEventStub(),
     ]);
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
 
-    expect(sidecar.schema).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5);
+    expect(sidecar.schema).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V6);
     expect(sidecar.tool_calls[0]).toMatchObject({ tool_kind: 'kmp-test', operation: 'other', recognized_operation: 'parallel' });
     expect(sidecar.tool_calls[1]).toMatchObject({ tool_kind: 'kmp-test', operation: 'other', recognized_operation: 'describe' });
     expect(validateAcceptedRunAuditSidecar(sidecar).errors).toEqual([]);
@@ -1231,27 +1260,82 @@ describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / cross
   it('maps unknown kmp-test subcommands to the closed structural "other" bucket, never the raw token', () => {
     const record = notApplicableRecord();
     const cr = notApplicableConditionResult([initEventStub(), bashToolUseEvent('t1', 'kmp-test private-secret-subcommand --json'), toolResultEvent('t1'), resultEventStub()]);
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     expect(sidecar.tool_calls[0]).toMatchObject({ tool_kind: 'kmp-test', operation: 'other', recognized_operation: 'other' });
     expect(JSON.stringify(sidecar)).not.toContain('private-secret-subcommand');
   });
 
-  it('still accepts a frozen legacy v4 no-policy sidecar without recognized_operation', () => {
+  it('still accepts frozen legacy v4/v5 no-policy sidecars without terminal_evidence', () => {
     const record = notApplicableRecord();
     const cr = notApplicableConditionResult([initEventStub(), bashToolUseEvent('t1', 'kmp-test doctor --json'), toolResultEvent('t1'), resultEventStub()]);
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     const legacyV4 = {
       ...sidecar,
       schema: ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4,
-      tool_calls: sidecar.tool_calls.map(({ recognized_operation: _recognizedOperation, ...tc }) => tc),
     };
+    delete legacyV4.terminal_evidence;
+    legacyV4.tool_calls = sidecar.tool_calls.map(({ recognized_operation: _recognizedOperation, ...tc }) => tc);
+    const legacyV5 = { ...sidecar, schema: ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5 };
+    delete legacyV5.terminal_evidence;
     expect(validateAcceptedRunAuditSidecar(legacyV4).errors).toEqual([]);
+    expect(validateAcceptedRunAuditSidecar(legacyV5).errors).toEqual([]);
   });
 
-  it('rejects a schema 5 recognized_operation outside the closed privacy-safe vocabulary', () => {
+  it('rejects terminal_evidence keys outside the closed privacy-safe schema', () => {
     const record = notApplicableRecord();
     const cr = notApplicableConditionResult([initEventStub(), bashToolUseEvent('t1', 'kmp-test doctor --json'), toolResultEvent('t1'), resultEventStub()]);
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({
+      record, conditionResult: cr, terminalAuthoritativeEventIndex: null,
+      terminalEvidence: terminalEvidence({ command_text: 'kmp-test parallel --module-filter secretmodule123' }),
+      targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME,
+    });
+    const errors = validateAcceptedRunAuditSidecar(sidecar).errors;
+    expect(errors.some((e) => e.field === 'terminal_evidence.command_text')).toBe(true);
+    expect(JSON.stringify({ errors })).not.toContain('secretmodule123');
+  });
+
+  it('rejects observed_result payload fields that would smuggle path or module prose', () => {
+    const record = notApplicableRecord();
+    const cr = notApplicableConditionResult([initEventStub(), bashToolUseEvent('t1', 'kmp-test doctor --json'), toolResultEvent('t1'), resultEventStub()]);
+    const sidecar = buildAcceptedRunAuditSidecar({
+      record, conditionResult: cr, terminalAuthoritativeEventIndex: null,
+      terminalEvidence: terminalEvidence({
+        observed_result: { ...terminalEvidence().observed_result, module: 'secretmodule123', project_root: 'C:/secret/project' },
+      }),
+      targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME,
+    });
+    const errors = validateAcceptedRunAuditSidecar(sidecar).errors;
+    expect(errors.some((e) => e.field === 'terminal_evidence.observed_result.module')).toBe(true);
+    expect(errors.some((e) => e.field === 'terminal_evidence.observed_result.project_root')).toBe(true);
+    expect(JSON.stringify({ errors })).not.toContain('secretmodule123');
+    expect(JSON.stringify({ errors })).not.toContain('C:/secret/project');
+  });
+
+  it('rejects present:false terminal_evidence when observed_result is not null', () => {
+    const record = notApplicableRecord();
+    const cr = notApplicableConditionResult([initEventStub(), resultEventStub()]);
+    const sidecar = buildAcceptedRunAuditSidecar({
+      record, conditionResult: cr, terminalAuthoritativeEventIndex: null,
+      terminalEvidence: terminalEvidence({
+        present: false,
+        provider: null,
+        tool_result_event_index: null,
+        evidence_well_formed: false,
+        target_matches_expected: null,
+        outcome_matches_expected: null,
+        malformed: null,
+        parallel_evidence_invalid: null,
+        changed_evidence_invalid: null,
+      }),
+      targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME,
+    });
+    expect(validateAcceptedRunAuditSidecar(sidecar).errors.some((e) => e.field === 'terminal_evidence.observed_result')).toBe(true);
+  });
+
+  it('rejects a schema 6 recognized_operation outside the closed privacy-safe vocabulary', () => {
+    const record = notApplicableRecord();
+    const cr = notApplicableConditionResult([initEventStub(), bashToolUseEvent('t1', 'kmp-test doctor --json'), toolResultEvent('t1'), resultEventStub()]);
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     const tampered = { ...sidecar, tool_calls: [{ ...sidecar.tool_calls[0], recognized_operation: 'secretmodule123' }] };
     expect(validateAcceptedRunAuditSidecar(tampered).errors.some((e) => e.field.endsWith('.recognized_operation'))).toBe(true);
   });
@@ -1259,7 +1343,7 @@ describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / cross
   it('validates with zero errors, and cross-validates cleanly against the record', () => {
     const record = notApplicableRecord();
     const cr = notApplicableConditionResult([initEventStub(), bashToolUseEvent('t1', 'kmp-test doctor --json'), toolResultEvent('t1'), resultEventStub()]);
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     expect(validateAcceptedRunAuditSidecar(sidecar).errors).toEqual([]);
     record.accepted_audit = { schema: sidecar.schema, relative_path: `audit/${record.run_id}.json`, sha256: 'f'.repeat(64) };
     expect(crossValidateAcceptedRunAuditAgainstRecord(sidecar, record)).toEqual([]);
@@ -1272,7 +1356,7 @@ describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / cross
       decisionByAttempt: new Map([['t1', 'allow']]),
       dispatchAccounting: { dispatchStatusByAttempt: new Map([['t1', 'result_correlated_no_policy']]) },
     });
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     expect(sidecar.tool_calls[0].policy_decision).toBe('not-applicable');
   });
 
@@ -1280,7 +1364,7 @@ describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / cross
     const record = notApplicableRecord();
     const events = [initEventStub(), bashToolUseEvent('t1', 'kmp-test doctor --json'), resultEventStub()]; // no toolResultEvent -- missing result
     const cr = notApplicableConditionResult(events);
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     expect(sidecar.tool_calls[0].dispatch_status).toBe('unaccounted');
     expect(sidecar.tool_calls[0].policy_decision).toBe('not-applicable');
     expect(sidecar.summary.dispatch_unaccounted_total).toBe(1);
@@ -1288,10 +1372,10 @@ describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / cross
     expect(errors.some((e) => e.field === 'summary.dispatch_unaccounted_total')).toBe(true);
   });
 
-  it('hook_evaluated can never appear on a v5 sidecar, even if fabricated directly', () => {
+  it('hook_evaluated can never appear on a v6 sidecar, even if fabricated directly', () => {
     const record = notApplicableRecord();
     const cr = notApplicableConditionResult([initEventStub(), bashToolUseEvent('t1', 'kmp-test doctor --json'), toolResultEvent('t1'), resultEventStub()]);
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     const tampered = { ...sidecar, tool_calls: [{ ...sidecar.tool_calls[0], dispatch_status: 'hook_evaluated', policy_decision: 'allow' }] };
     expect(validateAcceptedRunAuditSidecar(tampered).errors.some((e) => e.field.endsWith('.dispatch_status'))).toBe(true);
   });
@@ -1302,7 +1386,7 @@ describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / cross
       [initEventStub(), bashToolUseEvent('t1', 'kmp-test doctor --json'), toolResultEvent('t1'), resultEventStub()],
       { decisionByAttempt: new Map([['t1', 'allow']]), dispatchAccounting: { dispatchStatusByAttempt: new Map([['t1', 'result_correlated_no_policy']]) } },
     );
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     expect(sidecar.schema).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3);
     expect(validateAcceptedRunAuditSidecar(sidecar).errors.some((e) => e.field.endsWith('.dispatch_status'))).toBe(true);
   });
@@ -1311,7 +1395,7 @@ describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / cross
     it(`cross-validation rejects a mismatched ${field}`, () => {
       const record = notApplicableRecord();
       const cr = notApplicableConditionResult([initEventStub(), resultEventStub()]);
-      const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+      const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
       const tampered = { ...sidecar, [field]: field === 'policy_mode' ? 'required' : field === 'execution_profile_id' ? 'strict-policy-v1' : 'a'.repeat(64) };
       expect(crossValidateAcceptedRunAuditAgainstRecord(tampered, record).some((e) => e.field === field)).toBe(true);
     });
@@ -1323,7 +1407,7 @@ describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / cross
       [initEventStub(), bashToolUseEvent('t1', 'kmp-test doctor --json'), toolResultEvent('t1'), resultEventStub()],
       { decisionByAttempt: new Map([['t1', 'allow']]) },
     );
-    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
     expect(sidecar.schema).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3);
     expect(sidecar).not.toHaveProperty('execution_profile_id');
     expect(sidecar).not.toHaveProperty('policy_mode');

@@ -1978,19 +1978,61 @@ function kmpEvalResultBlockMatchesObserved(block, observedResult) {
  *   of what the final-answer block itself claims. */
 function evaluateFinalAnswer(finalText, observedResult) {
   const text = typeof finalText === 'string' ? finalText : '';
-  if (text.length === 0) return { passed: false, detail: 'no final answer text found' };
+  if (text.length === 0) return { passed: false, detail: 'no final answer text found', diagnostic: { found: false, parsed: false, ambiguous: false, matches_observed: false } };
 
   const { found, parsed, ambiguous } = extractKmpEvalResultBlock(text);
-  if (!found) return { passed: false, detail: 'final answer contains no KMP_EVAL_RESULT block' };
-  if (ambiguous) return { passed: false, detail: 'final answer contains more than one KMP_EVAL_RESULT block -- ambiguous, not resolved by picking one' };
-  if (parsed == null) return { passed: false, detail: 'the KMP_EVAL_RESULT block did not parse as valid JSON' };
+  if (!found) return { passed: false, detail: 'final answer contains no KMP_EVAL_RESULT block', diagnostic: { found: false, parsed: false, ambiguous: false, matches_observed: false } };
+  if (ambiguous) return { passed: false, detail: 'final answer contains more than one KMP_EVAL_RESULT block -- ambiguous, not resolved by picking one', diagnostic: { found: true, parsed: false, ambiguous: true, matches_observed: false } };
+  if (parsed == null) return { passed: false, detail: 'the KMP_EVAL_RESULT block did not parse as valid JSON', diagnostic: { found: true, parsed: false, ambiguous: false, matches_observed: false } };
   if (observedResult == null) {
-    return { passed: false, detail: 'no well-formed, canonicalizable observed result from the terminal attempt to compare the KMP_EVAL_RESULT block against' };
+    return { passed: false, detail: 'no well-formed, canonicalizable observed result from the terminal attempt to compare the KMP_EVAL_RESULT block against', diagnostic: { found: true, parsed: true, ambiguous: false, matches_observed: false } };
   }
   if (!kmpEvalResultBlockMatchesObserved(parsed, observedResult)) {
-    return { passed: false, detail: "the KMP_EVAL_RESULT block does not exactly match the facts observed in the terminal attempt's own evidence (module/outcome_kind/counts, or carries unexpected/missing keys)" };
+    return { passed: false, detail: "the KMP_EVAL_RESULT block does not exactly match the facts observed in the terminal attempt's own evidence (module/outcome_kind/counts, or carries unexpected/missing keys)", diagnostic: { found: true, parsed: true, ambiguous: false, matches_observed: false } };
   }
-  return { passed: true, detail: "the KMP_EVAL_RESULT block exactly matches the facts observed in the terminal attempt's own evidence" };
+  return { passed: true, detail: "the KMP_EVAL_RESULT block exactly matches the facts observed in the terminal attempt's own evidence", diagnostic: { found: true, parsed: true, ambiguous: false, matches_observed: true } };
+}
+
+function terminalEvidenceDiagnostic(terminal, evidenceWellFormed, scenario, finalAnswer) {
+  if (terminal == null) {
+    return {
+      present: false,
+      provider: null,
+      tool_result_event_index: null,
+      evidence_well_formed: false,
+      target_matches_expected: null,
+      outcome_matches_expected: null,
+      malformed: null,
+      parallel_evidence_invalid: null,
+      changed_evidence_invalid: null,
+      observed_result: null,
+      final_answer_block: finalAnswer.diagnostic,
+    };
+  }
+  const observed = terminal.observedResult;
+  const observedSummary = observed == null ? null : {
+    outcome_kind: observed.outcome_kind,
+    module_matches_expected: normalizeModuleName(observed.module) === normalizeModuleName(scenario.expected.module),
+    total: Number.isInteger(observed.total) ? observed.total : null,
+    passed: Number.isInteger(observed.passed) ? observed.passed : null,
+    failed: Number.isInteger(observed.failed) ? observed.failed : null,
+    missed_lines: Number.isInteger(observed.missed_lines) ? observed.missed_lines : null,
+    threshold: Number.isInteger(observed.threshold) ? observed.threshold : null,
+    modules_contributing: Number.isInteger(observed.modules_contributing) ? observed.modules_contributing : null,
+  };
+  return {
+    present: true,
+    provider: terminal.provider === 'kmp_test' ? 'kmp-test' : terminal.provider,
+    tool_result_event_index: terminal.resultIndex,
+    evidence_well_formed: evidenceWellFormed,
+    target_matches_expected: terminal.targetMatches,
+    outcome_matches_expected: terminal.outcomeMatches,
+    malformed: terminal.malformed,
+    parallel_evidence_invalid: terminal.parallelEvidenceInvalid,
+    changed_evidence_invalid: terminal.changedEvidenceInvalid,
+    observed_result: observedSummary,
+    final_answer_block: finalAnswer.diagnostic,
+  };
 }
 
 // classifyJunitProvenance (the old condition-wide producer-count heuristic) has been removed --
@@ -2265,5 +2307,6 @@ export function gradeScenarioCondition(conditionResult, scenario) {
     // file, or the capture bounds were exceeded, on some relevant Gradle attempt) -- see
     // junit-evidence.mjs's countEvidenceTaskJunit/attributeCondition.
     gradleJunitEvidenceUnreliable,
+    terminalEvidence: terminalEvidenceDiagnostic(terminal, evidenceWellFormed, scenario, finalAnswer),
   };
 }
