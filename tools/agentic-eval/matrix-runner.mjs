@@ -141,7 +141,7 @@ function assertFreeBaselinePreflight({ productAccessMode, fixtureDir, conditionE
  */
 export async function acquireSharedEvalResources({
   allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator,
-  junitEvidenceEnabled = false, runtimeAdapter, executionProfile = null,
+  junitEvidenceEnabled = false, runtimeAdapter, executionProfile = null, gradlePrewarm = null,
 }) {
   // Validated BEFORE any resource below is created (post-review hardening, round 1): the default
   // (claudeCodeRuntimeAdapter) is already validated once, at module load, by defineRuntimeAdapter
@@ -180,7 +180,9 @@ export async function acquireSharedEvalResources({
     // internal snapshotDir it resets from) -- gradleSnapshotDir here is deliberately distinctly
     // named from the skill snapshot's `snapshotDir` above; conflating the two previously meant the
     // Gradle module's own snapshot directory was never captured at all and leaked on every run.
-    const { gradleUserHome, snapshotDir: gradleSnapshotDir, resetToSnapshot, daemonPolicy } = materializeGradleUserHome({});
+    const { gradleUserHome, snapshotDir: gradleSnapshotDir, resetToSnapshot, daemonPolicy } = materializeGradleUserHome({
+      runPrewarm: gradlePrewarm ?? undefined,
+    });
     registerCleanup(() => rmSync(gradleUserHome, { recursive: true, force: true }));
     registerCleanup(() => rmSync(gradleSnapshotDir, { recursive: true, force: true }));
     const kmpEvalTempHome = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-home-'));
@@ -504,7 +506,7 @@ export function isJunitEvidenceOutcome(outcomeKind) {
 export async function runScenarioMatrix({
   scenario, repeats, seed, model, allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha,
   runPluginValidator, materializeFixture, cleanupFixture, targetPluginName, targetSkillName, timeoutMs,
-  journal = null, runtimeAdapter, executionProfile = null, maxBudgetUsd = 0.60,
+  journal = null, runtimeAdapter, executionProfile = null, maxBudgetUsd = 0.60, gradlePrewarm = null,
 }) {
   // Decision attribution (allow/deny per Bash attempt) is needed for EVERY scenario regardless of
   // outcome_kind (round-7 fix): a no_applicable_tests condition's denied kmp-test-parallel
@@ -524,7 +526,7 @@ export async function runScenarioMatrix({
   const evidenceTask = scenario.expected?.gradle?.evidence_task ?? null;
   const allowedInvocations = scenario.expected?.gradle?.allowed_invocations ?? null;
   const fixtureSetup = scenario.fixture_setup ?? null;
-  const shared = await acquireSharedEvalResources({ allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, junitEvidenceEnabled, runtimeAdapter, executionProfile });
+  const shared = await acquireSharedEvalResources({ allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator, junitEvidenceEnabled, runtimeAdapter, executionProfile, gradlePrewarm });
   const { registerCleanup, runCleanup } = shared;
 
   try {
@@ -725,7 +727,7 @@ export async function runScenarioMatrix({
 export async function runScenarioCampaign({
   scenario, campaignPlan, seed, model, allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha,
   runPluginValidator, materializeFixture, cleanupFixture, targetPluginName, targetSkillName, timeoutMs,
-  journal = null, selectionsByProfileId, maxBudgetUsd = 0.60,
+  journal = null, selectionsByProfileId, maxBudgetUsd = 0.60, gradlePrewarm = null,
 }) {
   const decisionAttributionEnabled = true;
   const junitEvidenceEnabled = isJunitEvidenceOutcome(scenario.expected?.outcome_kind);
@@ -757,7 +759,7 @@ export async function runScenarioCampaign({
       // eslint-disable-next-line no-await-in-loop
       const shared = await acquireSharedEvalResources({
         allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha, runPluginValidator,
-        junitEvidenceEnabled, runtimeAdapter, executionProfile,
+        junitEvidenceEnabled, runtimeAdapter, executionProfile, gradlePrewarm,
       });
       sharedByProfileId[profileId] = shared;
       acquiredProfileIds.push(profileId);

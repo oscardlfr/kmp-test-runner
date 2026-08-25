@@ -317,11 +317,9 @@ export function materializeScenarioProject({ sourceRepoDir, pinnedCommit, existi
  * temp GRADLE_USER_HOME itself, so the policy applies regardless of which gradle-invoking
  * command the agent types.
  *
- * runPrewarm is OPTIONAL and, as of this PR, is never actually supplied by cli.mjs -- no
- * dependency prewarming happens today, and the "snapshot" is of an otherwise-empty directory
- * (just gradle.properties). The isolation guarantee (byte-identical reset between conditions)
- * holds either way; what's NOT currently true is any claim that dependencies are pre-resolved.
- * A caller that DOES pass runPrewarm gets its writes captured in the snapshot before it's taken.
+ * runPrewarm is OPTIONAL. Without it, the "snapshot" is of an otherwise-empty directory (just
+ * gradle.properties). With it, the caller's writes are captured in the snapshot before it's
+ * taken. The isolation guarantee (byte-identical reset between conditions) holds either way.
  * @param {{runPrewarm?: (gradleUserHome: string) => void}} [opts]
  */
 export function materializeGradleUserHome({ runPrewarm } = {}) {

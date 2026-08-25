@@ -3503,6 +3503,45 @@ function verifySourceRepoForScenario(sourceRepoDir, scenario) {
   return { ok: true, reason: null };
 }
 
+function runGradleWrapper({ fixtureDir, task, gradleUserHome }) {
+  const env = { ...process.env, GRADLE_USER_HOME: gradleUserHome };
+  if (process.platform === 'win32') {
+    const wrapper = join(fixtureDir, 'gradlew.bat');
+    if (!existsSync(wrapper)) return { skipped: true };
+    const r = spawnSync(wrapper, [task, '--no-daemon'], { cwd: fixtureDir, env, encoding: 'utf8', shell: true });
+    return { skipped: false, status: r.status, error: r.error, stdout: r.stdout, stderr: r.stderr };
+  }
+  const wrapper = join(fixtureDir, 'gradlew');
+  if (!existsSync(wrapper)) return { skipped: true };
+  const r = spawnSync(wrapper, [task, '--no-daemon'], { cwd: fixtureDir, env, encoding: 'utf8' });
+  return { skipped: false, status: r.status, error: r.error, stdout: r.stdout, stderr: r.stderr };
+}
+
+function buildScenarioGradlePrewarm({ sourceRepoDir, pinnedCommit, scenario }) {
+  const evidenceTask = scenario.expected?.gradle?.evidence_task;
+  if (typeof evidenceTask !== 'string' || evidenceTask.length === 0) return null;
+  return (gradleUserHome) => {
+    let prewarmFixtureDir = null;
+    try {
+      const materialized = materializeScenarioProject({ sourceRepoDir, pinnedCommit });
+      prewarmFixtureDir = materialized.fixtureDir;
+      const result = runGradleWrapper({ fixtureDir: prewarmFixtureDir, task: evidenceTask, gradleUserHome });
+      if (result.skipped) return;
+      if (result.error) {
+        throw new Error(`Gradle prewarm failed for ${evidenceTask}: ${result.error.message}`);
+      }
+      if (result.status !== 0) {
+        const diagnosticTail = `${result.stderr ?? ''}${result.stdout ?? ''}`.replace(/\s+/g, ' ').trim().slice(0, 300);
+        throw new Error(`Gradle prewarm failed for ${evidenceTask} (exit ${result.status})${diagnosticTail ? `: ${diagnosticTail}` : ''}`);
+      }
+    } finally {
+      if (prewarmFixtureDir) {
+        removeScenarioWorktree({ sourceRepoDir, worktreeDir: prewarmFixtureDir });
+      }
+    }
+  };
+}
+
 /**
  * Builds the full resolved execution plan (which repetition/condition runs at each order_index)
  * exactly the way runScenarioMatrix itself will -- shared by --dry-run's preview and (implicitly,
@@ -3728,6 +3767,7 @@ async function cmdRunCampaign(args, campaignDesignId) {
   }
   let matrix;
   try {
+    const gradlePrewarm = buildScenarioGradlePrewarm({ sourceRepoDir, pinnedCommit: scenario.project_commit, scenario });
     matrix = await runScenarioCampaign({
       scenario, campaignPlan, seed, model,
       allowedGradleTasks: scenario.policy.allowed_gradle_tasks,
@@ -3741,6 +3781,7 @@ async function cmdRunCampaign(args, campaignDesignId) {
       journal,
       selectionsByProfileId,
       maxBudgetUsd: budgetCheck.maxBudgetUsd,
+      gradlePrewarm,
     });
   } catch (err) {
     const incidentResult = finalizeIncident({
@@ -4004,6 +4045,7 @@ async function cmdRun(args) {
   // contract.
   let matrix;
   try {
+    const gradlePrewarm = buildScenarioGradlePrewarm({ sourceRepoDir, pinnedCommit: scenario.project_commit, scenario });
     matrix = await runScenarioMatrix({
       scenario, repeats, seed, model,
       allowedGradleTasks: scenario.policy.allowed_gradle_tasks,
@@ -4018,6 +4060,7 @@ async function cmdRun(args) {
       runtimeAdapter: adapter,
       executionProfile,
       maxBudgetUsd: budgetCheck.maxBudgetUsd,
+      gradlePrewarm,
     });
   } catch (err) {
     const incidentResult = finalizeIncident({

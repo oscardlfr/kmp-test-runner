@@ -21,7 +21,7 @@
 //     attestation failure before any session, legacy two-condition run still works.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -77,6 +77,21 @@ beforeEach(() => {
   gitViaBash(['config', 'user.email', 'test@example.com'], sourceRepoDir);
   gitViaBash(['config', 'user.name', 'Test'], sourceRepoDir);
   writeFileSync(path.join(sourceRepoDir, 'marker.txt'), 'pristine\n');
+  writeFileSync(path.join(sourceRepoDir, 'gradlew'), [
+    '#!/usr/bin/env sh',
+    'if [ -n "$KMP_EVAL_PREWARM_MARKER_FILE" ]; then',
+    '  printf "%s|%s\\n" "$GRADLE_USER_HOME" "$*" >> "$KMP_EVAL_PREWARM_MARKER_FILE"',
+    'fi',
+    'exit 0',
+    '',
+  ].join('\n'));
+  chmodSync(path.join(sourceRepoDir, 'gradlew'), 0o755);
+  writeFileSync(path.join(sourceRepoDir, 'gradlew.bat'), [
+    '@echo off',
+    'if not "%KMP_EVAL_PREWARM_MARKER_FILE%"=="" echo %GRADLE_USER_HOME%^|%*>>"%KMP_EVAL_PREWARM_MARKER_FILE%"',
+    'exit /b 0',
+    '',
+  ].join('\r\n'));
   gitViaBash(['add', '-A'], sourceRepoDir);
   gitViaBash(['commit', '-q', '-m', 'initial'], sourceRepoDir);
   pinnedCommit = gitViaBash(['rev-parse', 'HEAD'], sourceRepoDir).trim();
@@ -375,7 +390,7 @@ describe('2. cli.mjs run --campaign-design -- argument validation (fail closed b
   it('a valid isolation attestation allows --dry-run through to a printed plan', async () => {
     const attestationPath = writeValidAttestation();
     const result = await runCli(runArgs(['--seed', '1', '--campaign-design', DESIGN_ID, '--isolation-attestation-file', attestationPath, '--dry-run']), fakeClaudeEnv('run-scenario-success'));
-    expect(result.status).toBe(0);
+    expect(result.status, result.stderr || result.stdout).toBe(0);
     expect(result.stderr).not.toMatch(/Unknown flag/);
     expect(result.parsed.dry_run).toBe(true);
   });
@@ -391,7 +406,7 @@ describe('2. cli.mjs run --campaign-design -- argument validation (fail closed b
 describe('3. cli.mjs run --execution-profile -- legacy bookend (byte-for-byte unaffected by --campaign-design)', () => {
   it('run --execution-profile strict-policy-v1 --dry-run --repeats 4 still plans 8 sessions, no campaign fields anywhere', async () => {
     const result = await runCli(runArgs(['--seed', '1', '--execution-profile', STRICT, '--repeats', '4', '--dry-run']), fakeClaudeEnv('run-scenario-success'));
-    expect(result.status).toBe(0);
+    expect(result.status, result.stderr || result.stdout).toBe(0);
     expect(result.parsed.dry_run).toBe(true);
     expect(result.parsed.total_live_sessions).toBe(8);
     expect(result.parsed.plan.length).toBe(8);
@@ -405,7 +420,7 @@ describe('3. cli.mjs run --execution-profile -- legacy bookend (byte-for-byte un
 
   it('bare run --dry-run (no campaign, no execution-profile) is completely unaffected', async () => {
     const result = await runCli(runArgs(['--seed', '1', '--repeats', '2', '--dry-run']), fakeClaudeEnv('run-scenario-success'));
-    expect(result.status).toBe(0);
+    expect(result.status, result.stderr || result.stdout).toBe(0);
     expect(result.parsed.plan.length).toBe(4);
     expect(result.parsed.campaign_design_id).toBeUndefined();
   });
@@ -420,7 +435,7 @@ describe('3. cli.mjs run --execution-profile -- legacy bookend (byte-for-byte un
   // dispatch) left the LEGACY --execution-profile real-run path completely unaffected.
   it('run --execution-profile strict-policy-v1 (real, non-dry-run) still promotes records via the legacy path, unaffected by runScenarioCampaign existing', async () => {
     const result = await runCli(runArgs(['--seed', '5', '--execution-profile', STRICT, '--repeats', '1']), fakeClaudeEnv('run-scenario-success'), 60000);
-    expect(result.status).toBe(0);
+    expect(result.status, result.stderr || result.stdout).toBe(0);
     expect(result.parsed.records.length).toBe(2);
     expect(listEvidenceFiles('scenario').length).toBe(2);
   }, 60000);
@@ -429,13 +444,17 @@ describe('3. cli.mjs run --execution-profile -- legacy bookend (byte-for-byte un
 describe('4. cli.mjs run --campaign-design -- fake-runtime campaign execution (real subprocess against fake claude)', () => {
   it('happy path: all 16 cells accepted, each record matches its own pre-registered plan cell exactly, no cross-contamination between profiles', async () => {
     const attestationPath = writeValidAttestation();
+    const prewarmMarker = path.join(isolatedTmp, 'gradle-prewarm-marker.txt');
     const result = await runCli(
       runArgs(['--seed', '11', '--max-budget-usd', '1.25', ...CAMPAIGN_FLAGS(attestationPath)]),
-      { ...fakeClaudeEnv('campaign-success'), KMP_FAKE_EXPECT_MAX_BUDGET_USD: '1.25' },
+      { ...fakeClaudeEnv('campaign-success'), KMP_FAKE_EXPECT_MAX_BUDGET_USD: '1.25', KMP_EVAL_PREWARM_MARKER_FILE: prewarmMarker },
       120000,
     );
-    expect(result.status).toBe(0);
+    expect(result.status, result.stderr || result.stdout).toBe(0);
     expect(result.parsed).not.toBeNull();
+    const prewarmLines = readFileSync(prewarmMarker, 'utf8').trim().split(/\r?\n/);
+    expect(prewarmLines.length).toBe(2); // one isolated Gradle snapshot per distinct profile
+    expect(prewarmLines.every((line) => line.includes(':fakemod:test'))).toBe(true);
     const { records } = result.parsed;
     expect(records.length).toBe(16);
     expect(listEvidenceFiles('scenario').length).toBe(16);
@@ -613,7 +632,7 @@ describe('4. cli.mjs run --campaign-design -- fake-runtime campaign execution (r
   it('leaves no registered git worktree behind after a passing campaign run (matrix.cleanup() ran)', async () => {
     const attestationPath = writeValidAttestation();
     const result = await runCli(runArgs(['--seed', '11', ...CAMPAIGN_FLAGS(attestationPath)]), fakeClaudeEnv('campaign-success'), 120000);
-    expect(result.status).toBe(0);
+    expect(result.status, result.stderr || result.stdout).toBe(0);
     const worktreeList = gitViaBash(['worktree', 'list'], sourceRepoDir);
     expect(worktreeList.trim().split('\n').length).toBe(1);
   }, 120000);
