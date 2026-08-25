@@ -8,7 +8,7 @@
 // into a fresh temp directory immediately before use.
 import { mkdtempSync, rmSync, mkdirSync, cpSync, writeFileSync, appendFileSync, realpathSync, existsSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname, basename } from 'node:path';
+import { join, dirname, basename, isAbsolute, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { resolveBash } from './resolve-bash.mjs';
 import { isWithinOrEqualCanonical } from './policy-hook.mjs';
@@ -67,6 +67,49 @@ function bestEffortRemove(path) {
   } catch { /* best-effort: the original acquisition error is what matters, not this */ }
 }
 
+function sleepSync(ms) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch { /* SAB unavailable -> retry immediately */ }
+}
+
+function resolveGitCommonDir(repoRoot) {
+  const r = spawnSync(resolveBash(), ['-c', buildLongpathsGitCommand(['rev-parse', '--git-common-dir'])], { cwd: repoRoot, encoding: 'utf8' });
+  if (r.status !== 0) return join(repoRoot, '.git');
+  const commonDir = r.stdout.trim();
+  return isAbsolute(commonDir) ? commonDir : resolve(repoRoot, commonDir);
+}
+
+function acquireGitFetchLock(repoRoot) {
+  const lockDir = join(resolveGitCommonDir(repoRoot), 'kmp-agentic-eval-fetch.lock');
+  const started = Date.now();
+  let attempt = 0;
+  while (true) {
+    try {
+      mkdirSync(lockDir);
+      writeFileSync(join(lockDir, 'owner.txt'), `${process.pid}\n${new Date().toISOString()}\n`);
+      return () => bestEffortRemove(lockDir);
+    } catch (err) {
+      if (!err || err.code !== 'EEXIST') throw err;
+      let stale = false;
+      try {
+        stale = Date.now() - statSync(lockDir).mtimeMs > 5 * 60 * 1000;
+      } catch { /* if stat fails, just keep waiting */ }
+      if (stale) {
+        try {
+          rmSync(lockDir, { recursive: true, force: true });
+          continue;
+        } catch { /* another process may have won the race */ }
+      }
+      if (Date.now() - started > 120_000) {
+        throw new Error(`timed out waiting for git shallow-fetch lock: ${lockDir}`);
+      }
+      sleepSync(Math.min(50 + attempt * 25, 250));
+      attempt += 1;
+    }
+  }
+}
+
 /**
  * Bounded-retry `rmSync` with a VERIFIED postcondition -- modeled directly on
  * `lib/project/artifact-sweep.js`'s `renameWithRetrySync` (the one existing retry idiom in this
@@ -108,9 +151,15 @@ function ensureCommitAvailable(repoRoot, sha) {
   // Not hex-shaped -- definitely not a real commit; let `git archive` report it directly rather
   // than spending a network round-trip on input that can never resolve.
   if (!PLAUSIBLE_SHA_RE.test(sha)) return;
-  const r = spawnSync(resolveBash(), ['-c', buildLongpathsGitCommand(['fetch', '--depth', '1', 'origin', sha])], { cwd: repoRoot, encoding: 'utf8' });
-  if (r.status !== 0) {
-    throw new Error(`commit ${sha} not present locally (shallow clone?) and could not be fetched from origin (exit ${r.status}): ${r.stderr}`);
+  const releaseFetchLock = acquireGitFetchLock(repoRoot);
+  try {
+    if (isCommitAvailable(repoRoot, sha)) return;
+    const r = spawnSync(resolveBash(), ['-c', buildLongpathsGitCommand(['fetch', '--depth', '1', 'origin', sha])], { cwd: repoRoot, encoding: 'utf8' });
+    if (r.status !== 0) {
+      throw new Error(`commit ${sha} not present locally (shallow clone?) and could not be fetched from origin (exit ${r.status}): ${r.stderr}`);
+    }
+  } finally {
+    releaseFetchLock();
   }
 }
 

@@ -193,7 +193,7 @@ describe('isRunnerEntrypoint', () => {
       // Also holds symmetrically (argv canonical, module via symlink).
       expect(isRunnerEntrypoint(realFile, pathToFileURL(viaSymlinkFile).href)).toBe(true);
     } finally {
-      fs.rmSync(linkDir, { force: true });
+      fs.unlinkSync(linkDir);
       fs.rmSync(realDir, { recursive: true, force: true });
     }
   });

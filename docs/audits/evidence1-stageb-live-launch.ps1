@@ -1,6 +1,7 @@
 param(
   [string]$RunId = '',
-  [string]$TerminalRecordPath = ''
+  [string]$TerminalRecordPath = '',
+  [switch]$LoadOnly
 )
 
 Set-StrictMode -Version Latest
@@ -157,6 +158,53 @@ function Require-JsonProperty($Object, [string]$Name, [string]$Label) {
   return $Object.$Name
 }
 
+function Read-HarnessAnchorFields($Object, [string]$Label) {
+  if ($Object.PSObject.Properties.Name -contains 'harness_commit_actual') {
+    return [ordered]@{
+      commit_actual = Require-JsonProperty $Object 'harness_commit_actual' $Label
+      commit_expected = Require-JsonProperty $Object 'harness_commit_expected' $Label
+      tree_actual = Require-JsonProperty $Object 'harness_tree_actual' $Label
+      tree_expected = Require-JsonProperty $Object 'harness_tree_expected' $Label
+    }
+  }
+  if ($Object.PSObject.Properties.Name -contains 'actual_commit') {
+    return [ordered]@{
+      commit_actual = Require-JsonProperty $Object 'actual_commit' $Label
+      commit_expected = Require-JsonProperty $Object 'expected_commit' $Label
+      tree_actual = Require-JsonProperty $Object 'actual_tree' $Label
+      tree_expected = Require-JsonProperty $Object 'expected_tree' $Label
+    }
+  }
+  if ($Object.PSObject.Properties.Name -contains 'harness_sha') {
+    $commit = Require-JsonProperty $Object 'harness_sha' $Label
+    $tree = Require-JsonProperty $Object 'harness_tree' $Label
+    return [ordered]@{
+      commit_actual = $commit
+      commit_expected = $commit
+      tree_actual = $tree
+      tree_expected = $tree
+    }
+  }
+  if ($Object.PSObject.Properties.Name -contains 'harness_commit') {
+    $commit = Require-JsonProperty $Object 'harness_commit' $Label
+    $tree = Require-JsonProperty $Object 'harness_tree' $Label
+    return [ordered]@{
+      commit_actual = $commit
+      commit_expected = $commit
+      tree_actual = $tree
+      tree_expected = $tree
+    }
+  }
+  $commit = Require-JsonProperty $Object 'commit' $Label
+  $tree = Require-JsonProperty $Object 'tree' $Label
+  return [ordered]@{
+    commit_actual = $commit
+    commit_expected = $commit
+    tree_actual = $tree
+    tree_expected = $tree
+  }
+}
+
 function Assert-SequenceEquals($Actual, [string[]]$Expected, [string]$Label) {
   $actualArray = @($Actual | ForEach-Object { [string]$_ })
   if ($actualArray.Count -ne $Expected.Count) {
@@ -187,41 +235,21 @@ function Read-ReadinessLedger {
 
   if ($ledger.PSObject.Properties.Name -contains 'anchors') {
     $anchors = Require-JsonProperty $ledger 'anchors' 'readiness ledger'
-    if ($anchors.PSObject.Properties.Name -contains 'harness_commit_actual') {
-      $ledgerCommitActual = Require-JsonProperty $anchors 'harness_commit_actual' 'readiness anchors'
-      $ledgerCommitExpected = Require-JsonProperty $anchors 'harness_commit_expected' 'readiness anchors'
-      $ledgerTreeActual = Require-JsonProperty $anchors 'harness_tree_actual' 'readiness anchors'
-      $ledgerTreeExpected = Require-JsonProperty $anchors 'harness_tree_expected' 'readiness anchors'
-    } elseif ($anchors.PSObject.Properties.Name -contains 'harness_sha') {
-      $ledgerCommitActual = Require-JsonProperty $anchors 'harness_sha' 'readiness anchors'
-      $ledgerTreeActual = Require-JsonProperty $anchors 'harness_tree' 'readiness anchors'
-      $ledgerCommitExpected = $ledgerCommitActual
-      $ledgerTreeExpected = $ledgerTreeActual
-    } else {
-      $ledgerCommitActual = Require-JsonProperty $anchors 'harness_commit' 'readiness anchors'
-      $ledgerTreeActual = Require-JsonProperty $anchors 'harness_tree' 'readiness anchors'
-      $ledgerCommitExpected = $ledgerCommitActual
-      $ledgerTreeExpected = $ledgerTreeActual
-    }
+    $fields = Read-HarnessAnchorFields $anchors 'readiness anchors'
   } elseif ($ledger.PSObject.Properties.Name -contains 'r2_harness') {
     $anchors = Require-JsonProperty $ledger 'r2_harness' 'readiness ledger'
-    $ledgerCommitActual = Require-JsonProperty $anchors 'harness_commit' 'readiness r2_harness'
-    $ledgerTreeActual = Require-JsonProperty $anchors 'harness_tree' 'readiness r2_harness'
-    $ledgerCommitExpected = $ledgerCommitActual
-    $ledgerTreeExpected = $ledgerTreeActual
+    $fields = Read-HarnessAnchorFields $anchors 'readiness r2_harness'
   } elseif ($ledger.PSObject.Properties.Name -contains 'harness') {
     $anchors = Require-JsonProperty $ledger 'harness' 'readiness ledger'
-    $ledgerCommitActual = Require-JsonProperty $anchors 'commit' 'readiness harness'
-    $ledgerTreeActual = Require-JsonProperty $anchors 'tree' 'readiness harness'
-    $ledgerCommitExpected = $ledgerCommitActual
-    $ledgerTreeExpected = $ledgerTreeActual
+    $fields = Read-HarnessAnchorFields $anchors 'readiness harness'
   } else {
     $anchors = Require-JsonProperty $ledger 'harness_anchor' 'readiness ledger'
-    $ledgerCommitActual = Require-JsonProperty $anchors 'commit' 'readiness harness_anchor'
-    $ledgerTreeActual = Require-JsonProperty $anchors 'tree' 'readiness harness_anchor'
-    $ledgerCommitExpected = $ledgerCommitActual
-    $ledgerTreeExpected = $ledgerTreeActual
+    $fields = Read-HarnessAnchorFields $anchors 'readiness harness_anchor'
   }
+  $ledgerCommitActual = $fields.commit_actual
+  $ledgerCommitExpected = $fields.commit_expected
+  $ledgerTreeActual = $fields.tree_actual
+  $ledgerTreeExpected = $fields.tree_expected
   if ($ledgerCommitActual -ne $HarnessCommit -or $ledgerCommitExpected -ne $HarnessCommit) {
     Fail "readiness ledger harness commit drift: actual=$ledgerCommitActual expected=$ledgerCommitExpected"
   }
@@ -229,16 +257,45 @@ function Read-ReadinessLedger {
     Fail "readiness ledger harness tree drift: actual=$ledgerTreeActual expected=$ledgerTreeExpected"
   }
 
-  if ($ledger.PSObject.Properties.Name -contains 'R7_campaign_dry_run') {
+  $attestationShaFromLedger = if ($ledger.PSObject.Properties.Name -contains 'attestation') {
+    $attestation = Require-JsonProperty $ledger 'attestation' 'readiness ledger'
+    if ($attestation.PSObject.Properties.Name -contains 'canonical_json_sha256') {
+      [string]$attestation.canonical_json_sha256
+    } elseif ($attestation.PSObject.Properties.Name -contains 'sha256') {
+      [string]$attestation.sha256
+    } else {
+      ''
+    }
+  } else {
+    ''
+  }
+
+  if ($ledger.PSObject.Properties.Name -contains 'dry_run_campaign_pass') {
+    $campaign = Require-JsonProperty $ledger 'dry_run_campaign_pass' 'readiness ledger'
+  } elseif ($ledger.PSObject.Properties.Name -contains 'R7_campaign_dry_run') {
     $r7 = Require-JsonProperty $ledger 'R7_campaign_dry_run' 'readiness ledger'
+    $campaign = Require-JsonProperty $r7 'pass_dry_run' 'readiness campaign_dry_run'
   } elseif ($ledger.PSObject.Properties.Name -contains 'campaign_dry_run') {
     $r7 = Require-JsonProperty $ledger 'campaign_dry_run' 'readiness ledger'
+    $campaign = Require-JsonProperty $r7 'pass_dry_run' 'readiness campaign_dry_run'
   } elseif ($ledger.PSObject.Properties.Name -contains 'dry_run_campaign') {
     $r7 = Require-JsonProperty $ledger 'dry_run_campaign' 'readiness ledger'
+    $campaign = Require-JsonProperty $r7 'pass_dry_run' 'readiness campaign_dry_run'
+  } elseif ($ledger.PSObject.Properties.Name -contains 'dry_runs') {
+    $dryRuns = Require-JsonProperty $ledger 'dry_runs' 'readiness ledger'
+    if ($dryRuns.PSObject.Properties.Name -contains 'campaign_pass') {
+      $campaign = Require-JsonProperty $dryRuns 'campaign_pass' 'readiness dry_runs'
+    } elseif ($dryRuns.PSObject.Properties.Name -contains 'campaign') {
+      $campaign = Require-JsonProperty $dryRuns 'campaign' 'readiness dry_runs'
+    } elseif ($dryRuns.PSObject.Properties.Name -contains 'pass_dry_run') {
+      $campaign = Require-JsonProperty $dryRuns 'pass_dry_run' 'readiness dry_runs'
+    } else {
+      Fail 'readiness dry_runs missing campaign pass dry-run object'
+    }
   } else {
     $r7 = Require-JsonProperty $ledger 'r7_campaign_dry_run' 'readiness ledger'
+    $campaign = Require-JsonProperty $r7 'pass_dry_run' 'readiness campaign_dry_run'
   }
-  $campaign = Require-JsonProperty $r7 'pass_dry_run' 'readiness campaign_dry_run'
   foreach ($required in @(
     'planned_sessions',
     'plan_length',
@@ -272,6 +329,10 @@ function Read-ReadinessLedger {
     if ([int]$campaign.unrestricted_distinct_attestation_hash_count -eq 1) { 8 } else { 0 }
   } elseif ($campaign.PSObject.Properties.Name -contains 'unrestricted_unique_attestation_hash_count') {
     if ([int]$campaign.unrestricted_unique_attestation_hash_count -eq 1) { [int]$campaign.unrestricted_cell_count } else { 0 }
+  } elseif ($campaign.PSObject.Properties.Name -contains 'shared_attestation_hash_across_all_cells') {
+    if ($campaign.shared_attestation_hash_across_all_cells -eq $true) { [int]$campaign.unrestricted_cell_count } else { 0 }
+  } elseif ($campaign.PSObject.Properties.Name -contains 'unique_isolation_attestation_hash_count') {
+    if ([int]$campaign.unique_isolation_attestation_hash_count -eq 1) { [int]$campaign.unrestricted_cell_count } else { 0 }
   } elseif ($campaign.PSObject.Properties.Name -contains 'distinct_isolation_attestation_hashes_on_unrestricted_cells') {
     if ([int]$campaign.distinct_isolation_attestation_hashes_on_unrestricted_cells -eq 1) { [int]$campaign.unrestricted_cell_count } else { 0 }
   } else {
@@ -283,6 +344,10 @@ function Read-ReadinessLedger {
     [int]$campaign.unrestricted_distinct_attestation_hash_count
   } elseif ($campaign.PSObject.Properties.Name -contains 'unrestricted_unique_attestation_hash_count') {
     [int]$campaign.unrestricted_unique_attestation_hash_count
+  } elseif ($campaign.PSObject.Properties.Name -contains 'shared_attestation_hash_across_all_cells') {
+    if ($campaign.shared_attestation_hash_across_all_cells -eq $true) { 1 } else { 0 }
+  } elseif ($campaign.PSObject.Properties.Name -contains 'unique_isolation_attestation_hash_count') {
+    [int]$campaign.unique_isolation_attestation_hash_count
   } elseif ($campaign.PSObject.Properties.Name -contains 'distinct_isolation_attestation_hashes_on_unrestricted_cells') {
     [int]$campaign.distinct_isolation_attestation_hashes_on_unrestricted_cells
   } else {
@@ -294,6 +359,8 @@ function Read-ReadinessLedger {
     $campaign.attestation_path_leaked
   } elseif ($campaign.PSObject.Properties.Name -contains 'attestation_path_or_content_or_timestamps_leaked') {
     $campaign.attestation_path_or_content_or_timestamps_leaked
+  } elseif ($campaign.PSObject.Properties.Name -contains 'attestation_path_content_or_timestamps_leaked') {
+    $campaign.attestation_path_content_or_timestamps_leaked
   } elseif ($campaign.PSObject.Properties.Name -contains 'attestation_path_absent_from_output') {
     -not $campaign.attestation_path_absent_from_output
   } else {
@@ -307,6 +374,8 @@ function Read-ReadinessLedger {
     $campaign.attestation_filename_leaked_in_output -or $campaign.attestation_campaign_id_leaked_in_output -or $campaign.attestation_boundary_kind_leaked_in_output
   } elseif ($campaign.PSObject.Properties.Name -contains 'attestation_path_or_content_or_timestamps_leaked') {
     $campaign.attestation_path_or_content_or_timestamps_leaked
+  } elseif ($campaign.PSObject.Properties.Name -contains 'attestation_path_content_or_timestamps_leaked') {
+    $campaign.attestation_path_content_or_timestamps_leaked
   } elseif ($campaign.PSObject.Properties.Name -contains 'attestation_content_absent_from_output') {
     -not $campaign.attestation_content_absent_from_output
   } else {
@@ -318,6 +387,8 @@ function Read-ReadinessLedger {
     $campaign.attestation_timestamps_leaked
   } elseif ($campaign.PSObject.Properties.Name -contains 'attestation_path_or_content_or_timestamps_leaked') {
     $campaign.attestation_path_or_content_or_timestamps_leaked
+  } elseif ($campaign.PSObject.Properties.Name -contains 'attestation_path_content_or_timestamps_leaked') {
+    $campaign.attestation_path_content_or_timestamps_leaked
   } elseif ($campaign.PSObject.Properties.Name -contains 'attestation_timestamps_absent_from_output') {
     -not $campaign.attestation_timestamps_absent_from_output
   } else {
@@ -329,12 +400,17 @@ function Read-ReadinessLedger {
     $campaign.unrestricted_attestation_hash_matches_file
   } elseif ($campaign.PSObject.Properties.Name -contains 'unrestricted_hash_matches_r5_validation') {
     $campaign.unrestricted_hash_matches_r5_validation
+  } elseif ($campaign.PSObject.Properties.Name -contains 'attestation_hash_matches_r5') {
+    $campaign.attestation_hash_matches_r5
   } elseif ($campaign.PSObject.Properties.Name -contains 'attestation_hash_matches_loader') {
     $campaign.attestation_hash_matches_loader
   } elseif ($campaign.PSObject.Properties.Name -contains 'unrestricted_attestation_hash_matches_loader') {
     $campaign.unrestricted_attestation_hash_matches_loader
   } elseif ($campaign.PSObject.Properties.Name -contains 'shared_isolation_attestation_sha256') {
     [string]$campaign.shared_isolation_attestation_sha256 -match '^[0-9a-f]{64}$'
+  } elseif ($campaign.PSObject.Properties.Name -contains 'bound_isolation_attestation_sha256') {
+    [string]$campaign.bound_isolation_attestation_sha256 -match '^[0-9a-f]{64}$' -and
+      ($attestationShaFromLedger -eq '' -or [string]$campaign.bound_isolation_attestation_sha256 -eq $attestationShaFromLedger)
   } else {
     Fail 'readiness campaign dry-run missing attestation hash match field'
   }
@@ -407,6 +483,7 @@ function Read-ReadinessLedger {
 
   $ledger | Add-Member -NotePropertyName '__live_harness_commit' -NotePropertyValue $ledgerCommitActual -Force
   $ledger | Add-Member -NotePropertyName '__live_harness_tree' -NotePropertyValue $ledgerTreeActual -Force
+  $ledger | Add-Member -NotePropertyName '__live_campaign_dry_run' -NotePropertyValue $campaign -Force
   $campaign | Add-Member -NotePropertyName '__live_output_sha256' -NotePropertyValue $campaignOutputSha -Force
   return $ledger
 }
@@ -470,6 +547,10 @@ process.exit(result.status ?? 125);
   }
 }
 
+if ($LoadOnly) {
+  return
+}
+
 Refresh-StageBPath
 Set-StageBClaudeNetworkEnvironment
 New-Item -ItemType Directory -Force -Path $ScratchDir | Out-Null
@@ -520,15 +601,7 @@ try {
   $authCheck = Assert-ClaudeAuthReady $claude
   Assert-RestrictedNetwork
   $readiness = Read-ReadinessLedger
-  $readinessCampaign = if ($readiness.PSObject.Properties.Name -contains 'R7_campaign_dry_run') {
-    $readiness.R7_campaign_dry_run.pass_dry_run
-  } elseif ($readiness.PSObject.Properties.Name -contains 'campaign_dry_run') {
-    $readiness.campaign_dry_run.pass_dry_run
-  } elseif ($readiness.PSObject.Properties.Name -contains 'dry_run_campaign') {
-    $readiness.dry_run_campaign.pass_dry_run
-  } else {
-    $readiness.r7_campaign_dry_run.pass_dry_run
-  }
+  $readinessCampaign = Require-JsonProperty $readiness '__live_campaign_dry_run' 'normalized readiness ledger'
 
   $attestationCheckRaw = & $node --input-type=module -e "import { loadIsolationAttestation } from './tools/agentic-eval/execution-profiles/isolation-attestation.mjs'; const r = loadIsolationAttestation('C:/kmp-eval/measurement-scopes/evidence1-claude-windows-isolation-attestation-stageb-v1.json', { profileId:'sandboxed-unrestricted-v1', runtimeId:'claude-code', platform:'windows', networkMode:'restricted', harnessSha:'$HarnessCommit' }); console.log(JSON.stringify({ok:r.ok,schema:r.schema,sha256:r.sha256})); if (!r.ok) process.exit(2);"
   if ($LASTEXITCODE -ne 0) {
@@ -550,7 +623,11 @@ try {
     $readinessAttestationHash = Require-JsonProperty $readinessAttestation 'sha256' 'readiness isolation_attestation'
   } elseif ($readiness.PSObject.Properties.Name -contains 'attestation') {
     $readinessAttestation = Require-JsonProperty $readiness 'attestation' 'readiness ledger'
-    $readinessAttestationHash = Require-JsonProperty $readinessAttestation 'sha256' 'readiness attestation'
+    if ($readinessAttestation.PSObject.Properties.Name -contains 'canonical_json_sha256') {
+      $readinessAttestationHash = Require-JsonProperty $readinessAttestation 'canonical_json_sha256' 'readiness attestation'
+    } else {
+      $readinessAttestationHash = Require-JsonProperty $readinessAttestation 'sha256' 'readiness attestation'
+    }
   } else {
     $readinessAttestation = Require-JsonProperty $readiness 'r5_network_seal_and_attestation' 'readiness ledger'
     $readinessAttestationHash = Require-JsonProperty $readinessAttestation 'attestation_sha256' 'readiness r5_network_seal_and_attestation'
@@ -653,6 +730,7 @@ try {
   Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
   $psi = New-Object System.Diagnostics.ProcessStartInfo
   $psi.FileName = $node
+  $psi.WorkingDirectory = $HarnessDir
   $psi.UseShellExecute = $false
   $psi.RedirectStandardOutput = $true
   $psi.RedirectStandardError = $true

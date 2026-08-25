@@ -7,6 +7,7 @@ BeforeAll {
     $script:WrapperPath = Join-Path $script:AuditRoot 'evidence1-stageb-live-wrapper.ps1'
     $script:PlacePath = Join-Path $script:AuditRoot 'evidence1-hyperv-place-live-autorun.ps1'
     $script:ProgressPath = Join-Path $script:AuditRoot 'evidence1-hyperv-read-live-progress.ps1'
+    $script:LauncherPath = Join-Path $script:AuditRoot 'evidence1-stageb-live-launch.ps1'
 }
 
 Describe 'Evidence1 Hyper-V live observability scripts' {
@@ -21,7 +22,7 @@ Describe 'Evidence1 Hyper-V live observability scripts' {
             $script:WrapperPath
             $script:PlacePath
             $script:ProgressPath
-            (Join-Path $script:AuditRoot 'evidence1-stageb-live-launch.ps1')
+            $script:LauncherPath
         )
         foreach ($path in $paths) {
             $tokens = $null
@@ -56,6 +57,58 @@ Describe 'Evidence1 Hyper-V live observability scripts' {
         $content = Get-Content -LiteralPath $script:ProgressPath -Raw
         $content | Should -Not -Match '\bCommandLine\b'
         $content | Should -Not -Match 'Get-Content.+(?:stdout|stderr|STAGE-B-live\.log)'
+    }
+
+    It 'launches the native Node process from the harness directory' {
+        $content = Get-Content -LiteralPath $script:LauncherPath -Raw
+        $content | Should -Match '\$psi\.WorkingDirectory = \$HarnessDir'
+    }
+
+    It 'accepts the current readiness ledger harness anchor shape' {
+        . $script:LauncherPath -LoadOnly
+        function Fail($Message) { throw "HARD STOP: $Message" }
+
+        $HarnessCommit = '657f426f3091ffa1045f0ddd76ab5ce3b2a5d5a3'
+        $HarnessTree = 'c65a1dc0ad0af9558d17f8df0c133a2a1fca7a2f'
+        $ReadinessLedgerPath = Join-Path $TestDrive 'READINESS.json'
+        $sha = 'a' * 64
+        $ledger = [ordered]@{
+            verdict = 'PASS'
+            harness = [ordered]@{
+                expected_commit = $HarnessCommit
+                actual_commit = $HarnessCommit
+                expected_tree = $HarnessTree
+                actual_tree = $HarnessTree
+            }
+            attestation = [ordered]@{
+                canonical_json_sha256 = $sha
+            }
+            dry_run_campaign_pass = [ordered]@{
+                campaign_design_id = 'claude-product-vs-free-baseline-v1'
+                planned_sessions = 8
+                plan_length = 8
+                strict_cell_count = 0
+                unrestricted_cell_count = 8
+                output_sha256_lf_normalized = $sha
+                strict_cells_with_attestation_hash = 0
+                unique_isolation_attestation_hash_count = 1
+                bound_isolation_attestation_sha256 = $sha
+                attestation_path_leaked_in_output = $false
+                attestation_content_leaked_in_output = $false
+                attestation_timestamps_leaked_in_output = $false
+                label_order_matches_expected = $true
+                profile_order_matches_expected = $true
+                condition_order_matches_expected = $true
+                max_budget_usd = '2.00'
+            }
+        }
+        $ledger | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $ReadinessLedgerPath -Encoding UTF8
+
+        $actual = Read-ReadinessLedger
+
+        $actual.__live_harness_commit | Should -Be $HarnessCommit
+        $actual.__live_harness_tree | Should -Be $HarnessTree
+        $actual.__live_campaign_dry_run.__live_output_sha256 | Should -Be $sha
     }
 }
 
