@@ -1670,6 +1670,64 @@ function buildStderrByRunId(journal, cellOrdinalByRunId) {
   }
 }
 
+function cloneJson(value) {
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+}
+
+function absentRejectedMetric(reason = 'not recorded on rejected record') {
+  return { value: null, reason };
+}
+
+function normalizeRejectedUsage(record) {
+  const usage = cloneJson(record.usage);
+  if (usage != null && typeof usage === 'object' && !Array.isArray(usage)) {
+    return {
+      source: usage.source,
+      input: usage.input ?? null,
+      cached_input: usage.cached_input ?? null,
+      cache_write: usage.cache_write ?? null,
+      output: usage.output ?? null,
+      reasoning_output: usage.reasoning_output ?? null,
+    };
+  }
+  return {
+    source: 'not-recorded',
+    input: null,
+    cached_input: null,
+    cache_write: null,
+    output: null,
+    reasoning_output: null,
+  };
+}
+
+function normalizeRejectedTokens(record, usage) {
+  const tokens = cloneJson(record.tokens);
+  if (tokens != null && typeof tokens === 'object' && !Array.isArray(tokens)) return tokens;
+  const metricFor = (value) => (Number.isInteger(value) && value >= 0 ? { value, reason: null } : absentRejectedMetric());
+  return {
+    input: metricFor(usage.input),
+    output: metricFor(usage.output),
+    cache_read: metricFor(usage.cached_input),
+    cache_creation: metricFor(usage.cache_write),
+  };
+}
+
+function buildRejectedCellMetrics(record) {
+  const usage = normalizeRejectedUsage(record);
+  return {
+    schema: 1,
+    started_at: record.started_at,
+    ended_at: record.ended_at,
+    wall_clock_ms: record.wall_clock_ms,
+    first_useful_signal_ms: cloneJson(record.first_useful_signal_ms) ?? absentRejectedMetric(),
+    post_signal_ms: cloneJson(record.post_signal_ms) ?? absentRejectedMetric(),
+    usage,
+    tokens: normalizeRejectedTokens(record, usage),
+    tool_calls_total: cloneJson(record.tool_calls_total) ?? absentRejectedMetric(),
+    shell_commands_total: cloneJson(record.shell_commands_total) ?? absentRejectedMetric(),
+  };
+}
+
 /**
  * Shared rejection-forensics writer for BOTH finalizeAndWriteRecords (pair path) and
  * finalizeAndWriteMatrixRecords (matrix path) -- TWO INDEPENDENT transactions (see
@@ -1687,6 +1745,7 @@ async function writeRejectionForensics({
   plannedCellCount = null, executedCellCount = null, privatePatternsFile, runsRootOverride,
   correlationObservabilityByRunId = null,
   preInferenceFailureByRunId = null,
+  cellMetricsByRunId = null,
   // stderrByRunId: null when the caller has no journal (e.g. a direct test of this function) --
   // the 3rd transaction below is skipped cleanly in that case, never throws, never blocks the
   // other two. When present, every value MUST already be a string (the caller reads it back
@@ -1745,7 +1804,7 @@ async function writeRejectionForensics({
       runKind, rejectionId, records, failedChecksByRunId, unexpectedToolUsesCountByRunId,
       unexpectedToolsByRunId, captureOrdinalByRunId, rawTranscriptsPersisted, foreignSkillNamesByRunId,
       ambientProfileMatrixOk, plannedCellCount, executedCellCount, correlationObservabilityByRunId,
-      preInferenceFailureByRunId,
+      preInferenceFailureByRunId, cellMetricsByRunId,
     });
     ({ rejectionId: writtenRejectionId, relativePath: diagnosticsRelativePath } = writeRejectedRunDiagnostics(diagnostics, { privatePatternsFile, runsRootOverride }));
   } catch (err) {
@@ -1861,6 +1920,7 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
       foreignSkillNamesByRunId: { [recordB.run_id]: runB.observation.skill.foreignInvocations.map((u) => u.skillReference).filter((s) => s != null) },
       correlationObservabilityByRunId: { [recordB.run_id]: runB.correlationObservability },
       preInferenceFailureByRunId: { [recordB.run_id]: summarizePreInferenceFailure(runB.observation) },
+      cellMetricsByRunId: { [recordB.run_id]: buildRejectedCellMetrics(recordB) },
       transcriptsByRunId,
       // Derived from runB.cellOrdinal -- the journal's own authoritative per-cell ordinal (stamped
       // by runSingleCondition itself), never a hardcoded 0 (post-Codex-audit fix, PR #418, round
@@ -1970,6 +2030,10 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
       preInferenceFailureByRunId: {
         [recordA.run_id]: summarizePreInferenceFailure(runA.observation),
         [recordB.run_id]: summarizePreInferenceFailure(runB.observation),
+      },
+      cellMetricsByRunId: {
+        [recordA.run_id]: buildRejectedCellMetrics(recordA),
+        [recordB.run_id]: buildRejectedCellMetrics(recordB),
       },
       transcriptsByRunId,
       // Derived from runB.cellOrdinal/runA.cellOrdinal -- the journal's own authoritative per-cell
@@ -2233,6 +2297,7 @@ async function finalizeAndWriteMatrixRecords({
     );
     const correlationObservabilityByRunId = Object.fromEntries(records.map((r, i) => [r.run_id, conditionResults[i].correlationObservability]));
     const preInferenceFailureByRunId = Object.fromEntries(records.map((r, i) => [r.run_id, summarizePreInferenceFailure(conditionResults[i].observation)]));
+    const cellMetricsByRunId = Object.fromEntries(records.map((r) => [r.run_id, buildRejectedCellMetrics(r)]));
     // Derived from conditionResults[i].cellOrdinal -- the journal's own authoritative per-cell
     // ordinal (always stamped by runSingleCondition, present regardless of whether a journal is
     // actually threaded through) -- never array index `i`. Post-Codex-audit fix (PR #418): under
@@ -2246,7 +2311,7 @@ async function finalizeAndWriteMatrixRecords({
 
     const forensics = await writeRejectionForensics({
       runKind, records, failedChecksByRunId, unexpectedToolUsesCountByRunId, unexpectedToolsByRunId,
-      foreignSkillNamesByRunId, correlationObservabilityByRunId, preInferenceFailureByRunId, transcriptsByRunId, captureOrdinalByRunId,
+      foreignSkillNamesByRunId, correlationObservabilityByRunId, preInferenceFailureByRunId, cellMetricsByRunId, transcriptsByRunId, captureOrdinalByRunId,
       ambientProfileMatrixOk: null, plannedCellCount, executedCellCount,
       privatePatternsFile, runsRootOverride, stderrByRunId, stderrReadError,
     });
@@ -2298,6 +2363,7 @@ async function finalizeAndWriteMatrixRecords({
     );
     const correlationObservabilityByRunId = Object.fromEntries(records.map((r, i) => [r.run_id, conditionResults[i].correlationObservability]));
     const preInferenceFailureByRunId = Object.fromEntries(records.map((r, i) => [r.run_id, summarizePreInferenceFailure(conditionResults[i].observation)]));
+    const cellMetricsByRunId = Object.fromEntries(records.map((r) => [r.run_id, buildRejectedCellMetrics(r)]));
     // Derived from conditionResults[i].cellOrdinal -- the journal's own authoritative per-cell
     // ordinal (always stamped by runSingleCondition, present regardless of whether a journal is
     // actually threaded through) -- never array index `i`. Post-Codex-audit fix (PR #418): under
@@ -2314,7 +2380,7 @@ async function finalizeAndWriteMatrixRecords({
     // profile consensus itself held, distinct from any individual cell's own failed_checks.
     const forensics = await writeRejectionForensics({
       runKind, records, failedChecksByRunId, unexpectedToolUsesCountByRunId, unexpectedToolsByRunId,
-      foreignSkillNamesByRunId, correlationObservabilityByRunId, preInferenceFailureByRunId, transcriptsByRunId, captureOrdinalByRunId,
+      foreignSkillNamesByRunId, correlationObservabilityByRunId, preInferenceFailureByRunId, cellMetricsByRunId, transcriptsByRunId, captureOrdinalByRunId,
       ambientProfileMatrixOk: gate.ambientProfileMatrixOk,
       privatePatternsFile, runsRootOverride, stderrByRunId, stderrReadError,
     });
