@@ -19,6 +19,7 @@ import {
   REJECTION_DIAGNOSTICS_SCHEMA_V4,
   REJECTION_DIAGNOSTICS_SCHEMA_V5,
   REJECTION_DIAGNOSTICS_SCHEMA_V6,
+  REJECTION_DIAGNOSTICS_SCHEMA_V7,
   buildRejectionDiagnostics,
   validateRejectionRow,
   validateRejectionLocalRow,
@@ -56,6 +57,7 @@ function zeroToolDefaultsFor(records) {
     captureOrdinalByRunId: Object.fromEntries(ids.map((id, i) => [id, i])),
     correlationObservabilityByRunId: Object.fromEntries(records.map((r) => [r.run_id, correlationSummary(r.condition, r.execution_profile?.policy_mode ?? 'required')])),
     preInferenceFailureByRunId: Object.fromEntries(records.map((r) => [r.run_id, preInferenceSummary(false)])),
+    cellMetricsByRunId: Object.fromEntries(records.map((r, i) => [r.run_id, cellMetrics(i)])),
   };
 }
 function buildDiag(opts) {
@@ -193,25 +195,63 @@ function preInferenceSummary(signatureMatched = false, overrides = {}) {
   };
 }
 
+function nullableMetric(value, reason = null) {
+  return { value, reason: value === null ? (reason ?? 'not recorded') : null };
+}
+
+function cellMetrics(i = 0, overrides = {}) {
+  const input = 100 + i;
+  const output = 10 + i;
+  const cachedInput = 5 + i;
+  const cacheWrite = 2 + i;
+  return {
+    schema: 1,
+    started_at: `2026-08-21T00:00:0${i}.000Z`,
+    ended_at: `2026-08-21T00:00:1${i}.000Z`,
+    wall_clock_ms: 10000 + i,
+    first_useful_signal_ms: nullableMetric(1200 + i),
+    post_signal_ms: nullableMetric(8800 + i),
+    usage: {
+      source: 'runtime-reported',
+      input,
+      cached_input: cachedInput,
+      cache_write: cacheWrite,
+      output,
+      reasoning_output: null,
+    },
+    tokens: {
+      input: nullableMetric(input),
+      output: nullableMetric(output),
+      cache_read: nullableMetric(cachedInput),
+      cache_creation: nullableMetric(cacheWrite),
+    },
+    tool_calls_total: nullableMetric(30 + i),
+    shell_commands_total: nullableMetric(11 + i),
+    ...overrides,
+  };
+}
+
 // Schema 2 -> 3 -> 4 -> 5 -> 6 (preserve rejected matrix forensics; sandboxed-unrestricted-v1 support): v2
 // gained per-cell unexpected_tool_uses_count + top-level matrix_complete/planned_cell_count/
 // executed_cell_count/raw_transcripts_persisted going to v3; v3 gained execution_profile_id/
 // policy_mode/isolation_attestation_sha256 going to v4, EXCLUSIVE to a policy_mode:"not_applicable"
 // batch (policy_sha256 becomes exactly null there, instead of a real hash). v5 added closed
-// error-code/correlation observability; v6 adds closed pre-inference failure summaries. All are a genuine
-// version DISPATCH (SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS = [2, 3, 4, 5, 6]), never a plain constant
+// error-code/correlation observability; v6 adds closed pre-inference failure summaries; v7 adds exact
+// per-cell timing/usage/token/tool-count metrics for rejected cells. All are a genuine
+// version DISPATCH (SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS = [2, 3, 4, 5, 6, 7]), never a plain constant
 // bump -- two real diagnostic files from a live 2026-08 canary rejection are schema:2 and are
 // declared incident evidence that must keep validating, and v2/v3 stay frozen forever (their own
 // field sets, and policy_sha256's own real-hex64 requirement, never change again). The builder
-// picks v3 or v6 per batch (see buildRejectionDiagnostics' own dispatch) -- never emits v2/v4/v5.
-it('LATEST_REJECTION_DIAGNOSTICS_SCHEMA is 6, and the validator still supports 2, 3, 4, and 5', () => {
+// picks v3 or v7 per batch (see buildRejectionDiagnostics' own dispatch) -- never emits v2/v4/v5/v6.
+it('LATEST_REJECTION_DIAGNOSTICS_SCHEMA is 7, and the validator still supports 2, 3, 4, 5, and 6', () => {
   expect(REJECTION_DIAGNOSTICS_SCHEMA_V2).toBe(2);
   expect(REJECTION_DIAGNOSTICS_SCHEMA_V3).toBe(3);
   expect(REJECTION_DIAGNOSTICS_SCHEMA_V4).toBe(4);
   expect(REJECTION_DIAGNOSTICS_SCHEMA_V5).toBe(5);
   expect(REJECTION_DIAGNOSTICS_SCHEMA_V6).toBe(6);
-  expect(LATEST_REJECTION_DIAGNOSTICS_SCHEMA).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V6);
-  expect(SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS).toEqual([REJECTION_DIAGNOSTICS_SCHEMA_V2, REJECTION_DIAGNOSTICS_SCHEMA_V3, REJECTION_DIAGNOSTICS_SCHEMA_V4, REJECTION_DIAGNOSTICS_SCHEMA_V5, REJECTION_DIAGNOSTICS_SCHEMA_V6]);
+  expect(REJECTION_DIAGNOSTICS_SCHEMA_V7).toBe(7);
+  expect(LATEST_REJECTION_DIAGNOSTICS_SCHEMA).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V7);
+  expect(SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS).toEqual([REJECTION_DIAGNOSTICS_SCHEMA_V2, REJECTION_DIAGNOSTICS_SCHEMA_V3, REJECTION_DIAGNOSTICS_SCHEMA_V4, REJECTION_DIAGNOSTICS_SCHEMA_V5, REJECTION_DIAGNOSTICS_SCHEMA_V6, REJECTION_DIAGNOSTICS_SCHEMA_V7]);
 });
 
 describe('buildRejectionDiagnostics -- pure construction', () => {
@@ -1794,7 +1834,7 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
     });
   });
 
-  describe('buildRejectionDiagnostics -- dispatches to v3 or v6, never via LATEST_REJECTION_DIAGNOSTICS_SCHEMA', () => {
+  describe('buildRejectionDiagnostics -- dispatches to v3 or v7, never via LATEST_REJECTION_DIAGNOSTICS_SCHEMA', () => {
     it('a policy-required (schema<6, or no execution_profile) batch still builds v3, byte-identical to before this addition', () => {
       const r = record();
       const { committed } = buildDiag({ runKind: 'calibration', records: [r], failedChecksByRunId: { [r.run_id]: [] } });
@@ -1805,10 +1845,10 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
       expect('isolation_attestation_sha256' in committed).toBe(false);
     });
 
-    it('a policy_mode:"not_applicable" batch builds v6, with policy_sha256 honestly null, execution-profile facts, observability, and pre-inference summary', () => {
+    it('a policy_mode:"not_applicable" batch builds v7, with policy_sha256 honestly null, execution-profile facts, observability, pre-inference summary, and cell metrics', () => {
       const r = unrestrictedRecord();
       const { committed } = buildDiag({ runKind: 'calibration', records: [r], failedChecksByRunId: { [r.run_id]: ['skillSelectionOk'] } });
-      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V6);
+      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V7);
       expect(committed.policy_sha256).toBeNull();
       expect(committed.execution_profile_id).toBe('sandboxed-unrestricted-v1');
       expect(committed.policy_mode).toBe('not_applicable');
@@ -1816,10 +1856,11 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
       expect(committed.cells[0].record_error_codes).toEqual([]);
       expect(committed.cells[0].correlation_observability.policy_mode).toBe('not_applicable');
       expect(committed.cells[0].pre_inference_failure).toEqual(preInferenceSummary(false));
+      expect(committed.cells[0].cell_metrics).toEqual(cellMetrics(0));
       expect(validateRejectionRow(committed).errors).toEqual([]);
     });
 
-    it('a not_applicable scenario batch (2 cells) also builds v6 cleanly, matching the real fail-fast-rejection shape', () => {
+    it('a not_applicable scenario batch (2 cells) also builds v7 cleanly, matching the real fail-fast-rejection shape', () => {
       const r1 = unrestrictedScenarioRecord();
       const r2 = unrestrictedScenarioRecord({ run_id: 'kampkit-current-skill-bbbb2222', condition: 'current-skill', skill_source_sha: 'a'.repeat(40), repetition_index: 0, order_index: 1 });
       const { committed } = buildDiag({
@@ -1829,10 +1870,11 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
         unexpectedToolsByRunId: { [r1.run_id]: [], [r2.run_id]: [{ name: 'Read', event_index: 3 }] },
         matrixComplete: false, plannedCellCount: 4, executedCellCount: 2, ambientProfileMatrixOk: null,
       });
-      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V6);
+      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V7);
       expect(committed.matrix_complete).toBe(false);
       expect(committed.policy_sha256).toBeNull();
       expect(committed.execution_profile_id).toBe('sandboxed-unrestricted-v1');
+      expect(committed.cells.map((c) => c.cell_metrics.wall_clock_ms)).toEqual([10000, 10001]);
       expect(validateRejectionRow(committed).errors).toEqual([]);
     });
 
@@ -1850,7 +1892,7 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
         executedCellCount: 1,
         ambientProfileMatrixOk: true,
       });
-      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V6);
+      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V7);
       expect(committed.cells[0].record_error_codes).toEqual(['junit_evidence_capture_incomplete']);
       expect(JSON.stringify(committed)).not.toContain('raw explanatory text');
       expect(validateRejectionRow(committed).errors).toEqual([]);
@@ -1877,7 +1919,7 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
         ambientProfileMatrixOk: true,
         correlationObservabilityByRunId: { [r.run_id]: correlation },
       });
-      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V6);
+      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V7);
       expect(committed.cells[0].correlation_observability.dispatch_status_counts.unaccounted).toBe(1);
       expect(committed.cells[0].correlation_observability.tool_use_counts_by_kind.shell).toBe(2);
       expect(JSON.stringify(committed)).not.toMatch(/toolu_|kmp-test|gradle|\\.jsonl/);
@@ -1899,13 +1941,13 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
         ambientProfileMatrixOk: true,
         preInferenceFailureByRunId: { [r.run_id]: summary },
       });
-      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V6);
+      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V7);
       expect(committed.cells[0].pre_inference_failure).toEqual(summary);
-      expect(JSON.stringify(committed)).not.toMatch(/final_answer|prompt|response|auth|token|toolu_|kmp-test|gradle/);
+      expect(JSON.stringify(committed)).not.toMatch(/final_answer|prompt|response|auth|toolu_|kmp-test|gradle/);
       expect(validateRejectionRow(committed).errors).toEqual([]);
     });
 
-    it('throws instead of writing a v6 diagnostic when correlation observability is missing for one run', () => {
+    it('throws instead of writing a v7 diagnostic when correlation observability is missing for one run', () => {
       const r1 = unrestrictedScenarioRecord();
       const r2 = unrestrictedScenarioRecord({ run_id: 'kampkit-no-skill-cccc3333', repetition_index: 0, order_index: 1 });
       expect(() => buildDiag({
@@ -1919,7 +1961,7 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
       })).toThrow(/correlationObservabilityByRunId/);
     });
 
-    it('throws instead of writing a v6 diagnostic when pre-inference summary is missing for one run', () => {
+    it('throws instead of writing a v7 diagnostic when pre-inference summary is missing for one run', () => {
       const r1 = unrestrictedScenarioRecord();
       const r2 = unrestrictedScenarioRecord({ run_id: 'kampkit-no-skill-cccc3333', repetition_index: 0, order_index: 1 });
       expect(() => buildDiag({
@@ -1931,6 +1973,20 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
         ambientProfileMatrixOk: true,
         preInferenceFailureByRunId: { [r1.run_id]: preInferenceSummary(true) },
       })).toThrow(/preInferenceFailureByRunId/);
+    });
+
+    it('throws instead of writing a v7 diagnostic when cell metrics are missing for one run', () => {
+      const r1 = unrestrictedScenarioRecord();
+      const r2 = unrestrictedScenarioRecord({ run_id: 'kampkit-no-skill-cccc3333', repetition_index: 0, order_index: 1 });
+      expect(() => buildDiag({
+        runKind: 'scenario',
+        records: [r1, r2],
+        failedChecksByRunId: { [r1.run_id]: ['junitCaptureCompleteOk'], [r2.run_id]: [] },
+        plannedCellCount: 2,
+        executedCellCount: 2,
+        ambientProfileMatrixOk: true,
+        cellMetricsByRunId: { [r1.run_id]: cellMetrics(0) },
+      })).toThrow(/cellMetricsByRunId/);
     });
 
     it('throws a specific, closed reason when records disagree on execution_profile.policy_mode (a caller-assembled inconsistency, never a real production shape)', () => {
@@ -2131,6 +2187,16 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
       return row;
     }
 
+    function unrestrictedValidV7Row() {
+      const row = unrestrictedValidV6Row();
+      row.schema = REJECTION_DIAGNOSTICS_SCHEMA_V7;
+      row.cells = row.cells.map((cell, i) => ({
+        ...cell,
+        cell_metrics: cellMetrics(i),
+      }));
+      return row;
+    }
+
     it('accepts a well-formed schema-5 row with per-cell observability cleanly', () => {
       expect(validateRejectionRow(unrestrictedValidV5Row()).errors).toEqual([]);
     });
@@ -2152,6 +2218,16 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
 
     it('accepts a well-formed schema-6 row with pre-inference summaries cleanly', () => {
       expect(validateRejectionRow(unrestrictedValidV6Row()).errors).toEqual([]);
+    });
+
+    it('accepts a well-formed schema-7 row with exact per-cell metrics cleanly', () => {
+      expect(validateRejectionRow(unrestrictedValidV7Row()).errors).toEqual([]);
+    });
+
+    it('keeps schema-6 legacy rows valid without cell_metrics', () => {
+      const row = unrestrictedValidV6Row();
+      expect('cell_metrics' in row.cells[0]).toBe(false);
+      expect(validateRejectionRow(row).errors).toEqual([]);
     });
 
     it('rejects schema-6 pre_inference_failure when signature_matched contradicts failed_checks', () => {
@@ -2180,6 +2256,25 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
       const { errors } = validateRejectionRow(row);
       expect(errors.some((e) => e.field === 'cells[0].pre_inference_failure.leaked_detail')).toBe(true);
       expect(errors.some((e) => e.field === 'cells[0].pre_inference_failure.usage.input')).toBe(true);
+    });
+
+    it('rejects schema-7 cell_metrics when they carry non-canonical fields or invalid usage values', () => {
+      const row = unrestrictedValidV7Row();
+      row.cells[0].cell_metrics = {
+        ...cellMetrics(0),
+        usage: { ...cellMetrics(0).usage, input: -1 },
+        leaked_detail: 'must-not-be-accepted',
+      };
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'cells[0].cell_metrics.leaked_detail')).toBe(true);
+      expect(errors.some((e) => e.field === 'cells[0].cell_metrics.usage.input')).toBe(true);
+    });
+
+    it('rejects schema-7 cell_metrics when legacy tokens drift from usage dimensions', () => {
+      const row = unrestrictedValidV7Row();
+      row.cells[0].cell_metrics.tokens.cache_read = nullableMetric(999);
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'cells[0].cell_metrics.tokens.cache_read' && /usage.cached_input/.test(e.message))).toBe(true);
     });
   });
 });

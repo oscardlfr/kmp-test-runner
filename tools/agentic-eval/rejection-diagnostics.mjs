@@ -88,16 +88,24 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // batch-wide not_applicable fields and adds two per-cell, privacy-safe observability surfaces:
 // closed run-record error codes and correlation-observability v1 count summaries. It still carries
 // no raw transcript content, tool IDs, commands, paths, prompts, responses, or timestamps.
-// schema 6: the current emitted sandboxed-unrestricted-v1 rejection shape. It keeps schema 5 and
-// adds a per-cell pre_inference_failure summary: closed terminal metadata and usage/tool counts
-// only, never final text, prompts, responses, paths, tool ids, command strings, or timestamps.
+// schema 6: the historical emitted sandboxed-unrestricted-v1 rejection shape. It keeps schema 5
+// and adds a per-cell pre_inference_failure summary: closed terminal metadata and usage/tool
+// counts only, never final text, prompts, responses, paths, tool ids, command strings, or
+// timestamps.
+//
+// schema 7: the current emitted sandboxed-unrestricted-v1 rejection shape. It keeps schema 6 and
+// adds per-cell cell_metrics: the already-built run record's exact timing/usage/token/tool-count
+// projection. This is deliberately separate from pre_inference_failure's categorical signatures
+// so consumers can analyze rejected cells without reading raw transcripts or overloading a
+// failure-classification field with numeric analytics.
 export const REJECTION_DIAGNOSTICS_SCHEMA_V2 = 2;
 export const REJECTION_DIAGNOSTICS_SCHEMA_V3 = 3;
 export const REJECTION_DIAGNOSTICS_SCHEMA_V4 = 4;
 export const REJECTION_DIAGNOSTICS_SCHEMA_V5 = 5;
 export const REJECTION_DIAGNOSTICS_SCHEMA_V6 = 6;
-export const SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS = [REJECTION_DIAGNOSTICS_SCHEMA_V2, REJECTION_DIAGNOSTICS_SCHEMA_V3, REJECTION_DIAGNOSTICS_SCHEMA_V4, REJECTION_DIAGNOSTICS_SCHEMA_V5, REJECTION_DIAGNOSTICS_SCHEMA_V6];
-export const LATEST_REJECTION_DIAGNOSTICS_SCHEMA = REJECTION_DIAGNOSTICS_SCHEMA_V6;
+export const REJECTION_DIAGNOSTICS_SCHEMA_V7 = 7;
+export const SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS = [REJECTION_DIAGNOSTICS_SCHEMA_V2, REJECTION_DIAGNOSTICS_SCHEMA_V3, REJECTION_DIAGNOSTICS_SCHEMA_V4, REJECTION_DIAGNOSTICS_SCHEMA_V5, REJECTION_DIAGNOSTICS_SCHEMA_V6, REJECTION_DIAGNOSTICS_SCHEMA_V7];
+export const LATEST_REJECTION_DIAGNOSTICS_SCHEMA = REJECTION_DIAGNOSTICS_SCHEMA_V7;
 
 // Mirrors registries.mjs's own ID_RE exactly (a small, local copy -- not imported, matching this
 // module's and isolation-attestation.mjs's own established convention of keeping such small
@@ -112,6 +120,12 @@ const PRE_INFERENCE_FAILURE_FIELDS = [
 ];
 const PRE_INFERENCE_USAGE_FIELDS = ['input', 'output', 'cached_input', 'cache_write'];
 const PRE_INFERENCE_USAGE_STATUS_VALUES = ['zero', 'nonzero', 'null'];
+const CELL_METRICS_FIELDS = [
+  'schema', 'started_at', 'ended_at', 'wall_clock_ms', 'first_useful_signal_ms',
+  'post_signal_ms', 'usage', 'tokens', 'tool_calls_total', 'shell_commands_total',
+];
+const CELL_METRICS_USAGE_FIELDS = ['source', 'input', 'cached_input', 'cache_write', 'output', 'reasoning_output'];
+const CELL_METRICS_TOKEN_FIELDS = ['input', 'output', 'cache_read', 'cache_creation'];
 // {name, event_index} only -- see validateUnexpectedTools's own doc comment for why nothing else
 // (id, receiptNs, input, arguments, content) may ever appear here.
 const UNEXPECTED_TOOL_FIELDS = ['name', 'event_index'];
@@ -141,6 +155,7 @@ const CELL_CANONICAL_FIELDS_V5 = [
   'record_error_codes', 'correlation_observability',
 ];
 const CELL_CANONICAL_FIELDS_V6 = [...CELL_CANONICAL_FIELDS_V5, 'pre_inference_failure'];
+const CELL_CANONICAL_FIELDS_V7 = [...CELL_CANONICAL_FIELDS_V6, 'cell_metrics'];
 
 // Explicit if-chain, never a ternary/fallthrough -- mirrors schemas.mjs's runCanonicalFieldsFor
 // rationale: a naive fallthrough would silently validate an unrecognized future schema against the
@@ -148,6 +163,7 @@ const CELL_CANONICAL_FIELDS_V6 = [...CELL_CANONICAL_FIELDS_V5, 'pre_inference_fa
 // fields are all batch-wide, never per-cell) -- never REJECTION_DIAGNOSTICS_SCHEMA_V4 falling
 // through to the v2 cell shape by accident.
 function cellCanonicalFieldsFor(schema) {
+  if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V7) return CELL_CANONICAL_FIELDS_V7;
   if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V6) return CELL_CANONICAL_FIELDS_V6;
   if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V5) return CELL_CANONICAL_FIELDS_V5;
   if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V4 || schema === REJECTION_DIAGNOSTICS_SCHEMA_V3) return CELL_CANONICAL_FIELDS_V3;
@@ -193,6 +209,7 @@ const REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V4 = [
 const REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V5 = [...REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V4];
 
 function rejectionCanonicalFieldsFor(schema) {
+  if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V7) return REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V5;
   if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V6) return REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V5;
   if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V5) return REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V5;
   if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V4) return REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V4;
@@ -432,6 +449,112 @@ function validatePreInferenceFailureSummary(summary, fieldPrefix, failedChecks) 
   return errors;
 }
 
+function validateMetricProjection(metric, fieldPrefix, errors, kind) {
+  if (metric == null || typeof metric !== 'object' || Array.isArray(metric)) {
+    errors.push({ field: fieldPrefix, message: 'must be a {value, reason} object' });
+    return;
+  }
+  const allowedKeys = new Set(['value', 'reason']);
+  for (const k of Object.keys(metric)) {
+    if (!allowedKeys.has(k)) errors.push({ field: `${fieldPrefix}.${k}`, message: 'unrecognized field' });
+  }
+  for (const k of allowedKeys) {
+    if (!(k in metric)) errors.push({ field: `${fieldPrefix}.${k}`, message: 'missing required field' });
+  }
+  if (metric.value === null) {
+    if (typeof metric.reason !== 'string' || metric.reason.length === 0) {
+      errors.push({ field: `${fieldPrefix}.reason`, message: 'must be a non-empty string when value is null' });
+    }
+    return;
+  }
+  if (metric.reason !== null) {
+    errors.push({ field: `${fieldPrefix}.reason`, message: 'must be null when value is present' });
+  }
+  if (kind === 'count' && !(Number.isInteger(metric.value) && metric.value >= 0)) {
+    errors.push({ field: `${fieldPrefix}.value`, message: 'must be a non-negative integer or null' });
+  } else if (kind === 'timing' && !(typeof metric.value === 'number' && Number.isFinite(metric.value) && metric.value >= 0)) {
+    errors.push({ field: `${fieldPrefix}.value`, message: 'must be a non-negative finite number or null' });
+  }
+}
+
+function validateCellMetrics(metrics, fieldPrefix) {
+  const errors = [];
+  if (metrics == null || typeof metrics !== 'object' || Array.isArray(metrics)) {
+    errors.push({ field: fieldPrefix, message: 'must be an object' });
+    return errors;
+  }
+  const allowedKeys = new Set(CELL_METRICS_FIELDS);
+  for (const k of Object.keys(metrics)) {
+    if (!allowedKeys.has(k)) errors.push({ field: `${fieldPrefix}.${k}`, message: 'unrecognized field' });
+  }
+  for (const k of allowedKeys) {
+    if (!(k in metrics)) errors.push({ field: `${fieldPrefix}.${k}`, message: 'missing required field' });
+  }
+  if (metrics.schema !== 1) errors.push({ field: `${fieldPrefix}.schema`, message: 'must be exactly 1' });
+  for (const field of ['started_at', 'ended_at']) {
+    if (typeof metrics[field] !== 'string' || Number.isNaN(Date.parse(metrics[field]))) {
+      errors.push({ field: `${fieldPrefix}.${field}`, message: 'must be a valid ISO timestamp string' });
+    }
+  }
+  if (!(typeof metrics.wall_clock_ms === 'number' && Number.isFinite(metrics.wall_clock_ms) && metrics.wall_clock_ms >= 0)) {
+    errors.push({ field: `${fieldPrefix}.wall_clock_ms`, message: 'must be a non-negative finite number' });
+  }
+  validateMetricProjection(metrics.first_useful_signal_ms, `${fieldPrefix}.first_useful_signal_ms`, errors, 'timing');
+  validateMetricProjection(metrics.post_signal_ms, `${fieldPrefix}.post_signal_ms`, errors, 'timing');
+  validateMetricProjection(metrics.tool_calls_total, `${fieldPrefix}.tool_calls_total`, errors, 'count');
+  validateMetricProjection(metrics.shell_commands_total, `${fieldPrefix}.shell_commands_total`, errors, 'count');
+
+  if (metrics.usage == null || typeof metrics.usage !== 'object' || Array.isArray(metrics.usage)) {
+    errors.push({ field: `${fieldPrefix}.usage`, message: 'must be an object' });
+  } else {
+    const usageKeys = new Set(CELL_METRICS_USAGE_FIELDS);
+    for (const k of Object.keys(metrics.usage)) {
+      if (!usageKeys.has(k)) errors.push({ field: `${fieldPrefix}.usage.${k}`, message: 'unrecognized field' });
+    }
+    for (const k of usageKeys) {
+      if (!(k in metrics.usage)) errors.push({ field: `${fieldPrefix}.usage.${k}`, message: 'missing required field' });
+    }
+    if (!['runtime-reported', 'not-recorded', 'offline-estimate'].includes(metrics.usage.source)) {
+      errors.push({ field: `${fieldPrefix}.usage.source`, message: 'must be a closed usage source' });
+    }
+    for (const dim of CELL_METRICS_USAGE_FIELDS.filter((k) => k !== 'source')) {
+      const v = metrics.usage[dim];
+      if (v !== null && !(Number.isInteger(v) && v >= 0)) {
+        errors.push({ field: `${fieldPrefix}.usage.${dim}`, message: 'must be null or a non-negative integer' });
+      }
+    }
+  }
+
+  if (metrics.tokens == null || typeof metrics.tokens !== 'object' || Array.isArray(metrics.tokens)) {
+    errors.push({ field: `${fieldPrefix}.tokens`, message: 'must be an object' });
+  } else {
+    const tokenKeys = new Set(CELL_METRICS_TOKEN_FIELDS);
+    for (const k of Object.keys(metrics.tokens)) {
+      if (!tokenKeys.has(k)) errors.push({ field: `${fieldPrefix}.tokens.${k}`, message: 'unrecognized field' });
+    }
+    for (const k of tokenKeys) {
+      if (!(k in metrics.tokens)) errors.push({ field: `${fieldPrefix}.tokens.${k}`, message: 'missing required field' });
+      validateMetricProjection(metrics.tokens[k], `${fieldPrefix}.tokens.${k}`, errors, 'count');
+    }
+    const projections = [
+      ['input', 'input'],
+      ['output', 'output'],
+      ['cache_read', 'cached_input'],
+      ['cache_creation', 'cache_write'],
+    ];
+    for (const [tokenKey, usageKey] of projections) {
+      const tokenValue = metrics.tokens?.[tokenKey]?.value ?? null;
+      const usageValue = metrics.usage && typeof metrics.usage === 'object' && !Array.isArray(metrics.usage)
+        ? (metrics.usage[usageKey] ?? null)
+        : null;
+      if (tokenValue !== usageValue) {
+        errors.push({ field: `${fieldPrefix}.tokens.${tokenKey}`, message: `must exactly equal usage.${usageKey} (${JSON.stringify(usageValue)})` });
+      }
+    }
+  }
+  return errors;
+}
+
 /**
  * Local-tier-only shape check for `unexpected_tools` -- mirrors validateForeignSkillSummary's
  * exact closed-key-set discipline one field over: array of {name, event_index}, nothing else.
@@ -624,7 +747,7 @@ function validateAmbientProfileMatrixOk(row) {
   const errors = [];
   if (RUN_KIND_VALUES.includes(row.run_kind)) {
     if (row.run_kind === 'scenario') {
-      if ((row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V3 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V4 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V5 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V6) && row.matrix_complete === false) {
+      if ((row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V3 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V4 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V5 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V6 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V7) && row.matrix_complete === false) {
         if (row.ambient_profile_matrix_ok !== null) {
           errors.push({ field: 'ambient_profile_matrix_ok', message: `must be null when matrix_complete is false -- a matrix that fail-fast stopped before finishing never actually evaluated a real cross-cell consensus` });
         }
@@ -700,9 +823,10 @@ export function validateRejectionRow(row) {
   const isV4 = row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V4;
   const isV5 = row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V5;
   const isV6 = row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V6;
-  const isV5OrLater = isV5 || isV6;
-  const isV3OrLater = isV3 || isV4 || isV5 || isV6;
-  const isNotApplicableSchema = isV4 || isV5 || isV6;
+  const isV7 = row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V7;
+  const isV5OrLater = isV5 || isV6 || isV7;
+  const isV3OrLater = isV3 || isV4 || isV5 || isV6 || isV7;
+  const isNotApplicableSchema = isV4 || isV5 || isV6 || isV7;
   const allowedKeys = new Set(rejectionCanonicalFieldsFor(row.schema));
   for (const k of Object.keys(row)) if (!allowedKeys.has(k)) errors.push({ field: k, message: 'unrecognized field' });
   for (const k of allowedKeys) if (!(k in row)) errors.push({ field: k, message: 'missing required field' });
@@ -910,8 +1034,11 @@ export function validateRejectionRow(row) {
           }
         }
       }
-      if (isV6) {
+      if (isV6 || isV7) {
         errors.push(...validatePreInferenceFailureSummary(cell.pre_inference_failure, `cells[${i}].pre_inference_failure`, cell.failed_checks));
+      }
+      if (isV7) {
+        errors.push(...validateCellMetrics(cell.cell_metrics, `cells[${i}].cell_metrics`));
       }
     }
     if (!anyCellHasFailedCheck) {
@@ -962,7 +1089,7 @@ export function validateRejectionRow(row) {
  * (evaluateNamedChecks' failedChecks/failedChecksA/failedChecksB, scenarioHardGate's cellResults,
  * cell-integrity.mjs's unexpectedToolUsesCount/unexpectedTools) -- see cli.mjs's own call sites for
  * how each run_kind maps its own shape into the uniform inputs here. Constructs schema
- * REJECTION_DIAGNOSTICS_SCHEMA_V6 when every record in the batch is schema>=6 with
+ * REJECTION_DIAGNOSTICS_SCHEMA_V7 when every record in the batch is schema>=6 with
  * execution_profile.policy_mode==="not_applicable" (see the dispatch this function runs, right
  * after the existing BATCH_WIDE_FIELDS agreement check, for the exact rule -- NEVER
  * LATEST_REJECTION_DIAGNOSTICS_SCHEMA used as that selector), REJECTION_DIAGNOSTICS_SCHEMA_V3
@@ -996,6 +1123,10 @@ export function validateRejectionRow(row) {
  *   pre-inference terminal summary produced from the canonical condition observation. Required,
  *   exact-set, for schema:6. Never contains final text, prompts, responses, paths, commands,
  *   tool ids, or timestamps.
+ * @param {Record<string, object>|null} [cellMetricsByRunId] - run_id -> exact, privacy-safe
+ *   timing/usage/token/tool-count projection from the already-built run record. Required,
+ *   exact-set, for schema:7. Never contains prompts, responses, paths, commands, tool ids, or
+ *   transcript content.
  * @param {Record<string, number>} captureOrdinalByRunId - run_id -> a non-negative integer
  *   execution-position ordinal used to derive that cell's transcript_filename via
  *   deriveTranscriptFilename. Required, exact-set of run_ids, and the value set must form the
@@ -1018,6 +1149,7 @@ export function buildRejectionDiagnostics({
   foreignSkillNamesByRunId = {}, ambientProfileMatrixOk = null,
   plannedCellCount = null, executedCellCount = null, matrixComplete = null,
   correlationObservabilityByRunId = null, preInferenceFailureByRunId = null,
+  cellMetricsByRunId = null,
 }) {
   if (!Array.isArray(records) || records.length === 0) {
     throw new Error('buildRejectionDiagnostics: records must be a non-empty array');
@@ -1089,10 +1221,11 @@ export function buildRejectionDiagnostics({
     throw new Error(`buildRejectionDiagnostics: records disagree on execution_profile.policy_mode (${JSON.stringify([...policyModes])}) -- one harness invocation always resolves exactly one execution profile for its whole batch`);
   }
   const buildingNotApplicable = [...policyModes][0] === 'not_applicable';
-  const schema = buildingNotApplicable ? REJECTION_DIAGNOSTICS_SCHEMA_V6 : REJECTION_DIAGNOSTICS_SCHEMA_V3;
-  if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V6) {
+  const schema = buildingNotApplicable ? REJECTION_DIAGNOSTICS_SCHEMA_V7 : REJECTION_DIAGNOSTICS_SCHEMA_V3;
+  if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V7) {
     requireExactRunIdKeys(correlationObservabilityByRunId, 'correlationObservabilityByRunId');
     requireExactRunIdKeys(preInferenceFailureByRunId, 'preInferenceFailureByRunId');
+    requireExactRunIdKeys(cellMetricsByRunId, 'cellMetricsByRunId');
     for (const [runId, summary] of Object.entries(correlationObservabilityByRunId)) {
       const validation = validateCorrelationObservability(summary);
       if (!validation.ok) {
@@ -1103,6 +1236,12 @@ export function buildRejectionDiagnostics({
       const errors = validatePreInferenceFailureSummary(summary, `preInferenceFailureByRunId['${runId}']`, failedChecksByRunId[runId] ?? []);
       if (errors.length > 0) {
         throw new Error(`buildRejectionDiagnostics: preInferenceFailureByRunId['${runId}'] must be a valid pre-inference-failure schema v1 object (${JSON.stringify(errors)})`);
+      }
+    }
+    for (const [runId, metrics] of Object.entries(cellMetricsByRunId)) {
+      const errors = validateCellMetrics(metrics, `cellMetricsByRunId['${runId}']`);
+      if (errors.length > 0) {
+        throw new Error(`buildRejectionDiagnostics: cellMetricsByRunId['${runId}'] must be a valid cell-metrics schema v1 object (${JSON.stringify(errors)})`);
       }
     }
   }
@@ -1163,10 +1302,11 @@ export function buildRejectionDiagnostics({
     foreign_skill_summary: r.foreign_skill_summary,
     ambient_skill_profile: r.ambient_skill_profile,
     unexpected_tool_uses_count: unexpectedToolUsesCountByRunId[r.run_id],
-    ...(schema === REJECTION_DIAGNOSTICS_SCHEMA_V6 ? {
+    ...(schema === REJECTION_DIAGNOSTICS_SCHEMA_V7 ? {
       record_error_codes: [...new Set((r.errors ?? []).map((e) => e?.code).filter((code) => typeof code === 'string' && code.length > 0))].sort(),
       correlation_observability: JSON.parse(JSON.stringify(correlationObservabilityByRunId[r.run_id])),
       pre_inference_failure: JSON.parse(JSON.stringify(preInferenceFailureByRunId[r.run_id])),
+      cell_metrics: JSON.parse(JSON.stringify(cellMetricsByRunId[r.run_id])),
     } : {}),
   }));
 
