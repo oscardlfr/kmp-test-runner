@@ -84,14 +84,45 @@ export function summarizeUnexpectedToolUses(toolAttempts) {
  * @param {object} observation - conditionResult.observation
  * @returns {boolean}
  */
+export function summarizePreInferenceFailure(observation) {
+  const terminal = observation?.terminal ?? {};
+  const terminalUsage = terminal.usage && typeof terminal.usage === 'object' ? terminal.usage : {};
+  const usageStatus = (value) => {
+    if (typeof value === 'number') return value === 0 ? 'zero' : 'nonzero';
+    return 'null';
+  };
+  const usage = {
+    input: usageStatus(terminalUsage.input),
+    output: usageStatus(terminalUsage.output),
+    cached_input: usageStatus(terminalUsage.cached_input),
+    cache_write: usageStatus(terminalUsage.cache_write),
+  };
+  const terminalPresent = terminal.present === true;
+  const terminalIsError = terminalPresent ? terminal.isError === true : null;
+  const terminalTurnCount = terminalPresent && Number.isInteger(terminal.turnCount) ? terminal.turnCount : null;
+  const toolAttemptCount = Array.isArray(observation?.toolAttempts) ? observation.toolAttempts.length : 0;
+  const hasNonZeroUsage = Object.values(usage).some((v) => v === 'nonzero');
+  const signatureMatched = terminalPresent
+    && terminalIsError === true
+    && Number.isInteger(terminalTurnCount)
+    && terminalTurnCount >= 0
+    && terminalTurnCount <= 1
+    && !hasNonZeroUsage
+    && toolAttemptCount === 0;
+  return {
+    schema: 1,
+    signature_matched: signatureMatched,
+    terminal_present: terminalPresent,
+    terminal_is_error: terminalIsError,
+    terminal_result_subtype: terminalPresent && typeof terminal.resultSubtype === 'string' ? terminal.resultSubtype : null,
+    terminal_turn_count: terminalTurnCount,
+    usage,
+    tool_attempt_count: toolAttemptCount,
+  };
+}
+
 function isPreInferenceFailureSignature(observation) {
-  const terminal = observation.terminal;
-  if (!terminal.present || terminal.isError !== true) return false;
-  if (!Number.isInteger(terminal.turnCount) || terminal.turnCount < 0 || terminal.turnCount > 1) return false;
-  const counters = [terminal.usage.input, terminal.usage.output, terminal.usage.cached_input, terminal.usage.cache_write];
-  if (counters.some((v) => typeof v === 'number' && v !== 0)) return false;
-  if (observation.toolAttempts.length !== 0) return false;
-  return true;
+  return summarizePreInferenceFailure(observation).signature_matched;
 }
 
 /**

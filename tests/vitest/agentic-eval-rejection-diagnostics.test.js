@@ -18,6 +18,7 @@ import {
   REJECTION_DIAGNOSTICS_SCHEMA_V3,
   REJECTION_DIAGNOSTICS_SCHEMA_V4,
   REJECTION_DIAGNOSTICS_SCHEMA_V5,
+  REJECTION_DIAGNOSTICS_SCHEMA_V6,
   buildRejectionDiagnostics,
   validateRejectionRow,
   validateRejectionLocalRow,
@@ -54,6 +55,7 @@ function zeroToolDefaultsFor(records) {
     unexpectedToolsByRunId: Object.fromEntries(ids.map((id) => [id, []])),
     captureOrdinalByRunId: Object.fromEntries(ids.map((id, i) => [id, i])),
     correlationObservabilityByRunId: Object.fromEntries(records.map((r) => [r.run_id, correlationSummary(r.condition, r.execution_profile?.policy_mode ?? 'required')])),
+    preInferenceFailureByRunId: Object.fromEntries(records.map((r) => [r.run_id, preInferenceSummary(false)])),
   };
 }
 function buildDiag(opts) {
@@ -172,23 +174,44 @@ function correlationSummary(condition = 'no-skill', policyMode = 'not_applicable
   };
 }
 
-// Schema 2 -> 3 -> 4 -> 5 (preserve rejected matrix forensics; sandboxed-unrestricted-v1 support): v2
+function preInferenceSummary(signatureMatched = false, overrides = {}) {
+  return {
+    schema: 1,
+    signature_matched: signatureMatched,
+    terminal_present: true,
+    terminal_is_error: signatureMatched ? true : false,
+    terminal_result_subtype: signatureMatched ? 'error_during_execution' : 'success',
+    terminal_turn_count: 1,
+    usage: {
+      input: signatureMatched ? 'zero' : 'nonzero',
+      output: 'zero',
+      cached_input: 'zero',
+      cache_write: 'zero',
+    },
+    tool_attempt_count: 0,
+    ...overrides,
+  };
+}
+
+// Schema 2 -> 3 -> 4 -> 5 -> 6 (preserve rejected matrix forensics; sandboxed-unrestricted-v1 support): v2
 // gained per-cell unexpected_tool_uses_count + top-level matrix_complete/planned_cell_count/
 // executed_cell_count/raw_transcripts_persisted going to v3; v3 gained execution_profile_id/
 // policy_mode/isolation_attestation_sha256 going to v4, EXCLUSIVE to a policy_mode:"not_applicable"
-// batch (policy_sha256 becomes exactly null there, instead of a real hash). All three are a genuine
-// version DISPATCH (SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS = [2, 3, 4]), never a plain constant
+// batch (policy_sha256 becomes exactly null there, instead of a real hash). v5 added closed
+// error-code/correlation observability; v6 adds closed pre-inference failure summaries. All are a genuine
+// version DISPATCH (SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS = [2, 3, 4, 5, 6]), never a plain constant
 // bump -- two real diagnostic files from a live 2026-08 canary rejection are schema:2 and are
 // declared incident evidence that must keep validating, and v2/v3 stay frozen forever (their own
 // field sets, and policy_sha256's own real-hex64 requirement, never change again). The builder
-// picks v3 or v4 per batch (see buildRejectionDiagnostics' own dispatch) -- never emits v2.
-it('LATEST_REJECTION_DIAGNOSTICS_SCHEMA is 5, and the validator still supports 2, 3, and 4', () => {
+// picks v3 or v6 per batch (see buildRejectionDiagnostics' own dispatch) -- never emits v2/v4/v5.
+it('LATEST_REJECTION_DIAGNOSTICS_SCHEMA is 6, and the validator still supports 2, 3, 4, and 5', () => {
   expect(REJECTION_DIAGNOSTICS_SCHEMA_V2).toBe(2);
   expect(REJECTION_DIAGNOSTICS_SCHEMA_V3).toBe(3);
   expect(REJECTION_DIAGNOSTICS_SCHEMA_V4).toBe(4);
   expect(REJECTION_DIAGNOSTICS_SCHEMA_V5).toBe(5);
-  expect(LATEST_REJECTION_DIAGNOSTICS_SCHEMA).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V5);
-  expect(SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS).toEqual([REJECTION_DIAGNOSTICS_SCHEMA_V2, REJECTION_DIAGNOSTICS_SCHEMA_V3, REJECTION_DIAGNOSTICS_SCHEMA_V4, REJECTION_DIAGNOSTICS_SCHEMA_V5]);
+  expect(REJECTION_DIAGNOSTICS_SCHEMA_V6).toBe(6);
+  expect(LATEST_REJECTION_DIAGNOSTICS_SCHEMA).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V6);
+  expect(SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS).toEqual([REJECTION_DIAGNOSTICS_SCHEMA_V2, REJECTION_DIAGNOSTICS_SCHEMA_V3, REJECTION_DIAGNOSTICS_SCHEMA_V4, REJECTION_DIAGNOSTICS_SCHEMA_V5, REJECTION_DIAGNOSTICS_SCHEMA_V6]);
 });
 
 describe('buildRejectionDiagnostics -- pure construction', () => {
@@ -202,7 +225,7 @@ describe('buildRejectionDiagnostics -- pure construction', () => {
       foreignSkillNamesByRunId: { [recordA.run_id]: ['some-other-skill'], [recordB.run_id]: [] },
     });
     // record() carries no execution_profile (a real, policy-required calibration record) --
-    // schema 3, never the current LATEST (which now means something else: schema 5, exclusive to
+    // schema 3, never the current LATEST (which now means something else: schema 6, exclusive to
     // a policy_mode:"not_applicable" batch neither recordA nor recordB is).
     expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V3);
     expect(committed.run_kind).toBe('calibration');
@@ -413,7 +436,7 @@ describe('validateRejectionRow -- schema validation', () => {
     const cellB = { run_id: 'r2', condition: 'current-skill', repetition_index: null, order_index: null, skill_source_sha: 'a'.repeat(40), model_resolved: 'claude-sonnet-5-fake-resolved', claude_code_version: '1.2.3-fake', failed_checks: [], foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 }, ambient_skill_profile: AMBIENT_PROFILE_FIXTURE, unexpected_tool_uses_count: 0 };
     return {
       // Explicitly v3 (a real policy_sha256 below, no execution_profile) -- never
-      // LATEST_REJECTION_DIAGNOSTICS_SCHEMA, which now means schema 5 and requires
+      // LATEST_REJECTION_DIAGNOSTICS_SCHEMA, which now means schema 6 and requires
       // policy_sha256:null instead.
       schema: REJECTION_DIAGNOSTICS_SCHEMA_V3,
       rejection_id: '11111111-1111-1111-1111-111111111111',
@@ -1771,7 +1794,7 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
     });
   });
 
-  describe('buildRejectionDiagnostics -- dispatches to v3 or v5, never via LATEST_REJECTION_DIAGNOSTICS_SCHEMA', () => {
+  describe('buildRejectionDiagnostics -- dispatches to v3 or v6, never via LATEST_REJECTION_DIAGNOSTICS_SCHEMA', () => {
     it('a policy-required (schema<6, or no execution_profile) batch still builds v3, byte-identical to before this addition', () => {
       const r = record();
       const { committed } = buildDiag({ runKind: 'calibration', records: [r], failedChecksByRunId: { [r.run_id]: [] } });
@@ -1782,20 +1805,21 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
       expect('isolation_attestation_sha256' in committed).toBe(false);
     });
 
-    it('a policy_mode:"not_applicable" batch builds v5, with policy_sha256 honestly null, execution-profile facts, error codes, and correlation observability', () => {
+    it('a policy_mode:"not_applicable" batch builds v6, with policy_sha256 honestly null, execution-profile facts, observability, and pre-inference summary', () => {
       const r = unrestrictedRecord();
       const { committed } = buildDiag({ runKind: 'calibration', records: [r], failedChecksByRunId: { [r.run_id]: ['skillSelectionOk'] } });
-      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V5);
+      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V6);
       expect(committed.policy_sha256).toBeNull();
       expect(committed.execution_profile_id).toBe('sandboxed-unrestricted-v1');
       expect(committed.policy_mode).toBe('not_applicable');
       expect(committed.isolation_attestation_sha256).toBe('e'.repeat(64));
       expect(committed.cells[0].record_error_codes).toEqual([]);
       expect(committed.cells[0].correlation_observability.policy_mode).toBe('not_applicable');
+      expect(committed.cells[0].pre_inference_failure).toEqual(preInferenceSummary(false));
       expect(validateRejectionRow(committed).errors).toEqual([]);
     });
 
-    it('a not_applicable scenario batch (2 cells) also builds v5 cleanly, matching the real fail-fast-rejection shape', () => {
+    it('a not_applicable scenario batch (2 cells) also builds v6 cleanly, matching the real fail-fast-rejection shape', () => {
       const r1 = unrestrictedScenarioRecord();
       const r2 = unrestrictedScenarioRecord({ run_id: 'kampkit-current-skill-bbbb2222', condition: 'current-skill', skill_source_sha: 'a'.repeat(40), repetition_index: 0, order_index: 1 });
       const { committed } = buildDiag({
@@ -1803,9 +1827,9 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
         failedChecksByRunId: { [r1.run_id]: [], [r2.run_id]: ['noUnexpectedToolsOk'] },
         unexpectedToolUsesCountByRunId: { [r1.run_id]: 0, [r2.run_id]: 1 },
         unexpectedToolsByRunId: { [r1.run_id]: [], [r2.run_id]: [{ name: 'Read', event_index: 3 }] },
-        plannedCellCount: 4, executedCellCount: 2, ambientProfileMatrixOk: null,
+        matrixComplete: false, plannedCellCount: 4, executedCellCount: 2, ambientProfileMatrixOk: null,
       });
-      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V5);
+      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V6);
       expect(committed.matrix_complete).toBe(false);
       expect(committed.policy_sha256).toBeNull();
       expect(committed.execution_profile_id).toBe('sandboxed-unrestricted-v1');
@@ -1826,7 +1850,7 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
         executedCellCount: 1,
         ambientProfileMatrixOk: true,
       });
-      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V5);
+      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V6);
       expect(committed.cells[0].record_error_codes).toEqual(['junit_evidence_capture_incomplete']);
       expect(JSON.stringify(committed)).not.toContain('raw explanatory text');
       expect(validateRejectionRow(committed).errors).toEqual([]);
@@ -1853,14 +1877,35 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
         ambientProfileMatrixOk: true,
         correlationObservabilityByRunId: { [r.run_id]: correlation },
       });
-      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V5);
+      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V6);
       expect(committed.cells[0].correlation_observability.dispatch_status_counts.unaccounted).toBe(1);
       expect(committed.cells[0].correlation_observability.tool_use_counts_by_kind.shell).toBe(2);
       expect(JSON.stringify(committed)).not.toMatch(/toolu_|kmp-test|gradle|\\.jsonl/);
       expect(validateRejectionRow(committed).errors).toEqual([]);
     });
 
-    it('throws instead of writing a v5 diagnostic when correlation observability is missing for one run', () => {
+    it('captures a pre-inference failure signature as closed per-cell metadata, without raw text', () => {
+      const r = unrestrictedScenarioRecord();
+      const summary = preInferenceSummary(true, {
+        terminal_result_subtype: 'error_during_execution',
+        usage: { input: 'zero', output: 'zero', cached_input: 'null', cache_write: 'zero' },
+      });
+      const { committed } = buildDiag({
+        runKind: 'scenario',
+        records: [r],
+        failedChecksByRunId: { [r.run_id]: ['noPreInferenceFailureOk'] },
+        plannedCellCount: 1,
+        executedCellCount: 1,
+        ambientProfileMatrixOk: true,
+        preInferenceFailureByRunId: { [r.run_id]: summary },
+      });
+      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V6);
+      expect(committed.cells[0].pre_inference_failure).toEqual(summary);
+      expect(JSON.stringify(committed)).not.toMatch(/final_answer|prompt|response|auth|token|toolu_|kmp-test|gradle/);
+      expect(validateRejectionRow(committed).errors).toEqual([]);
+    });
+
+    it('throws instead of writing a v6 diagnostic when correlation observability is missing for one run', () => {
       const r1 = unrestrictedScenarioRecord();
       const r2 = unrestrictedScenarioRecord({ run_id: 'kampkit-no-skill-cccc3333', repetition_index: 0, order_index: 1 });
       expect(() => buildDiag({
@@ -1872,6 +1917,20 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
         ambientProfileMatrixOk: true,
         correlationObservabilityByRunId: { [r1.run_id]: correlationSummary('no-skill', 'not_applicable') },
       })).toThrow(/correlationObservabilityByRunId/);
+    });
+
+    it('throws instead of writing a v6 diagnostic when pre-inference summary is missing for one run', () => {
+      const r1 = unrestrictedScenarioRecord();
+      const r2 = unrestrictedScenarioRecord({ run_id: 'kampkit-no-skill-cccc3333', repetition_index: 0, order_index: 1 });
+      expect(() => buildDiag({
+        runKind: 'scenario',
+        records: [r1, r2],
+        failedChecksByRunId: { [r1.run_id]: ['noPreInferenceFailureOk'], [r2.run_id]: [] },
+        plannedCellCount: 2,
+        executedCellCount: 2,
+        ambientProfileMatrixOk: true,
+        preInferenceFailureByRunId: { [r1.run_id]: preInferenceSummary(true) },
+      })).toThrow(/preInferenceFailureByRunId/);
     });
 
     it('throws a specific, closed reason when records disagree on execution_profile.policy_mode (a caller-assembled inconsistency, never a real production shape)', () => {
@@ -2062,6 +2121,16 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
       return row;
     }
 
+    function unrestrictedValidV6Row() {
+      const row = unrestrictedValidV5Row();
+      row.schema = REJECTION_DIAGNOSTICS_SCHEMA_V6;
+      row.cells = row.cells.map((cell) => ({
+        ...cell,
+        pre_inference_failure: preInferenceSummary(false),
+      }));
+      return row;
+    }
+
     it('accepts a well-formed schema-5 row with per-cell observability cleanly', () => {
       expect(validateRejectionRow(unrestrictedValidV5Row()).errors).toEqual([]);
     });
@@ -2079,6 +2148,38 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
       const { errors } = validateRejectionRow(row);
       expect(errors.some((e) => e.field === 'cells[0].correlation_observability.condition')).toBe(true);
       expect(errors.some((e) => e.field === 'cells[0].correlation_observability.policy_mode')).toBe(true);
+    });
+
+    it('accepts a well-formed schema-6 row with pre-inference summaries cleanly', () => {
+      expect(validateRejectionRow(unrestrictedValidV6Row()).errors).toEqual([]);
+    });
+
+    it('rejects schema-6 pre_inference_failure when signature_matched contradicts failed_checks', () => {
+      const row = unrestrictedValidV6Row();
+      row.cells[0].failed_checks = ['noPreInferenceFailureOk'];
+      row.cells[0].pre_inference_failure = preInferenceSummary(false);
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'cells[0].pre_inference_failure.signature_matched')).toBe(true);
+    });
+
+    it('rejects schema-6 pre_inference_failure when signature_matched contradicts the normalized summary fields', () => {
+      const row = unrestrictedValidV6Row();
+      row.cells[0].failed_checks = ['noPreInferenceFailureOk'];
+      row.cells[0].pre_inference_failure = preInferenceSummary(true, { tool_attempt_count: 1 });
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'cells[0].pre_inference_failure.signature_matched' && e.message.includes('derived: false'))).toBe(true);
+    });
+
+    it('rejects schema-6 pre_inference_failure when it carries non-canonical fields or usage values', () => {
+      const row = unrestrictedValidV6Row();
+      row.cells[0].pre_inference_failure = {
+        ...preInferenceSummary(false),
+        usage: { input: 'some', output: 'zero', cached_input: 'zero', cache_write: 'zero' },
+        leaked_detail: 'must-not-be-accepted',
+      };
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'cells[0].pre_inference_failure.leaked_detail')).toBe(true);
+      expect(errors.some((e) => e.field === 'cells[0].pre_inference_failure.usage.input')).toBe(true);
     });
   });
 });

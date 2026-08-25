@@ -84,16 +84,20 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // schema via LATEST_REJECTION_DIAGNOSTICS_SCHEMA (a future LATEST bump must never silently
 // redirect an unrelated, policy-required batch away from schema 3).
 //
-// schema 5: the current emitted sandboxed-unrestricted-v1 rejection shape. It keeps schema 4's
+// schema 5: the first emitted sandboxed-unrestricted-v1 rejection observability shape. It keeps schema 4's
 // batch-wide not_applicable fields and adds two per-cell, privacy-safe observability surfaces:
 // closed run-record error codes and correlation-observability v1 count summaries. It still carries
 // no raw transcript content, tool IDs, commands, paths, prompts, responses, or timestamps.
+// schema 6: the current emitted sandboxed-unrestricted-v1 rejection shape. It keeps schema 5 and
+// adds a per-cell pre_inference_failure summary: closed terminal metadata and usage/tool counts
+// only, never final text, prompts, responses, paths, tool ids, command strings, or timestamps.
 export const REJECTION_DIAGNOSTICS_SCHEMA_V2 = 2;
 export const REJECTION_DIAGNOSTICS_SCHEMA_V3 = 3;
 export const REJECTION_DIAGNOSTICS_SCHEMA_V4 = 4;
 export const REJECTION_DIAGNOSTICS_SCHEMA_V5 = 5;
-export const SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS = [REJECTION_DIAGNOSTICS_SCHEMA_V2, REJECTION_DIAGNOSTICS_SCHEMA_V3, REJECTION_DIAGNOSTICS_SCHEMA_V4, REJECTION_DIAGNOSTICS_SCHEMA_V5];
-export const LATEST_REJECTION_DIAGNOSTICS_SCHEMA = REJECTION_DIAGNOSTICS_SCHEMA_V5;
+export const REJECTION_DIAGNOSTICS_SCHEMA_V6 = 6;
+export const SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS = [REJECTION_DIAGNOSTICS_SCHEMA_V2, REJECTION_DIAGNOSTICS_SCHEMA_V3, REJECTION_DIAGNOSTICS_SCHEMA_V4, REJECTION_DIAGNOSTICS_SCHEMA_V5, REJECTION_DIAGNOSTICS_SCHEMA_V6];
+export const LATEST_REJECTION_DIAGNOSTICS_SCHEMA = REJECTION_DIAGNOSTICS_SCHEMA_V6;
 
 // Mirrors registries.mjs's own ID_RE exactly (a small, local copy -- not imported, matching this
 // module's and isolation-attestation.mjs's own established convention of keeping such small
@@ -102,6 +106,12 @@ const EXECUTION_PROFILE_ID_RE = /^[a-z0-9][a-z0-9-]*$/;
 
 const FOREIGN_SKILL_SUMMARY_FIELDS = ['rejected', 'confirmed', 'incomplete'];
 const AMBIENT_SKILL_PROFILE_FIELDS = ['count', 'scope_id', 'fingerprint_hmac'];
+const PRE_INFERENCE_FAILURE_FIELDS = [
+  'schema', 'signature_matched', 'terminal_present', 'terminal_is_error',
+  'terminal_result_subtype', 'terminal_turn_count', 'usage', 'tool_attempt_count',
+];
+const PRE_INFERENCE_USAGE_FIELDS = ['input', 'output', 'cached_input', 'cache_write'];
+const PRE_INFERENCE_USAGE_STATUS_VALUES = ['zero', 'nonzero', 'null'];
 // {name, event_index} only -- see validateUnexpectedTools's own doc comment for why nothing else
 // (id, receiptNs, input, arguments, content) may ever appear here.
 const UNEXPECTED_TOOL_FIELDS = ['name', 'event_index'];
@@ -130,6 +140,7 @@ const CELL_CANONICAL_FIELDS_V5 = [
   ...CELL_CANONICAL_FIELDS_V3,
   'record_error_codes', 'correlation_observability',
 ];
+const CELL_CANONICAL_FIELDS_V6 = [...CELL_CANONICAL_FIELDS_V5, 'pre_inference_failure'];
 
 // Explicit if-chain, never a ternary/fallthrough -- mirrors schemas.mjs's runCanonicalFieldsFor
 // rationale: a naive fallthrough would silently validate an unrecognized future schema against the
@@ -137,6 +148,7 @@ const CELL_CANONICAL_FIELDS_V5 = [
 // fields are all batch-wide, never per-cell) -- never REJECTION_DIAGNOSTICS_SCHEMA_V4 falling
 // through to the v2 cell shape by accident.
 function cellCanonicalFieldsFor(schema) {
+  if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V6) return CELL_CANONICAL_FIELDS_V6;
   if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V5) return CELL_CANONICAL_FIELDS_V5;
   if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V4 || schema === REJECTION_DIAGNOSTICS_SCHEMA_V3) return CELL_CANONICAL_FIELDS_V3;
   return CELL_CANONICAL_FIELDS_V2;
@@ -181,6 +193,7 @@ const REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V4 = [
 const REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V5 = [...REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V4];
 
 function rejectionCanonicalFieldsFor(schema) {
+  if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V6) return REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V5;
   if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V5) return REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V5;
   if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V4) return REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V4;
   if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V3) return REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V3;
@@ -347,6 +360,74 @@ function validateAmbientSkillProfile(profile, fieldPrefix) {
   }
   if (typeof profile.fingerprint_hmac !== 'string' || !/^[0-9a-f]{64}$/.test(profile.fingerprint_hmac)) {
     errors.push({ field: `${fieldPrefix}.fingerprint_hmac`, message: 'must be a lowercase 64-char hex HMAC-SHA256 string' });
+  }
+  return errors;
+}
+
+function validatePreInferenceFailureSummary(summary, fieldPrefix, failedChecks) {
+  const errors = [];
+  if (summary == null || typeof summary !== 'object' || Array.isArray(summary)) {
+    errors.push({ field: fieldPrefix, message: 'must be an object' });
+    return errors;
+  }
+  const allowedKeys = new Set(PRE_INFERENCE_FAILURE_FIELDS);
+  for (const k of Object.keys(summary)) {
+    if (!allowedKeys.has(k)) errors.push({ field: `${fieldPrefix}.${k}`, message: 'unrecognized field' });
+  }
+  for (const k of allowedKeys) {
+    if (!(k in summary)) errors.push({ field: `${fieldPrefix}.${k}`, message: 'missing required field' });
+  }
+  if (summary.schema !== 1) errors.push({ field: `${fieldPrefix}.schema`, message: 'must be exactly 1' });
+  if (typeof summary.signature_matched !== 'boolean') errors.push({ field: `${fieldPrefix}.signature_matched`, message: 'must be a boolean' });
+  if (typeof summary.terminal_present !== 'boolean') errors.push({ field: `${fieldPrefix}.terminal_present`, message: 'must be a boolean' });
+  if (!(summary.terminal_is_error === null || typeof summary.terminal_is_error === 'boolean')) errors.push({ field: `${fieldPrefix}.terminal_is_error`, message: 'must be null or boolean' });
+  if (!(summary.terminal_result_subtype === null || (typeof summary.terminal_result_subtype === 'string' && /^[a-z][a-z0-9_]*$/.test(summary.terminal_result_subtype)))) {
+    errors.push({ field: `${fieldPrefix}.terminal_result_subtype`, message: 'must be null or a closed lowercase snake_case subtype' });
+  }
+  if (!(summary.terminal_turn_count === null || (Number.isInteger(summary.terminal_turn_count) && summary.terminal_turn_count >= 0))) {
+    errors.push({ field: `${fieldPrefix}.terminal_turn_count`, message: 'must be null or a non-negative integer' });
+  }
+  if (summary.usage == null || typeof summary.usage !== 'object' || Array.isArray(summary.usage)) {
+    errors.push({ field: `${fieldPrefix}.usage`, message: 'must be an object' });
+  } else {
+    const usageKeys = new Set(PRE_INFERENCE_USAGE_FIELDS);
+    for (const k of Object.keys(summary.usage)) {
+      if (!usageKeys.has(k)) errors.push({ field: `${fieldPrefix}.usage.${k}`, message: 'unrecognized field' });
+    }
+    for (const k of usageKeys) {
+      if (!PRE_INFERENCE_USAGE_STATUS_VALUES.includes(summary.usage[k])) {
+        errors.push({ field: `${fieldPrefix}.usage.${k}`, message: `must be one of ${PRE_INFERENCE_USAGE_STATUS_VALUES.join('|')}` });
+      }
+    }
+  }
+  if (!(Number.isInteger(summary.tool_attempt_count) && summary.tool_attempt_count >= 0)) {
+    errors.push({ field: `${fieldPrefix}.tool_attempt_count`, message: 'must be a non-negative integer' });
+  }
+  if (typeof summary.signature_matched === 'boolean') {
+    const usage = summary.usage && typeof summary.usage === 'object' && !Array.isArray(summary.usage) ? summary.usage : {};
+    const hasNonZeroUsage = PRE_INFERENCE_USAGE_FIELDS.some((k) => usage[k] === 'nonzero');
+    const derivedSignatureMatched = summary.terminal_present === true
+      && summary.terminal_is_error === true
+      && Number.isInteger(summary.terminal_turn_count)
+      && summary.terminal_turn_count >= 0
+      && summary.terminal_turn_count <= 1
+      && !hasNonZeroUsage
+      && summary.tool_attempt_count === 0;
+    if (summary.signature_matched !== derivedSignatureMatched) {
+      errors.push({
+        field: `${fieldPrefix}.signature_matched`,
+        message: `must match the normalized pre-inference signature derived from terminal/usage/tool_attempt_count fields (derived: ${derivedSignatureMatched})`,
+      });
+    }
+  }
+  if (Array.isArray(failedChecks) && typeof summary.signature_matched === 'boolean') {
+    const flagged = failedChecks.includes('noPreInferenceFailureOk');
+    if (summary.signature_matched !== flagged) {
+      errors.push({
+        field: `${fieldPrefix}.signature_matched`,
+        message: `must be true iff failed_checks contains 'noPreInferenceFailureOk' (failed_checks has it: ${flagged})`,
+      });
+    }
   }
   return errors;
 }
@@ -543,7 +624,7 @@ function validateAmbientProfileMatrixOk(row) {
   const errors = [];
   if (RUN_KIND_VALUES.includes(row.run_kind)) {
     if (row.run_kind === 'scenario') {
-      if ((row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V3 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V4 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V5) && row.matrix_complete === false) {
+      if ((row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V3 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V4 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V5 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V6) && row.matrix_complete === false) {
         if (row.ambient_profile_matrix_ok !== null) {
           errors.push({ field: 'ambient_profile_matrix_ok', message: `must be null when matrix_complete is false -- a matrix that fail-fast stopped before finishing never actually evaluated a real cross-cell consensus` });
         }
@@ -598,11 +679,12 @@ function validateAmbientProfileMatrixOk(row) {
  * Validates one rejection-diagnostics record. Dispatches on `row.schema` (SUPPORTED_
  * REJECTION_DIAGNOSTICS_SCHEMAS): a schema:2 row is checked against its original, frozen shape
  * (no unexpected_tool_uses_count/matrix_complete/etc.); a schema:3 row additionally gets every new
- * check the "preserve rejected matrix forensics" fix added; a schema:4 row gets everything schema:3
- * does PLUS the policy_mode:"not_applicable"-exclusive fields (execution_profile_id/policy_mode/
- * isolation_attestation_sha256), and its own policy_sha256 must be exactly null rather than a real
- * hash. Closed key sets at EVERY nesting level (top-level, each cells[] entry, both
- * foreign_skill_summary objects) for whichever schema applies. Also enforces: cells[].run_id
+ * check the "preserve rejected matrix forensics" fix added; schema:4+ rows get the
+ * policy_mode:"not_applicable"-exclusive fields (execution_profile_id/policy_mode/
+ * isolation_attestation_sha256), schema:5+ rows get closed per-cell observability, and schema:6
+ * rows get closed pre-inference summaries. Not-applicable schemas require policy_sha256 to be
+ * exactly null rather than a real hash. Closed key sets at EVERY nesting level (top-level, each
+ * cells[] entry, both foreign_skill_summary objects) for whichever schema applies. Also enforces: cells[].run_id
  * values unique within one record; exact set-equality between run_ids[] and cells[].run_id;
  * non-negative integer counts everywhere; the top-level foreign_skill_summary must equal the
  * field-by-field sum across cells[].
@@ -617,8 +699,10 @@ export function validateRejectionRow(row) {
   const isV3 = row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V3;
   const isV4 = row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V4;
   const isV5 = row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V5;
-  const isV3OrLater = isV3 || isV4 || isV5;
-  const isNotApplicableSchema = isV4 || isV5;
+  const isV6 = row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V6;
+  const isV5OrLater = isV5 || isV6;
+  const isV3OrLater = isV3 || isV4 || isV5 || isV6;
+  const isNotApplicableSchema = isV4 || isV5 || isV6;
   const allowedKeys = new Set(rejectionCanonicalFieldsFor(row.schema));
   for (const k of Object.keys(row)) if (!allowedKeys.has(k)) errors.push({ field: k, message: 'unrecognized field' });
   for (const k of allowedKeys) if (!(k in row)) errors.push({ field: k, message: 'missing required field' });
@@ -808,7 +892,7 @@ export function validateRejectionRow(row) {
           }
         }
       }
-      if (isV5) {
+      if (isV5OrLater) {
         if (!Array.isArray(cell.record_error_codes) || cell.record_error_codes.some((code) => typeof code !== 'string' || !/^[a-z][a-z0-9_]*$/.test(code))) {
           errors.push({ field: `cells[${i}].record_error_codes`, message: 'must be an array of closed lowercase snake_case error-code strings' });
         } else if (new Set(cell.record_error_codes).size !== cell.record_error_codes.length || JSON.stringify([...cell.record_error_codes].sort()) !== JSON.stringify(cell.record_error_codes)) {
@@ -825,6 +909,9 @@ export function validateRejectionRow(row) {
             errors.push({ field: `cells[${i}].correlation_observability.policy_mode`, message: 'must match the rejection batch policy_mode exactly' });
           }
         }
+      }
+      if (isV6) {
+        errors.push(...validatePreInferenceFailureSummary(cell.pre_inference_failure, `cells[${i}].pre_inference_failure`, cell.failed_checks));
       }
     }
     if (!anyCellHasFailedCheck) {
@@ -875,12 +962,12 @@ export function validateRejectionRow(row) {
  * (evaluateNamedChecks' failedChecks/failedChecksA/failedChecksB, scenarioHardGate's cellResults,
  * cell-integrity.mjs's unexpectedToolUsesCount/unexpectedTools) -- see cli.mjs's own call sites for
  * how each run_kind maps its own shape into the uniform inputs here. Constructs schema
- * REJECTION_DIAGNOSTICS_SCHEMA_V5 when every record in the batch is schema>=6 with
+ * REJECTION_DIAGNOSTICS_SCHEMA_V6 when every record in the batch is schema>=6 with
  * execution_profile.policy_mode==="not_applicable" (see the dispatch this function runs, right
  * after the existing BATCH_WIDE_FIELDS agreement check, for the exact rule -- NEVER
  * LATEST_REJECTION_DIAGNOSTICS_SCHEMA used as that selector), REJECTION_DIAGNOSTICS_SCHEMA_V3
  * otherwise (every policy-required or pre-schema-6 batch, unchanged from before) -- see
- * validateRejectionRow for why schema:2 is still ACCEPTED (never built) by this module.
+ * validateRejectionRow for why schema:2/4/5 are still ACCEPTED (never built) by this module.
  *
  * @param {string} runKind
  * @param {string} rejectionId - a full UUID, generated ONCE by the caller (not here) so the SAME
@@ -905,6 +992,10 @@ export function validateRejectionRow(row) {
  *   correlation-observability schema v1 count-only projection already produced by matrix-runner.
  *   Required, exact-set, for schema:5. Never contains tool ids, commands, transcript content,
  *   paths, prompts, responses, or timestamps.
+ * @param {Record<string, object>|null} [preInferenceFailureByRunId] - run_id -> the
+ *   pre-inference terminal summary produced from the canonical condition observation. Required,
+ *   exact-set, for schema:6. Never contains final text, prompts, responses, paths, commands,
+ *   tool ids, or timestamps.
  * @param {Record<string, number>} captureOrdinalByRunId - run_id -> a non-negative integer
  *   execution-position ordinal used to derive that cell's transcript_filename via
  *   deriveTranscriptFilename. Required, exact-set of run_ids, and the value set must form the
@@ -926,7 +1017,7 @@ export function buildRejectionDiagnostics({
   unexpectedToolsByRunId, captureOrdinalByRunId, rawTranscriptsPersisted,
   foreignSkillNamesByRunId = {}, ambientProfileMatrixOk = null,
   plannedCellCount = null, executedCellCount = null, matrixComplete = null,
-  correlationObservabilityByRunId = null,
+  correlationObservabilityByRunId = null, preInferenceFailureByRunId = null,
 }) {
   if (!Array.isArray(records) || records.length === 0) {
     throw new Error('buildRejectionDiagnostics: records must be a non-empty array');
@@ -998,13 +1089,20 @@ export function buildRejectionDiagnostics({
     throw new Error(`buildRejectionDiagnostics: records disagree on execution_profile.policy_mode (${JSON.stringify([...policyModes])}) -- one harness invocation always resolves exactly one execution profile for its whole batch`);
   }
   const buildingNotApplicable = [...policyModes][0] === 'not_applicable';
-  const schema = buildingNotApplicable ? REJECTION_DIAGNOSTICS_SCHEMA_V5 : REJECTION_DIAGNOSTICS_SCHEMA_V3;
-  if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V5) {
+  const schema = buildingNotApplicable ? REJECTION_DIAGNOSTICS_SCHEMA_V6 : REJECTION_DIAGNOSTICS_SCHEMA_V3;
+  if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V6) {
     requireExactRunIdKeys(correlationObservabilityByRunId, 'correlationObservabilityByRunId');
+    requireExactRunIdKeys(preInferenceFailureByRunId, 'preInferenceFailureByRunId');
     for (const [runId, summary] of Object.entries(correlationObservabilityByRunId)) {
       const validation = validateCorrelationObservability(summary);
       if (!validation.ok) {
         throw new Error(`buildRejectionDiagnostics: correlationObservabilityByRunId['${runId}'] must be a valid correlation-observability schema v1 object (${JSON.stringify(validation.errors)})`);
+      }
+    }
+    for (const [runId, summary] of Object.entries(preInferenceFailureByRunId)) {
+      const errors = validatePreInferenceFailureSummary(summary, `preInferenceFailureByRunId['${runId}']`, failedChecksByRunId[runId] ?? []);
+      if (errors.length > 0) {
+        throw new Error(`buildRejectionDiagnostics: preInferenceFailureByRunId['${runId}'] must be a valid pre-inference-failure schema v1 object (${JSON.stringify(errors)})`);
       }
     }
   }
@@ -1065,9 +1163,10 @@ export function buildRejectionDiagnostics({
     foreign_skill_summary: r.foreign_skill_summary,
     ambient_skill_profile: r.ambient_skill_profile,
     unexpected_tool_uses_count: unexpectedToolUsesCountByRunId[r.run_id],
-    ...(schema === REJECTION_DIAGNOSTICS_SCHEMA_V5 ? {
+    ...(schema === REJECTION_DIAGNOSTICS_SCHEMA_V6 ? {
       record_error_codes: [...new Set((r.errors ?? []).map((e) => e?.code).filter((code) => typeof code === 'string' && code.length > 0))].sort(),
       correlation_observability: JSON.parse(JSON.stringify(correlationObservabilityByRunId[r.run_id])),
+      pre_inference_failure: JSON.parse(JSON.stringify(preInferenceFailureByRunId[r.run_id])),
     } : {}),
   }));
 
