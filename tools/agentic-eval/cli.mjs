@@ -66,7 +66,7 @@ import { resolveScenarioCampaignDesign, buildScenarioCampaignPlan } from './scen
 // objects, never checkout bytes, and why it is never a second notion of "the skill" beyond what
 // materializeSkillSnapshot already delivers.
 import { computePromptArtifact } from './input-artifacts.mjs';
-import { cellTranscriptIntegrityOk, summarizeUnexpectedToolUses, evaluateNamedChecks } from './cell-integrity.mjs';
+import { cellTranscriptIntegrityOk, summarizeUnexpectedToolUses, evaluateNamedChecks, summarizePreInferenceFailure } from './cell-integrity.mjs';
 import { gradeScenarioCondition } from './graders.mjs';
 import { buildRunMatrix, buildConditionOrders } from './randomizer.mjs';
 import { aggregateRuns } from './aggregate.mjs';
@@ -1686,6 +1686,7 @@ async function writeRejectionForensics({
   foreignSkillNamesByRunId, transcriptsByRunId, captureOrdinalByRunId, ambientProfileMatrixOk = null,
   plannedCellCount = null, executedCellCount = null, privatePatternsFile, runsRootOverride,
   correlationObservabilityByRunId = null,
+  preInferenceFailureByRunId = null,
   // stderrByRunId: null when the caller has no journal (e.g. a direct test of this function) --
   // the 3rd transaction below is skipped cleanly in that case, never throws, never blocks the
   // other two. When present, every value MUST already be a string (the caller reads it back
@@ -1744,6 +1745,7 @@ async function writeRejectionForensics({
       runKind, rejectionId, records, failedChecksByRunId, unexpectedToolUsesCountByRunId,
       unexpectedToolsByRunId, captureOrdinalByRunId, rawTranscriptsPersisted, foreignSkillNamesByRunId,
       ambientProfileMatrixOk, plannedCellCount, executedCellCount, correlationObservabilityByRunId,
+      preInferenceFailureByRunId,
     });
     ({ rejectionId: writtenRejectionId, relativePath: diagnosticsRelativePath } = writeRejectedRunDiagnostics(diagnostics, { privatePatternsFile, runsRootOverride }));
   } catch (err) {
@@ -1858,6 +1860,7 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
       unexpectedToolsByRunId: { [recordB.run_id]: failFastStop.unexpectedTools },
       foreignSkillNamesByRunId: { [recordB.run_id]: runB.observation.skill.foreignInvocations.map((u) => u.skillReference).filter((s) => s != null) },
       correlationObservabilityByRunId: { [recordB.run_id]: runB.correlationObservability },
+      preInferenceFailureByRunId: { [recordB.run_id]: summarizePreInferenceFailure(runB.observation) },
       transcriptsByRunId,
       // Derived from runB.cellOrdinal -- the journal's own authoritative per-cell ordinal (stamped
       // by runSingleCondition itself), never a hardcoded 0 (post-Codex-audit fix, PR #418, round
@@ -1963,6 +1966,10 @@ async function finalizeAndWriteRecords({ runKind, recordA, recordB, runA, runB, 
       correlationObservabilityByRunId: {
         [recordA.run_id]: runA.correlationObservability,
         [recordB.run_id]: runB.correlationObservability,
+      },
+      preInferenceFailureByRunId: {
+        [recordA.run_id]: summarizePreInferenceFailure(runA.observation),
+        [recordB.run_id]: summarizePreInferenceFailure(runB.observation),
       },
       transcriptsByRunId,
       // Derived from runB.cellOrdinal/runA.cellOrdinal -- the journal's own authoritative per-cell
@@ -2225,6 +2232,7 @@ async function finalizeAndWriteMatrixRecords({
       records.map((r, i) => [r.run_id, conditionResults[i].observation.skill.foreignInvocations.map((u) => u.skillReference).filter((s) => s != null)]),
     );
     const correlationObservabilityByRunId = Object.fromEntries(records.map((r, i) => [r.run_id, conditionResults[i].correlationObservability]));
+    const preInferenceFailureByRunId = Object.fromEntries(records.map((r, i) => [r.run_id, summarizePreInferenceFailure(conditionResults[i].observation)]));
     // Derived from conditionResults[i].cellOrdinal -- the journal's own authoritative per-cell
     // ordinal (always stamped by runSingleCondition, present regardless of whether a journal is
     // actually threaded through) -- never array index `i`. Post-Codex-audit fix (PR #418): under
@@ -2238,7 +2246,7 @@ async function finalizeAndWriteMatrixRecords({
 
     const forensics = await writeRejectionForensics({
       runKind, records, failedChecksByRunId, unexpectedToolUsesCountByRunId, unexpectedToolsByRunId,
-      foreignSkillNamesByRunId, correlationObservabilityByRunId, transcriptsByRunId, captureOrdinalByRunId,
+      foreignSkillNamesByRunId, correlationObservabilityByRunId, preInferenceFailureByRunId, transcriptsByRunId, captureOrdinalByRunId,
       ambientProfileMatrixOk: null, plannedCellCount, executedCellCount,
       privatePatternsFile, runsRootOverride, stderrByRunId, stderrReadError,
     });
@@ -2289,6 +2297,7 @@ async function finalizeAndWriteMatrixRecords({
       records.map((r, i) => [r.run_id, conditionResults[i].observation.skill.foreignInvocations.map((u) => u.skillReference).filter((s) => s != null)]),
     );
     const correlationObservabilityByRunId = Object.fromEntries(records.map((r, i) => [r.run_id, conditionResults[i].correlationObservability]));
+    const preInferenceFailureByRunId = Object.fromEntries(records.map((r, i) => [r.run_id, summarizePreInferenceFailure(conditionResults[i].observation)]));
     // Derived from conditionResults[i].cellOrdinal -- the journal's own authoritative per-cell
     // ordinal (always stamped by runSingleCondition, present regardless of whether a journal is
     // actually threaded through) -- never array index `i`. Post-Codex-audit fix (PR #418): under
@@ -2305,7 +2314,7 @@ async function finalizeAndWriteMatrixRecords({
     // profile consensus itself held, distinct from any individual cell's own failed_checks.
     const forensics = await writeRejectionForensics({
       runKind, records, failedChecksByRunId, unexpectedToolUsesCountByRunId, unexpectedToolsByRunId,
-      foreignSkillNamesByRunId, correlationObservabilityByRunId, transcriptsByRunId, captureOrdinalByRunId,
+      foreignSkillNamesByRunId, correlationObservabilityByRunId, preInferenceFailureByRunId, transcriptsByRunId, captureOrdinalByRunId,
       ambientProfileMatrixOk: gate.ambientProfileMatrixOk,
       privatePatternsFile, runsRootOverride, stderrByRunId, stderrReadError,
     });

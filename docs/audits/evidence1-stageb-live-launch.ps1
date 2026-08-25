@@ -594,17 +594,91 @@ try {
     '--isolation-attestation-file', $AttestationFile
   )
 
-  # Native stderr is expected on fail-closed harness outcomes (for example matrix fail-fast).
-  # Keep the script strict for PowerShell code, but do not let PowerShell convert native stderr
-  # into a terminating NativeCommandError before the Node process finishes finalizing evidence.
-  $previousErrorActionPreference = $ErrorActionPreference
-  $ErrorActionPreference = 'Continue'
-  try {
-    & $node @args 2>&1 | Tee-Object -FilePath $LogPath -Append
-    $exit = $LASTEXITCODE
-  } finally {
-    $ErrorActionPreference = $previousErrorActionPreference
+  function ConvertTo-NativeArgumentLine {
+    param([Parameter(Mandatory = $true)][string[]]$ArgumentList)
+    $parts = foreach ($argument in $ArgumentList) {
+      if ($null -eq $argument) {
+        '""'
+        continue
+      }
+      $value = [string]$argument
+      if ($value -notmatch '[\s"]') {
+        $value
+        continue
+      }
+      $value = $value -replace '(\\*)"', '$1$1\"'
+      $value = $value -replace '(\\+)$', '$1$1'
+      '"' + $value + '"'
+    }
+    [string]::Join(' ', $parts)
   }
+
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  $appendLine = {
+    param([string]$line)
+    [System.IO.File]::AppendAllText($LogPath, "$line`r`n", $utf8NoBom)
+  }
+  $appendFileBytes = {
+    param([string]$sourcePath)
+    if (-not (Test-Path -LiteralPath $sourcePath)) { return }
+    $sourceStream = [System.IO.File]::Open($sourcePath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+    try {
+      $targetStream = [System.IO.File]::Open($LogPath, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
+      try {
+        $sourceStream.CopyTo($targetStream)
+      } finally {
+        $targetStream.Dispose()
+      }
+    } finally {
+      $sourceStream.Dispose()
+    }
+  }
+
+  # Native stderr is expected on fail-closed harness outcomes (for example matrix fail-fast).
+  # Capture stdout/stderr as native process streams instead of PowerShell's `2>&1` pipeline, which
+  # can serialize stderr as ErrorRecord objects and corrupt the operational log with NUL/UTF-16-like
+  # bytes while the JSON terminal records remain valid. Keep the two native streams in temporary
+  # files while the process is alive; after exit, append the captured bytes to the operational log
+  # without decoding or PowerShell object formatting.
+  $streamCaptureRoot = Join-Path $ScratchDir 'stage-b-live-stream-capture'
+  New-Item -ItemType Directory -Force -Path $streamCaptureRoot | Out-Null
+  $stdoutPath = Join-Path $streamCaptureRoot 'stdout.log'
+  $stderrPath = Join-Path $streamCaptureRoot 'stderr.log'
+  Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $node
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $argumentListProperty = $psi.GetType().GetProperty('ArgumentList')
+  if ($null -ne $argumentListProperty) {
+    foreach ($argument in $args) { [void]$psi.ArgumentList.Add($argument) }
+  } else {
+    $psi.Arguments = ConvertTo-NativeArgumentLine -ArgumentList $args
+  }
+
+  $process = New-Object System.Diagnostics.Process
+  $process.StartInfo = $psi
+  $stdoutStream = $null
+  $stderrStream = $null
+  $stdoutTask = $null
+  $stderrTask = $null
+  try {
+    $stdoutStream = [System.IO.File]::Open($stdoutPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
+    $stderrStream = [System.IO.File]::Open($stderrPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
+    if (-not $process.Start()) { Fail 'failed to start Node live campaign process' }
+    $stdoutTask = $process.StandardOutput.BaseStream.CopyToAsync($stdoutStream)
+    $stderrTask = $process.StandardError.BaseStream.CopyToAsync($stderrStream)
+    $process.WaitForExit()
+    [System.Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask))
+    $exit = [int]$process.ExitCode
+  } finally {
+    if ($null -ne $stdoutStream) { $stdoutStream.Dispose() }
+    if ($null -ne $stderrStream) { $stderrStream.Dispose() }
+    $process.Dispose()
+  }
+  & $appendFileBytes $stdoutPath
+  & $appendFileBytes $stderrPath
   if ($RunId) {
     Write-Evidence1JsonAtomically -Path $TerminalRecordPath -Value ([ordered]@{
       schema = 1
@@ -615,7 +689,8 @@ try {
       exit_code_source = 'launcher_record'
     })
   }
-  "EXITCODE:$exit" | Tee-Object -FilePath $LogPath -Append
+  & $appendLine "EXITCODE:$exit"
+  Write-Output "EXITCODE:$exit"
   exit $exit
 } finally {
   Pop-Location
