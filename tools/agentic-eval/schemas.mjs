@@ -19,6 +19,7 @@ import {
   ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3,
   ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4,
   ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5,
+  ACCEPTED_AUDIT_SIDECAR_SCHEMA_V6,
 } from './accepted-run-audit.mjs';
 import { classifyExitCode, EXIT } from '../../lib/envelope/exit-codes.js';
 // canonicalStructuredValue moved to canonical-json.mjs (this PR) -- re-exported here verbatim so
@@ -883,8 +884,9 @@ export function validateRun(run) {
         // must point at a v1 or v2 sidecar (the 92 v1 + 64 v2 historical records; both still
         // require literally run_schema:5 on the sidecar side, checked independently by
         // crossValidateAcceptedRunAuditAgainstRecord), while a schema:6+ record must point at v3,
-        // v4, or v5 (v5 is the current policy_mode:"not_applicable" sidecar with structural
-        // recognized_operation accounting -- all three stamp run_provenance_sha256 and require
+        // v4, v5, or v6 (v6 is the current policy_mode:"not_applicable" sidecar with terminal
+        // evidence diagnostics; v5 is the previous no-policy sidecar with structural
+        // recognized_operation accounting -- all four stamp run_provenance_sha256 and require
         // literally run_schema:6; which ONE a given record
         // actually produces is accepted-run-audit.mjs's own expectedAcceptedAuditSchemaFor,
         // cross-validated independently, never re-decided here). Accepting v3/v4 for a v5 record
@@ -894,7 +896,7 @@ export function validateRun(run) {
         // selector here (that would exclude v3/v4 the moment LATEST advances past them).
         const compatibleSidecarSchemas = run.schema === 5
           ? [ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2]
-          : [ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5];
+          : [ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V6];
         if (!compatibleSidecarSchemas.includes(audit.schema)) {
           errors.push({ field: 'accepted_audit.schema', message: `must be one of ${compatibleSidecarSchemas.join('|')} for a schema:${run.schema} record (got ${JSON.stringify(audit.schema)})` });
         }

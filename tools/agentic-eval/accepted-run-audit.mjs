@@ -68,8 +68,12 @@ export const ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4 = 4;
 // privacy-safe structural visibility for no-policy runs whose record-level allowlists are null by
 // design.
 export const ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5 = 5;
-export const LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA = 5;
-export const SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS = Object.freeze([1, 2, 3, 4, 5]);
+// PR evidence1-product-vs-free diagnostics: v6 is exclusive to schema:6 +
+// policy_mode:"not_applicable". It preserves v5 and adds one privacy-safe terminal_evidence
+// object so a failed accepted run can explain its lower cause without opening raw transcripts.
+export const ACCEPTED_AUDIT_SIDECAR_SCHEMA_V6 = 6;
+export const LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA = 6;
+export const SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS = Object.freeze([1, 2, 3, 4, 5, 6]);
 
 const SIDECAR_TOP_FIELDS_V1V2 = [
   'schema', 'run_id', 'run_schema', 'run_kind', 'condition', 'scenario_id',
@@ -80,6 +84,7 @@ const SIDECAR_TOP_FIELDS_V3 = [...SIDECAR_TOP_FIELDS_V1V2, 'run_provenance_sha25
 // execution_profile object (that would duplicate the record's own group under a different key,
 // exactly the ambiguity the runbook's own dry-run rule warns against elsewhere).
 const SIDECAR_TOP_FIELDS_V4 = [...SIDECAR_TOP_FIELDS_V3, 'execution_profile_id', 'policy_mode', 'isolation_attestation_sha256'];
+const SIDECAR_TOP_FIELDS_V6 = [...SIDECAR_TOP_FIELDS_V4, 'terminal_evidence'];
 const TOOL_CALL_FIELDS_V1 = [
   'ordinal', 'tool_use_event_index', 'tool_result_event_index', 'tool_kind', 'operation',
   'plan_only', 'policy_decision', 'result_status', 'phase',
@@ -109,7 +114,7 @@ const SUMMARY_FIELDS_V4 = [...SUMMARY_FIELDS_V2, 'dispatch_unaccounted_total'];
  */
 export function expectedAcceptedAuditSchemaFor(record) {
   if (!(record?.schema >= 6)) return ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2;
-  if (record.execution_profile?.policy_mode === 'not_applicable') return ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5;
+  if (record.execution_profile?.policy_mode === 'not_applicable') return ACCEPTED_AUDIT_SIDECAR_SCHEMA_V6;
   return ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3;
 }
 
@@ -140,6 +145,7 @@ export function computeRunProvenanceSha256(record) {
  * silently borrow another version's field list. v3 reuses v2's tool_calls/summary shape verbatim
  * (Section E: "V3 conserva tool calls y summary de v2"). */
 function topFieldsFor(schema) {
+  if (schema === 6) return SIDECAR_TOP_FIELDS_V6;
   if (schema === 4 || schema === 5) return SIDECAR_TOP_FIELDS_V4;
   if (schema === 3) return SIDECAR_TOP_FIELDS_V3;
   return SIDECAR_TOP_FIELDS_V1V2;
@@ -147,22 +153,22 @@ function topFieldsFor(schema) {
 function toolCallFieldsFor(schema) {
   if (schema === 1) return TOOL_CALL_FIELDS_V1;
   if (schema === 2 || schema === 3 || schema === 4) return TOOL_CALL_FIELDS_V2;
-  if (schema === 5) return TOOL_CALL_FIELDS_V5;
+  if (schema === 5 || schema === 6) return TOOL_CALL_FIELDS_V5;
   return null;
 }
 function summaryFieldsFor(schema) {
   if (schema === 1) return SUMMARY_FIELDS_V1;
   if (schema === 2 || schema === 3) return SUMMARY_FIELDS_V2;
-  if (schema === 4 || schema === 5) return SUMMARY_FIELDS_V4;
+  if (schema === 4 || schema === 5 || schema === 6) return SUMMARY_FIELDS_V4;
   return null;
 }
 /** The run record schema a given sidecar schema requires literally (Section E's exact
- * compatibility matrix) -- v1/v2 require exactly 5 (frozen); v3/v4/v5 require exactly 6. An unknown
+ * compatibility matrix) -- v1/v2 require exactly 5 (frozen); v3/v4/v5/v6 require exactly 6. An unknown
  * sidecar schema has no required run_schema of its own (validated separately as an unknown
  * version). */
 function requiredRunSchemaFor(sidecarSchema) {
   if (sidecarSchema === 1 || sidecarSchema === 2) return 5;
-  if (sidecarSchema === 3 || sidecarSchema === 4 || sidecarSchema === 5) return 6;
+  if (sidecarSchema === 3 || sidecarSchema === 4 || sidecarSchema === 5 || sidecarSchema === 6) return 6;
   return null;
 }
 
@@ -173,6 +179,19 @@ const KMP_TEST_RECOGNIZED_OPERATION_SET = new Set(KMP_TEST_RECOGNIZED_OPERATION_
 const POLICY_DECISION_VALUES = ['allow', 'deny', 'missing', 'not-applicable'];
 const RESULT_STATUS_VALUES = ['success', 'error', 'missing'];
 const PHASE_VALUES = ['pre-signal', 'produced-signal', 'post-signal', 'no-signal'];
+const TERMINAL_EVIDENCE_PROVIDER_VALUES = ['kmp-test', 'gradle'];
+const TERMINAL_EVIDENCE_TOP_FIELDS = [
+  'present', 'provider', 'tool_result_event_index', 'evidence_well_formed',
+  'target_matches_expected', 'outcome_matches_expected', 'malformed',
+  'parallel_evidence_invalid', 'changed_evidence_invalid', 'observed_result',
+  'final_answer_block',
+];
+const TERMINAL_OBSERVED_RESULT_FIELDS = [
+  'outcome_kind', 'module_matches_expected', 'total', 'passed', 'failed',
+  'missed_lines', 'threshold', 'modules_contributing',
+];
+const TERMINAL_FINAL_ANSWER_BLOCK_FIELDS = ['found', 'parsed', 'ambiguous', 'matches_observed'];
+const TERMINAL_OUTCOME_KIND_VALUES = ['tests_executed', 'no_applicable_tests', 'tests_failed', 'coverage_threshold_exceeded'];
 /** v2 only. DERIVED from dispatch-accounting.mjs's own canonical Bash vocabulary rather than
  * restated, so the two can never drift: the sidecar's set is exactly that set plus
  * `not_applicable`, which is the non-Bash case (Skill / unexpected-tool) and never a Bash call
@@ -304,7 +323,7 @@ function classifyToolCall(a, { acceptedAuditSchema, allowedGradleTasks, allowedK
     phase,
     dispatch_status: dispatchStatus,
   };
-  if (acceptedAuditSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5) out.recognized_operation = recognizedOperation;
+  if (acceptedAuditSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5 || acceptedAuditSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V6) out.recognized_operation = recognizedOperation;
   return out;
 }
 
@@ -326,8 +345,9 @@ function classifyToolCall(a, { acceptedAuditSchema, allowedGradleTasks, allowedK
  * @param {object} opts.conditionResult - this record's own conditionResult (observation.toolAttempts,
  *   junitAttribution.decisionByAttempt, observation.process.endedHrtimeNs, observation.timing)
  * @param {number|null} opts.terminalAuthoritativeEventIndex - graders.mjs's gradeScenarioCondition() additive field
+ * @param {object|null} opts.terminalEvidence - graders.mjs's privacy-safe terminalEvidence diagnostic
  */
-export function buildAcceptedRunAuditSidecar({ record, conditionResult, terminalAuthoritativeEventIndex }) {
+export function buildAcceptedRunAuditSidecar({ record, conditionResult, terminalAuthoritativeEventIndex, terminalEvidence = null }) {
   const observation = conditionResult.observation;
   const decisionByAttempt = conditionResult.junitAttribution?.decisionByAttempt ?? new Map();
   // The canonical per-attempt classification, consumed as-is and never re-derived. If it is absent
@@ -367,7 +387,10 @@ export function buildAcceptedRunAuditSidecar({ record, conditionResult, terminal
   // count (a Bash entry's policy_decision is always exactly "not-applicable" under not_applicable,
   // so "deny"/"missing" can never occur -- a real 0 would misleadingly claim these were genuinely
   // evaluated and found clean, rather than never evaluated at all).
-  const policyApplies = sidecarSchema !== ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4 && sidecarSchema !== ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5;
+  const isNoPolicySidecarSchema = sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4
+    || sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5
+    || sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V6;
+  const policyApplies = !isNoPolicySidecarSchema;
   const policyDenialsTotal = policyApplies ? toolCalls.filter((tc) => isBashKind(tc) && tc.policy_decision === 'deny').length : null;
   // Counts ONLY genuinely unaccounted Bash calls under policyApplies (v1-v3's own historical
   // meaning). A recognized pre-dispatch block is deliberately excluded: no decision was ever due
@@ -398,19 +421,22 @@ export function buildAcceptedRunAuditSidecar({ record, conditionResult, terminal
       policy_denials_after_first_signal: policyDenialsAfter,
       policy_decisions_missing: policyDecisionsMissing,
       pre_dispatch_blocked_total: preDispatchBlockedTotal,
-      ...(sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4 || sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5 ? { dispatch_unaccounted_total: dispatchUnaccountedTotal } : {}),
+      ...(isNoPolicySidecarSchema ? { dispatch_unaccounted_total: dispatchUnaccountedTotal } : {}),
     },
   };
   // Decision H: provenance SHA is recomputed for BOTH schema 3 and 4 -- never gated on
-  // `sidecarSchema === LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA` (LATEST is now 5; that comparison
+  // `sidecarSchema === LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA` (LATEST is now 6; that comparison
   // would silently stop stamping it on every v3/strict sidecar the moment LATEST advanced).
-  if (sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3 || sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4 || sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5) {
+  if (sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3 || isNoPolicySidecarSchema) {
     built.run_provenance_sha256 = computeRunProvenanceSha256(record);
   }
-  if (sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4 || sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5) {
+  if (isNoPolicySidecarSchema) {
     built.execution_profile_id = record.execution_profile.id;
     built.policy_mode = record.execution_profile.policy_mode;
     built.isolation_attestation_sha256 = record.execution_profile.isolation_attestation_sha256;
+  }
+  if (sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V6) {
+    built.terminal_evidence = terminalEvidence;
   }
   return built;
 }
@@ -439,6 +465,83 @@ function validateEventRefField(ref, field, errors) {
   }
   if (!Number.isInteger(ref.index) || ref.index < 0) {
     errors.push({ field: `${field}.index`, message: 'must be a non-negative integer' });
+  }
+}
+
+function validateNullableNonNegativeInteger(value, field, errors) {
+  if (value !== null && !(Number.isInteger(value) && value >= 0)) {
+    errors.push({ field, message: 'must be null or a non-negative integer' });
+  }
+}
+
+function validateNullableBoolean(value, field, errors) {
+  if (value !== null && typeof value !== 'boolean') {
+    errors.push({ field, message: 'must be null or a boolean' });
+  }
+}
+
+function validateTerminalEvidence(terminalEvidence, field, errors) {
+  if (terminalEvidence == null || typeof terminalEvidence !== 'object' || Array.isArray(terminalEvidence)) {
+    errors.push({ field, message: 'must be an object' });
+    return;
+  }
+  rejectUnrecognizedKeys(terminalEvidence, TERMINAL_EVIDENCE_TOP_FIELDS, field, errors);
+  for (const f of TERMINAL_EVIDENCE_TOP_FIELDS) {
+    if (!(f in terminalEvidence)) errors.push({ field: `${field}.${f}`, message: 'missing required field' });
+  }
+  if (typeof terminalEvidence.present !== 'boolean') errors.push({ field: `${field}.present`, message: 'must be a boolean' });
+  if (terminalEvidence.present) {
+    if (!TERMINAL_EVIDENCE_PROVIDER_VALUES.includes(terminalEvidence.provider)) {
+      errors.push({ field: `${field}.provider`, message: `must be one of ${TERMINAL_EVIDENCE_PROVIDER_VALUES.join('|')} when present is true` });
+    }
+    if (!(Number.isInteger(terminalEvidence.tool_result_event_index) && terminalEvidence.tool_result_event_index >= 0)) {
+      errors.push({ field: `${field}.tool_result_event_index`, message: 'must be a non-negative integer when present is true' });
+    }
+    for (const f of ['evidence_well_formed', 'target_matches_expected', 'outcome_matches_expected', 'malformed', 'parallel_evidence_invalid', 'changed_evidence_invalid']) {
+      if (typeof terminalEvidence[f] !== 'boolean') errors.push({ field: `${field}.${f}`, message: 'must be a boolean when present is true' });
+    }
+  } else {
+    if (terminalEvidence.provider !== null) errors.push({ field: `${field}.provider`, message: 'must be null when present is false' });
+    if (terminalEvidence.tool_result_event_index !== null) errors.push({ field: `${field}.tool_result_event_index`, message: 'must be null when present is false' });
+    if (terminalEvidence.evidence_well_formed !== false) errors.push({ field: `${field}.evidence_well_formed`, message: 'must be exactly false when present is false' });
+    for (const f of ['target_matches_expected', 'outcome_matches_expected', 'malformed', 'parallel_evidence_invalid', 'changed_evidence_invalid']) {
+      if (terminalEvidence[f] !== null) errors.push({ field: `${field}.${f}`, message: 'must be null when present is false' });
+    }
+  }
+
+  const observed = terminalEvidence.observed_result;
+  if (!terminalEvidence.present && observed !== null) {
+    errors.push({ field: `${field}.observed_result`, message: 'must be null when present is false' });
+  }
+  if (observed != null) {
+    if (typeof observed !== 'object' || Array.isArray(observed)) {
+      errors.push({ field: `${field}.observed_result`, message: 'must be null or an object' });
+    } else {
+      rejectUnrecognizedKeys(observed, TERMINAL_OBSERVED_RESULT_FIELDS, `${field}.observed_result`, errors);
+      for (const f of TERMINAL_OBSERVED_RESULT_FIELDS) {
+        if (!(f in observed)) errors.push({ field: `${field}.observed_result.${f}`, message: 'missing required field' });
+      }
+      if (!TERMINAL_OUTCOME_KIND_VALUES.includes(observed.outcome_kind)) {
+        errors.push({ field: `${field}.observed_result.outcome_kind`, message: `must be one of ${TERMINAL_OUTCOME_KIND_VALUES.join('|')}` });
+      }
+      if (typeof observed.module_matches_expected !== 'boolean') {
+        errors.push({ field: `${field}.observed_result.module_matches_expected`, message: 'must be a boolean' });
+      }
+      for (const f of ['total', 'passed', 'failed', 'missed_lines', 'threshold', 'modules_contributing']) {
+        validateNullableNonNegativeInteger(observed[f], `${field}.observed_result.${f}`, errors);
+      }
+    }
+  }
+
+  const finalBlock = terminalEvidence.final_answer_block;
+  if (finalBlock == null || typeof finalBlock !== 'object' || Array.isArray(finalBlock)) {
+    errors.push({ field: `${field}.final_answer_block`, message: 'must be an object' });
+  } else {
+    rejectUnrecognizedKeys(finalBlock, TERMINAL_FINAL_ANSWER_BLOCK_FIELDS, `${field}.final_answer_block`, errors);
+    for (const f of TERMINAL_FINAL_ANSWER_BLOCK_FIELDS) {
+      if (!(f in finalBlock)) errors.push({ field: `${field}.final_answer_block.${f}`, message: 'missing required field' });
+      else validateNullableBoolean(finalBlock[f], `${field}.final_answer_block.${f}`, errors);
+    }
   }
 }
 
@@ -480,13 +583,14 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
 
   const toolCallFields = toolCallFieldsFor(schema) ?? TOOL_CALL_FIELDS_V1;
   const summaryFields = summaryFieldsFor(schema) ?? SUMMARY_FIELDS_V1;
-  // v2+ carry dispatch_status. v4 is the legacy no-policy sidecar; v5 keeps that contract and
-  // adds a closed-vocabulary structural operation field for privacy-safe observability.
-  const hasDispatchStatusShape = schema === 2 || schema === 3 || schema === 4 || schema === 5;
-  const hasProvenanceHash = schema === 3 || schema === 4 || schema === 5;
+  // v2+ carry dispatch_status. v4/v5 are legacy no-policy sidecars; v6 keeps that contract and
+  // adds terminal evidence for privacy-safe post-run diagnostics.
+  const hasDispatchStatusShape = schema === 2 || schema === 3 || schema === 4 || schema === 5 || schema === 6;
+  const hasProvenanceHash = schema === 3 || schema === 4 || schema === 5 || schema === 6;
   const isV4 = schema === 4;
-  const isV5 = schema === 5;
-  const isNoPolicySidecar = isV4 || isV5;
+  const isV5OrV6 = schema === 5 || schema === 6;
+  const isV6 = schema === 6;
+  const isNoPolicySidecar = isV4 || isV5OrV6;
   if (typeof sidecar.run_id !== 'string' || sidecar.run_id.length === 0) errors.push({ field: 'run_id', message: 'must be a non-empty string' });
   const requiredRunSchema = requiredRunSchemaFor(schema);
   if (requiredRunSchema != null && sidecar.run_schema !== requiredRunSchema) {
@@ -628,19 +732,19 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
             errors.push({ field: `${label}.operation`, message: 'must be a non-empty string for tool_kind kmp-test (membership against the record\'s own allowlist is checked during cross-validation)' });
           }
         }
-        if (isV5) {
+        if (isV5OrV6) {
           if (tc.tool_kind === 'kmp-test') {
             if (!KMP_TEST_RECOGNIZED_OPERATION_VALUES.includes(tc.recognized_operation)) {
-              errors.push({ field: `${label}.recognized_operation`, message: `must be one of ${KMP_TEST_RECOGNIZED_OPERATION_VALUES.join('|')} for tool_kind kmp-test on a schema-5 sidecar` });
+              errors.push({ field: `${label}.recognized_operation`, message: `must be one of ${KMP_TEST_RECOGNIZED_OPERATION_VALUES.join('|')} for tool_kind kmp-test on a schema-${schema} sidecar` });
             }
           } else if (tc.recognized_operation !== null) {
-            errors.push({ field: `${label}.recognized_operation`, message: 'must be null except for tool_kind kmp-test on a schema-5 sidecar' });
+            errors.push({ field: `${label}.recognized_operation`, message: `must be null except for tool_kind kmp-test on a schema-${schema} sidecar` });
           }
         }
       } else {
         if (tc.plan_only !== null) errors.push({ field: `${label}.plan_only`, message: 'must be null for a Skill/unexpected-tool tool_kind' });
         if (tc.operation !== null) errors.push({ field: `${label}.operation`, message: 'must be null for a Skill/unexpected-tool tool_kind' });
-        if (isV5 && tc.recognized_operation !== null) errors.push({ field: `${label}.recognized_operation`, message: 'must be null except for tool_kind kmp-test on a schema-5 sidecar' });
+        if (isV5OrV6 && tc.recognized_operation !== null) errors.push({ field: `${label}.recognized_operation`, message: `must be null except for tool_kind kmp-test on a schema-${schema} sidecar` });
         if (tc.policy_decision !== 'not-applicable') errors.push({ field: `${label}.policy_decision`, message: 'must be exactly not-applicable for a Skill/unexpected-tool tool_kind' });
       }
 
@@ -750,6 +854,9 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
   if (isNoPolicySidecar && Number.isInteger(summary.dispatch_unaccounted_total) && summary.dispatch_unaccounted_total !== 0) {
     errors.push({ field: 'summary.dispatch_unaccounted_total', message: 'must be exactly 0 -- a sidecar only ever accompanies an accepted run, so every Bash-family attempt must have a correlated result or a recognized pre-dispatch block' });
   }
+  if (isV6) {
+    validateTerminalEvidence(sidecar.terminal_evidence, 'terminal_evidence', errors);
+  }
 
   // Phase correctness + post-signal summary recompute (review finding 1e/1f) -- previously only
   // the NULL-when-no-boundary direction was checked; neither each entry's own claimed `phase` nor
@@ -854,15 +961,18 @@ export function crossValidateAcceptedRunAuditAgainstRecord(sidecar, record) {
     errors.push({ field: 'summary.policy_denials_total', message: `sidecar summary.policy_denials_total (${sidecar.summary?.policy_denials_total}) does not match record hook_deny_count (${record.hook_deny_count})` });
   }
 
-  // run_provenance_sha256 (v3/v4/v5, Decision H: provenance SHA is recomputed for every schema:6
+  // run_provenance_sha256 (v3/v4/v5/v6, Decision H: provenance SHA is recomputed for every schema:6
   // sidecar)
   // -- recomputed from the RE-READ record and required to match exactly, so neither sidecar version
   // can ever be self-consistent while pointing at a different record's provenance (the same
   // identity-binding role sha256/blob hashes play elsewhere in this repo). Deliberately never
-  // `sidecar.schema === LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA` -- LATEST is 5, and that comparison
+  // `sidecar.schema === LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA` -- LATEST can advance, and that comparison
   // would stop checking v3 sidecars entirely. Only checked for schema 3/4/5: a v1/v2 sidecar carries
   // no such field at all.
-  if (sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3 || sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4 || sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5) {
+  if (sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3
+    || sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4
+    || sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5
+    || sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V6) {
     const expected = computeRunProvenanceSha256(record);
     if (sidecar.run_provenance_sha256 !== expected) {
       errors.push({ field: 'run_provenance_sha256', message: `sidecar run_provenance_sha256 (${sidecar.run_provenance_sha256}) does not match recomputed value from record (${expected})` });
@@ -870,10 +980,12 @@ export function crossValidateAcceptedRunAuditAgainstRecord(sidecar, record) {
   }
 
   // no-policy only: execution_profile_id/policy_mode/isolation_attestation_sha256 cross-validate against
-  // the record's OWN execution_profile group (Decision H) -- a v4/v5 sidecar can never be
+  // the record's OWN execution_profile group (Decision H) -- a v4/v5/v6 sidecar can never be
   // self-consistent while claiming a DIFFERENT profile identity/attestation than the record it was
   // built from actually carries.
-  if (sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4 || sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5) {
+  if (sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4
+    || sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5
+    || sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V6) {
     const ep = record.execution_profile ?? {};
     if (sidecar.execution_profile_id !== ep.id) {
       errors.push({ field: 'execution_profile_id', message: `sidecar execution_profile_id (${sidecar.execution_profile_id}) does not match record execution_profile.id (${ep.id})` });
