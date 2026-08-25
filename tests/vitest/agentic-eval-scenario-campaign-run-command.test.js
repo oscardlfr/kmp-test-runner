@@ -21,7 +21,7 @@
 //     attestation failure before any session, legacy two-condition run still works.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawn, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, readdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -79,8 +79,12 @@ beforeEach(() => {
   writeFileSync(path.join(sourceRepoDir, 'marker.txt'), 'pristine\n');
   writeFileSync(path.join(sourceRepoDir, 'gradlew'), [
     '#!/usr/bin/env sh',
+    'if [ -n "$KMP_EVAL_EXPECT_PREWARM_SEED_FILE" ] && [ ! -f "$GRADLE_USER_HOME/$KMP_EVAL_EXPECT_PREWARM_SEED_FILE" ]; then',
+    '  exit 17',
+    'fi',
     'if [ -n "$KMP_EVAL_PREWARM_MARKER_FILE" ]; then',
-    '  printf "%s|%s\\n" "$GRADLE_USER_HOME" "$*" >> "$KMP_EVAL_PREWARM_MARKER_FILE"',
+    '  if [ -n "$KMP_EVAL_EXPECT_PREWARM_SEED_FILE" ]; then seed_state=yes; else seed_state=not-checked; fi',
+    '  printf "%s|%s|seed=%s\\n" "$GRADLE_USER_HOME" "$*" "$seed_state" >> "$KMP_EVAL_PREWARM_MARKER_FILE"',
     'fi',
     'exit 0',
     '',
@@ -88,7 +92,9 @@ beforeEach(() => {
   chmodSync(path.join(sourceRepoDir, 'gradlew'), 0o755);
   writeFileSync(path.join(sourceRepoDir, 'gradlew.bat'), [
     '@echo off',
-    'if not "%KMP_EVAL_PREWARM_MARKER_FILE%"=="" echo %GRADLE_USER_HOME%^|%*>>"%KMP_EVAL_PREWARM_MARKER_FILE%"',
+    'if not "%KMP_EVAL_EXPECT_PREWARM_SEED_FILE%"=="" if not exist "%GRADLE_USER_HOME%\\%KMP_EVAL_EXPECT_PREWARM_SEED_FILE%" exit /b 17',
+    'if not "%KMP_EVAL_PREWARM_MARKER_FILE%"=="" if not "%KMP_EVAL_EXPECT_PREWARM_SEED_FILE%"=="" echo %GRADLE_USER_HOME%^|%*^|seed=yes>>"%KMP_EVAL_PREWARM_MARKER_FILE%"',
+    'if not "%KMP_EVAL_PREWARM_MARKER_FILE%"=="" if "%KMP_EVAL_EXPECT_PREWARM_SEED_FILE%"=="" echo %GRADLE_USER_HOME%^|%*^|seed=not-checked>>"%KMP_EVAL_PREWARM_MARKER_FILE%"',
     'exit /b 0',
     '',
   ].join('\r\n'));
@@ -445,9 +451,19 @@ describe('4. cli.mjs run --campaign-design -- fake-runtime campaign execution (r
   it('happy path: all 16 cells accepted, each record matches its own pre-registered plan cell exactly, no cross-contamination between profiles', async () => {
     const attestationPath = writeValidAttestation();
     const prewarmMarker = path.join(isolatedTmp, 'gradle-prewarm-marker.txt');
+    const gradleSeedDir = path.join(isolatedTmp, 'gradle-seed');
+    mkdirSync(path.join(gradleSeedDir, 'caches', 'modules-2'), { recursive: true });
+    writeFileSync(path.join(gradleSeedDir, 'caches', 'modules-2', 'prewarmed.bin'), 'seeded');
+    const expectedSeedFile = ['caches', 'modules-2', 'prewarmed.bin'].join(path.sep);
     const result = await runCli(
       runArgs(['--seed', '11', '--max-budget-usd', '1.25', ...CAMPAIGN_FLAGS(attestationPath)]),
-      { ...fakeClaudeEnv('campaign-success'), KMP_FAKE_EXPECT_MAX_BUDGET_USD: '1.25', KMP_EVAL_PREWARM_MARKER_FILE: prewarmMarker },
+      {
+        ...fakeClaudeEnv('campaign-success'),
+        KMP_FAKE_EXPECT_MAX_BUDGET_USD: '1.25',
+        KMP_EVAL_PREWARM_MARKER_FILE: prewarmMarker,
+        KMP_AGENTIC_EVAL_GRADLE_USER_HOME_SEED_DIR: gradleSeedDir,
+        KMP_EVAL_EXPECT_PREWARM_SEED_FILE: expectedSeedFile,
+      },
       120000,
     );
     expect(result.status, result.stderr || result.stdout).toBe(0);
@@ -455,6 +471,7 @@ describe('4. cli.mjs run --campaign-design -- fake-runtime campaign execution (r
     const prewarmLines = readFileSync(prewarmMarker, 'utf8').trim().split(/\r?\n/);
     expect(prewarmLines.length).toBe(2); // one isolated Gradle snapshot per distinct profile
     expect(prewarmLines.every((line) => line.includes(':fakemod:test'))).toBe(true);
+    expect(prewarmLines.every((line) => line.includes('seed=yes'))).toBe(true);
     const { records } = result.parsed;
     expect(records.length).toBe(16);
     expect(listEvidenceFiles('scenario').length).toBe(16);

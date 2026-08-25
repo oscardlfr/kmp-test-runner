@@ -722,6 +722,25 @@ describe('materializeGradleUserHome', () => {
     expect(readFileSync(path.join(gradleUserHome, 'prewarm-marker.txt'), 'utf8')).toBe('prewarmed-content');
   });
 
+  it('seeds the temp GRADLE_USER_HOME from a prewarmed baseline before snapshotting', () => {
+    const seedDir = mkdtempSync(path.join(os.tmpdir(), 'aemat-gradle-seed-'));
+    cleanupDirs.push(seedDir);
+    mkdirSync(path.join(seedDir, 'caches', 'modules-2'), { recursive: true });
+    writeFileSync(path.join(seedDir, 'caches', 'modules-2', 'prewarmed.bin'), 'seeded-cache');
+    writeFileSync(path.join(seedDir, 'gradle.properties'), 'org.gradle.daemon=true\n');
+
+    const { gradleUserHome, resetToSnapshot } = materializeGradleUserHome({ seedFromDir: seedDir });
+    cleanupDirs.push(gradleUserHome);
+
+    const seededFile = path.join(gradleUserHome, 'caches', 'modules-2', 'prewarmed.bin');
+    expect(readFileSync(seededFile, 'utf8')).toBe('seeded-cache');
+    expect(readFileSync(path.join(gradleUserHome, 'gradle.properties'), 'utf8')).toBe('org.gradle.daemon=false\n');
+
+    writeFileSync(seededFile, 'mutated');
+    resetToSnapshot();
+    expect(readFileSync(seededFile, 'utf8')).toBe('seeded-cache');
+  });
+
   // Regression coverage: a failure inside runPrewarm (or writeFileSync/cpSync) partway through
   // previously left BOTH the gradleUserHome and its own internal snapshotDir behind forever,
   // since the function had no try/catch of its own.

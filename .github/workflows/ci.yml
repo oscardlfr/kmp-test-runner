@@ -13,15 +13,21 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   # Fast pre-check: decides whether the heavy CI matrix needs to run.
-  # GitHub treats `skipped` as `success` for required-check gating (since
-  # 2022), so branch protection still passes without burning CI minutes.
+  # The `report-skipped-as-success` sentinel below keeps required heavy
+  # contexts green when this job decides they are not needed.
   #
-  # Skip-eligible (heavy=false when ALL changes fall here):
+  # Docs-only (heavy=false, agentic_eval=false when ALL changes fall here):
   #   *.md, .smoke/**, .gitignore
   #
+  # Agentic-eval-only (heavy=false, agentic_eval=true when ALL non-doc changes
+  # fall here):
+  #   tools/agentic-eval/**, tests/vitest/agentic-eval-*.test.js,
+  #   tests/fixtures/fake-claude*/**, docs/audits/**
+  #
   # Always heavy=true (triggers the full matrix):
-  #   source code, tests/, scripts/, tools/, gradle-plugin/, package.json,
-  #   .github/workflows/**, AND .gitattributes.
+  #   PRs to main, push events on main, source code outside agentic-eval,
+  #   tests outside agentic-eval, scripts/, gradle-plugin/, package.json,
+  #   .github/workflows/**, AND line-ending rule changes.
   #   .gitattributes is the source of truth for check-line-endings.mjs —
   #   a change to LF rules must run build (checker + workflow-static tests).
   #
@@ -31,6 +37,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       heavy: ${{ steps.filter.outputs.heavy }}
+      agentic_eval: ${{ steps.filter.outputs.agentic_eval }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
         with:
@@ -38,12 +45,20 @@ jobs:
       - id: filter
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BASE_REF: ${{ github.base_ref }}
           PUSH_BEFORE: ${{ github.event.before }}
           PR_IS_DRAFT: ${{ github.event.pull_request.draft }}
         run: |
           if [ "${GITHUB_EVENT_NAME}" = "pull_request" ] && [ "${PR_IS_DRAFT}" = "true" ]; then
             echo "Draft PR -- hosted heavy matrix deferred until ready_for_review"
             echo "heavy=false" >> "$GITHUB_OUTPUT"
+            echo "agentic_eval=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if { [ "${GITHUB_EVENT_NAME}" = "pull_request" ] && [ "${PR_BASE_REF}" = "main" ]; } || [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            echo "Release/main validation -- heavy=true"
+            echo "heavy=true" >> "$GITHUB_OUTPUT"
+            echo "agentic_eval=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if [ -n "$PR_BASE_SHA" ]; then
@@ -53,39 +68,96 @@ jobs:
           else
             echo "Cannot determine diff base — defaulting to heavy=true (safe)"
             echo "heavy=true" >> "$GITHUB_OUTPUT"
+            echo "agentic_eval=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           CHANGED=$(git diff --name-only "$BASE"...HEAD)
           if [ -z "$CHANGED" ]; then
             echo "Empty diff — defaulting to heavy=true (safe)"
             echo "heavy=true" >> "$GITHUB_OUTPUT"
+            echo "agentic_eval=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # grep returns 1 when no lines match (= all changes are skippable).
-          # Capture exit explicitly to avoid bash -e killing the step on that
-          # legitimate "no matches" outcome.
+          DOC_SKIPPABLE_RE='^(.+\.md|\.smoke/.*|\.gitignore)$'
+          AGENTIC_EVAL_RE='^(tools/agentic-eval/.*|tests/vitest/agentic-eval-[^/]*\.test\.js|tests/fixtures/fake-claude[^/]*/.*|docs/audits/.*)$'
+
+          # grep returns 1 when no lines match. Capture exits explicitly to
+          # avoid bash -e killing the step on that legitimate outcome.
           set +e
-          NON_SKIPPABLE=$(printf '%s\n' "$CHANGED" | grep -vE '^(.+\.md|\.smoke/.*|\.gitignore)$')
-          GREP_EXIT=$?
+          NON_DOC=$(printf '%s\n' "$CHANGED" | grep -vE "$DOC_SKIPPABLE_RE")
+          NON_DOC_EXIT=$?
+          NON_AGENTIC_OR_DOC=$(printf '%s\n' "$CHANGED" | grep -vE "($DOC_SKIPPABLE_RE|$AGENTIC_EVAL_RE)")
+          NON_AGENTIC_OR_DOC_EXIT=$?
+          AGENTIC_MATCHES=$(printf '%s\n' "$CHANGED" | grep -E "$AGENTIC_EVAL_RE")
+          AGENTIC_MATCH_EXIT=$?
           set -e
-          if [ "$GREP_EXIT" -eq 0 ]; then
-            echo "Non-skippable file changes detected — heavy=true"
-            echo "Non-skippable files:"
-            printf '%s\n' "$NON_SKIPPABLE" | sed 's/^/  /'
-            echo "heavy=true" >> "$GITHUB_OUTPUT"
-          elif [ "$GREP_EXIT" -eq 1 ]; then
+          if [ "$NON_DOC_EXIT" -eq 1 ]; then
             CHANGED_COUNT=$(printf '%s\n' "$CHANGED" | wc -l | tr -d ' ')
-            echo "All ${CHANGED_COUNT} changed files are skip-eligible — heavy=false"
-            echo "Skipped files:"
+            echo "All ${CHANGED_COUNT} changed files are docs-only skip-eligible — heavy=false, agentic_eval=false"
             printf '%s\n' "$CHANGED" | sed 's/^/  /'
             echo "heavy=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "Grep failed with exit $GREP_EXIT — defaulting to heavy=true (safe)"
+            echo "agentic_eval=false" >> "$GITHUB_OUTPUT"
+          elif [ "$NON_AGENTIC_OR_DOC_EXIT" -eq 1 ] && [ "$AGENTIC_MATCH_EXIT" -eq 0 ]; then
+            CHANGED_COUNT=$(printf '%s\n' "$CHANGED" | wc -l | tr -d ' ')
+            echo "All ${CHANGED_COUNT} changed files are agentic-eval/docs scoped — heavy=false, agentic_eval=true"
+            echo "Agentic-eval files:"
+            printf '%s\n' "$AGENTIC_MATCHES" | sed 's/^/  /'
+            echo "heavy=false" >> "$GITHUB_OUTPUT"
+            echo "agentic_eval=true" >> "$GITHUB_OUTPUT"
+          elif [ "$NON_AGENTIC_OR_DOC_EXIT" -eq 0 ]; then
+            echo "Heavy-impact file changes detected — heavy=true"
+            echo "Heavy-impact files:"
+            printf '%s\n' "$NON_AGENTIC_OR_DOC" | sed 's/^/  /'
             echo "heavy=true" >> "$GITHUB_OUTPUT"
+            echo "agentic_eval=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Diff classification failed — defaulting to heavy=true (safe)"
+            echo "heavy=true" >> "$GITHUB_OUTPUT"
+            echo "agentic_eval=false" >> "$GITHUB_OUTPUT"
           fi
       - name: Draft privacy audit (tools/decouple-audit.mjs)
         if: github.event_name == 'pull_request' && github.event.pull_request.draft == true
         run: node tools/decouple-audit.mjs
+
+  agentic-eval:
+    needs: decide
+    if: needs.decide.outputs.agentic_eval == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: '24.18.0'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - name: Check line endings (tools/check-line-endings.mjs)
+        run: node tools/check-line-endings.mjs
+      - name: Check fixture executable bits (tools/check-executable-fixtures.mjs)
+        run: node tools/check-executable-fixtures.mjs
+      - name: Parse Evidence 1 PowerShell launch/readiness scripts
+        shell: pwsh
+        run: |
+          $errors = @()
+          foreach ($file in Get-ChildItem -LiteralPath docs/audits -Filter 'evidence1-*.ps1') {
+            $tokens = $null
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$parseErrors) | Out-Null
+            if ($parseErrors.Count -gt 0) {
+              $messages = ($parseErrors | ForEach-Object { $_.Message }) -join '; '
+              $errors += "${file}: $messages"
+            }
+          }
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_ }
+            exit 1
+          }
+      - name: Agentic-eval Vitest subset
+        shell: bash
+        run: |
+          mapfile -t files < <(find tests/vitest -maxdepth 1 -name 'agentic-eval-*.test.js' | sort)
+          npx vitest run "${files[@]}"
 
   build:
     needs: decide
