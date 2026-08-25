@@ -333,6 +333,8 @@ function Read-ReadinessLedger {
     if ($campaign.shared_attestation_hash_across_all_cells -eq $true) { [int]$campaign.unrestricted_cell_count } else { 0 }
   } elseif ($campaign.PSObject.Properties.Name -contains 'unique_isolation_attestation_hash_count') {
     if ([int]$campaign.unique_isolation_attestation_hash_count -eq 1) { [int]$campaign.unrestricted_cell_count } else { 0 }
+  } elseif ($campaign.PSObject.Properties.Name -contains 'distinct_isolation_attestation_hash_count') {
+    if ([int]$campaign.distinct_isolation_attestation_hash_count -eq 1) { [int]$campaign.unrestricted_cell_count } else { 0 }
   } elseif ($campaign.PSObject.Properties.Name -contains 'distinct_isolation_attestation_hashes_on_unrestricted_cells') {
     if ([int]$campaign.distinct_isolation_attestation_hashes_on_unrestricted_cells -eq 1) { [int]$campaign.unrestricted_cell_count } else { 0 }
   } else {
@@ -348,6 +350,8 @@ function Read-ReadinessLedger {
     if ($campaign.shared_attestation_hash_across_all_cells -eq $true) { 1 } else { 0 }
   } elseif ($campaign.PSObject.Properties.Name -contains 'unique_isolation_attestation_hash_count') {
     [int]$campaign.unique_isolation_attestation_hash_count
+  } elseif ($campaign.PSObject.Properties.Name -contains 'distinct_isolation_attestation_hash_count') {
+    [int]$campaign.distinct_isolation_attestation_hash_count
   } elseif ($campaign.PSObject.Properties.Name -contains 'distinct_isolation_attestation_hashes_on_unrestricted_cells') {
     [int]$campaign.distinct_isolation_attestation_hashes_on_unrestricted_cells
   } else {
@@ -400,6 +404,8 @@ function Read-ReadinessLedger {
     $campaign.unrestricted_attestation_hash_matches_file
   } elseif ($campaign.PSObject.Properties.Name -contains 'unrestricted_hash_matches_r5_validation') {
     $campaign.unrestricted_hash_matches_r5_validation
+  } elseif ($campaign.PSObject.Properties.Name -contains 'isolation_attestation_hash_matches_r5') {
+    $campaign.isolation_attestation_hash_matches_r5
   } elseif ($campaign.PSObject.Properties.Name -contains 'attestation_hash_matches_r5') {
     $campaign.attestation_hash_matches_r5
   } elseif ($campaign.PSObject.Properties.Name -contains 'attestation_hash_matches_loader') {
@@ -630,7 +636,11 @@ try {
     }
   } else {
     $readinessAttestation = Require-JsonProperty $readiness 'r5_network_seal_and_attestation' 'readiness ledger'
-    $readinessAttestationHash = Require-JsonProperty $readinessAttestation 'attestation_sha256' 'readiness r5_network_seal_and_attestation'
+    if ($readinessAttestation.PSObject.Properties.Name -contains 'attestation_sha256') {
+      $readinessAttestationHash = Require-JsonProperty $readinessAttestation 'attestation_sha256' 'readiness r5_network_seal_and_attestation'
+    } else {
+      $readinessAttestationHash = Require-JsonProperty $readinessAttestation 'attestation_canonical_sha256' 'readiness r5_network_seal_and_attestation'
+    }
   }
   if ($attestationCheck.sha256 -ne $readinessAttestationHash) {
     Fail "attestation hash drift against readiness ledger: $($attestationCheck.sha256)"
