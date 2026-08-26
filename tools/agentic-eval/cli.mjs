@@ -1752,6 +1752,7 @@ async function writeRejectionForensics({
   correlationObservabilityByRunId = null,
   preInferenceFailureByRunId = null,
   cellMetricsByRunId = null,
+  terminalEvidenceByRunId = null,
   // stderrByRunId: null when the caller has no journal (e.g. a direct test of this function) --
   // the 3rd transaction below is skipped cleanly in that case, never throws, never blocks the
   // other two. When present, every value MUST already be a string (the caller reads it back
@@ -1810,7 +1811,7 @@ async function writeRejectionForensics({
       runKind, rejectionId, records, failedChecksByRunId, unexpectedToolUsesCountByRunId,
       unexpectedToolsByRunId, captureOrdinalByRunId, rawTranscriptsPersisted, foreignSkillNamesByRunId,
       ambientProfileMatrixOk, plannedCellCount, executedCellCount, correlationObservabilityByRunId,
-      preInferenceFailureByRunId, cellMetricsByRunId,
+      preInferenceFailureByRunId, cellMetricsByRunId, terminalEvidenceByRunId,
     });
     ({ rejectionId: writtenRejectionId, relativePath: diagnosticsRelativePath } = writeRejectedRunDiagnostics(diagnostics, { privatePatternsFile, runsRootOverride }));
   } catch (err) {
@@ -2239,6 +2240,7 @@ async function finalizeAndWriteMatrixRecords({
   // completeness contract (matches the pre-registered plan, which also carries an execution-profile
   // axis) is not representable by the legacy repeats*2-two-conditions shape.
   completenessCheckFn = null,
+  terminalEvidenceByRunId = null,
 }) {
   // Raw-custody rule: this function never reads raw transcript text off `conditionResults` itself
   // (the observation contract carries no raw/legacy fields) -- the caller (cmdRun) builds this map
@@ -2317,7 +2319,7 @@ async function finalizeAndWriteMatrixRecords({
 
     const forensics = await writeRejectionForensics({
       runKind, records, failedChecksByRunId, unexpectedToolUsesCountByRunId, unexpectedToolsByRunId,
-      foreignSkillNamesByRunId, correlationObservabilityByRunId, preInferenceFailureByRunId, cellMetricsByRunId, transcriptsByRunId, captureOrdinalByRunId,
+      foreignSkillNamesByRunId, correlationObservabilityByRunId, preInferenceFailureByRunId, cellMetricsByRunId, terminalEvidenceByRunId, transcriptsByRunId, captureOrdinalByRunId,
       ambientProfileMatrixOk: null, plannedCellCount, executedCellCount,
       privatePatternsFile, runsRootOverride, stderrByRunId, stderrReadError,
     });
@@ -2386,7 +2388,7 @@ async function finalizeAndWriteMatrixRecords({
     // profile consensus itself held, distinct from any individual cell's own failed_checks.
     const forensics = await writeRejectionForensics({
       runKind, records, failedChecksByRunId, unexpectedToolUsesCountByRunId, unexpectedToolsByRunId,
-      foreignSkillNamesByRunId, correlationObservabilityByRunId, preInferenceFailureByRunId, cellMetricsByRunId, transcriptsByRunId, captureOrdinalByRunId,
+      foreignSkillNamesByRunId, correlationObservabilityByRunId, preInferenceFailureByRunId, cellMetricsByRunId, terminalEvidenceByRunId, transcriptsByRunId, captureOrdinalByRunId,
       ambientProfileMatrixOk: gate.ambientProfileMatrixOk,
       privatePatternsFile, runsRootOverride, stderrByRunId, stderrReadError,
     });
@@ -3956,6 +3958,7 @@ async function cmdRunCampaign(args, campaignDesignId) {
       matrixComplete: matrix.matrixComplete, plannedCellCount: matrix.plannedCellCount,
       executedCellCount: matrix.executedCellCount, localIntegrityByRunId, failFastStop: matrix.failFastStop,
       journal, transcriptsByRunId,
+      terminalEvidenceByRunId: Object.fromEntries(records.map((r, i) => [r.run_id, terminalEvidenceDiagnostics[i] ?? null])),
       completenessCheckFn: (recs) => findCampaignCompletenessGap(recs, campaignPlan),
     });
     if (!result.ok) {
@@ -4273,6 +4276,7 @@ async function cmdRun(args) {
       matrixComplete: matrix.matrixComplete, plannedCellCount: matrix.plannedCellCount,
       executedCellCount: matrix.executedCellCount, localIntegrityByRunId, failFastStop: matrix.failFastStop,
       journal, transcriptsByRunId,
+      terminalEvidenceByRunId: Object.fromEntries(records.map((r, i) => [r.run_id, terminalEvidenceDiagnostics[i] ?? null])),
     });
     if (!result.ok) {
       if (result.rejectionId == null) {
