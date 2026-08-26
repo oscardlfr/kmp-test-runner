@@ -1032,10 +1032,10 @@ describe('schema v1/v2/v3/v4/v5 dispatch (decision 6, extended for v3 -- foreign
 // agent_runtime, execution_profile, skill_observation, usage. No selection is ever inferred from
 // legacy fields -- these four groups are the sole canonical source for runtime/profile/skill/
 // usage identity going forward.
-describe('schema v6 (agentic-eval-runtime-neutral-records-v1) -- agent_runtime/execution_profile/skill_observation/usage', () => {
-  it('SUPPORTED_RUN_SCHEMAS accepts 1 through 6; LATEST_RUN_SCHEMA is 6', () => {
-    expect(SUPPORTED_RUN_SCHEMAS).toEqual([1, 2, 3, 4, 5, 6]);
-    expect(LATEST_RUN_SCHEMA).toBe(6);
+describe('schema v6/v7 (agentic-eval-runtime-neutral-records-v1 + product-access mode) -- agent_runtime/execution_profile/skill_observation/usage/product_access_mode', () => {
+  it('SUPPORTED_RUN_SCHEMAS accepts 1 through 7; LATEST_RUN_SCHEMA is 7', () => {
+    expect(SUPPORTED_RUN_SCHEMAS).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(LATEST_RUN_SCHEMA).toBe(7);
   });
 
   const VALID_SCOPE_ID_V6 = '22222222-3333-4444-8555-666666666666';
@@ -1120,6 +1120,14 @@ describe('schema v6 (agentic-eval-runtime-neutral-records-v1) -- agent_runtime/e
       ...overrides,
     };
   }
+  function v7Base(overrides = {}) {
+    return {
+      ...v6Base(overrides),
+      schema: 7,
+      product_access_mode: 'product-visible-no-skill',
+      ...overrides,
+    };
+  }
   function v6CurrentSkillBase(overrides = {}) {
     return v6Base({
       condition: 'current-skill',
@@ -1159,6 +1167,37 @@ describe('schema v6 (agentic-eval-runtime-neutral-records-v1) -- agent_runtime/e
 
   it('a fully well-formed schema:6 no-skill calibration record validates cleanly', () => {
     expect(validateRun(v6Base())).toEqual({ errors: [], warnings: [] });
+  });
+
+  it('a fully well-formed schema:7 no-skill record requires and validates product_access_mode', () => {
+    expect(validateRun(v7Base())).toEqual({ errors: [], warnings: [] });
+  });
+
+  it('schema:7 rejects a missing product_access_mode', () => {
+    const { product_access_mode: _omit, ...run } = v7Base();
+    expect(validateRun(run).errors.some((e) => e.field === 'product_access_mode')).toBe(true);
+  });
+
+  it('schema:7 rejects an unrecognized product_access_mode', () => {
+    const run = v7Base({ product_access_mode: 'whatever-the-agent-did' });
+    expect(validateRun(run).errors.some((e) => e.field === 'product_access_mode')).toBe(true);
+  });
+
+  it('schema:7 rejects product_access_mode values incompatible with condition', () => {
+    const noSkill = v7Base({ condition: 'no-skill', product_access_mode: 'product-assisted' });
+    const currentSkill = v7Base({
+      ...v6CurrentSkillBase(),
+      schema: 7,
+      product_access_mode: 'free-baseline-no-product',
+    });
+    expect(validateRun(noSkill).errors.some((e) => e.field === 'product_access_mode')).toBe(true);
+    expect(validateRun(currentSkill).errors.some((e) => e.field === 'product_access_mode')).toBe(true);
+  });
+
+  it('schema<7 rejects product_access_mode as not-yet-canonical, never silently accepting a future treatment axis', () => {
+    const { errors, warnings } = validateRun(v6Base({ product_access_mode: 'free-baseline-no-product' }));
+    expect(errors.some((e) => e.field === 'product_access_mode')).toBe(true);
+    expect(warnings.some((w) => w.field === 'product_access_mode')).toBe(true);
   });
 
   describe('schema:6 policy_mode:"not_applicable" (sandboxed-unrestricted-v1) -- 5 policy-metric fields must be exactly null, never a real/fabricated value (PR 4)', () => {
@@ -1215,13 +1254,22 @@ describe('schema v6 (agentic-eval-runtime-neutral-records-v1) -- agent_runtime/e
     }
   });
 
-  it('the exact top-level field inventory is v5\'s set plus exactly the 4 new groups, nothing else', () => {
+  it('the exact schema:6 top-level field inventory is v5\'s set plus exactly the 4 new groups, nothing else', () => {
     const run = v6Base();
     const keys = new Set(Object.keys(run));
     for (const g of ['agent_runtime', 'execution_profile', 'skill_observation', 'usage']) expect(keys.has(g)).toBe(true);
     keys.delete('agent_runtime'); keys.delete('execution_profile'); keys.delete('skill_observation'); keys.delete('usage');
     const v5Keys = new Set(Object.keys(v5Base()));
     expect([...keys].sort()).toEqual([...v5Keys].sort());
+  });
+
+  it('the exact schema:7 top-level field inventory is schema:6 plus product_access_mode, nothing else', () => {
+    const run = v7Base();
+    const keys = new Set(Object.keys(run));
+    expect(keys.has('product_access_mode')).toBe(true);
+    keys.delete('product_access_mode');
+    const v6Keys = new Set(Object.keys(v6Base()));
+    expect([...keys].sort()).toEqual([...v6Keys].sort());
   });
 
   describe('agent_runtime -- exact keys, closed IDs, enums, and hash formats', () => {
@@ -3216,6 +3264,7 @@ describe('buildAggregateGroup -- Fairness Contract as code', () => {
       policy_allowed_gradle_tasks: ['build'],
       policy_allowed_kmptest_subcommands: ['doctor'],
       ambient_skill_profile: { count: 0, scope_id: '00000000-0000-4000-8000-000000000000', fingerprint_hmac: '0'.repeat(64) },
+      product_access_mode: 'product-visible-no-skill',
       // agent_runtime/execution_profile/skill_treatment (Section F): buildAggregateGroup is called
       // DIRECTLY here, bypassing aggregate.mjs's own withPartitionView() projection step -- a real
       // caller always pre-projects these 3 onto every record (including a schema<4 one, which gets
@@ -3268,6 +3317,14 @@ describe('buildAggregateGroup -- Fairness Contract as code', () => {
   it('refuses to mix policy_sha256 within one aggregate group (a changed policy-hook version)', () => {
     const { errors } = buildAggregateGroup([run({ run_id: 'r1', policy_sha256: 'a'.repeat(64) }), run({ run_id: 'r2', policy_sha256: 'b'.repeat(64) })]);
     expect(errors.some((e) => e.field === 'policy_sha256')).toBe(true);
+  });
+
+  it('refuses to mix product_access_mode within one aggregate group (product-visible no-skill vs true free baseline)', () => {
+    const { errors } = buildAggregateGroup([
+      run({ run_id: 'r1', product_access_mode: 'product-visible-no-skill' }),
+      run({ run_id: 'r2', product_access_mode: 'free-baseline-no-product' }),
+    ]);
+    expect(errors.some((e) => e.field === 'product_access_mode')).toBe(true);
   });
 
   it('refuses to mix claude_code_version within one aggregate group (a different Claude Code CLI release)', () => {
@@ -3373,7 +3430,8 @@ describe('buildAggregateGroup -- Fairness Contract as code', () => {
     expect(HARD_PARTITION_FIELDS).toContain('agent_runtime');
     expect(HARD_PARTITION_FIELDS).toContain('execution_profile');
     expect(HARD_PARTITION_FIELDS).toContain('skill_treatment');
-    expect(HARD_PARTITION_FIELDS.length).toBe(21);
+    expect(HARD_PARTITION_FIELDS).toContain('product_access_mode');
+    expect(HARD_PARTITION_FIELDS.length).toBe(22);
   });
 
   it('refuses to mix schema within one aggregate group -- a schema:2 record (no foreign_skill_summary) must never fold in with a schema:3 record (has it)', () => {
@@ -3454,8 +3512,8 @@ describe('buildAggregateGroup -- Fairness Contract as code', () => {
   // group_key's own SHAPE changed (gained ambient_skill_profile, then agent_runtime/
   // execution_profile/skill_treatment) -- CURRENT_AGGREGATE_SCHEMA must reflect that, mirroring the
   // exact discipline already applied to LATEST_RUN_SCHEMA whenever a run record's own shape changes.
-  it('CURRENT_AGGREGATE_SCHEMA is 3 -- group_key gained 3 more fields (agent_runtime/execution_profile/skill_treatment) and must be versioned', () => {
-    expect(CURRENT_AGGREGATE_SCHEMA).toBe(3);
+  it('CURRENT_AGGREGATE_SCHEMA is 4 -- group_key gained product_access_mode and must be versioned', () => {
+    expect(CURRENT_AGGREGATE_SCHEMA).toBe(4);
   });
 
   it('refuses to mix policy_allowed_gradle_tasks within one aggregate group (a materially different command policy)', () => {

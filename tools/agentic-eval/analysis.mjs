@@ -44,11 +44,10 @@ import { join } from 'node:path';
 import { validateRunRecordFile } from './run-record-loader.mjs';
 import { HARD_PARTITION_FIELDS, canonicalStructuredValue, findScenarioBenchmarkCompletenessViolations } from './schemas.mjs';
 import { redactObjectAndVerify } from './privacy.mjs';
-import { withPartitionView, agentRuntimeView, executionProfileView, skillObservationView, usageView, targetSkillInvokedView } from './run-record-view.mjs';
+import { withPartitionView, agentRuntimeView, executionProfileView, skillObservationView, usageView, targetSkillInvokedView, productAccessModeView } from './run-record-view.mjs';
 import {
   PRODUCT_ACCESS_MODE_VALUES,
   PRODUCT_USAGE_MODE_VALUES,
-  productAccessModeForSkillCondition,
 } from './product-access.mjs';
 
 // v1 -> v2 (Section F, agentic-eval-runtime-neutral-records-v1): per-run entries and group
@@ -64,7 +63,11 @@ import {
 // final-answer protocol compliance stay separate axes. Every new field is derived only from
 // already-validated record fields and accepted-run-audit tool-kind counts; no raw transcript
 // content is read.
-export const ANALYSIS_SCHEMA = 3;
+//
+// v3 -> v4 (product-vs-free-baseline observability): product_access_mode is now read from schema:7
+// records when available (falling back to the legacy condition-derived value for older records),
+// and product CLI usage is broken down by accepted-run-audit's closed recognized_operation field.
+export const ANALYSIS_SCHEMA = 4;
 
 /** Closed vocabulary for `failure_class` -- exactly one per run, resolved by classifyFailure's own
  * documented precedence. `success` is not a "failure" in the literal sense; it is included so every
@@ -366,6 +369,13 @@ export function analyzeRunRecord(record, sidecar) {
       product_access_mode: productAccessModeFor(record),
       product_usage_mode: productUsage.product_usage_mode,
       product_cli_command_count: productUsage.product_cli_command_count,
+      product_cli_recognized_operation_distribution: productUsage.product_cli_recognized_operation_distribution,
+      product_cli_parallel_command_count: productUsage.product_cli_parallel_command_count,
+      product_cli_coverage_command_count: productUsage.product_cli_coverage_command_count,
+      product_cli_describe_command_count: productUsage.product_cli_describe_command_count,
+      product_cli_doctor_command_count: productUsage.product_cli_doctor_command_count,
+      product_cli_other_recognized_command_count: productUsage.product_cli_other_recognized_command_count,
+      product_cli_unrecognized_operation_count: productUsage.product_cli_unrecognized_operation_count,
       direct_build_tool_command_count: productUsage.direct_build_tool_command_count,
       other_bash_command_count: productUsage.other_bash_command_count,
       product_cli_used: productUsage.product_cli_used,
@@ -414,15 +424,42 @@ function buildUsageSourceCounts(entries) {
 }
 
 function productAccessModeFor(record) {
-  return productAccessModeForSkillCondition(record?.condition);
+  if (PRODUCT_ACCESS_MODE_VALUES.includes(record?.product_access_mode)) return record.product_access_mode;
+  return productAccessModeView(record);
+}
+
+function incrementCount(map, key) {
+  map[key] = (map[key] ?? 0) + 1;
+}
+
+function sumCountMaps(entries, field) {
+  const counts = {};
+  for (const entry of entries) {
+    const source = entry[field];
+    if (source == null || typeof source !== 'object' || Array.isArray(source)) continue;
+    for (const [key, value] of Object.entries(source)) {
+      if (Number.isInteger(value) && value >= 0) counts[key] = (counts[key] ?? 0) + value;
+    }
+  }
+  return counts;
 }
 
 function deriveProductUsage(sidecar) {
   const toolCalls = Array.isArray(sidecar?.tool_calls) ? sidecar.tool_calls : null;
   if (toolCalls == null) return { ok: false, error: 'accepted-run-audit sidecar tool_calls is missing or not an array' };
-  const productCount = toolCalls.filter((tc) => tc?.tool_kind === 'kmp-test').length;
+  const productCalls = toolCalls.filter((tc) => tc?.tool_kind === 'kmp-test');
+  const productCount = productCalls.length;
   const gradleCount = toolCalls.filter((tc) => tc?.tool_kind === 'gradle').length;
   const otherBashCount = toolCalls.filter((tc) => tc?.tool_kind === 'other-bash').length;
+  const recognizedOperationCounts = {};
+  let unrecognizedOperationCount = 0;
+  for (const tc of productCalls) {
+    if (typeof tc.recognized_operation === 'string' && tc.recognized_operation.length > 0) {
+      incrementCount(recognizedOperationCounts, tc.recognized_operation);
+    } else {
+      unrecognizedOperationCount += 1;
+    }
+  }
   let product_usage_mode = 'none';
   if (productCount > 0 && gradleCount > 0) product_usage_mode = 'mixed-product-and-build-tool';
   else if (productCount > 0) product_usage_mode = 'product-cli';
@@ -432,6 +469,13 @@ function deriveProductUsage(sidecar) {
     ok: true,
     product_usage_mode,
     product_cli_command_count: productCount,
+    product_cli_recognized_operation_distribution: recognizedOperationCounts,
+    product_cli_parallel_command_count: recognizedOperationCounts.parallel ?? 0,
+    product_cli_coverage_command_count: recognizedOperationCounts.coverage ?? 0,
+    product_cli_describe_command_count: recognizedOperationCounts.describe ?? 0,
+    product_cli_doctor_command_count: recognizedOperationCounts.doctor ?? 0,
+    product_cli_other_recognized_command_count: recognizedOperationCounts.other ?? 0,
+    product_cli_unrecognized_operation_count: unrecognizedOperationCount,
     direct_build_tool_command_count: gradleCount,
     other_bash_command_count: otherBashCount,
     product_cli_used: productCount > 0,
@@ -507,6 +551,13 @@ function buildGroupSummary(groupKey, entries, record) {
     product_usage_mode_distribution: buildDistribution(entries.map((e) => e.product_usage_mode)),
     product_cli_used_count: productCliUsedCount,
     product_cli_used_rate: rate(productCliUsedCount, total),
+    product_cli_recognized_operation_distribution: sumCountMaps(entries, 'product_cli_recognized_operation_distribution'),
+    product_cli_parallel_command_count: entries.reduce((sum, e) => sum + (e.product_cli_parallel_command_count ?? 0), 0),
+    product_cli_coverage_command_count: entries.reduce((sum, e) => sum + (e.product_cli_coverage_command_count ?? 0), 0),
+    product_cli_describe_command_count: entries.reduce((sum, e) => sum + (e.product_cli_describe_command_count ?? 0), 0),
+    product_cli_doctor_command_count: entries.reduce((sum, e) => sum + (e.product_cli_doctor_command_count ?? 0), 0),
+    product_cli_other_recognized_command_count: entries.reduce((sum, e) => sum + (e.product_cli_other_recognized_command_count ?? 0), 0),
+    product_cli_unrecognized_operation_count: entries.reduce((sum, e) => sum + (e.product_cli_unrecognized_operation_count ?? 0), 0),
     programmatic_product_outcome_matched_count: programmaticProductOutcomeMatchedCount,
     programmatic_product_outcome_matched_rate: rate(programmaticProductOutcomeMatchedCount, total),
     final_answer_protocol_only_failure_count: finalAnswerProtocolOnlyFailureCount,

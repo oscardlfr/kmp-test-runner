@@ -1036,6 +1036,17 @@ describe('buildAcceptedRunAuditSidecar -- schema:6 record produces a v3 sidecar'
     expect(validateAcceptedRunAuditSidecar(sidecar).errors).toEqual([]);
   });
 
+  it('accepts the same v3 sidecar shape for later runtime-neutral run schemas', () => {
+    const record = v6Record({ schema: 7 });
+    const cr = conditionResultFrom([initEventStub(), resultEventStub()]);
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    expect(sidecar.schema).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3);
+    expect(sidecar.run_schema).toBe(7);
+    expect(validateAcceptedRunAuditSidecar(sidecar).errors).toEqual([]);
+    record.accepted_audit = { schema: sidecar.schema, relative_path: `audit/${record.run_id}.json`, sha256: 'f'.repeat(64) };
+    expect(crossValidateAcceptedRunAuditAgainstRecord(sidecar, record)).toEqual([]);
+  });
+
   it('cross-validates with zero errors against its own source record (including run_provenance_sha256)', () => {
     const record = v6Record();
     const cr = conditionResultFrom([initEventStub(), resultEventStub()]);

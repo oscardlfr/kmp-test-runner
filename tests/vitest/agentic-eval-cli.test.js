@@ -2308,14 +2308,13 @@ describe('buildRunRecord -- schema v5 post-signal metrics + accepted_audit place
     ...TEST_RUN_RECORD_V6_INPUTS,
   };
 
-  it('schema is now LATEST_RUN_SCHEMA (6), and every record carries accepted_audit:null at build time', () => {
+  it('schema is now LATEST_RUN_SCHEMA, and every record carries accepted_audit:null at build time', () => {
     const record = buildRunRecord({
       conditionResult: fakeConditionResultWithEvents({ events: [] }),
       ...commonScenarioParams,
       gradeResult: { expectedOutcomeMatched: false, success: false, checks: [], firstUsefulSignalEventIndex: null, testInvocationsTotal: 0, retries: 0 },
     });
     expect(record.schema).toBe(LATEST_RUN_SCHEMA);
-    expect(record.schema).toBe(6);
     expect(record.accepted_audit).toBeNull();
   });
 
@@ -2522,6 +2521,20 @@ describe('buildRunRecord -- selection/promptArtifact/skillSnapshotArtifact are r
     const selection = realSelection();
     const params = baseParams({ selection, modelRequested: 'some-other-model-the-caller-mistakenly-typed' });
     expect(() => buildRunRecord(params)).toThrow(/modelRequested .* must exactly equal selection\.model\.model_id/);
+  });
+
+  it('records product_access_mode explicitly, defaulting legacy no-skill callers to product-visible-no-skill', () => {
+    const record = buildRunRecord(baseParams());
+    expect(record.product_access_mode).toBe('product-visible-no-skill');
+  });
+
+  it('preserves a caller-supplied free-baseline-no-product mode for no-skill campaign cells', () => {
+    const record = buildRunRecord(baseParams({ productAccessMode: 'free-baseline-no-product' }));
+    expect(record.product_access_mode).toBe('free-baseline-no-product');
+  });
+
+  it('rejects a product_access_mode incompatible with condition before writing an incoherent record', () => {
+    expect(() => buildRunRecord(baseParams({ productAccessMode: 'product-assisted' }))).toThrow(/productAccessMode .* is not compatible with condition/);
   });
 });
 

@@ -478,21 +478,24 @@ matrix is rejected anyway.
   **not** independently prove the original raw transcript's own content, which was never committed
   in the first place and is not recoverable from the sidecar.
 
-  **Schema versions, and the construction-time vs at-rest evidentiary boundary.** Five versions
+  **Schema versions, and the construction-time vs at-rest evidentiary boundary.** Six versions
   coexist: **v1** (frozen — the 92 historical committed sidecars), **v2** (frozen — the 64 committed
   sidecars written since, adding per-call `dispatch_status` and `summary.pre_dispatch_blocked_total`;
   both v1 and v2 still require literally `run_schema: 5`), **v3** (schema-v6 policy-required
-  records), **v4** (frozen legacy schema-v6 no-policy sidecars), and **v5** (current schema-v6
-  no-policy sidecars, v4 plus `recognized_operation`). Validation dispatches on the sidecar's own
-  real version and fails closed on anything outside `{1, 2, 3, 4, 5}`; a record's
+  records and later runtime-neutral policy-required records), **v4** and **v5** (frozen legacy
+  schema-v6 no-policy sidecars), and **v6** (current runtime-neutral no-policy sidecars, v5 plus
+  terminal evidence). Validation dispatches on the sidecar's own real version and fails closed on
+  anything outside `{1, 2, 3, 4, 5, 6}`; a record's
   `accepted_audit.schema` must equal the schema of the sidecar it points at, checked during
-  cross-validation. A schema-v5 run record accepts only sidecar schema 1 or 2; a schema-v6
-  policy-required record produces sidecar schema 3; a schema-v6 no-policy record now produces
-  sidecar schema 5 while schema 4 remains accepted for already-written legacy artifacts. That
+  cross-validation. A schema-v5 run record accepts only sidecar schema 1 or 2; a schema-v6-or-later
+  policy-required record produces sidecar schema 3; a schema-v6-or-later no-policy record now
+  produces sidecar schema 6 while schemas 4 and 5 remain accepted for already-written legacy
+  artifacts. That
   equality was implicit while only one version existed and is now asserted per the compatible pair.
 
   **v3** conserves v2's `tool_calls`/`summary` shape verbatim (no re-litigating the
-  `dispatch_status` contract below), requires literally `run_schema: 6`, and adds exactly one new
+  `dispatch_status` contract below), requires the runtime-neutral run-record family
+  (`run_schema >= 6`), and adds exactly one new
   top-level field: `run_provenance_sha256` — the canonical SHA-256 of an exact projection of the
   record (`schema`, `run_id`, `run_kind`, `condition`, `scenario_id`, `agent_runtime`,
   `execution_profile`, `skill_observation`, `platform`, `repo_commit`,

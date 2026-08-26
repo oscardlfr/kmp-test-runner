@@ -27,6 +27,7 @@ import { classifyExitCode, EXIT } from '../../lib/envelope/exit-codes.js';
 // the ONE canonicalizer in the repo; this file never re-implements object-key sorting itself.
 import { canonicalStructuredValue, canonicalJsonSha256 } from './canonical-json.mjs';
 import { REQUIRED_CAPABILITY_KEYS } from './runtimes/contract.mjs';
+import { PRODUCT_ACCESS_MODE_VALUES, isProductAccessModeCompatibleWithSkillCondition } from './product-access.mjs';
 
 export { canonicalStructuredValue };
 
@@ -38,17 +39,20 @@ export { canonicalStructuredValue };
 // alike) stamps on NEW records going forward; `SUPPORTED_RUN_SCHEMAS` is what validateRun()
 // still accepts, so the 8 historical files keep validating under their original v1 rules
 // unchanged (see the RUN_CANONICAL_FIELDS_V1/_V2/_V3 split and validateRun's dispatch, below).
-export const SUPPORTED_RUN_SCHEMAS = [1, 2, 3, 4, 5, 6];
-export const LATEST_RUN_SCHEMA = 6;
+export const SUPPORTED_RUN_SCHEMAS = [1, 2, 3, 4, 5, 6, 7];
+export const LATEST_RUN_SCHEMA = 7;
 export const CURRENT_SCENARIO_SCHEMA = 1;
 // v1 -> v2 (review-round-2 fix): group_key's own SHAPE changed -- it gained the
 // `ambient_skill_profile` partition field -- so this is bumped exactly like LATEST_RUN_SCHEMA is
 // whenever a run record's own shape changes. v2 -> v3 (agentic-eval-runtime-neutral-records-v1,
 // Section F): group_key's shape changed again -- it gained the `agent_runtime`/`execution_profile`/
-// `skill_treatment` structural partition keys. No historical committed aggregate-output files exist
+// `skill_treatment` structural partition keys. v3 -> v4 (product-vs-free-baseline observability):
+// group_key gained product_access_mode so a product-visible no-skill run and a true
+// free-baseline-no-product run can never be pooled into one bucket. No historical committed
+// aggregate-output files exist
 // to preserve compatibility with (aggregate output is always computed on demand, never persisted
 // under tools/runs/), so this is a plain constant bump, not a versioned dispatch.
-export const CURRENT_AGGREGATE_SCHEMA = 3;
+export const CURRENT_AGGREGATE_SCHEMA = 4;
 
 export const RUN_KIND_VALUES = ['calibration', 'corpus-probe', 'scenario', 'smoke'];
 export const CONDITION_VALUES = ['no-skill', 'current-skill', 'candidate-skill'];
@@ -133,6 +137,15 @@ const V6_GROUP_FIELDS = ['agent_runtime', 'execution_profile', 'skill_observatio
 const RUN_CANONICAL_FIELDS_V6 = [
   ...RUN_CANONICAL_FIELDS_V5,
   ...V6_GROUP_FIELDS,
+];
+
+// Schema v7 (product-vs-free-baseline observability) = v6 + product_access_mode. Condition only
+// describes skill treatment (current-skill/no-skill); product_access_mode is the separate treatment
+// axis that distinguishes product-visible no-skill from a true free-baseline-no-product cell.
+const V7_FIELDS = ['product_access_mode'];
+const RUN_CANONICAL_FIELDS_V7 = [
+  ...RUN_CANONICAL_FIELDS_V6,
+  ...V7_FIELDS,
 ];
 
 // IDs throughout schema v6 use one closed lowercase charset.
@@ -571,6 +584,7 @@ const ACCEPTED_AUDIT_RELATIVE_PATH_RE = /^audit\/[A-Za-z0-9._-]+\.json$/;
 // schema number to V1 instead of the LATEST fields, which would make a schema:5 record validate
 // against the wrong (v1) field list entirely. schema===5 must resolve to V5, never V1.
 function runCanonicalFieldsFor(schema) {
+  if (schema === 7) return RUN_CANONICAL_FIELDS_V7;
   if (schema === 6) return RUN_CANONICAL_FIELDS_V6;
   if (schema === 5) return RUN_CANONICAL_FIELDS_V5;
   if (schema === 4) return RUN_CANONICAL_FIELDS_V4;
@@ -965,6 +979,19 @@ export function validateRun(run) {
         errors.push({ field: f, message: `must be absent or null for schema ${run.schema} -- ${f} was introduced in schema v6` });
       }
     }
+  }
+
+  // Schema v7: product_access_mode is a first-class, validated treatment axis. It must agree with
+  // condition's possible modes, but is never inferred from condition for new records: no-skill can
+  // legitimately mean either product-visible-no-skill or free-baseline-no-product.
+  if (run.schema >= 7) {
+    if (!PRODUCT_ACCESS_MODE_VALUES.includes(run.product_access_mode)) {
+      errors.push({ field: 'product_access_mode', message: `must be one of ${PRODUCT_ACCESS_MODE_VALUES.join('|')}` });
+    } else if (!isProductAccessModeCompatibleWithSkillCondition({ condition: run.condition, productAccessMode: run.product_access_mode })) {
+      errors.push({ field: 'product_access_mode', message: `mode ${JSON.stringify(run.product_access_mode)} is not compatible with condition ${JSON.stringify(run.condition)}` });
+    }
+  } else if ('product_access_mode' in run && run.product_access_mode != null) {
+    errors.push({ field: 'product_access_mode', message: `must be absent or null for schema ${run.schema} -- product_access_mode was introduced in schema v7` });
   }
 
   for (const f of NULLABLE_METRIC_FIELDS) if (f in run) validateNullableMetric(run[f], f, errors);
@@ -1736,6 +1763,7 @@ export const HARD_PARTITION_FIELDS = [
   'env_allowlist_profile', 'policy_allowed_gradle_tasks', 'policy_allowed_kmptest_subcommands',
   'claude_code_version', 'schema', 'ambient_skill_profile',
   'agent_runtime', 'execution_profile', 'skill_treatment',
+  'product_access_mode',
 ];
 
 // canonicalStructuredValue: see the top-of-file import from canonical-json.mjs -- this module no
