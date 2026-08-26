@@ -365,6 +365,9 @@ export function analyzeRunRecord(record, sidecar) {
   const success = record.success?.value ?? null;
   const post_signal_tool_calls = record.post_signal_tool_calls?.value ?? null;
   const finalAnswerBlock = finalAnswerBlockView(sidecar, final_answer_consistent);
+  const coverage_gate_diagnostic = typeof sidecar?.terminal_evidence?.coverage_gate_diagnostic === 'string'
+    ? sidecar.terminal_evidence.coverage_gate_diagnostic
+    : 'not-recorded';
   const task_outcome_matched = expected_outcome_matched;
   const answer_protocol_matched = final_answer_consistent;
   const programmatic_evidence_available = terminal_authoritative_evidence_present === true
@@ -429,6 +432,7 @@ export function analyzeRunRecord(record, sidecar) {
       canonical_final_answer_available,
       canonical_output_available,
       evidence_quality,
+      coverage_gate_diagnostic,
       success,
       failure_class,
       product_access_mode: productAccessModeFor(record),
@@ -626,6 +630,7 @@ function buildGroupSummary(groupKey, entries, record) {
     canonical_output_available_count: canonicalOutputAvailableCount,
     canonical_output_available_rate: rate(canonicalOutputAvailableCount, total),
     evidence_quality_distribution: buildDistribution(entries.map((e) => e.evidence_quality)),
+    coverage_gate_diagnostic_distribution: buildDistribution(entries.map((e) => e.coverage_gate_diagnostic)),
     success_count: successCount,
     success_rate: rate(successCount, total),
     product_access_mode_distribution: buildDistribution(entries.map((e) => e.product_access_mode)),

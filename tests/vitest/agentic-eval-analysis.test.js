@@ -701,6 +701,7 @@ describe('analyzeRunRecord -- required end-to-end scenario coverage', () => {
     expect(entry.canonical_final_answer_available).toBe(false);
     expect(entry.canonical_output_available).toBe(false);
     expect(entry.evidence_quality).toBe('product-canonical');
+    expect(entry.coverage_gate_diagnostic).toBe('not-recorded');
     expect(entry.failure_class).toBe('final-answer-mismatch');
   });
 
@@ -737,6 +738,7 @@ describe('analyzeRunRecord -- required end-to-end scenario coverage', () => {
           modules_contributing: 1,
         },
         final_answer_block: { found: true, parsed: true, ambiguous: false, matches_observed: false },
+        coverage_gate_diagnostic: 'observed-clean-tests',
       },
     });
     const { ok, entry } = analyzeRunRecord(record, sidecar);
@@ -749,6 +751,7 @@ describe('analyzeRunRecord -- required end-to-end scenario coverage', () => {
     expect(entry.canonical_output_available).toBe(false);
     expect(entry.product_cli_used).toBe(true);
     expect(entry.evidence_quality).toBe('product-canonical');
+    expect(entry.coverage_gate_diagnostic).toBe('observed-clean-tests');
     expect(entry.failure_class).toBe('outcome-mismatch');
   });
 
@@ -1016,6 +1019,7 @@ describe('buildSummary', () => {
       canonical_final_answer_available: true,
       canonical_output_available: true,
       evidence_quality: 'product-canonical',
+      coverage_gate_diagnostic: 'not-recorded',
       programmatic_product_outcome_matched: true,
       final_answer_protocol_only_failure: false,
       ...entryOverrides,
@@ -1138,6 +1142,7 @@ describe('buildSummary', () => {
         canonical_final_answer_available: false,
         canonical_output_available: false,
         evidence_quality: 'product-canonical',
+        coverage_gate_diagnostic: 'missing-threshold-gate',
         programmatic_product_outcome_matched: true,
         final_answer_protocol_only_failure: true,
         success: false,
@@ -1160,6 +1165,7 @@ describe('buildSummary', () => {
         canonical_final_answer_available: false,
         canonical_output_available: false,
         evidence_quality: 'claim-only',
+        coverage_gate_diagnostic: 'no-terminal-evidence',
         programmatic_product_outcome_matched: false,
         final_answer_protocol_only_failure: true,
         success: false,
@@ -1198,6 +1204,10 @@ describe('buildSummary', () => {
     expect(group.evidence_quality_distribution).toEqual({
       'product-canonical': 1,
       'claim-only': 1,
+    });
+    expect(group.coverage_gate_diagnostic_distribution).toEqual({
+      'missing-threshold-gate': 1,
+      'no-terminal-evidence': 1,
     });
     expect(group.programmatic_product_outcome_matched_count).toBe(1);
     expect(group.programmatic_product_outcome_matched_rate).toBe(0.5);

@@ -1470,7 +1470,7 @@ together, into 6 independent axes per run:
 3. **policy interaction** — `pre_skill_policy_denials`, `post_skill_policy_denials_total`
 4. **authoritative evidence** — `terminal_authoritative_evidence_present`,
    `terminal_authoritative_evidence_well_formed`, `programmatic_evidence_available`,
-   `evidence_quality`
+   `evidence_quality`, and the coverage-specific `coverage_gate_diagnostic`
 5. **task outcome** — `expected_outcome_matched`, `task_outcome_matched`
 6. **answer protocol** — `final_answer_consistent`, `answer_protocol_matched`,
    `canonical_final_answer_available`, `canonical_output_available`, `success`
@@ -1595,7 +1595,13 @@ parsed, and matched the observed evidence; `canonical_output_available` requires
 terminal attempt existed but was not usable), `claim-only` (a parseable final claim existed without
 usable terminal evidence), or `no-evidence`. This is deliberately reporting-only: it never relaxes
 `success`, never reads raw transcript content, and never treats a free-baseline claim as equivalent
-to product-generated evidence.
+to product-generated evidence. For `coverage_threshold_exceeded` specifically, accepted-run-audit
+sidecar schema v7 adds `terminal_evidence.coverage_gate_diagnostic`, a closed-vocabulary,
+privacy-safe lower-cause label such as `matched`, `coverage-only-not-terminal`,
+`missing-threshold-gate`, `coverage-disabled`, `threshold-mismatch`, `observed-clean-tests`,
+`coverage-evidence-malformed`, or `coverage-outcome-mismatch`; older sidecars analyze as
+`not-recorded`. The label explains why a coverage scenario's programmatic evidence did or did not
+prove the coverage gate, without exposing raw commands, paths, or transcript prose.
 
 **Summary.** Runs are grouped by the FULL `HARD_PARTITION_FIELDS` tuple (the identical Fairness
 Contract key `aggregate.mjs` already enforces, reused verbatim via `schemas.mjs`'s own
@@ -1608,7 +1614,7 @@ present_rate`, `terminal_authoritative_evidence_well_formed_rate`, `expected_out
 rate`, `task_outcome_matched_rate`, `answer_protocol_matched_rate`, `programmatic_evidence_
 available_rate`, `canonical_final_answer_available_rate`, `canonical_output_available_rate`,
 `success_rate` — `null`, never `NaN`, when the denominator is 0) plus `failure_class_counts`,
-`evidence_quality_distribution`,
+`evidence_quality_distribution`, `coverage_gate_diagnostic_distribution`,
 and compact frequency-map distributions for `target_skill_invocation_ordinal`, `target_skill_
 attempt_ordinal`, `pre_skill_tool_calls`, and `post_skill_tool_calls_total`. `analyze` never
 computes a cross-condition comparison (e.g. a `current-skill`-vs-`no-skill` lift/delta) — each
@@ -1899,7 +1905,10 @@ runbooks.
   mechanism analogous to `junit-evidence.mjs` — a Gradle attempt can only ever corroborate its own
   ordinary test-task contract (`expected.gradle` reuses `tests_executed`'s own key set verbatim),
   never the coverage-threshold decision itself, which is a `kmp-test`-only concept with no raw
-  Gradle equivalent.
+  Gradle equivalent. Prospective v7 accepted-run sidecars therefore carry a closed
+  `coverage_gate_diagnostic` value so post-run analysis can distinguish "the agent ran clean tests
+  but never armed the gate" from "the agent used a coverage-only command", "the threshold differed",
+  or "the coverage evidence was malformed", without opening raw transcripts.
   `corpus/trigger-queries.json` (the natural-trigger query set) remains separately in scope and is
   validated by the same `corpus validate` command. An earlier candidate module for this scenario,
   `:core:datastore`, was rejected after an adversarial review round: its `--module-filter`

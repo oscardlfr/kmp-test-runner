@@ -484,6 +484,30 @@ function coverageEnvelope(overrides = {}) {
 }
 const KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED = coverageEnvelope();
 
+function cleanCoverageGateFreeEnvelope(overrides = {}) {
+  return JSON.stringify({
+    tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0',
+    project_root: 'C:\\fake', exit_code: 0, duration_ms: 98214,
+    tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 4 },
+    modules: [{ name: 'core:domain', type: 'android', coverage_plugin: 'jacoco' }],
+    skipped: [],
+    coverage: {},
+    errors: [],
+    warnings: [],
+    parallel: {
+      test_type: 'auto',
+      legs: [{
+        test_type: 'auto', exit_code: 0,
+        execution: { fresh: 1, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 0, no_evidence: 0 },
+        cascade_detected: false, retry_fired: false,
+      }],
+      max_workers: 0, timeout_s: 600,
+    },
+    isolated: DEFAULT_ISOLATED_FIELD,
+    ...overrides,
+  });
+}
+
 const GRADLE_SCENARIO5_PASS_STDOUT = `> Task :core:domain:compileDemoDebugUnitTestKotlin\n> Task :core:domain:testDemoDebugUnitTest\n\nBUILD SUCCESSFUL in 2m 19s\n124 actionable tasks: 124 executed\n`;
 
 // The 6th and final scenario shape (changed-module-verification) -- the first (and, per this
@@ -3485,6 +3509,53 @@ describe('gradeScenarioCondition -- coverage_threshold_exceeded (SCENARIO_5, the
     expect(grade.success).toBe(true);
     expect(grade.checks).toHaveLength(8);
     expect(grade.checks.every((c) => c.passed)).toBe(true);
+    expect(grade.terminalEvidence.coverage_gate_diagnostic).toBe('matched');
+  });
+
+  it('diagnoses the live Evidence 1 class: parallel ran the module tests cleanly but never produced the coverage-threshold gate evidence', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --json', resultContent: cleanCoverageGateFreeEnvelope() }],
+      kmpEvalResultText('4 tests passed cleanly.', { module: ':core:domain', outcome_kind: 'tests_executed', total: 4, passed: 4, failed: 0 }),
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(true);
+    expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.terminalEvidence.observed_result.outcome_kind).toBe('tests_executed');
+    expect(grade.terminalEvidence.coverage_gate_diagnostic).toBe('missing-threshold-gate');
+    expect(grade.success).toBe(false);
+  });
+
+  it('diagnoses a coverage-only kmp-test command as non-terminal for a scenario that requires parallel test evidence plus coverage gate evidence', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test coverage --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope() }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(false);
+    expect(grade.terminalEvidence.present).toBe(false);
+    expect(grade.terminalEvidence.coverage_gate_diagnostic).toBe('coverage-only-not-terminal');
+  });
+
+  it('diagnoses a threshold mismatch without leaking the raw command string', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 40 --json', resultContent: coverageEnvelope({ errors: [{ code: 'coverage_threshold_exceeded', message: 'x', threshold: 40, missed_lines: 45 }] }) }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.terminalEvidence.coverage_gate_diagnostic).toBe('threshold-mismatch');
+    expect(JSON.stringify(grade.terminalEvidence)).not.toContain('--min-missed-lines');
+    expect(JSON.stringify(grade.terminalEvidence)).not.toContain(':core:domain');
+  });
+
+  it('diagnoses a well-formed on-target terminal attempt that explicitly disabled coverage', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --no-coverage --json', resultContent: cleanCoverageGateFreeEnvelope() }],
+      kmpEvalResultText('4 tests passed cleanly.', { module: ':core:domain', outcome_kind: 'tests_executed', total: 4, passed: 4, failed: 0 }),
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.terminalEvidence.coverage_gate_diagnostic).toBe('coverage-disabled');
+    expect(grade.success).toBe(false);
   });
 
   it('rejects when the envelope threshold differs from the scenario expected constant (both command and envelope agree with each other, but not with the scenario)', () => {
