@@ -110,7 +110,7 @@ export function summarizePreInferenceFailure(observation) {
     && !hasNonZeroUsage
     && toolAttemptCount === 0;
   return {
-    schema: 1,
+    schema: 2,
     signature_matched: signatureMatched,
     terminal_present: terminalPresent,
     terminal_is_error: terminalIsError,
@@ -118,6 +118,7 @@ export function summarizePreInferenceFailure(observation) {
     terminal_turn_count: terminalTurnCount,
     usage,
     tool_attempt_count: toolAttemptCount,
+    cause_code: signatureMatched ? 'pre_inference_terminal_error_zero_usage_zero_tools' : 'not_matched',
   };
 }
 

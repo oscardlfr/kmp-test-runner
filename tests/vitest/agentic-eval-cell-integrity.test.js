@@ -22,6 +22,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   evaluateNamedChecks, summarizeUnexpectedToolUses, cellTranscriptIntegrityOk,
+  summarizePreInferenceFailure,
 } from '../../tools/agentic-eval/cell-integrity.mjs';
 
 function cleanToolAttempt(overrides = {}) {
@@ -271,6 +272,11 @@ describe('cellTranscriptIntegrityOk', () => {
     expect(result.checksByName.noPreInferenceFailureOk).toBe(false);
     expect(result.ok).toBe(false);
     expect(result.failedChecks).toContain('noPreInferenceFailureOk');
+    expect(summarizePreInferenceFailure(conditionResult.observation)).toMatchObject({
+      schema: 2,
+      signature_matched: true,
+      cause_code: 'pre_inference_terminal_error_zero_usage_zero_tools',
+    });
   });
 
   it('ok:true (noPreInferenceFailureOk) when isError:false -- a normal success is never flagged', () => {
@@ -279,6 +285,7 @@ describe('cellTranscriptIntegrityOk', () => {
     });
     const result = cellTranscriptIntegrityOk(conditionResult, { requireDispatchAccounting: false });
     expect(result.checksByName.noPreInferenceFailureOk).toBe(true);
+    expect(summarizePreInferenceFailure(conditionResult.observation).cause_code).toBe('not_matched');
   });
 
   it('ok:true (noPreInferenceFailureOk) when the terminal is absent entirely -- never claims a signature without evidence', () => {
