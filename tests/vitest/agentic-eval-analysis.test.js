@@ -739,6 +739,21 @@ describe('analyzeRunRecord -- required end-to-end scenario coverage', () => {
     expect(entry.failure_class).toBe('final-answer-mismatch');
   });
 
+  it('schema:7 free-baseline-no-product records keep the explicit product access mode instead of falling back to condition-derived product-visible no-skill', () => {
+    const record = scenarioRecord({
+      schema: 7,
+      condition: 'no-skill',
+      product_access_mode: 'free-baseline-no-product',
+      skill_invoked: { value: false, reason: null },
+      skill_invocation_event: null,
+    });
+    const sidecar = sidecarFor(record, { entries: [bashEntry(0, { kind: 'gradle', operation: 'allowed-task' })], terminalAuthoritativeEvent: { type: 'user.tool_result', index: 1 } });
+    const { ok, entry } = analyzeRunRecord(record, sidecar);
+    expect(ok).toBe(true);
+    expect(entry.product_access_mode).toBe('free-baseline-no-product');
+    expect(entry.product_usage_mode).toBe('direct-build-tool');
+  });
+
   it('mixed product and direct Gradle usage is reported as its own usage mode', () => {
     const record = scenarioRecord({
       expected_outcome_matched: { value: false, reason: null },
@@ -757,6 +772,33 @@ describe('analyzeRunRecord -- required end-to-end scenario coverage', () => {
     expect(entry.product_usage_mode).toBe('mixed-product-and-build-tool');
     expect(entry.product_cli_command_count).toBe(1);
     expect(entry.direct_build_tool_command_count).toBe(1);
+  });
+
+  it('reports product CLI recognized operations from the accepted-audit sidecar, separate from policy-sensitive operation', () => {
+    const record = scenarioRecord({
+      expected_outcome_matched: { value: false, reason: null },
+      skill_invocation_event: { type: 'assistant.tool_use.Skill', index: 0 },
+    });
+    const sidecar = sidecarFor(record, {
+      entries: [
+        targetSkillEntry(0),
+        { ...bashEntry(1, { kind: 'kmp-test', operation: 'other' }), recognized_operation: 'parallel' },
+        { ...bashEntry(3, { kind: 'kmp-test', operation: 'other' }), recognized_operation: 'coverage' },
+        { ...bashEntry(5, { kind: 'kmp-test', operation: 'other' }), recognized_operation: 'doctor' },
+        bashEntry(7, { kind: 'kmp-test', operation: 'other' }),
+      ],
+      terminalAuthoritativeEvent: { type: 'user.tool_result', index: 2 },
+    });
+    const { ok, entry } = analyzeRunRecord(record, sidecar);
+    expect(ok).toBe(true);
+    expect(entry.product_cli_command_count).toBe(4);
+    expect(entry.product_cli_recognized_operation_distribution).toEqual({ parallel: 1, coverage: 1, doctor: 1 });
+    expect(entry.product_cli_parallel_command_count).toBe(1);
+    expect(entry.product_cli_coverage_command_count).toBe(1);
+    expect(entry.product_cli_describe_command_count).toBe(0);
+    expect(entry.product_cli_doctor_command_count).toBe(1);
+    expect(entry.product_cli_other_recognized_command_count).toBe(0);
+    expect(entry.product_cli_unrecognized_operation_count).toBe(1);
   });
 
   it('fails closed when grading_checks is missing one or more required check names', () => {
@@ -919,15 +961,29 @@ describe('buildSummary', () => {
         product_access_mode: 'product-assisted',
         product_usage_mode: 'product-cli',
         product_cli_used: true,
+        product_cli_recognized_operation_distribution: { parallel: 1, coverage: 1 },
+        product_cli_parallel_command_count: 1,
+        product_cli_coverage_command_count: 1,
+        product_cli_describe_command_count: 0,
+        product_cli_doctor_command_count: 0,
+        product_cli_other_recognized_command_count: 0,
+        product_cli_unrecognized_operation_count: 0,
         programmatic_product_outcome_matched: true,
         final_answer_protocol_only_failure: true,
         success: false,
         failure_class: 'final-answer-mismatch',
       }),
       pair({ run_id: 'r2' }, {
-        product_access_mode: 'product-visible-no-skill',
+        product_access_mode: 'free-baseline-no-product',
         product_usage_mode: 'direct-build-tool',
         product_cli_used: false,
+        product_cli_recognized_operation_distribution: {},
+        product_cli_parallel_command_count: 0,
+        product_cli_coverage_command_count: 0,
+        product_cli_describe_command_count: 0,
+        product_cli_doctor_command_count: 0,
+        product_cli_other_recognized_command_count: 0,
+        product_cli_unrecognized_operation_count: 0,
         programmatic_product_outcome_matched: false,
         final_answer_protocol_only_failure: true,
         success: false,
@@ -938,7 +994,7 @@ describe('buildSummary', () => {
     const [group] = summary.groups;
     expect(group.product_access_mode_distribution).toEqual({
       'product-assisted': 1,
-      'product-visible-no-skill': 1,
+      'free-baseline-no-product': 1,
     });
     expect(group.product_usage_mode_distribution).toEqual({
       'product-cli': 1,
@@ -946,6 +1002,13 @@ describe('buildSummary', () => {
     });
     expect(group.product_cli_used_count).toBe(1);
     expect(group.product_cli_used_rate).toBe(0.5);
+    expect(group.product_cli_recognized_operation_distribution).toEqual({ parallel: 1, coverage: 1 });
+    expect(group.product_cli_parallel_command_count).toBe(1);
+    expect(group.product_cli_coverage_command_count).toBe(1);
+    expect(group.product_cli_describe_command_count).toBe(0);
+    expect(group.product_cli_doctor_command_count).toBe(0);
+    expect(group.product_cli_other_recognized_command_count).toBe(0);
+    expect(group.product_cli_unrecognized_operation_count).toBe(0);
     expect(group.programmatic_product_outcome_matched_count).toBe(1);
     expect(group.programmatic_product_outcome_matched_rate).toBe(0.5);
     expect(group.final_answer_protocol_only_failure_count).toBe(2);

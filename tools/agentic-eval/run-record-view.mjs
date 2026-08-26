@@ -34,6 +34,8 @@
 // Deliberately NOT a partition key here (Section F): activation/availability outcomes, success,
 // usage, retries. Partitioning by an OBSERVED outcome would separate results by what happened,
 // introducing exactly the survivorship bias the Fairness Contract exists to prevent.
+import { productAccessModeForSkillCondition } from './product-access.mjs';
+
 const NOT_RECORDED = 'not-recorded';
 
 function isV6OrLater(record) {
@@ -122,6 +124,15 @@ export function targetSkillInvokedView(record) {
   return null;
 }
 
+/** Product access became a first-class run-record field in schema v7. For historical records, use
+ * the only product-access state they could represent: condition-derived product visibility. This is
+ * a compatibility projection for analysis/aggregation only; schemas.mjs still rejects a schema<7
+ * record that physically carries product_access_mode. */
+export function productAccessModeView(record) {
+  if (typeof record?.schema === 'number' && record.schema >= 7) return record.product_access_mode;
+  return productAccessModeForSkillCondition(record?.condition);
+}
+
 /** Augments a run record with the 3 new NARROWED structural partition fields as plain top-level
  * properties, named to match the record's own v6 field names (`agent_runtime`, `execution_profile`,
  * `skill_treatment`) -- aggregate.mjs's HARD_PARTITION_FIELDS-driven bucketing/mixing-check and
@@ -139,5 +150,6 @@ export function withPartitionView(record) {
     agent_runtime: agentRuntimeView(record),
     execution_profile: executionProfilePartitionView(record),
     skill_treatment: skillTreatmentPartitionView(record),
+    product_access_mode: productAccessModeView(record),
   };
 }

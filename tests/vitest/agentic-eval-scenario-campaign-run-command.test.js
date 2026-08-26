@@ -50,6 +50,14 @@ const FREE_BASELINE_CELL_DEFINITIONS = {
   A: { execution_profile_id: UNRESTRICTED, condition: 'current-skill', product_access_mode: 'product-assisted' },
   B: { execution_profile_id: UNRESTRICTED, condition: 'no-skill', product_access_mode: 'free-baseline-no-product' },
 };
+const PRODUCT_EXECUTABLE_NAMES = [
+  'kmp-test',
+  'kmp-test.cmd',
+  'kmp-test.ps1',
+  'kmp-test-runner',
+  'kmp-test-runner.cmd',
+  'kmp-test-runner.ps1',
+];
 
 let runsRoot;
 let isolatedTmp;
@@ -135,12 +143,27 @@ afterEach(() => {
   rmSync(scenariosDir, { recursive: true, force: true });
 });
 
-function fakeClaudeEnv(scenario) {
+function pathEntryHasProductExecutable(entry) {
+  return PRODUCT_EXECUTABLE_NAMES.some((exe) => existsSync(path.join(entry, exe)));
+}
+
+function withoutProductExecutablePathEntries(pathValue, delimiter) {
+  return String(pathValue ?? '')
+    .split(delimiter)
+    .filter(Boolean)
+    .filter((entry) => !pathEntryHasProductExecutable(entry))
+    .join(delimiter);
+}
+
+function fakeClaudeEnv(scenario, { productCliVisible = true } = {}) {
   const fakeDir = path.join(FIXTURES_DIR, `fake-claude-${scenario}`);
   const delimiter = process.platform === 'win32' ? ';' : ':';
+  const basePath = productCliVisible
+    ? (process.env.PATH ?? process.env.Path ?? '')
+    : withoutProductExecutablePathEntries(process.env.PATH ?? process.env.Path ?? '', delimiter);
   return {
     ...process.env,
-    PATH: `${fakeDir}${delimiter}${process.env.PATH ?? process.env.Path ?? ''}`,
+    PATH: `${fakeDir}${delimiter}${basePath}`,
     KMP_EVAL_RUNS_ROOT: runsRoot,
     KMP_EVAL_SCENARIOS_DIR: scenariosDir,
     TEMP: isolatedTmp,
@@ -536,6 +559,28 @@ describe('4. cli.mjs run --campaign-design -- fake-runtime campaign execution (r
       expect(crossValidateAcceptedRunAuditAgainstRecord(sidecar, record)).toEqual([]);
     }
   }, 120000);
+
+  it('product-vs-free-baseline execution preserves each plan cell product_access_mode in promoted records', async () => {
+    const attestationPath = writeValidAttestation();
+    const result = await runCli(
+      runArgs(['--seed', '11', ...FREE_BASELINE_CAMPAIGN_FLAGS(attestationPath)]),
+      fakeClaudeEnv('campaign-success', { productCliVisible: false }),
+      90000,
+    );
+    expect(result.status, result.stderr || result.stdout).toBe(0);
+    expect(result.parsed).not.toBeNull();
+    const sorted = [...result.parsed.records].sort((a, b) => a.order_index - b.order_index);
+    expect(sorted).toHaveLength(8);
+    expect(sorted.map((r) => r.product_access_mode)).toEqual(
+      FREE_BASELINE_EXPECTED_LABEL_ORDER.map((label) => FREE_BASELINE_CELL_DEFINITIONS[label].product_access_mode),
+    );
+    expect(sorted.filter((r) => r.condition === 'no-skill').map((r) => r.product_access_mode)).toEqual(
+      Array.from({ length: 4 }, () => 'free-baseline-no-product'),
+    );
+    expect(sorted.filter((r) => r.condition === 'current-skill').map((r) => r.product_access_mode)).toEqual(
+      Array.from({ length: 4 }, () => 'product-assisted'),
+    );
+  }, 90000);
 
   // KNOWN LIMITATION (documented and accepted for this PR -- see BACKLOG.md "mixed-profile
   // campaign rejection diagnostics schema" and this PR's own body): buildRejectionDiagnostics

@@ -38,10 +38,10 @@ import { canonicalJsonSha256 } from './canonical-json.mjs';
  * sidecars were written, and both still require literally `run_schema:5` (a v5 scenario record
  * accepts only sidecar schema 1 or 2). v2 added per-call `dispatch_status` and the
  * `pre_dispatch_blocked_total` summary counter. v3 (agentic-eval-runtime-neutral-records-v1)
- * conserves v2's `tool_calls`/`summary` shape verbatim, requires literally `run_schema:6`, and adds
- * exactly one new top-level field: `run_provenance_sha256` -- a v6 scenario record accepts only
- * sidecar schema 3. Extending v2 to accept run_schema 6 would silently rewrite its own frozen
- * historical contract, which is exactly why v3 exists as its own version instead.
+ * conserves v2's `tool_calls`/`summary` shape verbatim, requires the runtime-neutral record family
+ * (`run_schema >= 6`), and adds exactly one new top-level field: `run_provenance_sha256`.
+ * Extending v2 to accept run_schema 6+ would silently rewrite its own frozen historical contract,
+ * which is exactly why v3 exists as its own version instead.
  *
  * Deliberately explicit named constants and no bare `ACCEPTED_AUDIT_SIDECAR_SCHEMA`: a single
  * unversioned name cannot say whether a caller means "a specific historical shape" or "whatever is
@@ -162,13 +162,13 @@ function summaryFieldsFor(schema) {
   if (schema === 4 || schema === 5 || schema === 6) return SUMMARY_FIELDS_V4;
   return null;
 }
-/** The run record schema a given sidecar schema requires literally (Section E's exact
- * compatibility matrix) -- v1/v2 require exactly 5 (frozen); v3/v4/v5/v6 require exactly 6. An unknown
- * sidecar schema has no required run_schema of its own (validated separately as an unknown
- * version). */
-function requiredRunSchemaFor(sidecarSchema) {
-  if (sidecarSchema === 1 || sidecarSchema === 2) return 5;
-  if (sidecarSchema === 3 || sidecarSchema === 4 || sidecarSchema === 5 || sidecarSchema === 6) return 6;
+/** The run record schema compatibility a given sidecar schema requires (Section E's compatibility
+ * matrix) -- v1/v2 require exactly 5 (frozen); v3/v4/v5/v6 require the runtime-neutral record
+ * family, schema >= 6. An unknown sidecar schema has no required run_schema of its own (validated
+ * separately as an unknown version). */
+function runSchemaRequirementFor(sidecarSchema) {
+  if (sidecarSchema === 1 || sidecarSchema === 2) return { exact: 5 };
+  if (sidecarSchema === 3 || sidecarSchema === 4 || sidecarSchema === 5 || sidecarSchema === 6) return { min: 6 };
   return null;
 }
 
@@ -592,9 +592,12 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
   const isV6 = schema === 6;
   const isNoPolicySidecar = isV4 || isV5OrV6;
   if (typeof sidecar.run_id !== 'string' || sidecar.run_id.length === 0) errors.push({ field: 'run_id', message: 'must be a non-empty string' });
-  const requiredRunSchema = requiredRunSchemaFor(schema);
-  if (requiredRunSchema != null && sidecar.run_schema !== requiredRunSchema) {
-    errors.push({ field: 'run_schema', message: `must be exactly ${requiredRunSchema} for sidecar schema ${schema}` });
+  const runSchemaRequirement = runSchemaRequirementFor(schema);
+  if (runSchemaRequirement?.exact != null && sidecar.run_schema !== runSchemaRequirement.exact) {
+    errors.push({ field: 'run_schema', message: `must be exactly ${runSchemaRequirement.exact} for sidecar schema ${schema}` });
+  }
+  if (runSchemaRequirement?.min != null && !(Number.isInteger(sidecar.run_schema) && sidecar.run_schema >= runSchemaRequirement.min)) {
+    errors.push({ field: 'run_schema', message: `must be an integer >= ${runSchemaRequirement.min} for sidecar schema ${schema}` });
   }
   if (hasProvenanceHash) {
     if (!/^[0-9a-f]{64}$/.test(sidecar.run_provenance_sha256)) {

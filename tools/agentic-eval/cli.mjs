@@ -78,6 +78,7 @@ import { buildRejectionDiagnostics, writeRejectionRawTranscripts, writeRejectedR
 import { acceptedAuditRelativePathFor, buildAcceptedRunAuditSidecar, finalizeAcceptedRunAuditSidecar, crossValidateAcceptedRunAuditAgainstRecord, expectedAcceptedAuditSchemaFor } from './accepted-run-audit.mjs';
 import { loadMeasurementScopeFile, createMeasurementScopeFileExclusive } from './measurement-scope.mjs';
 import { createInvocationJournal, tagIncidentPhase } from './durable-journal.mjs';
+import { productAccessModeForSkillCondition, isProductAccessModeCompatibleWithSkillCondition } from './product-access.mjs';
 import { finalizeIncident, reportIncident } from './incident-diagnostics.mjs';
 // validateRunRecordFile now lives in run-record-loader.mjs (extracted so analysis.mjs can import
 // the identical trusted-input gate without a circular cli.mjs<->analysis.mjs dependency, and so it
@@ -1053,6 +1054,7 @@ function buildRunRecord({
   // function only ever receives the already-validated `{schema, sha256}` result's own sha256,
   // never a path or the attestation's own content.
   isolationAttestationSha256 = null,
+  productAccessMode = productAccessModeForSkillCondition(condition),
 }) {
   // schema v6 required-input contract: a missing/malformed selection, promptArtifact, or
   // skillSnapshotArtifact -- or a modelRequested that disagrees with the registry-resolved
@@ -1087,6 +1089,9 @@ function buildRunRecord({
   }
   if (policyApplies && isolationAttestationSha256 !== null) {
     throw new TypeError('buildRunRecord: isolationAttestationSha256 must be null when selection.executionProfile.policy_mode is "required" -- a policy-governed profile has no attestation to report');
+  }
+  if (!isProductAccessModeCompatibleWithSkillCondition({ condition, productAccessMode })) {
+    throw new TypeError(`buildRunRecord: productAccessMode (${JSON.stringify(productAccessMode)}) is not compatible with condition (${JSON.stringify(condition)}) -- product access is a separate treatment axis and must be supplied explicitly for free-baseline cells`);
   }
 
   const { observation, startedAt, endedAt } = conditionResult;
@@ -1271,6 +1276,7 @@ function buildRunRecord({
     scenario_id: scenarioId,
     query_id: null,
     condition,
+    product_access_mode: productAccessMode,
     skill_source_sha: condition === 'current-skill' ? skillSourceSha : null,
     kmp_test_cli_version: provenance.cliVersion,
     kmp_test_cli_source_sha: provenance.repoCommit,
@@ -3909,6 +3915,7 @@ async function cmdRunCampaign(args, campaignDesignId) {
         gradeResult, ambientProfileScopeId, ambientProfileKey,
         selection: cellSelection, promptArtifact: runPromptArtifact, skillSnapshotArtifact: matrix.skillSnapshotArtifact,
         isolationAttestationSha256: attestationSha256ByProfileId[planCell.execution_profile_id],
+        productAccessMode: planCell.product_access_mode,
       });
       records.push(record);
       conditionResults.push(cell.conditionResult);

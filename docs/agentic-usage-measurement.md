@@ -255,7 +255,7 @@ tool use and from mixed sessions. This lets reports say, for example, "the
 programmatic product outcome matched but the final answer protocol failed"
 without converting that into "the product failed."
 
-In analysis schema v3, `success` remains the full harness success criterion:
+In analysis schema v4, `success` remains the full harness success criterion:
 correct target, correct expected outcome, usable evidence, and final answer
 consistency. It must not be used alone as the product-quality metric. The
 product-specific diagnostic fields are:
@@ -263,9 +263,17 @@ product-specific diagnostic fields are:
 | Field | Meaning |
 |-------|---------|
 | `product_cli_used` / `product_cli_command_count` | Whether and how often the product CLI was observed in the accepted audit sidecar |
+| `product_cli_recognized_operation_distribution` | Closed-vocabulary product operation counts (`parallel`, `coverage`, `doctor`, etc.) derived from sidecar `recognized_operation`, never raw argv |
+| `product_cli_parallel_command_count` / `product_cli_coverage_command_count` / `product_cli_describe_command_count` / `product_cli_doctor_command_count` | Operation-specific product CLI counts for comparing product path quality without opening raw transcripts |
 | `direct_build_tool_command_count` | Direct build-tool invocations observed without naming a concrete private or project-specific command in the public analysis output |
 | `programmatic_product_outcome_matched` | Product CLI was used and the structured terminal evidence matched the expected outcome |
 | `final_answer_protocol_only_failure` | The expected outcome matched, but the final answer did not satisfy the reporting protocol |
+
+Run schema v7 persists `product_access_mode` on each promoted record. Earlier
+records are analyzed through the compatibility view implied by their
+`condition` (`current-skill` -> `product-assisted`, `no-skill` ->
+`product-visible-no-skill`) so historical product-visible observations are not
+mistaken for true `free-baseline-no-product` cells.
 
 This separation is mandatory for Evidence 1 interpretation. A run with
 `success:false` and `programmatic_product_outcome_matched:true` is not evidence
