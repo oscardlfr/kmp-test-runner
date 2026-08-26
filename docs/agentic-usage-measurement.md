@@ -255,7 +255,7 @@ tool use and from mixed sessions. This lets reports say, for example, "the
 programmatic product outcome matched but the final answer protocol failed"
 without converting that into "the product failed."
 
-In analysis schema v4, `success` remains the full harness success criterion:
+In analysis schema v5, `success` remains the full harness success criterion:
 correct target, correct expected outcome, usable evidence, and final answer
 consistency. It must not be used alone as the product-quality metric. The
 product-specific diagnostic fields are:
@@ -266,6 +266,10 @@ product-specific diagnostic fields are:
 | `product_cli_recognized_operation_distribution` | Closed-vocabulary product operation counts (`parallel`, `coverage`, `doctor`, etc.) derived from sidecar `recognized_operation`, never raw argv |
 | `product_cli_parallel_command_count` / `product_cli_coverage_command_count` / `product_cli_describe_command_count` / `product_cli_doctor_command_count` | Operation-specific product CLI counts for comparing product path quality without opening raw transcripts |
 | `direct_build_tool_command_count` | Direct build-tool invocations observed without naming a concrete private or project-specific command in the public analysis output |
+| `task_outcome_matched` | Alias of the graded expected outcome axis, published with a task-oriented name for product-vs-baseline interpretation |
+| `evidence_quality` | Closed vocabulary separating `product-canonical`, `baseline-verifiable`, `malformed-evidence`, `claim-only`, and `no-evidence` |
+| `answer_protocol_matched` | Whether the final answer followed the requested reporting protocol, separate from the task outcome itself |
+| `programmatic_evidence_available` / `canonical_final_answer_available` / `canonical_output_available` | Whether the run produced independently parseable terminal evidence, a matching final answer block, and both together |
 | `programmatic_product_outcome_matched` | Product CLI was used and the structured terminal evidence matched the expected outcome |
 | `final_answer_protocol_only_failure` | The expected outcome matched, but the final answer did not satisfy the reporting protocol |
 
@@ -280,7 +284,9 @@ This separation is mandatory for Evidence 1 interpretation. A run with
 that the product failed; it is evidence that the product-side result and the
 agent's final reporting behavior diverged. Conversely, a no-skill run that
 uses the product CLI is not a free baseline; it is a product-visible/no-skill
-observation.
+observation. A free-baseline run may produce a parseable final claim without
+authoritative terminal evidence; analysis reports that as
+`evidence_quality: claim-only`, not as product-equivalent evidence.
 
 ### Metrics
 

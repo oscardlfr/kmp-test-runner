@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import os from 'node:os';
 import {
-  ANALYSIS_SCHEMA, FAILURE_CLASS_VALUES, PRODUCT_ACCESS_MODE_VALUES, PRODUCT_USAGE_MODE_VALUES,
+  ANALYSIS_SCHEMA, FAILURE_CLASS_VALUES, PRODUCT_ACCESS_MODE_VALUES, PRODUCT_USAGE_MODE_VALUES, EVIDENCE_QUALITY_VALUES,
   classifyFailure, deriveSkillRelativeFields,
   analyzeRunRecord, buildSummary, analyzeRunsDir,
 } from '../../tools/agentic-eval/analysis.mjs';
@@ -144,7 +144,7 @@ function bashEntry(useIdx, { kind = 'other-bash', resultIdx = useIdx + 1, decisi
  * ordinal/phase and recomputes `summary` from the entries themselves, exactly mirroring
  * buildAcceptedRunAuditSidecar's own formulas, so every fixture independently satisfies
  * validateAcceptedRunAuditSidecar's cross-checks rather than merely analysis.mjs's own reading. */
-function sidecarFor(record, { entries = [], firstUsefulSignalEvent = null, terminalAuthoritativeEvent } = {}) {
+function sidecarFor(record, { entries = [], firstUsefulSignalEvent = null, terminalAuthoritativeEvent, terminalEvidence } = {}) {
   const sorted = [...entries].sort((a, b) => a.tool_use_event_index - b.tool_use_event_index);
   const boundaryIndex = firstUsefulSignalEvent?.index ?? null;
   const toolCalls = sorted.map((tc, ordinal) => ({ ordinal, ...tc, phase: phaseFor(tc, boundaryIndex) }));
@@ -156,6 +156,7 @@ function sidecarFor(record, { entries = [], firstUsefulSignalEvent = null, termi
     condition: record.condition, scenario_id: record.scenario_id,
     first_useful_signal_event: firstUsefulSignalEvent,
     terminal_authoritative_event: terminalAuthoritativeEvent !== undefined ? terminalAuthoritativeEvent : firstUsefulSignalEvent,
+    ...(terminalEvidence !== undefined ? { terminal_evidence: terminalEvidence } : {}),
     tool_calls: toolCalls,
     summary: {
       tool_calls_total: toolCalls.length,
@@ -295,6 +296,9 @@ describe('product access / usage layer contract', () => {
     ]);
     expect(PRODUCT_USAGE_MODE_VALUES).toEqual([
       'product-cli', 'direct-build-tool', 'mixed-product-and-build-tool', 'manual-other', 'none',
+    ]);
+    expect(EVIDENCE_QUALITY_VALUES).toEqual([
+      'product-canonical', 'baseline-verifiable', 'malformed-evidence', 'claim-only', 'no-evidence',
     ]);
   });
 });
@@ -691,7 +695,161 @@ describe('analyzeRunRecord -- required end-to-end scenario coverage', () => {
     expect(entry.product_cli_used).toBe(true);
     expect(entry.programmatic_product_outcome_matched).toBe(true);
     expect(entry.final_answer_protocol_only_failure).toBe(true);
+    expect(entry.task_outcome_matched).toBe(true);
+    expect(entry.answer_protocol_matched).toBe(false);
+    expect(entry.programmatic_evidence_available).toBe(true);
+    expect(entry.canonical_final_answer_available).toBe(false);
+    expect(entry.canonical_output_available).toBe(false);
+    expect(entry.evidence_quality).toBe('product-canonical');
     expect(entry.failure_class).toBe('final-answer-mismatch');
+  });
+
+  it('product run with well-formed product evidence is credited separately from outcome and final-answer success', () => {
+    const record = scenarioRecord({
+      expected_outcome_matched: { value: false, reason: null },
+      skill_invocation_event: { type: 'assistant.tool_use.Skill', index: 0 },
+      grading_checks: gradingChecks({
+        authoritative_outcome_matches_expected: { passed: false, detail: 'observed tests_executed, expected coverage_threshold_exceeded' },
+        final_answer_consistent_with_evidence: { passed: false, detail: 'final block did not match observed evidence' },
+      }),
+    });
+    const sidecar = sidecarFor(record, {
+      entries: [targetSkillEntry(0), bashEntry(1, { kind: 'kmp-test', operation: 'parallel' })],
+      terminalAuthoritativeEvent: { type: 'user.tool_result', index: 2 },
+      terminalEvidence: {
+        present: true,
+        provider: 'kmp-test',
+        tool_result_event_index: 2,
+        evidence_well_formed: true,
+        target_matches_expected: true,
+        outcome_matches_expected: false,
+        malformed: false,
+        parallel_evidence_invalid: false,
+        changed_evidence_invalid: false,
+        observed_result: {
+          outcome_kind: 'tests_executed',
+          module_matches_expected: true,
+          total: 2,
+          passed: 2,
+          failed: 0,
+          missed_lines: null,
+          threshold: null,
+          modules_contributing: 1,
+        },
+        final_answer_block: { found: true, parsed: true, ambiguous: false, matches_observed: false },
+      },
+    });
+    const { ok, entry } = analyzeRunRecord(record, sidecar);
+    expect(ok).toBe(true);
+    expect(entry.success).toBe(false);
+    expect(entry.task_outcome_matched).toBe(false);
+    expect(entry.answer_protocol_matched).toBe(false);
+    expect(entry.programmatic_evidence_available).toBe(true);
+    expect(entry.canonical_final_answer_available).toBe(false);
+    expect(entry.canonical_output_available).toBe(false);
+    expect(entry.product_cli_used).toBe(true);
+    expect(entry.evidence_quality).toBe('product-canonical');
+    expect(entry.failure_class).toBe('outcome-mismatch');
+  });
+
+  it('free-baseline claim-only output is visible as a claim, not confused with product evidence', () => {
+    const record = scenarioRecord({
+      schema: 7,
+      condition: 'no-skill',
+      product_access_mode: 'free-baseline-no-product',
+      skill_invoked: { value: false, reason: null },
+      skill_invocation_event: null,
+      grading_checks: gradingChecks({
+        authoritative_evidence_well_formed: { passed: false, detail: 'no authoritative terminal evidence' },
+        authoritative_target_matches_expected: { passed: false, detail: 'no well-formed terminal evidence to check' },
+        authoritative_outcome_matches_expected: { passed: false, detail: 'no well-formed, correctly-targeted terminal evidence to check' },
+        final_answer_consistent_with_evidence: { passed: false, detail: 'claim was parseable but not backed by terminal evidence' },
+      }),
+    });
+    const sidecar = sidecarFor(record, {
+      entries: [bashEntry(0, { kind: 'other-bash' })],
+      terminalAuthoritativeEvent: null,
+      terminalEvidence: {
+        present: false,
+        provider: null,
+        tool_result_event_index: null,
+        evidence_well_formed: false,
+        target_matches_expected: null,
+        outcome_matches_expected: null,
+        malformed: null,
+        parallel_evidence_invalid: null,
+        changed_evidence_invalid: null,
+        observed_result: null,
+        final_answer_block: { found: true, parsed: true, ambiguous: false, matches_observed: null },
+      },
+    });
+    const { ok, entry } = analyzeRunRecord(record, sidecar);
+    expect(ok).toBe(true);
+    expect(entry.product_access_mode).toBe('free-baseline-no-product');
+    expect(entry.product_usage_mode).toBe('manual-other');
+    expect(entry.product_cli_used).toBe(false);
+    expect(entry.task_outcome_matched).toBe(false);
+    expect(entry.answer_protocol_matched).toBe(false);
+    expect(entry.programmatic_evidence_available).toBe(false);
+    expect(entry.canonical_final_answer_available).toBe(false);
+    expect(entry.canonical_output_available).toBe(false);
+    expect(entry.evidence_quality).toBe('claim-only');
+    expect(entry.failure_class).toBe('no-authoritative-evidence');
+  });
+
+  it('malformed terminal evidence and absent evidence stay distinct from claim-only baseline output', () => {
+    const malformedRecord = scenarioRecord({
+      grading_checks: gradingChecks({
+        authoritative_evidence_well_formed: { passed: false, detail: 'terminal evidence was malformed' },
+        authoritative_target_matches_expected: { passed: false, detail: 'no well-formed terminal evidence to check' },
+        authoritative_outcome_matches_expected: { passed: false, detail: 'no well-formed, correctly-targeted terminal evidence to check' },
+      }),
+    });
+    const malformedSidecar = sidecarFor(malformedRecord, {
+      entries: [targetSkillEntry(0), bashEntry(1, { kind: 'kmp-test', operation: 'parallel' })],
+      terminalAuthoritativeEvent: { type: 'user.tool_result', index: 2 },
+      terminalEvidence: {
+        present: true,
+        provider: 'kmp-test',
+        tool_result_event_index: 2,
+        evidence_well_formed: false,
+        target_matches_expected: null,
+        outcome_matches_expected: null,
+        malformed: true,
+        parallel_evidence_invalid: true,
+        changed_evidence_invalid: false,
+        observed_result: null,
+        final_answer_block: { found: false, parsed: false, ambiguous: false, matches_observed: null },
+      },
+    });
+    const noEvidenceRecord = scenarioRecord({
+      grading_checks: gradingChecks({
+        authoritative_evidence_well_formed: { passed: false, detail: 'no authoritative terminal evidence' },
+        authoritative_target_matches_expected: { passed: false, detail: 'no well-formed terminal evidence to check' },
+        authoritative_outcome_matches_expected: { passed: false, detail: 'no well-formed, correctly-targeted terminal evidence to check' },
+        final_answer_consistent_with_evidence: { passed: false, detail: 'no KMP_EVAL_RESULT block' },
+      }),
+    });
+    const noEvidenceSidecar = sidecarFor(noEvidenceRecord, {
+      entries: [targetSkillEntry(0)],
+      terminalAuthoritativeEvent: null,
+      terminalEvidence: {
+        present: false,
+        provider: null,
+        tool_result_event_index: null,
+        evidence_well_formed: false,
+        target_matches_expected: null,
+        outcome_matches_expected: null,
+        malformed: null,
+        parallel_evidence_invalid: null,
+        changed_evidence_invalid: null,
+        observed_result: null,
+        final_answer_block: { found: false, parsed: false, ambiguous: false, matches_observed: null },
+      },
+    });
+
+    expect(analyzeRunRecord(malformedRecord, malformedSidecar).entry.evidence_quality).toBe('malformed-evidence');
+    expect(analyzeRunRecord(noEvidenceRecord, noEvidenceSidecar).entry.evidence_quality).toBe('no-evidence');
   });
 
   it('activation not expected (no-skill condition): every skill-relative field is null, evidence/outcome still graded', () => {
@@ -852,6 +1010,12 @@ describe('buildSummary', () => {
       direct_build_tool_command_count: 0,
       other_bash_command_count: 0,
       product_cli_used: true,
+      task_outcome_matched: true,
+      answer_protocol_matched: true,
+      programmatic_evidence_available: true,
+      canonical_final_answer_available: true,
+      canonical_output_available: true,
+      evidence_quality: 'product-canonical',
       programmatic_product_outcome_matched: true,
       final_answer_protocol_only_failure: false,
       ...entryOverrides,
@@ -968,6 +1132,12 @@ describe('buildSummary', () => {
         product_cli_doctor_command_count: 0,
         product_cli_other_recognized_command_count: 0,
         product_cli_unrecognized_operation_count: 0,
+        task_outcome_matched: true,
+        answer_protocol_matched: false,
+        programmatic_evidence_available: true,
+        canonical_final_answer_available: false,
+        canonical_output_available: false,
+        evidence_quality: 'product-canonical',
         programmatic_product_outcome_matched: true,
         final_answer_protocol_only_failure: true,
         success: false,
@@ -984,6 +1154,12 @@ describe('buildSummary', () => {
         product_cli_doctor_command_count: 0,
         product_cli_other_recognized_command_count: 0,
         product_cli_unrecognized_operation_count: 0,
+        task_outcome_matched: false,
+        answer_protocol_matched: false,
+        programmatic_evidence_available: false,
+        canonical_final_answer_available: false,
+        canonical_output_available: false,
+        evidence_quality: 'claim-only',
         programmatic_product_outcome_matched: false,
         final_answer_protocol_only_failure: true,
         success: false,
@@ -1009,6 +1185,20 @@ describe('buildSummary', () => {
     expect(group.product_cli_doctor_command_count).toBe(0);
     expect(group.product_cli_other_recognized_command_count).toBe(0);
     expect(group.product_cli_unrecognized_operation_count).toBe(0);
+    expect(group.task_outcome_matched_count).toBe(1);
+    expect(group.task_outcome_matched_rate).toBe(0.5);
+    expect(group.answer_protocol_matched_count).toBe(0);
+    expect(group.answer_protocol_matched_rate).toBe(0);
+    expect(group.programmatic_evidence_available_count).toBe(1);
+    expect(group.programmatic_evidence_available_rate).toBe(0.5);
+    expect(group.canonical_final_answer_available_count).toBe(0);
+    expect(group.canonical_final_answer_available_rate).toBe(0);
+    expect(group.canonical_output_available_count).toBe(0);
+    expect(group.canonical_output_available_rate).toBe(0);
+    expect(group.evidence_quality_distribution).toEqual({
+      'product-canonical': 1,
+      'claim-only': 1,
+    });
     expect(group.programmatic_product_outcome_matched_count).toBe(1);
     expect(group.programmatic_product_outcome_matched_rate).toBe(0.5);
     expect(group.final_answer_protocol_only_failure_count).toBe(2);

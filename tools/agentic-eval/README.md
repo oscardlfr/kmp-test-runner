@@ -1462,15 +1462,18 @@ above.
 
 `analyze --runs-dir <dir>` (`tools/agentic-eval/analysis.mjs`) is a deterministic, fully offline
 command that separates what a single `benchmark_eligible`/`success` pair otherwise collapses
-together, into 5 independent axes per run:
+together, into 6 independent axes per run:
 
 1. **target-skill activation** — `activation_expected` (`condition === 'current-skill'`),
    `target_skill_invoked`, `target_skill_invocation_ordinal`, `target_skill_attempt_ordinal`
 2. **post-invocation execution** — `post_skill_tool_calls_total`, `post_signal_tool_calls`
 3. **policy interaction** — `pre_skill_policy_denials`, `post_skill_policy_denials_total`
 4. **authoritative evidence** — `terminal_authoritative_evidence_present`,
-   `terminal_authoritative_evidence_well_formed`
-5. **final task outcome** — `expected_outcome_matched`, `final_answer_consistent`, `success`
+   `terminal_authoritative_evidence_well_formed`, `programmatic_evidence_available`,
+   `evidence_quality`
+5. **task outcome** — `expected_outcome_matched`, `task_outcome_matched`
+6. **answer protocol** — `final_answer_consistent`, `answer_protocol_matched`,
+   `canonical_final_answer_available`, `canonical_output_available`, `success`
 
 plus one closed-vocabulary `failure_class` per run (see below). It operates ONLY on already-
 committed schema-v5-or-later `run_kind:'scenario'` records and their validated accepted-run-audit sidecars
@@ -1579,6 +1582,21 @@ module) — distinct from invoking a foreign Skill entirely, which collapses int
 `pre_skill_tool_calls` is intentionally never a `failure_class` input — it remains an independent,
 always-visible field, never promoted into a causal label.
 
+**Outcome/evidence/protocol interpretation.** `success` remains the strict historical benchmark
+gate: a run must produce usable evidence for the expected target and outcome AND its final answer
+must reproduce that evidence correctly. Analysis schema v5 additionally publishes the same facts
+as separate reporting axes so product-vs-free-baseline results are not overread.
+`task_outcome_matched` is the task-level expected-outcome verdict; `answer_protocol_matched` is the final-answer
+reporting contract; `programmatic_evidence_available` means a terminal authoritative event existed
+and was well-formed; `canonical_final_answer_available` means the final answer block was found,
+parsed, and matched the observed evidence; `canonical_output_available` requires both. The closed
+`evidence_quality` enum is `product-canonical` (product CLI used and terminal evidence was usable),
+`baseline-verifiable` (usable terminal evidence without product CLI), `malformed-evidence` (a
+terminal attempt existed but was not usable), `claim-only` (a parseable final claim existed without
+usable terminal evidence), or `no-evidence`. This is deliberately reporting-only: it never relaxes
+`success`, never reads raw transcript content, and never treats a free-baseline claim as equivalent
+to product-generated evidence.
+
 **Summary.** Runs are grouped by the FULL `HARD_PARTITION_FIELDS` tuple (the identical Fairness
 Contract key `aggregate.mjs` already enforces, reused verbatim via `schemas.mjs`'s own
 `canonicalStructuredValue` serializer) — `scenario_id` and `condition` are 2 of its 17 fields, so
@@ -1587,7 +1605,10 @@ Contract key `aggregate.mjs` already enforces, reused verbatim via `schemas.mjs`
 differing schema/provenance run in its own separate group rather than silently pooled together.
 Each group reports counts + rates (`target_skill_invoked_rate`, `terminal_authoritative_evidence_
 present_rate`, `terminal_authoritative_evidence_well_formed_rate`, `expected_outcome_matched_
-rate`, `success_rate` — `null`, never `NaN`, when the denominator is 0) plus `failure_class_counts`
+rate`, `task_outcome_matched_rate`, `answer_protocol_matched_rate`, `programmatic_evidence_
+available_rate`, `canonical_final_answer_available_rate`, `canonical_output_available_rate`,
+`success_rate` — `null`, never `NaN`, when the denominator is 0) plus `failure_class_counts`,
+`evidence_quality_distribution`,
 and compact frequency-map distributions for `target_skill_invocation_ordinal`, `target_skill_
 attempt_ordinal`, `pre_skill_tool_calls`, and `post_skill_tool_calls_total`. `analyze` never
 computes a cross-condition comparison (e.g. a `current-skill`-vs-`no-skill` lift/delta) — each
@@ -1628,9 +1649,9 @@ with a runtime whose activation is not simply boolean. Group summaries additiona
 `usage_cached_input_distribution`, `usage_cache_write_distribution`, `usage_output_distribution`,
 `usage_reasoning_output_distribution` — deliberately no summed total field anywhere: runtime-
 native token counts are never rankable as if they shared a tokenizer or hidden prompt, so a single
-combined number would misleadingly imply they are. `ANALYSIS_SCHEMA` is **2** (was 1) for this
-shape change; bucketing/grouping is unchanged (still `HARD_PARTITION_FIELDS`, which itself gained
-the 3 new structural keys — see "Fairness Contract" above, which `analyze` shares verbatim via
+combined number would misleadingly imply they are. `ANALYSIS_SCHEMA` is **5** for the current
+shape; bucketing/grouping is unchanged (still `HARD_PARTITION_FIELDS`, which itself gained the 3
+new structural keys — see "Fairness Contract" above, which `analyze` shares verbatim via
 `run-record-view.mjs`'s `withPartitionView()`).
 
 **Explicit limitation**: no timing metric is derived or reported anywhere in this command's output

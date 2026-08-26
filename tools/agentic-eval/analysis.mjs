@@ -67,7 +67,14 @@ import {
 // v3 -> v4 (product-vs-free-baseline observability): product_access_mode is now read from schema:7
 // records when available (falling back to the legacy condition-derived value for older records),
 // and product CLI usage is broken down by accepted-run-audit's closed recognized_operation field.
-export const ANALYSIS_SCHEMA = 4;
+//
+// v4 -> v5 (outcome/evidence/protocol axes): per-run entries and group summaries now publish
+// task_outcome_matched, evidence_quality, answer_protocol_matched, and canonical-output availability
+// as separate privacy-safe axes. This keeps the historical `success` gate strict while making
+// product-vs-free-baseline interpretation explicit: product runs can be credited for canonical
+// programmatic evidence, and free-baseline runs can be reported as claim-only rather than silently
+// forced into the same product evidence contract.
+export const ANALYSIS_SCHEMA = 5;
 
 /** Closed vocabulary for `failure_class` -- exactly one per run, resolved by classifyFailure's own
  * documented precedence. `success` is not a "failure" in the literal sense; it is included so every
@@ -80,6 +87,12 @@ export const ANALYSIS_SCHEMA = 4;
 export const FAILURE_CLASS_VALUES = [
   'success', 'target-skill-not-invoked', 'policy-denial-observed-without-terminal-evidence',
   'no-authoritative-evidence', 'wrong-target', 'outcome-mismatch', 'final-answer-mismatch', 'unclassified',
+];
+
+/** Closed vocabulary for how independently verifiable a run's evidence is, separate from whether
+ * the task outcome matched or whether the final answer followed the requested protocol. */
+export const EVIDENCE_QUALITY_VALUES = [
+  'product-canonical', 'baseline-verifiable', 'malformed-evidence', 'claim-only', 'no-evidence',
 ];
 
 export { PRODUCT_ACCESS_MODE_VALUES, PRODUCT_USAGE_MODE_VALUES };
@@ -146,6 +159,35 @@ export function classifyFailure({
   if (outcomeMatchesExpected === false) return 'outcome-mismatch';
   if (finalAnswerConsistent === false) return 'final-answer-mismatch';
   return 'unclassified';
+}
+
+function finalAnswerBlockView(sidecar, finalAnswerConsistent) {
+  const block = sidecar?.terminal_evidence?.final_answer_block ?? null;
+  if (block != null && typeof block === 'object' && !Array.isArray(block)) {
+    return {
+      found: typeof block.found === 'boolean' ? block.found : null,
+      parsed: typeof block.parsed === 'boolean' ? block.parsed : null,
+      matches_observed: typeof block.matches_observed === 'boolean' ? block.matches_observed : null,
+    };
+  }
+  // Legacy sidecars (v1-v5) did not carry terminal_evidence.final_answer_block. Preserve a useful
+  // boolean for old passing records, but never infer a parsed claim from a failure.
+  return {
+    found: finalAnswerConsistent === true ? true : null,
+    parsed: finalAnswerConsistent === true ? true : null,
+    matches_observed: finalAnswerConsistent === true ? true : null,
+  };
+}
+
+function evidenceQualityFor({
+  productCliUsed, terminalEvidencePresent, terminalEvidenceWellFormed, finalAnswerBlockFound, finalAnswerBlockParsed,
+}) {
+  if (terminalEvidencePresent === true && terminalEvidenceWellFormed === true) {
+    return productCliUsed === true ? 'product-canonical' : 'baseline-verifiable';
+  }
+  if (terminalEvidencePresent === true) return 'malformed-evidence';
+  if (finalAnswerBlockFound === true && finalAnswerBlockParsed === true) return 'claim-only';
+  return 'no-evidence';
 }
 
 /**
@@ -322,6 +364,23 @@ export function analyzeRunRecord(record, sidecar) {
   const final_answer_consistent = finalAnswerCheck.passed === true;
   const success = record.success?.value ?? null;
   const post_signal_tool_calls = record.post_signal_tool_calls?.value ?? null;
+  const finalAnswerBlock = finalAnswerBlockView(sidecar, final_answer_consistent);
+  const task_outcome_matched = expected_outcome_matched;
+  const answer_protocol_matched = final_answer_consistent;
+  const programmatic_evidence_available = terminal_authoritative_evidence_present === true
+    && terminal_authoritative_evidence_well_formed === true;
+  const canonical_final_answer_available = finalAnswerBlock.found === true
+    && finalAnswerBlock.parsed === true
+    && finalAnswerBlock.matches_observed === true;
+  const canonical_output_available = programmatic_evidence_available === true
+    && canonical_final_answer_available === true;
+  const evidence_quality = evidenceQualityFor({
+    productCliUsed: productUsage.product_cli_used,
+    terminalEvidencePresent: terminal_authoritative_evidence_present,
+    terminalEvidenceWellFormed: terminal_authoritative_evidence_well_formed,
+    finalAnswerBlockFound: finalAnswerBlock.found,
+    finalAnswerBlockParsed: finalAnswerBlock.parsed,
+  });
   const programmatic_product_outcome_matched = productUsage.product_cli_used === true
     && terminal_authoritative_evidence_present === true
     && terminal_authoritative_evidence_well_formed === true
@@ -364,6 +423,12 @@ export function analyzeRunRecord(record, sidecar) {
       terminal_authoritative_evidence_well_formed,
       expected_outcome_matched,
       final_answer_consistent,
+      task_outcome_matched,
+      answer_protocol_matched,
+      programmatic_evidence_available,
+      canonical_final_answer_available,
+      canonical_output_available,
+      evidence_quality,
       success,
       failure_class,
       product_access_mode: productAccessModeFor(record),
@@ -495,6 +560,11 @@ function buildGroupSummary(groupKey, entries, record) {
   const evidencePresentCount = entries.filter((e) => e.terminal_authoritative_evidence_present === true).length;
   const evidenceWellFormedCount = entries.filter((e) => e.terminal_authoritative_evidence_well_formed === true).length;
   const outcomeMatchedCount = entries.filter((e) => e.expected_outcome_matched === true).length;
+  const taskOutcomeMatchedCount = entries.filter((e) => e.task_outcome_matched === true).length;
+  const answerProtocolMatchedCount = entries.filter((e) => e.answer_protocol_matched === true).length;
+  const programmaticEvidenceAvailableCount = entries.filter((e) => e.programmatic_evidence_available === true).length;
+  const canonicalFinalAnswerAvailableCount = entries.filter((e) => e.canonical_final_answer_available === true).length;
+  const canonicalOutputAvailableCount = entries.filter((e) => e.canonical_output_available === true).length;
   const successCount = entries.filter((e) => e.success === true).length;
   const productCliUsedCount = entries.filter((e) => e.product_cli_used === true).length;
   const programmaticProductOutcomeMatchedCount = entries.filter((e) => e.programmatic_product_outcome_matched === true).length;
@@ -545,6 +615,17 @@ function buildGroupSummary(groupKey, entries, record) {
     terminal_authoritative_evidence_well_formed_rate: rate(evidenceWellFormedCount, total),
     expected_outcome_matched_count: outcomeMatchedCount,
     expected_outcome_matched_rate: rate(outcomeMatchedCount, total),
+    task_outcome_matched_count: taskOutcomeMatchedCount,
+    task_outcome_matched_rate: rate(taskOutcomeMatchedCount, total),
+    answer_protocol_matched_count: answerProtocolMatchedCount,
+    answer_protocol_matched_rate: rate(answerProtocolMatchedCount, total),
+    programmatic_evidence_available_count: programmaticEvidenceAvailableCount,
+    programmatic_evidence_available_rate: rate(programmaticEvidenceAvailableCount, total),
+    canonical_final_answer_available_count: canonicalFinalAnswerAvailableCount,
+    canonical_final_answer_available_rate: rate(canonicalFinalAnswerAvailableCount, total),
+    canonical_output_available_count: canonicalOutputAvailableCount,
+    canonical_output_available_rate: rate(canonicalOutputAvailableCount, total),
+    evidence_quality_distribution: buildDistribution(entries.map((e) => e.evidence_quality)),
     success_count: successCount,
     success_rate: rate(successCount, total),
     product_access_mode_distribution: buildDistribution(entries.map((e) => e.product_access_mode)),
