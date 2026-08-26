@@ -59,6 +59,7 @@ import { resolveRejectedDiagnosticsDir, isRawDirSafeFromAccidentalCommit, promot
 import { assertCleanOrThrowObject, redactAndVerify } from './privacy.mjs';
 import { RUN_KIND_VALUES, CONDITION_VALUES, PLATFORM_VALUES, PRIVACY_STATUS_VALUES } from './schemas.mjs';
 import { validateCorrelationObservability } from './correlation-observability.mjs';
+import { GRADING_CHECK_NAMES } from './graders.mjs';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -93,19 +94,27 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // counts only, never final text, prompts, responses, paths, tool ids, command strings, or
 // timestamps.
 //
-// schema 7: the current emitted sandboxed-unrestricted-v1 rejection shape. It keeps schema 6 and
+// schema 7: the historical emitted sandboxed-unrestricted-v1 rejection metrics shape. It keeps schema 6 and
 // adds per-cell cell_metrics: the already-built run record's exact timing/usage/token/tool-count
 // projection. This is deliberately separate from pre_inference_failure's categorical signatures
 // so consumers can analyze rejected cells without reading raw transcripts or overloading a
 // failure-classification field with numeric analytics.
+//
+// schema 8: the current emitted sandboxed-unrestricted-v1 rejection grading-observability shape.
+// It keeps schema 7 and adds per-cell grading_summary: a closed, privacy-safe projection of
+// success, expected_outcome_matched, and per-check pass booleans/event indices from the already-
+// built run record. It deliberately drops grading_checks[].detail and every other free-text/raw
+// surface; consumers get enough structure to distinguish "cell graded and failed semantically"
+// from "cell never reached grading" without opening raw transcripts.
 export const REJECTION_DIAGNOSTICS_SCHEMA_V2 = 2;
 export const REJECTION_DIAGNOSTICS_SCHEMA_V3 = 3;
 export const REJECTION_DIAGNOSTICS_SCHEMA_V4 = 4;
 export const REJECTION_DIAGNOSTICS_SCHEMA_V5 = 5;
 export const REJECTION_DIAGNOSTICS_SCHEMA_V6 = 6;
 export const REJECTION_DIAGNOSTICS_SCHEMA_V7 = 7;
-export const SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS = [REJECTION_DIAGNOSTICS_SCHEMA_V2, REJECTION_DIAGNOSTICS_SCHEMA_V3, REJECTION_DIAGNOSTICS_SCHEMA_V4, REJECTION_DIAGNOSTICS_SCHEMA_V5, REJECTION_DIAGNOSTICS_SCHEMA_V6, REJECTION_DIAGNOSTICS_SCHEMA_V7];
-export const LATEST_REJECTION_DIAGNOSTICS_SCHEMA = REJECTION_DIAGNOSTICS_SCHEMA_V7;
+export const REJECTION_DIAGNOSTICS_SCHEMA_V8 = 8;
+export const SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS = [REJECTION_DIAGNOSTICS_SCHEMA_V2, REJECTION_DIAGNOSTICS_SCHEMA_V3, REJECTION_DIAGNOSTICS_SCHEMA_V4, REJECTION_DIAGNOSTICS_SCHEMA_V5, REJECTION_DIAGNOSTICS_SCHEMA_V6, REJECTION_DIAGNOSTICS_SCHEMA_V7, REJECTION_DIAGNOSTICS_SCHEMA_V8];
+export const LATEST_REJECTION_DIAGNOSTICS_SCHEMA = REJECTION_DIAGNOSTICS_SCHEMA_V8;
 
 // Mirrors registries.mjs's own ID_RE exactly (a small, local copy -- not imported, matching this
 // module's and isolation-attestation.mjs's own established convention of keeping such small
@@ -126,6 +135,10 @@ const CELL_METRICS_FIELDS = [
 ];
 const CELL_METRICS_USAGE_FIELDS = ['source', 'input', 'cached_input', 'cache_write', 'output', 'reasoning_output'];
 const CELL_METRICS_TOKEN_FIELDS = ['input', 'output', 'cache_read', 'cache_creation'];
+const GRADING_SUMMARY_FIELDS = ['schema', 'success', 'expected_outcome_matched', 'grading_checks'];
+const GRADING_SUMMARY_METRIC_FIELDS = ['value', 'reason'];
+const GRADING_SUMMARY_REASON_VALUES = ['not_applicable', 'not_recorded', 'not_tracked'];
+const GRADING_SUMMARY_CHECK_FIELDS = ['name', 'passed', 'evidence_event_indices'];
 // {name, event_index} only -- see validateUnexpectedTools's own doc comment for why nothing else
 // (id, receiptNs, input, arguments, content) may ever appear here.
 const UNEXPECTED_TOOL_FIELDS = ['name', 'event_index'];
@@ -156,6 +169,7 @@ const CELL_CANONICAL_FIELDS_V5 = [
 ];
 const CELL_CANONICAL_FIELDS_V6 = [...CELL_CANONICAL_FIELDS_V5, 'pre_inference_failure'];
 const CELL_CANONICAL_FIELDS_V7 = [...CELL_CANONICAL_FIELDS_V6, 'cell_metrics'];
+const CELL_CANONICAL_FIELDS_V8 = [...CELL_CANONICAL_FIELDS_V7, 'grading_summary'];
 
 // Explicit if-chain, never a ternary/fallthrough -- mirrors schemas.mjs's runCanonicalFieldsFor
 // rationale: a naive fallthrough would silently validate an unrecognized future schema against the
@@ -163,6 +177,7 @@ const CELL_CANONICAL_FIELDS_V7 = [...CELL_CANONICAL_FIELDS_V6, 'cell_metrics'];
 // fields are all batch-wide, never per-cell) -- never REJECTION_DIAGNOSTICS_SCHEMA_V4 falling
 // through to the v2 cell shape by accident.
 function cellCanonicalFieldsFor(schema) {
+  if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V8) return CELL_CANONICAL_FIELDS_V8;
   if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V7) return CELL_CANONICAL_FIELDS_V7;
   if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V6) return CELL_CANONICAL_FIELDS_V6;
   if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V5) return CELL_CANONICAL_FIELDS_V5;
@@ -209,6 +224,7 @@ const REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V4 = [
 const REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V5 = [...REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V4];
 
 function rejectionCanonicalFieldsFor(schema) {
+  if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V8) return REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V5;
   if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V7) return REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V5;
   if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V6) return REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V5;
   if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V5) return REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V5;
@@ -555,6 +571,125 @@ function validateCellMetrics(metrics, fieldPrefix) {
   return errors;
 }
 
+function gradingSummaryReason(metric) {
+  const reason = typeof metric?.reason === 'string' ? metric.reason.toLowerCase() : '';
+  if (reason.includes('not applicable')) return 'not_applicable';
+  if (reason.includes('not tracked')) return 'not_tracked';
+  return 'not_recorded';
+}
+
+function summarizeBooleanMetric(metric) {
+  if (metric?.value === true || metric?.value === false) {
+    return { value: metric.value, reason: null };
+  }
+  return { value: null, reason: gradingSummaryReason(metric) };
+}
+
+function summarizeGradingChecks(metric) {
+  if (!Array.isArray(metric?.value)) {
+    return { value: null, reason: gradingSummaryReason(metric) };
+  }
+  return {
+    value: metric.value.map((check) => ({
+      name: check?.name,
+      passed: check?.passed,
+      evidence_event_indices: Array.isArray(check?.evidence_event_indices) ? [...check.evidence_event_indices] : check?.evidence_event_indices,
+    })),
+    reason: null,
+  };
+}
+
+function buildGradingSummary(record) {
+  return {
+    schema: 1,
+    success: summarizeBooleanMetric(record.success),
+    expected_outcome_matched: summarizeBooleanMetric(record.expected_outcome_matched),
+    grading_checks: summarizeGradingChecks(record.grading_checks),
+  };
+}
+
+function validateGradingSummaryMetric(metric, fieldPrefix, errors, kind) {
+  if (metric == null || typeof metric !== 'object' || Array.isArray(metric)) {
+    errors.push({ field: fieldPrefix, message: 'must be a {value, reason} object' });
+    return;
+  }
+  const allowedKeys = new Set(GRADING_SUMMARY_METRIC_FIELDS);
+  for (const k of Object.keys(metric)) {
+    if (!allowedKeys.has(k)) errors.push({ field: `${fieldPrefix}.${k}`, message: 'unrecognized field' });
+  }
+  for (const k of allowedKeys) {
+    if (!(k in metric)) errors.push({ field: `${fieldPrefix}.${k}`, message: 'missing required field' });
+  }
+  if (metric.value === null) {
+    if (!GRADING_SUMMARY_REASON_VALUES.includes(metric.reason)) {
+      errors.push({ field: `${fieldPrefix}.reason`, message: `must be one of ${GRADING_SUMMARY_REASON_VALUES.join('|')} when value is null` });
+    }
+    return;
+  }
+  if (metric.reason !== null) {
+    errors.push({ field: `${fieldPrefix}.reason`, message: 'must be null when value is present' });
+  }
+  if (kind === 'boolean' && typeof metric.value !== 'boolean') {
+    errors.push({ field: `${fieldPrefix}.value`, message: 'must be a boolean or null' });
+  } else if (kind === 'checks') {
+    if (!Array.isArray(metric.value)) {
+      errors.push({ field: `${fieldPrefix}.value`, message: 'must be an array of grading check summaries or null' });
+      return;
+    }
+    const seen = new Set();
+    const allowedCheckKeys = new Set(GRADING_SUMMARY_CHECK_FIELDS);
+    for (const [i, check] of metric.value.entries()) {
+      const checkPrefix = `${fieldPrefix}.value[${i}]`;
+      if (check == null || typeof check !== 'object' || Array.isArray(check)) {
+        errors.push({ field: checkPrefix, message: 'must be an object' });
+        continue;
+      }
+      for (const k of Object.keys(check)) {
+        if (!allowedCheckKeys.has(k)) errors.push({ field: `${checkPrefix}.${k}`, message: 'unrecognized field -- no detail/free text is allowed in committed rejection diagnostics' });
+      }
+      for (const k of allowedCheckKeys) {
+        if (!(k in check)) errors.push({ field: `${checkPrefix}.${k}`, message: 'missing required field' });
+      }
+      if (typeof check.name !== 'string' || !GRADING_CHECK_NAMES.includes(check.name)) {
+        errors.push({ field: `${checkPrefix}.name`, message: `must be one of ${GRADING_CHECK_NAMES.join('|')}` });
+      } else if (seen.has(check.name)) {
+        errors.push({ field: `${checkPrefix}.name`, message: `duplicate grading check '${check.name}'` });
+      } else {
+        seen.add(check.name);
+      }
+      if (typeof check.passed !== 'boolean') {
+        errors.push({ field: `${checkPrefix}.passed`, message: 'must be a boolean' });
+      }
+      if (!Array.isArray(check.evidence_event_indices) || check.evidence_event_indices.some((x) => !(Number.isInteger(x) && x >= 0))) {
+        errors.push({ field: `${checkPrefix}.evidence_event_indices`, message: 'must be an array of non-negative integers' });
+      }
+    }
+    for (const name of GRADING_CHECK_NAMES) {
+      if (!seen.has(name)) errors.push({ field: `${fieldPrefix}.value`, message: `missing grading check '${name}'` });
+    }
+  }
+}
+
+function validateGradingSummary(summary, fieldPrefix) {
+  const errors = [];
+  if (summary == null || typeof summary !== 'object' || Array.isArray(summary)) {
+    errors.push({ field: fieldPrefix, message: 'must be an object' });
+    return errors;
+  }
+  const allowedKeys = new Set(GRADING_SUMMARY_FIELDS);
+  for (const k of Object.keys(summary)) {
+    if (!allowedKeys.has(k)) errors.push({ field: `${fieldPrefix}.${k}`, message: 'unrecognized field' });
+  }
+  for (const k of allowedKeys) {
+    if (!(k in summary)) errors.push({ field: `${fieldPrefix}.${k}`, message: 'missing required field' });
+  }
+  if (summary.schema !== 1) errors.push({ field: `${fieldPrefix}.schema`, message: 'must be exactly 1' });
+  validateGradingSummaryMetric(summary.success, `${fieldPrefix}.success`, errors, 'boolean');
+  validateGradingSummaryMetric(summary.expected_outcome_matched, `${fieldPrefix}.expected_outcome_matched`, errors, 'boolean');
+  validateGradingSummaryMetric(summary.grading_checks, `${fieldPrefix}.grading_checks`, errors, 'checks');
+  return errors;
+}
+
 /**
  * Local-tier-only shape check for `unexpected_tools` -- mirrors validateForeignSkillSummary's
  * exact closed-key-set discipline one field over: array of {name, event_index}, nothing else.
@@ -747,7 +882,7 @@ function validateAmbientProfileMatrixOk(row) {
   const errors = [];
   if (RUN_KIND_VALUES.includes(row.run_kind)) {
     if (row.run_kind === 'scenario') {
-      if ((row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V3 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V4 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V5 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V6 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V7) && row.matrix_complete === false) {
+      if ((row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V3 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V4 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V5 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V6 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V7 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V8) && row.matrix_complete === false) {
         if (row.ambient_profile_matrix_ok !== null) {
           errors.push({ field: 'ambient_profile_matrix_ok', message: `must be null when matrix_complete is false -- a matrix that fail-fast stopped before finishing never actually evaluated a real cross-cell consensus` });
         }
@@ -824,9 +959,10 @@ export function validateRejectionRow(row) {
   const isV5 = row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V5;
   const isV6 = row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V6;
   const isV7 = row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V7;
-  const isV5OrLater = isV5 || isV6 || isV7;
-  const isV3OrLater = isV3 || isV4 || isV5 || isV6 || isV7;
-  const isNotApplicableSchema = isV4 || isV5 || isV6 || isV7;
+  const isV8 = row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V8;
+  const isV5OrLater = isV5 || isV6 || isV7 || isV8;
+  const isV3OrLater = isV3 || isV4 || isV5 || isV6 || isV7 || isV8;
+  const isNotApplicableSchema = isV4 || isV5 || isV6 || isV7 || isV8;
   const allowedKeys = new Set(rejectionCanonicalFieldsFor(row.schema));
   for (const k of Object.keys(row)) if (!allowedKeys.has(k)) errors.push({ field: k, message: 'unrecognized field' });
   for (const k of allowedKeys) if (!(k in row)) errors.push({ field: k, message: 'missing required field' });
@@ -1034,11 +1170,14 @@ export function validateRejectionRow(row) {
           }
         }
       }
-      if (isV6 || isV7) {
+      if (isV6 || isV7 || isV8) {
         errors.push(...validatePreInferenceFailureSummary(cell.pre_inference_failure, `cells[${i}].pre_inference_failure`, cell.failed_checks));
       }
-      if (isV7) {
+      if (isV7 || isV8) {
         errors.push(...validateCellMetrics(cell.cell_metrics, `cells[${i}].cell_metrics`));
+      }
+      if (isV8) {
+        errors.push(...validateGradingSummary(cell.grading_summary, `cells[${i}].grading_summary`));
       }
     }
     if (!anyCellHasFailedCheck) {
@@ -1089,7 +1228,7 @@ export function validateRejectionRow(row) {
  * (evaluateNamedChecks' failedChecks/failedChecksA/failedChecksB, scenarioHardGate's cellResults,
  * cell-integrity.mjs's unexpectedToolUsesCount/unexpectedTools) -- see cli.mjs's own call sites for
  * how each run_kind maps its own shape into the uniform inputs here. Constructs schema
- * REJECTION_DIAGNOSTICS_SCHEMA_V7 when every record in the batch is schema>=6 with
+ * REJECTION_DIAGNOSTICS_SCHEMA_V8 when every record in the batch is schema>=6 with
  * execution_profile.policy_mode==="not_applicable" (see the dispatch this function runs, right
  * after the existing BATCH_WIDE_FIELDS agreement check, for the exact rule -- NEVER
  * LATEST_REJECTION_DIAGNOSTICS_SCHEMA used as that selector), REJECTION_DIAGNOSTICS_SCHEMA_V3
@@ -1125,7 +1264,7 @@ export function validateRejectionRow(row) {
  *   tool ids, or timestamps.
  * @param {Record<string, object>|null} [cellMetricsByRunId] - run_id -> exact, privacy-safe
  *   timing/usage/token/tool-count projection from the already-built run record. Required,
- *   exact-set, for schema:7. Never contains prompts, responses, paths, commands, tool ids, or
+ *   exact-set, for schema:7+ emitted not_applicable diagnostics. Never contains prompts, responses, paths, commands, tool ids, or
  *   transcript content.
  * @param {Record<string, number>} captureOrdinalByRunId - run_id -> a non-negative integer
  *   execution-position ordinal used to derive that cell's transcript_filename via
@@ -1221,8 +1360,8 @@ export function buildRejectionDiagnostics({
     throw new Error(`buildRejectionDiagnostics: records disagree on execution_profile.policy_mode (${JSON.stringify([...policyModes])}) -- one harness invocation always resolves exactly one execution profile for its whole batch`);
   }
   const buildingNotApplicable = [...policyModes][0] === 'not_applicable';
-  const schema = buildingNotApplicable ? REJECTION_DIAGNOSTICS_SCHEMA_V7 : REJECTION_DIAGNOSTICS_SCHEMA_V3;
-  if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V7) {
+  const schema = buildingNotApplicable ? REJECTION_DIAGNOSTICS_SCHEMA_V8 : REJECTION_DIAGNOSTICS_SCHEMA_V3;
+  if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V8) {
     requireExactRunIdKeys(correlationObservabilityByRunId, 'correlationObservabilityByRunId');
     requireExactRunIdKeys(preInferenceFailureByRunId, 'preInferenceFailureByRunId');
     requireExactRunIdKeys(cellMetricsByRunId, 'cellMetricsByRunId');
@@ -1302,11 +1441,12 @@ export function buildRejectionDiagnostics({
     foreign_skill_summary: r.foreign_skill_summary,
     ambient_skill_profile: r.ambient_skill_profile,
     unexpected_tool_uses_count: unexpectedToolUsesCountByRunId[r.run_id],
-    ...(schema === REJECTION_DIAGNOSTICS_SCHEMA_V7 ? {
+    ...(schema === REJECTION_DIAGNOSTICS_SCHEMA_V8 ? {
       record_error_codes: [...new Set((r.errors ?? []).map((e) => e?.code).filter((code) => typeof code === 'string' && code.length > 0))].sort(),
       correlation_observability: JSON.parse(JSON.stringify(correlationObservabilityByRunId[r.run_id])),
       pre_inference_failure: JSON.parse(JSON.stringify(preInferenceFailureByRunId[r.run_id])),
       cell_metrics: JSON.parse(JSON.stringify(cellMetricsByRunId[r.run_id])),
+      grading_summary: buildGradingSummary(r),
     } : {}),
   }));
 
