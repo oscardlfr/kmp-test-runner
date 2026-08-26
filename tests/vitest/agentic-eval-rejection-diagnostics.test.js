@@ -20,6 +20,7 @@ import {
   REJECTION_DIAGNOSTICS_SCHEMA_V5,
   REJECTION_DIAGNOSTICS_SCHEMA_V6,
   REJECTION_DIAGNOSTICS_SCHEMA_V7,
+  REJECTION_DIAGNOSTICS_SCHEMA_V8,
   buildRejectionDiagnostics,
   validateRejectionRow,
   validateRejectionLocalRow,
@@ -33,6 +34,7 @@ import {
   readRejectionStderrFile,
 } from '../../tools/agentic-eval/rejection-diagnostics.mjs';
 import { findLeaks, PUBLIC_SHAPE_RULES, redactAndVerify } from '../../tools/agentic-eval/privacy.mjs';
+import { GRADING_CHECK_NAMES } from '../../tools/agentic-eval/graders.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -199,6 +201,15 @@ function nullableMetric(value, reason = null) {
   return { value, reason: value === null ? (reason ?? 'not recorded') : null };
 }
 
+function gradingChecks(failingName = 'authoritative_outcome_matches_expected') {
+  return GRADING_CHECK_NAMES.map((name, index) => ({
+    name,
+    passed: name !== failingName,
+    detail: name === failingName ? 'free-text detail that must never enter committed rejection diagnostics' : null,
+    evidence_event_indices: [index],
+  }));
+}
+
 function cellMetrics(i = 0, overrides = {}) {
   const input = 100 + i;
   const output = 10 + i;
@@ -237,21 +248,23 @@ function cellMetrics(i = 0, overrides = {}) {
 // policy_mode/isolation_attestation_sha256 going to v4, EXCLUSIVE to a policy_mode:"not_applicable"
 // batch (policy_sha256 becomes exactly null there, instead of a real hash). v5 added closed
 // error-code/correlation observability; v6 adds closed pre-inference failure summaries; v7 adds exact
-// per-cell timing/usage/token/tool-count metrics for rejected cells. All are a genuine
-// version DISPATCH (SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS = [2, 3, 4, 5, 6, 7]), never a plain constant
+// per-cell timing/usage/token/tool-count metrics for rejected cells; v8 adds closed, privacy-safe
+// grading summaries (no detail/free text). All are a genuine
+// version DISPATCH (SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS = [2, 3, 4, 5, 6, 7, 8]), never a plain constant
 // bump -- two real diagnostic files from a live 2026-08 canary rejection are schema:2 and are
 // declared incident evidence that must keep validating, and v2/v3 stay frozen forever (their own
 // field sets, and policy_sha256's own real-hex64 requirement, never change again). The builder
-// picks v3 or v7 per batch (see buildRejectionDiagnostics' own dispatch) -- never emits v2/v4/v5/v6.
-it('LATEST_REJECTION_DIAGNOSTICS_SCHEMA is 7, and the validator still supports 2, 3, 4, 5, and 6', () => {
+// picks v3 or v8 per batch (see buildRejectionDiagnostics' own dispatch) -- never emits v2/v4/v5/v6/v7.
+it('LATEST_REJECTION_DIAGNOSTICS_SCHEMA is 8, and the validator still supports 2 through 7', () => {
   expect(REJECTION_DIAGNOSTICS_SCHEMA_V2).toBe(2);
   expect(REJECTION_DIAGNOSTICS_SCHEMA_V3).toBe(3);
   expect(REJECTION_DIAGNOSTICS_SCHEMA_V4).toBe(4);
   expect(REJECTION_DIAGNOSTICS_SCHEMA_V5).toBe(5);
   expect(REJECTION_DIAGNOSTICS_SCHEMA_V6).toBe(6);
   expect(REJECTION_DIAGNOSTICS_SCHEMA_V7).toBe(7);
-  expect(LATEST_REJECTION_DIAGNOSTICS_SCHEMA).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V7);
-  expect(SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS).toEqual([REJECTION_DIAGNOSTICS_SCHEMA_V2, REJECTION_DIAGNOSTICS_SCHEMA_V3, REJECTION_DIAGNOSTICS_SCHEMA_V4, REJECTION_DIAGNOSTICS_SCHEMA_V5, REJECTION_DIAGNOSTICS_SCHEMA_V6, REJECTION_DIAGNOSTICS_SCHEMA_V7]);
+  expect(REJECTION_DIAGNOSTICS_SCHEMA_V8).toBe(8);
+  expect(LATEST_REJECTION_DIAGNOSTICS_SCHEMA).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V8);
+  expect(SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS).toEqual([REJECTION_DIAGNOSTICS_SCHEMA_V2, REJECTION_DIAGNOSTICS_SCHEMA_V3, REJECTION_DIAGNOSTICS_SCHEMA_V4, REJECTION_DIAGNOSTICS_SCHEMA_V5, REJECTION_DIAGNOSTICS_SCHEMA_V6, REJECTION_DIAGNOSTICS_SCHEMA_V7, REJECTION_DIAGNOSTICS_SCHEMA_V8]);
 });
 
 describe('buildRejectionDiagnostics -- pure construction', () => {
@@ -1834,7 +1847,7 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
     });
   });
 
-  describe('buildRejectionDiagnostics -- dispatches to v3 or v7, never via LATEST_REJECTION_DIAGNOSTICS_SCHEMA', () => {
+  describe('buildRejectionDiagnostics -- dispatches to v3 or v8, never via LATEST_REJECTION_DIAGNOSTICS_SCHEMA', () => {
     it('a policy-required (schema<6, or no execution_profile) batch still builds v3, byte-identical to before this addition', () => {
       const r = record();
       const { committed } = buildDiag({ runKind: 'calibration', records: [r], failedChecksByRunId: { [r.run_id]: [] } });
@@ -1845,10 +1858,14 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
       expect('isolation_attestation_sha256' in committed).toBe(false);
     });
 
-    it('a policy_mode:"not_applicable" batch builds v7, with policy_sha256 honestly null, execution-profile facts, observability, pre-inference summary, and cell metrics', () => {
-      const r = unrestrictedRecord();
+    it('a policy_mode:"not_applicable" batch builds v8, with policy_sha256 honestly null, execution-profile facts, observability, pre-inference summary, cell metrics, and grading summary', () => {
+      const r = unrestrictedRecord({
+        success: nullableMetric(false),
+        expected_outcome_matched: nullableMetric(false),
+        grading_checks: nullableMetric(gradingChecks()),
+      });
       const { committed } = buildDiag({ runKind: 'calibration', records: [r], failedChecksByRunId: { [r.run_id]: ['skillSelectionOk'] } });
-      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V7);
+      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V8);
       expect(committed.policy_sha256).toBeNull();
       expect(committed.execution_profile_id).toBe('sandboxed-unrestricted-v1');
       expect(committed.policy_mode).toBe('not_applicable');
@@ -1857,10 +1874,16 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
       expect(committed.cells[0].correlation_observability.policy_mode).toBe('not_applicable');
       expect(committed.cells[0].pre_inference_failure).toEqual(preInferenceSummary(false));
       expect(committed.cells[0].cell_metrics).toEqual(cellMetrics(0));
+      expect(committed.cells[0].grading_summary.success).toEqual({ value: false, reason: null });
+      expect(committed.cells[0].grading_summary.expected_outcome_matched).toEqual({ value: false, reason: null });
+      expect(committed.cells[0].grading_summary.grading_checks.value).toEqual(
+        gradingChecks().map(({ name, passed, evidence_event_indices }) => ({ name, passed, evidence_event_indices })),
+      );
+      expect(JSON.stringify(committed)).not.toContain('free-text detail');
       expect(validateRejectionRow(committed).errors).toEqual([]);
     });
 
-    it('a not_applicable scenario batch (2 cells) also builds v7 cleanly, matching the real fail-fast-rejection shape', () => {
+    it('a not_applicable scenario batch (2 cells) also builds v8 cleanly, matching the real fail-fast-rejection shape', () => {
       const r1 = unrestrictedScenarioRecord();
       const r2 = unrestrictedScenarioRecord({ run_id: 'kampkit-current-skill-bbbb2222', condition: 'current-skill', skill_source_sha: 'a'.repeat(40), repetition_index: 0, order_index: 1 });
       const { committed } = buildDiag({
@@ -1870,11 +1893,15 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
         unexpectedToolsByRunId: { [r1.run_id]: [], [r2.run_id]: [{ name: 'Read', event_index: 3 }] },
         matrixComplete: false, plannedCellCount: 4, executedCellCount: 2, ambientProfileMatrixOk: null,
       });
-      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V7);
+      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V8);
       expect(committed.matrix_complete).toBe(false);
       expect(committed.policy_sha256).toBeNull();
       expect(committed.execution_profile_id).toBe('sandboxed-unrestricted-v1');
       expect(committed.cells.map((c) => c.cell_metrics.wall_clock_ms)).toEqual([10000, 10001]);
+      expect(committed.cells.map((c) => c.grading_summary.success)).toEqual([
+        { value: null, reason: 'not_recorded' },
+        { value: null, reason: 'not_recorded' },
+      ]);
       expect(validateRejectionRow(committed).errors).toEqual([]);
     });
 
@@ -1892,7 +1919,7 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
         executedCellCount: 1,
         ambientProfileMatrixOk: true,
       });
-      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V7);
+      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V8);
       expect(committed.cells[0].record_error_codes).toEqual(['junit_evidence_capture_incomplete']);
       expect(JSON.stringify(committed)).not.toContain('raw explanatory text');
       expect(validateRejectionRow(committed).errors).toEqual([]);
@@ -1919,7 +1946,7 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
         ambientProfileMatrixOk: true,
         correlationObservabilityByRunId: { [r.run_id]: correlation },
       });
-      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V7);
+      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V8);
       expect(committed.cells[0].correlation_observability.dispatch_status_counts.unaccounted).toBe(1);
       expect(committed.cells[0].correlation_observability.tool_use_counts_by_kind.shell).toBe(2);
       expect(JSON.stringify(committed)).not.toMatch(/toolu_|kmp-test|gradle|\\.jsonl/);
@@ -1941,13 +1968,13 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
         ambientProfileMatrixOk: true,
         preInferenceFailureByRunId: { [r.run_id]: summary },
       });
-      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V7);
+      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V8);
       expect(committed.cells[0].pre_inference_failure).toEqual(summary);
       expect(JSON.stringify(committed)).not.toMatch(/final_answer|prompt|response|auth|toolu_|kmp-test|gradle/);
       expect(validateRejectionRow(committed).errors).toEqual([]);
     });
 
-    it('throws instead of writing a v7 diagnostic when correlation observability is missing for one run', () => {
+    it('throws instead of writing a v8 diagnostic when correlation observability is missing for one run', () => {
       const r1 = unrestrictedScenarioRecord();
       const r2 = unrestrictedScenarioRecord({ run_id: 'kampkit-no-skill-cccc3333', repetition_index: 0, order_index: 1 });
       expect(() => buildDiag({
@@ -1961,7 +1988,7 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
       })).toThrow(/correlationObservabilityByRunId/);
     });
 
-    it('throws instead of writing a v7 diagnostic when pre-inference summary is missing for one run', () => {
+    it('throws instead of writing a v8 diagnostic when pre-inference summary is missing for one run', () => {
       const r1 = unrestrictedScenarioRecord();
       const r2 = unrestrictedScenarioRecord({ run_id: 'kampkit-no-skill-cccc3333', repetition_index: 0, order_index: 1 });
       expect(() => buildDiag({
@@ -1975,7 +2002,7 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
       })).toThrow(/preInferenceFailureByRunId/);
     });
 
-    it('throws instead of writing a v7 diagnostic when cell metrics are missing for one run', () => {
+    it('throws instead of writing a v8 diagnostic when cell metrics are missing for one run', () => {
       const r1 = unrestrictedScenarioRecord();
       const r2 = unrestrictedScenarioRecord({ run_id: 'kampkit-no-skill-cccc3333', repetition_index: 0, order_index: 1 });
       expect(() => buildDiag({
@@ -2197,6 +2224,24 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
       return row;
     }
 
+    function unrestrictedValidV8Row() {
+      const row = unrestrictedValidV7Row();
+      row.schema = REJECTION_DIAGNOSTICS_SCHEMA_V8;
+      row.cells = row.cells.map((cell) => ({
+        ...cell,
+        grading_summary: {
+          schema: 1,
+          success: { value: false, reason: null },
+          expected_outcome_matched: { value: false, reason: null },
+          grading_checks: {
+            value: gradingChecks().map(({ name, passed, evidence_event_indices }) => ({ name, passed, evidence_event_indices })),
+            reason: null,
+          },
+        },
+      }));
+      return row;
+    }
+
     it('accepts a well-formed schema-5 row with per-cell observability cleanly', () => {
       expect(validateRejectionRow(unrestrictedValidV5Row()).errors).toEqual([]);
     });
@@ -2224,9 +2269,19 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
       expect(validateRejectionRow(unrestrictedValidV7Row()).errors).toEqual([]);
     });
 
+    it('accepts a well-formed schema-8 row with privacy-safe grading summaries cleanly', () => {
+      expect(validateRejectionRow(unrestrictedValidV8Row()).errors).toEqual([]);
+    });
+
     it('keeps schema-6 legacy rows valid without cell_metrics', () => {
       const row = unrestrictedValidV6Row();
       expect('cell_metrics' in row.cells[0]).toBe(false);
+      expect(validateRejectionRow(row).errors).toEqual([]);
+    });
+
+    it('keeps schema-7 legacy rows valid without grading_summary', () => {
+      const row = unrestrictedValidV7Row();
+      expect('grading_summary' in row.cells[0]).toBe(false);
       expect(validateRejectionRow(row).errors).toEqual([]);
     });
 
@@ -2275,6 +2330,25 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
       row.cells[0].cell_metrics.tokens.cache_read = nullableMetric(999);
       const { errors } = validateRejectionRow(row);
       expect(errors.some((e) => e.field === 'cells[0].cell_metrics.tokens.cache_read' && /usage.cached_input/.test(e.message))).toBe(true);
+    });
+
+    it('rejects schema-8 grading_summary if grading check detail/free text is present', () => {
+      const row = unrestrictedValidV8Row();
+      row.cells[0].grading_summary.grading_checks.value[0] = {
+        ...row.cells[0].grading_summary.grading_checks.value[0],
+        detail: 'must-not-be-accepted',
+      };
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'cells[0].grading_summary.grading_checks.value[0].detail' && /no detail\/free text/.test(e.message))).toBe(true);
+    });
+
+    it('rejects schema-8 grading_summary when a grading check is missing or duplicated', () => {
+      const row = unrestrictedValidV8Row();
+      row.cells[0].grading_summary.grading_checks.value = row.cells[0].grading_summary.grading_checks.value.slice(1);
+      row.cells[0].grading_summary.grading_checks.value.push({ ...row.cells[0].grading_summary.grading_checks.value[0] });
+      const { errors } = validateRejectionRow(row);
+      expect(errors.some((e) => e.field === 'cells[0].grading_summary.grading_checks.value[7].name' && /duplicate grading check/.test(e.message))).toBe(true);
+      expect(errors.some((e) => e.field === 'cells[0].grading_summary.grading_checks.value' && /missing grading check/.test(e.message))).toBe(true);
     });
   });
 });
