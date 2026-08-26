@@ -1550,6 +1550,8 @@ function evaluateKmpTestAttempt(bashResult, scenario, decision) {
   return {
     provider: 'kmp_test', subcommand: classification.subcommand, bashIndex: bashResult.index, resultIndex: bashResult.resultIndex,
     hasEvidence, malformed, targetMatches, intendedTargetMatches, outcomeMatches, parallelEvidenceInvalid, changedEvidenceInvalid, observedResult,
+    minMissedLines: classification.minMissedLines,
+    coverageDisabled: classification.coverageDisabled,
   };
 }
 
@@ -1993,7 +1995,45 @@ function evaluateFinalAnswer(finalText, observedResult) {
   return { passed: true, detail: "the KMP_EVAL_RESULT block exactly matches the facts observed in the terminal attempt's own evidence", diagnostic: { found: true, parsed: true, ambiguous: false, matches_observed: true } };
 }
 
-function terminalEvidenceDiagnostic(terminal, evidenceWellFormed, scenario, finalAnswer) {
+function coverageGateAttemptContext(bashResults, scenario, decisionByAttempt) {
+  if (scenario.expected.outcome_kind !== 'coverage_threshold_exceeded') {
+    return { sawCoverageOnlyAttempt: false, sawParallelWithoutThreshold: false, sawCoverageDisabled: false };
+  }
+  const context = { sawCoverageOnlyAttempt: false, sawParallelWithoutThreshold: false, sawCoverageDisabled: false };
+  for (const b of bashResults) {
+    const decision = decisionByAttempt.get(b.id);
+    if (decision === 'deny' || decision === null) continue;
+    const classification = classifyBashCommand(b.command);
+    if (classification.kind !== 'kmp-test' || classification.isPlanOnly === true) continue;
+    if (classification.subcommand === 'coverage') context.sawCoverageOnlyAttempt = true;
+    if (classification.subcommand === 'parallel') {
+      if (classification.minMissedLines == null) context.sawParallelWithoutThreshold = true;
+      if (classification.coverageDisabled === true) context.sawCoverageDisabled = true;
+    }
+  }
+  return context;
+}
+
+function coverageGateDiagnostic(terminal, evidenceWellFormed, scenario, context) {
+  if (scenario.expected.outcome_kind !== 'coverage_threshold_exceeded') return 'not-applicable';
+  if (terminal == null) {
+    if (context.sawCoverageOnlyAttempt) return 'coverage-only-not-terminal';
+    if (context.sawCoverageDisabled) return 'coverage-disabled';
+    if (context.sawParallelWithoutThreshold) return 'missing-threshold-gate';
+    return 'no-terminal-evidence';
+  }
+  if (terminal.provider !== 'kmp_test') return 'non-kmp-test-terminal';
+  if (terminal.coverageDisabled === true) return 'coverage-disabled';
+  if (terminal.minMissedLines == null) return 'missing-threshold-gate';
+  if (String(terminal.minMissedLines) !== String(scenario.expected.kmp_test.coverage.min_missed_lines)) return 'threshold-mismatch';
+  if (!evidenceWellFormed) return 'coverage-evidence-malformed';
+  if (terminal.outcomeMatches) return 'matched';
+  if (terminal.observedResult?.outcome_kind === 'tests_executed') return 'observed-clean-tests';
+  return 'coverage-outcome-mismatch';
+}
+
+function terminalEvidenceDiagnostic(terminal, evidenceWellFormed, scenario, finalAnswer, coverageGateContext) {
+  const coverage_gate_diagnostic = coverageGateDiagnostic(terminal, evidenceWellFormed, scenario, coverageGateContext);
   if (terminal == null) {
     return {
       present: false,
@@ -2007,6 +2047,7 @@ function terminalEvidenceDiagnostic(terminal, evidenceWellFormed, scenario, fina
       changed_evidence_invalid: null,
       observed_result: null,
       final_answer_block: finalAnswer.diagnostic,
+      coverage_gate_diagnostic,
     };
   }
   const observed = terminal.observedResult;
@@ -2032,6 +2073,7 @@ function terminalEvidenceDiagnostic(terminal, evidenceWellFormed, scenario, fina
     changed_evidence_invalid: terminal.changedEvidenceInvalid,
     observed_result: observedSummary,
     final_answer_block: finalAnswer.diagnostic,
+    coverage_gate_diagnostic,
   };
 }
 
@@ -2161,6 +2203,7 @@ export function gradeScenarioCondition(conditionResult, scenario) {
   // (preserves the single-wrong-module-only failure case).
   const kmpTestAttempts = bashResults.map((b) => evaluateKmpTestAttempt(b, scenario, junitAttribution.decisionByAttempt.get(b.id))).filter(Boolean);
   const gradleAttempts = bashResults.map((b) => evaluateGradleAttempt(b, scenario, junitAttribution.decisionByAttempt.get(b.id), junitAttribution.perAttemptJunit.get(b.id))).filter(Boolean);
+  const coverageGateContext = coverageGateAttemptContext(bashResults, scenario, junitAttribution.decisionByAttempt);
   const allAttempts = [...kmpTestAttempts, ...gradleAttempts].sort((a, b) => a.bashIndex - b.bashIndex);
   // terminalEligible (isTerminalEligibleAttempt) restricts which attempts can ever become
   // `terminal` -- for coverage_threshold_exceeded, Gradle attempts are excluded entirely (see that
@@ -2307,6 +2350,6 @@ export function gradeScenarioCondition(conditionResult, scenario) {
     // file, or the capture bounds were exceeded, on some relevant Gradle attempt) -- see
     // junit-evidence.mjs's countEvidenceTaskJunit/attributeCondition.
     gradleJunitEvidenceUnreliable,
-    terminalEvidence: terminalEvidenceDiagnostic(terminal, evidenceWellFormed, scenario, finalAnswer),
+    terminalEvidence: terminalEvidenceDiagnostic(terminal, evidenceWellFormed, scenario, finalAnswer, coverageGateContext),
   };
 }
