@@ -273,10 +273,25 @@ describe('cellTranscriptIntegrityOk', () => {
     expect(result.ok).toBe(false);
     expect(result.failedChecks).toContain('noPreInferenceFailureOk');
     expect(summarizePreInferenceFailure(conditionResult.observation)).toMatchObject({
-      schema: 2,
+      schema: 3,
       signature_matched: true,
       cause_code: 'pre_inference_terminal_error_zero_usage_zero_tools',
+      runtime_error_code: 'terminal_error_during_execution_zero_usage_zero_tools',
     });
+  });
+
+  it('classifies a terminal success subtype marked as an error without reading raw terminal text', () => {
+    const conditionResult = cleanConditionResult('current-skill', {
+      observation: { terminal: preInferenceFailureTerminal({ resultSubtype: 'success' }), toolAttempts: [] },
+    });
+    const summary = summarizePreInferenceFailure(conditionResult.observation);
+    expect(summary).toMatchObject({
+      schema: 3,
+      signature_matched: true,
+      terminal_result_subtype: 'success',
+      runtime_error_code: 'terminal_success_marked_error_zero_usage_zero_tools',
+    });
+    expect(JSON.stringify(summary)).not.toMatch(/finalText|prompt|response|stderr|stdout/);
   });
 
   it('ok:true (noPreInferenceFailureOk) when isError:false -- a normal success is never flagged', () => {

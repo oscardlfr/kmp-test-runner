@@ -100,6 +100,7 @@ export function summarizePreInferenceFailure(observation) {
   const terminalPresent = terminal.present === true;
   const terminalIsError = terminalPresent ? terminal.isError === true : null;
   const terminalTurnCount = terminalPresent && Number.isInteger(terminal.turnCount) ? terminal.turnCount : null;
+  const terminalResultSubtype = terminalPresent && typeof terminal.resultSubtype === 'string' ? terminal.resultSubtype : null;
   const toolAttemptCount = Array.isArray(observation?.toolAttempts) ? observation.toolAttempts.length : 0;
   const hasNonZeroUsage = Object.values(usage).some((v) => v === 'nonzero');
   const signatureMatched = terminalPresent
@@ -109,16 +110,24 @@ export function summarizePreInferenceFailure(observation) {
     && terminalTurnCount <= 1
     && !hasNonZeroUsage
     && toolAttemptCount === 0;
+  const runtimeErrorCode = !signatureMatched
+    ? 'not_matched'
+    : terminalResultSubtype === 'success'
+      ? 'terminal_success_marked_error_zero_usage_zero_tools'
+      : terminalResultSubtype === 'error_during_execution'
+        ? 'terminal_error_during_execution_zero_usage_zero_tools'
+        : 'terminal_unknown_error_zero_usage_zero_tools';
   return {
-    schema: 2,
+    schema: 3,
     signature_matched: signatureMatched,
     terminal_present: terminalPresent,
     terminal_is_error: terminalIsError,
-    terminal_result_subtype: terminalPresent && typeof terminal.resultSubtype === 'string' ? terminal.resultSubtype : null,
+    terminal_result_subtype: terminalResultSubtype,
     terminal_turn_count: terminalTurnCount,
     usage,
     tool_attempt_count: toolAttemptCount,
     cause_code: signatureMatched ? 'pre_inference_terminal_error_zero_usage_zero_tools' : 'not_matched',
+    runtime_error_code: runtimeErrorCode,
   };
 }
 
