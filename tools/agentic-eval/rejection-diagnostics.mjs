@@ -118,11 +118,13 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // already-computed grader terminal evidence, including coverage_gate_diagnostic. It deliberately
 // omits final_answer_block, commands, paths, modules, prompts, responses, tool ids, and raw text.
 //
-// schema 11: the current emitted sandboxed-unrestricted-v1 runtime-terminal-error shape. It keeps
+// schema 11: the historical emitted sandboxed-unrestricted-v1 runtime-terminal-error shape. It keeps
 // schema 10 and upgrades per-cell pre_inference_failure from nested schema:2 to schema:3 by adding
 // runtime_error_code: a closed enum derived only from structured terminal fields
 // (is_error/subtype/usage/tool-count), never from raw stderr/stdout, prompts, responses, paths,
 // commands, account identity, or the terminal result text.
+// schema 12: the current emitted no-policy shape. It keeps schema 11 and adds the closed
+// coverage_gate_attempt_summary projection built from existing terminal evidence only.
 export const REJECTION_DIAGNOSTICS_SCHEMA_V2 = 2;
 export const REJECTION_DIAGNOSTICS_SCHEMA_V3 = 3;
 export const REJECTION_DIAGNOSTICS_SCHEMA_V4 = 4;
@@ -133,8 +135,9 @@ export const REJECTION_DIAGNOSTICS_SCHEMA_V8 = 8;
 export const REJECTION_DIAGNOSTICS_SCHEMA_V9 = 9;
 export const REJECTION_DIAGNOSTICS_SCHEMA_V10 = 10;
 export const REJECTION_DIAGNOSTICS_SCHEMA_V11 = 11;
-export const SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS = [REJECTION_DIAGNOSTICS_SCHEMA_V2, REJECTION_DIAGNOSTICS_SCHEMA_V3, REJECTION_DIAGNOSTICS_SCHEMA_V4, REJECTION_DIAGNOSTICS_SCHEMA_V5, REJECTION_DIAGNOSTICS_SCHEMA_V6, REJECTION_DIAGNOSTICS_SCHEMA_V7, REJECTION_DIAGNOSTICS_SCHEMA_V8, REJECTION_DIAGNOSTICS_SCHEMA_V9, REJECTION_DIAGNOSTICS_SCHEMA_V10, REJECTION_DIAGNOSTICS_SCHEMA_V11];
-export const LATEST_REJECTION_DIAGNOSTICS_SCHEMA = REJECTION_DIAGNOSTICS_SCHEMA_V11;
+export const REJECTION_DIAGNOSTICS_SCHEMA_V12 = 12;
+export const SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS = [REJECTION_DIAGNOSTICS_SCHEMA_V2, REJECTION_DIAGNOSTICS_SCHEMA_V3, REJECTION_DIAGNOSTICS_SCHEMA_V4, REJECTION_DIAGNOSTICS_SCHEMA_V5, REJECTION_DIAGNOSTICS_SCHEMA_V6, REJECTION_DIAGNOSTICS_SCHEMA_V7, REJECTION_DIAGNOSTICS_SCHEMA_V8, REJECTION_DIAGNOSTICS_SCHEMA_V9, REJECTION_DIAGNOSTICS_SCHEMA_V10, REJECTION_DIAGNOSTICS_SCHEMA_V11, REJECTION_DIAGNOSTICS_SCHEMA_V12];
+export const LATEST_REJECTION_DIAGNOSTICS_SCHEMA = REJECTION_DIAGNOSTICS_SCHEMA_V12;
 
 // Mirrors registries.mjs's own ID_RE exactly (a small, local copy -- not imported, matching this
 // module's and isolation-attestation.mjs's own established convention of keeping such small
@@ -194,6 +197,27 @@ const TERMINAL_OBSERVED_RESULT_FIELDS = [
   'missed_lines', 'threshold', 'modules_contributing',
 ];
 const TERMINAL_OUTCOME_KIND_VALUES = ['tests_executed', 'no_applicable_tests', 'tests_failed', 'coverage_threshold_exceeded'];
+const COVERAGE_GATE_ATTEMPT_SUMMARY_FIELDS = [
+  'schema', 'source', 'attempt_count', 'terminal_attempt_present',
+  'terminal_recognized_operation', 'terminal_canonicalization_status',
+  'terminal_canonicalization_reason', 'terminal_threshold_relation',
+  'terminal_tests_contract', 'terminal_coverage_contract', 'terminal_error_contract',
+  'terminal_exit_code_contract', 'terminal_target_matches_expected',
+  'terminal_observed_outcome_kind', 'terminal_outcome_matches_expected',
+];
+const COVERAGE_GATE_ATTEMPT_SUMMARY_SOURCE_VALUES = ['terminal-evidence-v1', 'not-recorded'];
+const TERMINAL_COVERAGE_GATE_RECOGNIZED_OPERATION_VALUES = ['parallel', 'coverage'];
+const TERMINAL_COVERAGE_GATE_CANONICALIZATION_STATUS_VALUES = ['canonical', 'uncanonicalizable', 'not-applicable'];
+const TERMINAL_COVERAGE_GATE_CANONICALIZATION_REASON_VALUES = [
+  'canonical', 'operation-not-eligible', 'subcommand-mismatch', 'plan-mode-contradiction',
+  'result-status-contradiction', 'test-counters-incoherent', 'warnings-malformed',
+  'skipped-malformed', 'oversized-junit-incomplete', 'module-scope-incoherent',
+  'dispatch-evidence-incoherent', 'test-detail-incoherent', 'threshold-missing',
+  'threshold-mismatch', 'coverage-block-incoherent', 'error-contract-incoherent',
+  'exit-code-incoherent', 'outcome-not-canonicalizable',
+];
+const TERMINAL_COVERAGE_GATE_THRESHOLD_RELATION_VALUES = ['matches', 'differs', 'missing', 'not-applicable'];
+const TERMINAL_COVERAGE_GATE_CONTRACT_VALUES = ['matches', 'differs', 'unavailable', 'not-applicable'];
 // {name, event_index} only -- see validateUnexpectedTools's own doc comment for why nothing else
 // (id, receiptNs, input, arguments, content) may ever appear here.
 const UNEXPECTED_TOOL_FIELDS = ['name', 'event_index'];
@@ -226,6 +250,7 @@ const CELL_CANONICAL_FIELDS_V6 = [...CELL_CANONICAL_FIELDS_V5, 'pre_inference_fa
 const CELL_CANONICAL_FIELDS_V7 = [...CELL_CANONICAL_FIELDS_V6, 'cell_metrics'];
 const CELL_CANONICAL_FIELDS_V8 = [...CELL_CANONICAL_FIELDS_V7, 'grading_summary'];
 const CELL_CANONICAL_FIELDS_V10 = [...CELL_CANONICAL_FIELDS_V8, 'terminal_evidence_summary'];
+const CELL_CANONICAL_FIELDS_V12 = [...CELL_CANONICAL_FIELDS_V10, 'coverage_gate_attempt_summary'];
 
 // Explicit if-chain, never a ternary/fallthrough -- mirrors schemas.mjs's runCanonicalFieldsFor
 // rationale: a naive fallthrough would silently validate an unrecognized future schema against the
@@ -233,6 +258,7 @@ const CELL_CANONICAL_FIELDS_V10 = [...CELL_CANONICAL_FIELDS_V8, 'terminal_eviden
 // fields are all batch-wide, never per-cell) -- never REJECTION_DIAGNOSTICS_SCHEMA_V4 falling
 // through to the v2 cell shape by accident.
 function cellCanonicalFieldsFor(schema) {
+  if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V12) return CELL_CANONICAL_FIELDS_V12;
   if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V11) return CELL_CANONICAL_FIELDS_V10;
   if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V10) return CELL_CANONICAL_FIELDS_V10;
   if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V9) return CELL_CANONICAL_FIELDS_V8;
@@ -283,6 +309,7 @@ const REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V4 = [
 const REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V5 = [...REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V4];
 
 function rejectionCanonicalFieldsFor(schema) {
+  if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V12) return REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V5;
   if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V11) return REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V5;
   if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V10) return REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V5;
   if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V9) return REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V5;
@@ -915,6 +942,153 @@ function validateTerminalEvidenceSummary(summary, fieldPrefix) {
   return errors;
 }
 
+function emptyCoverageGateAttemptSummary(source) {
+  return {
+    schema: 1,
+    source,
+    attempt_count: 0,
+    terminal_attempt_present: false,
+    terminal_recognized_operation: null,
+    terminal_canonicalization_status: null,
+    terminal_canonicalization_reason: null,
+    terminal_threshold_relation: null,
+    terminal_tests_contract: null,
+    terminal_coverage_contract: null,
+    terminal_error_contract: null,
+    terminal_exit_code_contract: null,
+    terminal_target_matches_expected: null,
+    terminal_observed_outcome_kind: null,
+    terminal_outcome_matches_expected: null,
+  };
+}
+
+// This is deliberately a projection of the already-graded terminal evidence, never an attempt to
+// parse a command, transcript, final answer, or accepted-run sidecar again. It exposes only the
+// closed outcome categories needed to distinguish a missing threshold, a differing threshold, or
+// a contract mismatch in a rejected cell.
+function buildCoverageGateAttemptSummary(terminalEvidence) {
+  if (terminalEvidence == null) return emptyCoverageGateAttemptSummary('not-recorded');
+  const attempts = terminalEvidence.coverage_gate_attempts;
+  if (!Array.isArray(attempts)) {
+    throw new Error('coverage_gate_attempts must be an array when terminal evidence is recorded');
+  }
+  const terminals = attempts.filter((attempt) => attempt?.terminal_authoritative === true);
+  if (terminals.length > 1) {
+    throw new Error('coverage_gate_attempts must contain at most one terminal_authoritative attempt');
+  }
+  if (terminals.length === 0) {
+    return {
+      ...emptyCoverageGateAttemptSummary('terminal-evidence-v1'),
+      attempt_count: attempts.length,
+    };
+  }
+  const terminal = terminals[0];
+  return {
+    schema: 1,
+    source: 'terminal-evidence-v1',
+    attempt_count: attempts.length,
+    terminal_attempt_present: true,
+    terminal_recognized_operation: terminal.recognized_operation ?? null,
+    terminal_canonicalization_status: terminal.canonicalization_status ?? null,
+    terminal_canonicalization_reason: terminal.canonicalization_reason ?? null,
+    terminal_threshold_relation: terminal.threshold_relation ?? null,
+    terminal_tests_contract: terminal.tests_contract ?? null,
+    terminal_coverage_contract: terminal.coverage_contract ?? null,
+    terminal_error_contract: terminal.error_contract ?? null,
+    terminal_exit_code_contract: terminal.exit_code_contract ?? null,
+    terminal_target_matches_expected: terminal.target_matches_expected ?? null,
+    terminal_observed_outcome_kind: terminal.observed_outcome_kind ?? null,
+    terminal_outcome_matches_expected: terminal.outcome_matches_expected ?? null,
+  };
+}
+
+function validateCoverageGateAttemptSummary(summary, fieldPrefix) {
+  const errors = [];
+  if (summary == null || typeof summary !== 'object' || Array.isArray(summary)) {
+    errors.push({ field: fieldPrefix, message: 'must be an object' });
+    return errors;
+  }
+  const allowedKeys = new Set(COVERAGE_GATE_ATTEMPT_SUMMARY_FIELDS);
+  for (const key of Object.keys(summary)) {
+    if (!allowedKeys.has(key)) errors.push({ field: `${fieldPrefix}.${key}`, message: 'unrecognized field -- no command, argv, path, module, prompt, response, or text is allowed' });
+  }
+  for (const key of allowedKeys) {
+    if (!(key in summary)) errors.push({ field: `${fieldPrefix}.${key}`, message: 'missing required field' });
+  }
+  if (summary.schema !== 1) errors.push({ field: `${fieldPrefix}.schema`, message: 'must be exactly 1' });
+  if (!COVERAGE_GATE_ATTEMPT_SUMMARY_SOURCE_VALUES.includes(summary.source)) {
+    errors.push({ field: `${fieldPrefix}.source`, message: `must be one of ${COVERAGE_GATE_ATTEMPT_SUMMARY_SOURCE_VALUES.join('|')}` });
+  }
+  if (!(Number.isInteger(summary.attempt_count) && summary.attempt_count >= 0)) {
+    errors.push({ field: `${fieldPrefix}.attempt_count`, message: 'must be a non-negative integer' });
+  }
+  if (typeof summary.terminal_attempt_present !== 'boolean') {
+    errors.push({ field: `${fieldPrefix}.terminal_attempt_present`, message: 'must be a boolean' });
+  }
+  const terminalFields = [
+    'terminal_recognized_operation', 'terminal_canonicalization_status',
+    'terminal_canonicalization_reason', 'terminal_threshold_relation',
+    'terminal_tests_contract', 'terminal_coverage_contract', 'terminal_error_contract',
+    'terminal_exit_code_contract', 'terminal_target_matches_expected',
+    'terminal_observed_outcome_kind', 'terminal_outcome_matches_expected',
+  ];
+  const requiresNoTerminalFacts = summary.source === 'not-recorded' || summary.terminal_attempt_present === false;
+  if (summary.source === 'not-recorded') {
+    if (summary.attempt_count !== 0) errors.push({ field: `${fieldPrefix}.attempt_count`, message: 'must be 0 when source is not-recorded' });
+    if (summary.terminal_attempt_present !== false) errors.push({ field: `${fieldPrefix}.terminal_attempt_present`, message: 'must be false when source is not-recorded' });
+  }
+  if (requiresNoTerminalFacts) {
+    for (const field of terminalFields) {
+      if (summary[field] !== null) errors.push({ field: `${fieldPrefix}.${field}`, message: 'must be null when no terminal attempt is present' });
+    }
+    return errors;
+  }
+  if (summary.attempt_count < 1) errors.push({ field: `${fieldPrefix}.attempt_count`, message: 'must be at least 1 when a terminal attempt is present' });
+  if (!TERMINAL_COVERAGE_GATE_RECOGNIZED_OPERATION_VALUES.includes(summary.terminal_recognized_operation)) {
+    errors.push({ field: `${fieldPrefix}.terminal_recognized_operation`, message: `must be one of ${TERMINAL_COVERAGE_GATE_RECOGNIZED_OPERATION_VALUES.join('|')}` });
+  }
+  if (!TERMINAL_COVERAGE_GATE_CANONICALIZATION_STATUS_VALUES.includes(summary.terminal_canonicalization_status)) {
+    errors.push({ field: `${fieldPrefix}.terminal_canonicalization_status`, message: `must be one of ${TERMINAL_COVERAGE_GATE_CANONICALIZATION_STATUS_VALUES.join('|')}` });
+  }
+  if (!TERMINAL_COVERAGE_GATE_CANONICALIZATION_REASON_VALUES.includes(summary.terminal_canonicalization_reason)) {
+    errors.push({ field: `${fieldPrefix}.terminal_canonicalization_reason`, message: `must be one of ${TERMINAL_COVERAGE_GATE_CANONICALIZATION_REASON_VALUES.join('|')}` });
+  }
+  if (!TERMINAL_COVERAGE_GATE_THRESHOLD_RELATION_VALUES.includes(summary.terminal_threshold_relation)) {
+    errors.push({ field: `${fieldPrefix}.terminal_threshold_relation`, message: `must be one of ${TERMINAL_COVERAGE_GATE_THRESHOLD_RELATION_VALUES.join('|')}` });
+  }
+  for (const field of ['terminal_tests_contract', 'terminal_coverage_contract', 'terminal_error_contract', 'terminal_exit_code_contract']) {
+    if (!TERMINAL_COVERAGE_GATE_CONTRACT_VALUES.includes(summary[field])) {
+      errors.push({ field: `${fieldPrefix}.${field}`, message: `must be one of ${TERMINAL_COVERAGE_GATE_CONTRACT_VALUES.join('|')}` });
+    }
+  }
+  for (const field of ['terminal_target_matches_expected', 'terminal_outcome_matches_expected']) {
+    if (summary[field] !== null && typeof summary[field] !== 'boolean') {
+      errors.push({ field: `${fieldPrefix}.${field}`, message: 'must be null or boolean' });
+    }
+  }
+  if (summary.terminal_observed_outcome_kind !== null && !TERMINAL_OUTCOME_KIND_VALUES.includes(summary.terminal_observed_outcome_kind)) {
+    errors.push({ field: `${fieldPrefix}.terminal_observed_outcome_kind`, message: `must be null or one of ${TERMINAL_OUTCOME_KIND_VALUES.join('|')}` });
+  }
+  if (summary.terminal_canonicalization_status === 'canonical' && summary.terminal_canonicalization_reason !== 'canonical') {
+    errors.push({ field: `${fieldPrefix}.terminal_canonicalization_reason`, message: 'must be canonical when canonicalization status is canonical' });
+  }
+  if (summary.terminal_canonicalization_status === 'not-applicable' && summary.terminal_canonicalization_reason !== 'operation-not-eligible') {
+    errors.push({ field: `${fieldPrefix}.terminal_canonicalization_reason`, message: 'must be operation-not-eligible when canonicalization status is not-applicable' });
+  }
+  if (summary.terminal_canonicalization_status === 'uncanonicalizable' && summary.terminal_canonicalization_reason === 'canonical') {
+    errors.push({ field: `${fieldPrefix}.terminal_canonicalization_reason`, message: 'cannot be canonical when canonicalization status is uncanonicalizable' });
+  }
+  if (summary.terminal_recognized_operation === 'coverage') {
+    for (const field of ['terminal_tests_contract', 'terminal_coverage_contract', 'terminal_error_contract', 'terminal_exit_code_contract']) {
+      if (summary[field] !== 'not-applicable') errors.push({ field: `${fieldPrefix}.${field}`, message: 'must be not-applicable for coverage-only attempts' });
+    }
+    if (summary.terminal_threshold_relation !== 'not-applicable') errors.push({ field: `${fieldPrefix}.terminal_threshold_relation`, message: 'must be not-applicable for coverage-only attempts' });
+    if (summary.terminal_target_matches_expected !== null) errors.push({ field: `${fieldPrefix}.terminal_target_matches_expected`, message: 'must be null for coverage-only attempts' });
+    if (summary.terminal_outcome_matches_expected !== null) errors.push({ field: `${fieldPrefix}.terminal_outcome_matches_expected`, message: 'must be null for coverage-only attempts' });
+  }
+  return errors;
+}
+
 /**
  * Local-tier-only shape check for `unexpected_tools` -- mirrors validateForeignSkillSummary's
  * exact closed-key-set discipline one field over: array of {name, event_index}, nothing else.
@@ -1107,7 +1281,7 @@ function validateAmbientProfileMatrixOk(row) {
   const errors = [];
   if (RUN_KIND_VALUES.includes(row.run_kind)) {
     if (row.run_kind === 'scenario') {
-      if ((row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V3 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V4 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V5 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V6 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V7 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V8 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V9 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V10 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V11) && row.matrix_complete === false) {
+      if ((row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V3 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V4 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V5 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V6 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V7 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V8 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V9 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V10 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V11 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V12) && row.matrix_complete === false) {
         if (row.ambient_profile_matrix_ok !== null) {
           errors.push({ field: 'ambient_profile_matrix_ok', message: `must be null when matrix_complete is false -- a matrix that fail-fast stopped before finishing never actually evaluated a real cross-cell consensus` });
         }
@@ -1188,9 +1362,10 @@ export function validateRejectionRow(row) {
   const isV9 = row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V9;
   const isV10 = row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V10;
   const isV11 = row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V11;
-  const isV5OrLater = isV5 || isV6 || isV7 || isV8 || isV9 || isV10 || isV11;
-  const isV3OrLater = isV3 || isV4 || isV5 || isV6 || isV7 || isV8 || isV9 || isV10 || isV11;
-  const isNotApplicableSchema = isV4 || isV5 || isV6 || isV7 || isV8 || isV9 || isV10 || isV11;
+  const isV12 = row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V12;
+  const isV5OrLater = isV5 || isV6 || isV7 || isV8 || isV9 || isV10 || isV11 || isV12;
+  const isV3OrLater = isV3 || isV4 || isV5 || isV6 || isV7 || isV8 || isV9 || isV10 || isV11 || isV12;
+  const isNotApplicableSchema = isV4 || isV5 || isV6 || isV7 || isV8 || isV9 || isV10 || isV11 || isV12;
   const allowedKeys = new Set(rejectionCanonicalFieldsFor(row.schema));
   for (const k of Object.keys(row)) if (!allowedKeys.has(k)) errors.push({ field: k, message: 'unrecognized field' });
   for (const k of allowedKeys) if (!(k in row)) errors.push({ field: k, message: 'missing required field' });
@@ -1398,17 +1573,20 @@ export function validateRejectionRow(row) {
           }
         }
       }
-      if (isV6 || isV7 || isV8 || isV9 || isV10 || isV11) {
-        errors.push(...validatePreInferenceFailureSummary(cell.pre_inference_failure, `cells[${i}].pre_inference_failure`, cell.failed_checks, isV11 ? [3] : (isV9 || isV10) ? [2] : [1]));
+      if (isV6 || isV7 || isV8 || isV9 || isV10 || isV11 || isV12) {
+        errors.push(...validatePreInferenceFailureSummary(cell.pre_inference_failure, `cells[${i}].pre_inference_failure`, cell.failed_checks, (isV11 || isV12) ? [3] : (isV9 || isV10) ? [2] : [1]));
       }
-      if (isV7 || isV8 || isV9 || isV10 || isV11) {
+      if (isV7 || isV8 || isV9 || isV10 || isV11 || isV12) {
         errors.push(...validateCellMetrics(cell.cell_metrics, `cells[${i}].cell_metrics`));
       }
-      if (isV8 || isV9 || isV10 || isV11) {
+      if (isV8 || isV9 || isV10 || isV11 || isV12) {
         errors.push(...validateGradingSummary(cell.grading_summary, `cells[${i}].grading_summary`));
       }
-      if (isV10 || isV11) {
+      if (isV10 || isV11 || isV12) {
         errors.push(...validateTerminalEvidenceSummary(cell.terminal_evidence_summary, `cells[${i}].terminal_evidence_summary`));
+      }
+      if (isV12) {
+        errors.push(...validateCoverageGateAttemptSummary(cell.coverage_gate_attempt_summary, `cells[${i}].coverage_gate_attempt_summary`));
       }
     }
     if (!anyCellHasFailedCheck) {
@@ -1459,7 +1637,7 @@ export function validateRejectionRow(row) {
  * (evaluateNamedChecks' failedChecks/failedChecksA/failedChecksB, scenarioHardGate's cellResults,
  * cell-integrity.mjs's unexpectedToolUsesCount/unexpectedTools) -- see cli.mjs's own call sites for
  * how each run_kind maps its own shape into the uniform inputs here. Constructs schema
- * REJECTION_DIAGNOSTICS_SCHEMA_V11 when every record in the batch is schema>=6 with
+ * REJECTION_DIAGNOSTICS_SCHEMA_V12 when every record in the batch is schema>=6 with
  * execution_profile.policy_mode==="not_applicable" (see the dispatch this function runs, right
  * after the existing BATCH_WIDE_FIELDS agreement check, for the exact rule -- NEVER
  * LATEST_REJECTION_DIAGNOSTICS_SCHEMA used as that selector), REJECTION_DIAGNOSTICS_SCHEMA_V3
@@ -1591,8 +1769,9 @@ export function buildRejectionDiagnostics({
     throw new Error(`buildRejectionDiagnostics: records disagree on execution_profile.policy_mode (${JSON.stringify([...policyModes])}) -- one harness invocation always resolves exactly one execution profile for its whole batch`);
   }
   const buildingNotApplicable = [...policyModes][0] === 'not_applicable';
-  const schema = buildingNotApplicable ? REJECTION_DIAGNOSTICS_SCHEMA_V11 : REJECTION_DIAGNOSTICS_SCHEMA_V3;
-  if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V11) {
+  const schema = buildingNotApplicable ? REJECTION_DIAGNOSTICS_SCHEMA_V12 : REJECTION_DIAGNOSTICS_SCHEMA_V3;
+  let coverageGateAttemptSummaryByRunId = null;
+  if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V12) {
     requireExactRunIdKeys(correlationObservabilityByRunId, 'correlationObservabilityByRunId');
     requireExactRunIdKeys(preInferenceFailureByRunId, 'preInferenceFailureByRunId');
     requireExactRunIdKeys(cellMetricsByRunId, 'cellMetricsByRunId');
@@ -1621,6 +1800,15 @@ export function buildRejectionDiagnostics({
       if (errors.length > 0) {
         throw new Error(`buildRejectionDiagnostics: terminalEvidenceByRunId['${runId}'] must summarize to a valid terminal-evidence-summary schema v1 object (${JSON.stringify(errors)})`);
       }
+    }
+    coverageGateAttemptSummaryByRunId = {};
+    for (const [runId, terminalEvidence] of Object.entries(terminalEvidenceByRunId)) {
+      const summary = buildCoverageGateAttemptSummary(terminalEvidence);
+      const errors = validateCoverageGateAttemptSummary(summary, `terminalEvidenceByRunId['${runId}']`);
+      if (errors.length > 0) {
+        throw new Error(`buildRejectionDiagnostics: terminalEvidenceByRunId['${runId}'] must summarize to a valid coverage-gate-attempt-summary schema v1 object (${JSON.stringify(errors)})`);
+      }
+      coverageGateAttemptSummaryByRunId[runId] = summary;
     }
   }
 
@@ -1680,13 +1868,14 @@ export function buildRejectionDiagnostics({
     foreign_skill_summary: r.foreign_skill_summary,
     ambient_skill_profile: r.ambient_skill_profile,
     unexpected_tool_uses_count: unexpectedToolUsesCountByRunId[r.run_id],
-    ...(schema === REJECTION_DIAGNOSTICS_SCHEMA_V11 ? {
+    ...(schema === REJECTION_DIAGNOSTICS_SCHEMA_V12 ? {
       record_error_codes: [...new Set((r.errors ?? []).map((e) => e?.code).filter((code) => typeof code === 'string' && code.length > 0))].sort(),
       correlation_observability: JSON.parse(JSON.stringify(correlationObservabilityByRunId[r.run_id])),
       pre_inference_failure: JSON.parse(JSON.stringify(preInferenceFailureByRunId[r.run_id])),
       cell_metrics: JSON.parse(JSON.stringify(cellMetricsByRunId[r.run_id])),
       grading_summary: buildGradingSummary(r),
       terminal_evidence_summary: buildTerminalEvidenceSummary(terminalEvidenceByRunId[r.run_id]),
+      coverage_gate_attempt_summary: JSON.parse(JSON.stringify(coverageGateAttemptSummaryByRunId[r.run_id])),
     } : {}),
   }));
 

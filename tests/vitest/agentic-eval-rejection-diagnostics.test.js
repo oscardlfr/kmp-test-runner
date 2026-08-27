@@ -24,6 +24,7 @@ import {
   REJECTION_DIAGNOSTICS_SCHEMA_V9,
   REJECTION_DIAGNOSTICS_SCHEMA_V10,
   REJECTION_DIAGNOSTICS_SCHEMA_V11,
+  REJECTION_DIAGNOSTICS_SCHEMA_V12,
   buildRejectionDiagnostics,
   validateRejectionRow,
   validateRejectionLocalRow,
@@ -288,11 +289,30 @@ function terminalEvidence(overrides = {}) {
       detail: 'free-text final answer detail that must never enter committed rejection diagnostics',
     },
     coverage_gate_diagnostic: 'missing-threshold-gate',
+    coverage_gate_attempts: [coverageGateAttempt()],
     ...overrides,
   };
 }
 
-// Schema 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10 -> 11 (preserve rejected matrix forensics; sandboxed-unrestricted-v1 support): v2
+function coverageGateAttempt(overrides = {}) {
+  return {
+    recognized_operation: 'parallel',
+    terminal_authoritative: true,
+    canonicalization_status: 'canonical',
+    canonicalization_reason: 'canonical',
+    threshold_relation: 'missing',
+    tests_contract: 'matches',
+    coverage_contract: 'matches',
+    error_contract: 'matches',
+    exit_code_contract: 'matches',
+    target_matches_expected: true,
+    observed_outcome_kind: 'tests_executed',
+    outcome_matches_expected: false,
+    ...overrides,
+  };
+}
+
+// Schema 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10 -> 11 -> 12 (preserve rejected matrix forensics; sandboxed-unrestricted-v1 support): v2
 // gained per-cell unexpected_tool_uses_count + top-level matrix_complete/planned_cell_count/
 // executed_cell_count/raw_transcripts_persisted going to v3; v3 gained execution_profile_id/
 // policy_mode/isolation_attestation_sha256 going to v4, EXCLUSIVE to a policy_mode:"not_applicable"
@@ -301,13 +321,13 @@ function terminalEvidence(overrides = {}) {
 // per-cell timing/usage/token/tool-count metrics for rejected cells; v8 adds closed, privacy-safe
 // grading summaries (no detail/free text); v9 adds a closed pre-inference cause code; v10 adds
 // closed terminal-evidence summaries; v11 adds a closed runtime error code to pre-inference
-// summaries. All are a genuine version DISPATCH (SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS =
-// [2, 3, 4, 5, 6, 7, 8, 9, 10, 11]), never a plain constant
+// summaries; v12 adds one closed projection of existing terminal coverage-gate attempts. All are
+// a genuine version DISPATCH, never a plain constant
 // bump -- two real diagnostic files from a live 2026-08 canary rejection are schema:2 and are
 // declared incident evidence that must keep validating, and v2/v3 stay frozen forever (their own
 // field sets, and policy_sha256's own real-hex64 requirement, never change again). The builder
-// picks v3 or v11 per batch (see buildRejectionDiagnostics' own dispatch) -- never emits v2/v4/v5/v6/v7/v8/v9/v10.
-it('LATEST_REJECTION_DIAGNOSTICS_SCHEMA is 11, and the validator still supports 2 through 11', () => {
+// picks v3 or v12 per batch (see buildRejectionDiagnostics' own dispatch) -- never emits v2/v4/v5/v6/v7/v8/v9/v10/v11.
+it('LATEST_REJECTION_DIAGNOSTICS_SCHEMA is 12, and the validator still supports 2 through 12', () => {
   expect(REJECTION_DIAGNOSTICS_SCHEMA_V2).toBe(2);
   expect(REJECTION_DIAGNOSTICS_SCHEMA_V3).toBe(3);
   expect(REJECTION_DIAGNOSTICS_SCHEMA_V4).toBe(4);
@@ -318,8 +338,9 @@ it('LATEST_REJECTION_DIAGNOSTICS_SCHEMA is 11, and the validator still supports 
   expect(REJECTION_DIAGNOSTICS_SCHEMA_V9).toBe(9);
   expect(REJECTION_DIAGNOSTICS_SCHEMA_V10).toBe(10);
   expect(REJECTION_DIAGNOSTICS_SCHEMA_V11).toBe(11);
-  expect(LATEST_REJECTION_DIAGNOSTICS_SCHEMA).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V11);
-  expect(SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS).toEqual([REJECTION_DIAGNOSTICS_SCHEMA_V2, REJECTION_DIAGNOSTICS_SCHEMA_V3, REJECTION_DIAGNOSTICS_SCHEMA_V4, REJECTION_DIAGNOSTICS_SCHEMA_V5, REJECTION_DIAGNOSTICS_SCHEMA_V6, REJECTION_DIAGNOSTICS_SCHEMA_V7, REJECTION_DIAGNOSTICS_SCHEMA_V8, REJECTION_DIAGNOSTICS_SCHEMA_V9, REJECTION_DIAGNOSTICS_SCHEMA_V10, REJECTION_DIAGNOSTICS_SCHEMA_V11]);
+  expect(REJECTION_DIAGNOSTICS_SCHEMA_V12).toBe(12);
+  expect(LATEST_REJECTION_DIAGNOSTICS_SCHEMA).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V12);
+  expect(SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS).toEqual([REJECTION_DIAGNOSTICS_SCHEMA_V2, REJECTION_DIAGNOSTICS_SCHEMA_V3, REJECTION_DIAGNOSTICS_SCHEMA_V4, REJECTION_DIAGNOSTICS_SCHEMA_V5, REJECTION_DIAGNOSTICS_SCHEMA_V6, REJECTION_DIAGNOSTICS_SCHEMA_V7, REJECTION_DIAGNOSTICS_SCHEMA_V8, REJECTION_DIAGNOSTICS_SCHEMA_V9, REJECTION_DIAGNOSTICS_SCHEMA_V10, REJECTION_DIAGNOSTICS_SCHEMA_V11, REJECTION_DIAGNOSTICS_SCHEMA_V12]);
 });
 
 describe('buildRejectionDiagnostics -- pure construction', () => {
@@ -1902,7 +1923,7 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
     });
   });
 
-  describe('buildRejectionDiagnostics -- dispatches to v3 or v11, never via LATEST_REJECTION_DIAGNOSTICS_SCHEMA', () => {
+  describe('buildRejectionDiagnostics -- dispatches to v3 or v12, never via LATEST_REJECTION_DIAGNOSTICS_SCHEMA', () => {
     it('a policy-required (schema<6, or no execution_profile) batch still builds v3, byte-identical to before this addition', () => {
       const r = record();
       const { committed } = buildDiag({ runKind: 'calibration', records: [r], failedChecksByRunId: { [r.run_id]: [] } });
@@ -1913,14 +1934,14 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
       expect('isolation_attestation_sha256' in committed).toBe(false);
     });
 
-    it('a policy_mode:"not_applicable" batch builds v11, with policy_sha256 honestly null, execution-profile facts, observability, pre-inference summary, cell metrics, grading summary, and terminal evidence summary', () => {
+    it('a policy_mode:"not_applicable" batch builds v12, with policy_sha256 honestly null, execution-profile facts, observability, pre-inference summary, cell metrics, grading summary, and terminal evidence summary', () => {
       const r = unrestrictedRecord({
         success: nullableMetric(false),
         expected_outcome_matched: nullableMetric(false),
         grading_checks: nullableMetric(gradingChecks()),
       });
       const { committed } = buildDiag({ runKind: 'calibration', records: [r], failedChecksByRunId: { [r.run_id]: ['skillSelectionOk'] } });
-      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V11);
+      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V12);
       expect(committed.policy_sha256).toBeNull();
       expect(committed.execution_profile_id).toBe('sandboxed-unrestricted-v1');
       expect(committed.policy_mode).toBe('not_applicable');
@@ -1961,7 +1982,7 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
       expect(validateRejectionRow(committed).errors).toEqual([]);
     });
 
-    it('a not_applicable scenario batch (2 cells) also builds v11 cleanly, matching the real fail-fast-rejection shape', () => {
+    it('a not_applicable scenario batch (2 cells) also builds v12 cleanly, matching the real fail-fast-rejection shape', () => {
       const r1 = unrestrictedScenarioRecord();
       const r2 = unrestrictedScenarioRecord({ run_id: 'kampkit-current-skill-bbbb2222', condition: 'current-skill', skill_source_sha: 'a'.repeat(40), repetition_index: 0, order_index: 1 });
       const { committed } = buildDiag({
@@ -1971,7 +1992,7 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
         unexpectedToolsByRunId: { [r1.run_id]: [], [r2.run_id]: [{ name: 'Read', event_index: 3 }] },
         matrixComplete: false, plannedCellCount: 4, executedCellCount: 2, ambientProfileMatrixOk: null,
       });
-      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V11);
+      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V12);
       expect(committed.matrix_complete).toBe(false);
       expect(committed.policy_sha256).toBeNull();
       expect(committed.execution_profile_id).toBe('sandboxed-unrestricted-v1');
@@ -1998,7 +2019,7 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
         executedCellCount: 1,
         ambientProfileMatrixOk: true,
       });
-      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V11);
+      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V12);
       expect(committed.cells[0].record_error_codes).toEqual(['junit_evidence_capture_incomplete']);
       expect(JSON.stringify(committed)).not.toContain('raw explanatory text');
       expect(validateRejectionRow(committed).errors).toEqual([]);
@@ -2025,7 +2046,7 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
         ambientProfileMatrixOk: true,
         correlationObservabilityByRunId: { [r.run_id]: correlation },
       });
-      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V11);
+      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V12);
       expect(committed.cells[0].correlation_observability.dispatch_status_counts.unaccounted).toBe(1);
       expect(committed.cells[0].correlation_observability.tool_use_counts_by_kind.shell).toBe(2);
       expect(JSON.stringify(committed)).not.toMatch(/toolu_|\\.jsonl/);
@@ -2047,7 +2068,7 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
         ambientProfileMatrixOk: true,
         preInferenceFailureByRunId: { [r.run_id]: summary },
       });
-      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V11);
+      expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V12);
       expect(committed.cells[0].pre_inference_failure).toEqual(summary);
       expect(committed.cells[0].pre_inference_failure.cause_code).toBe('pre_inference_terminal_error_zero_usage_zero_tools');
       expect(committed.cells[0].pre_inference_failure.runtime_error_code).toBe('terminal_error_during_execution_zero_usage_zero_tools');
@@ -2055,7 +2076,7 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
       expect(validateRejectionRow(committed).errors).toEqual([]);
     });
 
-    it('throws instead of writing a v11 diagnostic when correlation observability is missing for one run', () => {
+    it('throws instead of writing a v12 diagnostic when correlation observability is missing for one run', () => {
       const r1 = unrestrictedScenarioRecord();
       const r2 = unrestrictedScenarioRecord({ run_id: 'kampkit-no-skill-cccc3333', repetition_index: 0, order_index: 1 });
       expect(() => buildDiag({
@@ -2069,7 +2090,7 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
       })).toThrow(/correlationObservabilityByRunId/);
     });
 
-    it('throws instead of writing a v11 diagnostic when pre-inference summary is missing for one run', () => {
+    it('throws instead of writing a v12 diagnostic when pre-inference summary is missing for one run', () => {
       const r1 = unrestrictedScenarioRecord();
       const r2 = unrestrictedScenarioRecord({ run_id: 'kampkit-no-skill-cccc3333', repetition_index: 0, order_index: 1 });
       expect(() => buildDiag({
@@ -2083,7 +2104,7 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
       })).toThrow(/preInferenceFailureByRunId/);
     });
 
-    it('throws instead of writing a v11 diagnostic when cell metrics are missing for one run', () => {
+    it('throws instead of writing a v12 diagnostic when cell metrics are missing for one run', () => {
       const r1 = unrestrictedScenarioRecord();
       const r2 = unrestrictedScenarioRecord({ run_id: 'kampkit-no-skill-cccc3333', repetition_index: 0, order_index: 1 });
       expect(() => buildDiag({
@@ -2097,7 +2118,7 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
       })).toThrow(/cellMetricsByRunId/);
     });
 
-    it('throws instead of writing a v11 diagnostic when terminal evidence is missing for one run', () => {
+    it('throws instead of writing a v12 diagnostic when terminal evidence is missing for one run', () => {
       const r1 = unrestrictedScenarioRecord();
       const r2 = unrestrictedScenarioRecord({ run_id: 'kampkit-no-skill-cccc3333', repetition_index: 0, order_index: 1 });
       expect(() => buildDiag({
@@ -2610,6 +2631,152 @@ describe('rejection-diagnostics schema 4 -- sandboxed-unrestricted-v1 (policy_mo
       expect(errors.some((e) => e.field === 'cells[0].grading_summary.grading_checks.value[7].name' && /duplicate grading check/.test(e.message))).toBe(true);
       expect(errors.some((e) => e.field === 'cells[0].grading_summary.grading_checks.value' && /missing grading check/.test(e.message))).toBe(true);
     });
+  });
+});
+
+describe('rejection-diagnostics schema 12 -- rejected coverage-gate attempt observability', () => {
+  function buildSchema12(terminal = terminalEvidence()) {
+    const r = unrestrictedRecord();
+    return buildDiag({
+      runKind: 'calibration',
+      records: [r],
+      failedChecksByRunId: { [r.run_id]: ['authoritative_outcome_matches_expected'] },
+      terminalEvidenceByRunId: { [r.run_id]: terminal },
+    });
+  }
+
+  it('builds schema 12 with the exact closed projection of one terminal coverage-gate attempt', () => {
+    const { committed } = buildSchema12();
+    expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V12);
+    expect(committed.cells[0].coverage_gate_attempt_summary).toEqual({
+      schema: 1,
+      source: 'terminal-evidence-v1',
+      attempt_count: 1,
+      terminal_attempt_present: true,
+      terminal_recognized_operation: 'parallel',
+      terminal_canonicalization_status: 'canonical',
+      terminal_canonicalization_reason: 'canonical',
+      terminal_threshold_relation: 'missing',
+      terminal_tests_contract: 'matches',
+      terminal_coverage_contract: 'matches',
+      terminal_error_contract: 'matches',
+      terminal_exit_code_contract: 'matches',
+      terminal_target_matches_expected: true,
+      terminal_observed_outcome_kind: 'tests_executed',
+      terminal_outcome_matches_expected: false,
+    });
+    expect(validateRejectionRow(committed).errors).toEqual([]);
+  });
+
+  it('preserves threshold mismatch and coverage-only contracts without copying a command or target text', () => {
+    const { committed } = buildSchema12(terminalEvidence({
+      coverage_gate_attempts: [coverageGateAttempt(), coverageGateAttempt({
+        recognized_operation: 'coverage',
+        terminal_authoritative: false,
+        tests_contract: 'not-applicable',
+        coverage_contract: 'not-applicable',
+        error_contract: 'not-applicable',
+        exit_code_contract: 'not-applicable',
+        target_matches_expected: null,
+        observed_outcome_kind: null,
+        outcome_matches_expected: null,
+        threshold_relation: 'differs',
+        canonicalization_status: 'uncanonicalizable',
+        canonicalization_reason: 'threshold-mismatch',
+      })],
+    }));
+    const summary = committed.cells[0].coverage_gate_attempt_summary;
+    expect(summary.attempt_count).toBe(2);
+    expect(summary.terminal_recognized_operation).toBe('parallel');
+    expect(summary.terminal_tests_contract).toBe('matches');
+    expect(JSON.stringify(summary)).not.toMatch(/command|argv|path|module|prompt|response|text/i);
+  });
+
+  it('preserves a terminal threshold mismatch as the closed differs category', () => {
+    const { committed } = buildSchema12(terminalEvidence({
+      coverage_gate_attempts: [coverageGateAttempt({
+        canonicalization_status: 'uncanonicalizable',
+        canonicalization_reason: 'threshold-mismatch',
+        threshold_relation: 'differs',
+      })],
+    }));
+    const summary = committed.cells[0].coverage_gate_attempt_summary;
+    expect(summary.terminal_threshold_relation).toBe('differs');
+    expect(summary.terminal_canonicalization_reason).toBe('threshold-mismatch');
+    expect(validateRejectionRow(committed).errors).toEqual([]);
+  });
+
+  it('records absent terminal evidence as not-recorded with no terminal facts', () => {
+    const { committed } = buildSchema12(terminalEvidence({ coverage_gate_attempts: [] }));
+    expect(committed.cells[0].coverage_gate_attempt_summary).toEqual({
+      schema: 1,
+      source: 'terminal-evidence-v1',
+      attempt_count: 0,
+      terminal_attempt_present: false,
+      terminal_recognized_operation: null,
+      terminal_canonicalization_status: null,
+      terminal_canonicalization_reason: null,
+      terminal_threshold_relation: null,
+      terminal_tests_contract: null,
+      terminal_coverage_contract: null,
+      terminal_error_contract: null,
+      terminal_exit_code_contract: null,
+      terminal_target_matches_expected: null,
+      terminal_observed_outcome_kind: null,
+      terminal_outcome_matches_expected: null,
+    });
+  });
+
+  it('uses not-recorded only when terminal evidence itself is absent', () => {
+    const { committed } = buildSchema12(null);
+    expect(committed.cells[0].coverage_gate_attempt_summary).toEqual({
+      schema: 1,
+      source: 'not-recorded',
+      attempt_count: 0,
+      terminal_attempt_present: false,
+      terminal_recognized_operation: null,
+      terminal_canonicalization_status: null,
+      terminal_canonicalization_reason: null,
+      terminal_threshold_relation: null,
+      terminal_tests_contract: null,
+      terminal_coverage_contract: null,
+      terminal_error_contract: null,
+      terminal_exit_code_contract: null,
+      terminal_target_matches_expected: null,
+      terminal_observed_outcome_kind: null,
+      terminal_outcome_matches_expected: null,
+    });
+  });
+
+  it('fails closed when more than one source attempt claims terminal authority', () => {
+    expect(() => buildSchema12(terminalEvidence({
+      coverage_gate_attempts: [coverageGateAttempt(), coverageGateAttempt()],
+    }))).toThrow(/at most one terminal_authoritative attempt/);
+  });
+
+  it('keeps v11 historical rows valid without the schema-12 field, but rejects schema-12 omissions and raw-like mutations', () => {
+    const { committed } = buildSchema12();
+    const v11 = JSON.parse(JSON.stringify(committed));
+    v11.schema = REJECTION_DIAGNOSTICS_SCHEMA_V11;
+    delete v11.cells[0].coverage_gate_attempt_summary;
+    expect(validateRejectionRow(v11).errors).toEqual([]);
+
+    const missing = JSON.parse(JSON.stringify(committed));
+    delete missing.cells[0].coverage_gate_attempt_summary;
+    expect(validateRejectionRow(missing).errors.some((e) => e.field === 'cells[0].coverage_gate_attempt_summary')).toBe(true);
+
+    const mutated = JSON.parse(JSON.stringify(committed));
+    mutated.cells[0].coverage_gate_attempt_summary.command = 'must-not-enter-diagnostics';
+    mutated.cells[0].coverage_gate_attempt_summary.terminal_threshold_relation = 'raw prose';
+    const errors = validateRejectionRow(mutated).errors;
+    expect(errors.some((e) => e.field === 'cells[0].coverage_gate_attempt_summary.command')).toBe(true);
+    expect(errors.some((e) => e.field === 'cells[0].coverage_gate_attempt_summary.terminal_threshold_relation')).toBe(true);
+  });
+
+  it('uses only the already-computed terminal evidence data -- never a parser, transcript, or raw artifact reader', () => {
+    const source = readFileSync(path.join(REPO_ROOT, 'tools', 'agentic-eval', 'rejection-diagnostics.mjs'), 'utf8');
+    const builder = source.slice(source.indexOf('export function buildRejectionDiagnostics'), source.indexOf('export function writeRejectionRawTranscripts'));
+    expect(builder).not.toMatch(/parse(?:Stream|Transcript)|readFileSync\(/i);
   });
 });
 

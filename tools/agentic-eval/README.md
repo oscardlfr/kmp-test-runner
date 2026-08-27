@@ -833,13 +833,13 @@ tiers, which stay exactly as narrow as before.
   depth, confirmed empirically with `git check-ignore -v`) — no new `.gitignore` entry was needed
   for either. Only tier 1 (the top-level `<rejection_id>.json`) is genuinely tracked; the whole
   directory is **not** uniformly gitignored, unlike an earlier version of this note claimed.
-- **Shape — schema is a genuine DISPATCH (`SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS = [2, 3, 4, 5, 6, 7, 8, 9, 10]`),
+- **Shape — schema is a genuine DISPATCH (`SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]`),
   not a plain constant bump**: two real diagnostic files from the 2026-08 canary rejection itself
   are `schema:2` and are preserved, hashed, declared incident evidence outside this repo — a plain
   bump would make `validateRejectionRow()` call that very evidence "invalid." `validateRejectionRow()`
   still validates a `schema:2` row against its original, frozen shape (no
   `unexpected_tool_uses_count`/`matrix_complete`/etc. — and a v2 row may not even carry those keys,
-  closed-key-set); `buildRejectionDiagnostics()` only ever *constructs* schema 3 or schema 10,
+  closed-key-set); `buildRejectionDiagnostics()` only ever *constructs* schema 3 or schema 12,
   never schema 2/4/5/6/7/8/9, and never via a bare
   `schema === LATEST_REJECTION_DIAGNOSTICS_SCHEMA` selector (see the schema-4 paragraph below for
   why). A
@@ -904,24 +904,32 @@ tiers, which stay exactly as narrow as before.
   `local.cells[i].unexpected_tools.length === committed.cells[i].unexpected_tool_uses_count` for
   every cell AND that `local.raw_transcripts_persisted === committed.raw_transcripts_persisted` —
   both tiers must stamp the identical tier-3 outcome, checked explicitly rather than merely trusted.
-- **Shape — schemas 4 through 10 (`sandboxed-unrestricted-v1` support)**: exclusive to a batch whose *every*
+- **Shape — schemas 4 through 12 (`sandboxed-unrestricted-v1` support)**: exclusive to a batch whose *every*
   record is `schema>=6` with `execution_profile.policy_mode === "not_applicable"` — no policy hook
   ever governed such a batch, so a real `policy_sha256` hash would misrepresent what happened.
   Schema 4 extends schema 3's own shape with exactly 3 new top-level fields —
   `execution_profile_id` (a lowercase slug), `policy_mode` (always exactly `"not_applicable"`),
   `isolation_attestation_sha256` (a real hex64 hash) — and requires `policy_sha256` to be *exactly*
-  `null` instead of a real hash (never `""`/`0`/a synthetic hash). Schemas 5 through 10 keep that
+  `null` instead of a real hash (never `""`/`0`/a synthetic hash). Schemas 5 through 12 keep that
   not-applicable contract and add closed, privacy-safe per-cell observability in layers: error
   codes and correlation counts, pre-inference summaries and cause codes, timing/usage metrics,
   grading summaries, and finally `terminal_evidence_summary` with `coverage_gate_diagnostic`
-  copied from the already-computed grader terminal evidence. Schema 10 deliberately omits
+  copied from the already-computed grader terminal evidence. Schema 12 additionally carries
+  `coverage_gate_attempt_summary`: a closed projection of the already-computed
+  `terminal_evidence.coverage_gate_attempts` array. It reports only the attempt count and, for at
+  most one terminal-authoritative attempt, its recognized operation, canonicalization status and
+  reason, threshold relation, four contract categories, target/outcome booleans, and observed
+  outcome kind. It distinguishes `missing`, `differs`, and contract states without re-parsing any
+  transcript or accepted sidecar. When terminal evidence is absent it records the closed
+  `not-recorded` shape; when evidence exists but has no terminal attempt it records its exact
+  count with all terminal fields `null`. Schema 12 deliberately omits
   `final_answer_block`, commands, paths, module names, prompts, responses, tool ids, and raw text;
   it is enough to explain coverage-gate failure classes without opening raw transcripts.
   `buildRejectionDiagnostics()`
   dispatches per batch (never via `LATEST_REJECTION_DIAGNOSTICS_SCHEMA`, so a future `LATEST` bump
   can never silently redirect an unrelated, policy-required batch away from schema 3): every record
   policy-required (or `schema<6`) still builds schema 3, byte-identical to before this addition;
-  every record `not_applicable` builds schema 10. The execution-profile fields are copied *exclusively* from
+  every record `not_applicable` builds schema 12. The execution-profile fields are copied *exclusively* from
   `records[].execution_profile` (never the live registry, never derived from `policy_sha256:null`,
   never a parallel caller-supplied parameter) — a batch that disagrees on any of the 3 (or mixes
   `schema<6` and `schema>=6` records, or policy-required and `not_applicable` records) fails closed
