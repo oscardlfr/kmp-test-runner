@@ -81,8 +81,8 @@ describe('materializeSkillSnapshot', () => {
   // throws synchronously, so a single block with the equality check first would hide whether the
   // content assertions below actually discriminate -- two blocks means a run against a stale pin
   // shows both failing for real, not just the first one.
-  it('PINNED_SKILL_SHA is locked to the PR #432 coverage-budget skill snapshot', () => {
-    expect(PINNED_SKILL_SHA).toBe('0bb958d464ccd4b2f463aa10a4101d726e2154c4');
+  it('PINNED_SKILL_SHA is locked to the PR A coverage-budget skill squash snapshot', () => {
+    expect(PINNED_SKILL_SHA).toBe('2112aed96686ee159f851e00c2efa553e58473fc');
   });
 
   it('the pinned current-skill snapshot reflects the PR #403 target-binding fix', async () => {
@@ -474,6 +474,27 @@ describe('materializeSkillSnapshot', () => {
     // and the constraint-preservation half is stated explicitly, not left implied.
     expect(deniedExploratoryClause).toMatch(/rebuilt\s+from\s+the\s+resolved\s+workflow\s+and\s+its\s+modifiers/i);
     expect(deniedExploratoryClause).toMatch(/a\s+denial\s+never\s+drops\s+a\s+user\s+constraint/i);
+  });
+
+  it('the pinned snapshot preserves the PR A discovery and inspection contracts without benchmark leakage', async () => {
+    const { snapshotDir, validation } = await materializeSkillSnapshot({ repoRoot: REPO_ROOT, sha: PINNED_SKILL_SHA, validateFn: runValidator });
+    cleanupDirs.push(snapshotDir);
+    expect(validation.ok).toBe(true);
+
+    const skillsDir = path.join(snapshotDir, '.skills', 'kmp-test-runner');
+    const skillMd = readFileSync(path.join(skillsDir, 'SKILL.md'), 'utf8').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const unitTestsMd = readFileSync(path.join(skillsDir, 'references', 'workflows', 'unit-tests.md'), 'utf8').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const troubleshootingMd = readFileSync(path.join(skillsDir, 'references', 'troubleshooting', 'coverage-threshold-exceeded.md'), 'utf8').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+    expect(skillMd).toMatch(/Keep\s+the\s+same\s+resolved\s+workflow\s+and\s+every\s+mandatory\s+modifier[\s\S]{0,160}bound\s+exact\s+`modules\[\]\.name`/i);
+    expect(skillMd).toMatch(/`describe`\s+only\s+completes\s+unknown\s+discovery\s+data[\s\S]{0,120}does\s+not\s+reconstruct/i);
+    expect(unitTestsMd).toMatch(/Discovery\s+reports\s+flavor\s+availability;\s+it\s+does\s+not\s+choose\s+one/i);
+    expect(unitTestsMd).toMatch(/For\s+a\s+module-wide\s+request,\s+use\s+no\s+`--flavor`[\s\S]{0,160}umbrella\s+dispatch/i);
+    expect(troubleshootingMd).toMatch(/inspect[\s\S]{0,200}`coverage_threshold_exceeded`\s+envelope\s+is\s+terminal/i);
+    expect(troubleshootingMd).toMatch(/remediat\w*[\s\S]{0,200}recovery/i);
+
+    const protocolDocs = `${skillMd}\n${unitTestsMd}\n${troubleshootingMd}`;
+    expect(protocolDocs).not.toMatch(/coverage-threshold-failure|NowInAndroid|:core:domain|--min-missed-lines\s+15/);
   });
 
   it('cleans up its temp directory when validation fails partway through (not just on an invalid SHA)', async () => {
