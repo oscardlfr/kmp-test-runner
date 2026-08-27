@@ -478,20 +478,50 @@ matrix is rejected anyway.
   **not** independently prove the original raw transcript's own content, which was never committed
   in the first place and is not recoverable from the sidecar.
 
-  **Schema versions, and the construction-time vs at-rest evidentiary boundary.** Six versions
+  **Schema versions, and the construction-time vs at-rest evidentiary boundary.** Eight versions
   coexist: **v1** (frozen — the 92 historical committed sidecars), **v2** (frozen — the 64 committed
   sidecars written since, adding per-call `dispatch_status` and `summary.pre_dispatch_blocked_total`;
   both v1 and v2 still require literally `run_schema: 5`), **v3** (schema-v6 policy-required
   records and later runtime-neutral policy-required records), **v4** and **v5** (frozen legacy
-  schema-v6 no-policy sidecars), and **v6** (current runtime-neutral no-policy sidecars, v5 plus
-  terminal evidence). Validation dispatches on the sidecar's own real version and fails closed on
-  anything outside `{1, 2, 3, 4, 5, 6}`; a record's
+  schema-v6 no-policy sidecars), **v6** (runtime-neutral no-policy sidecars, v5 plus
+  terminal evidence), **v7** (frozen no-policy coverage-gate diagnostic sidecars), and **v8**
+  (current runtime-neutral no-policy sidecars, v7 plus coverage-outcome observability).
+  Validation dispatches on the sidecar's own real version and fails closed on anything outside
+  `{1, 2, 3, 4, 5, 6, 7, 8}`; a record's
   `accepted_audit.schema` must equal the schema of the sidecar it points at, checked during
   cross-validation. A schema-v5 run record accepts only sidecar schema 1 or 2; a schema-v6-or-later
   policy-required record produces sidecar schema 3; a schema-v6-or-later no-policy record now
-  produces sidecar schema 6 while schemas 4 and 5 remain accepted for already-written legacy
+  produces sidecar schema 8 while schemas 4, 5, 6, and 7 remain accepted for already-written legacy
   artifacts. That
   equality was implicit while only one version existed and is now asserted per the compatible pair.
+
+  **v8 coverage-outcome observability.** v8 is restricted to runtime-neutral no-policy scenario
+  records (`run_schema >= 6`, `policy_mode:"not_applicable"`). It preserves v6 semantics and adds
+  `terminal_evidence.coverage_gate_attempts`, an array of closed, privacy-safe summaries for each
+  non-plan-only `kmp-test parallel` or `kmp-test coverage` attempt when the scenario's expected
+  outcome is `coverage_threshold_exceeded`; for every other expected outcome the array is present
+  and empty. Each item contains only:
+  `tool_call_ordinal`, `recognized_operation` (`parallel|coverage`), `terminal_authoritative`,
+  `canonicalization_status` (`canonical|uncanonicalizable|not-applicable`),
+  `canonicalization_reason` (closed enum such as `canonical`, `operation-not-eligible`,
+  `threshold-missing`, `threshold-mismatch`, `coverage-block-incoherent`,
+  `subcommand-mismatch`, `result-status-contradiction`, `test-detail-incoherent`,
+  `module-scope-incoherent`, or `outcome-not-canonicalizable`), `threshold_relation`
+  (`matches|differs|missing|not-applicable`), `tests_contract`, `coverage_contract`,
+  `error_contract`, and `exit_code_contract` (`matches|differs|unavailable|not-applicable`),
+  `target_matches_expected`, `observed_outcome_kind`, and `outcome_matches_expected`. It never
+  stores raw commands, argv, module filters, thresholds as typed by the agent, paths, stderr,
+  prompt text, or response prose.
+
+  v8 also extends `terminal_evidence.final_answer_block` with a closed structural comparison of
+  the final `KMP_EVAL_RESULT` block against the canonical observed result:
+  `comparison_status` (`no-final-text|missing-block|ambiguous-block|invalid-json|
+  no-observed-result|field-mismatch|matched`), `declared_outcome_kind` (canonical outcome,
+  `unrecognized`, or `null`), `observed_outcome_kind` (canonical outcome or `null`),
+  `missing_fields`, `mismatch_fields`, and `unexpected_key_count`. Field arrays use only the
+  public vocabulary `module|outcome_kind|total|passed|failed|missed_lines|threshold|
+  modules_contributing`; arbitrary extra keys and arbitrary outcome strings are counted or
+  collapsed, never echoed.
 
   **v3** conserves v2's `tool_calls`/`summary` shape verbatim (no re-litigating the
   `dispatch_status` contract below), requires the runtime-neutral run-record family
@@ -1592,7 +1622,7 @@ always-visible field, never promoted into a causal label.
 
 **Outcome/evidence/protocol interpretation.** `success` remains the strict historical benchmark
 gate: a run must produce usable evidence for the expected target and outcome AND its final answer
-must reproduce that evidence correctly. Analysis schema v5 additionally publishes the same facts
+must reproduce that evidence correctly. Analysis schema v6 additionally publishes the same facts
 as separate reporting axes so product-vs-free-baseline results are not overread.
 `task_outcome_matched` is the task-level expected-outcome verdict; `answer_protocol_matched` is the final-answer
 reporting contract; `programmatic_evidence_available` means a terminal authoritative event existed
@@ -1604,12 +1634,17 @@ terminal attempt existed but was not usable), `claim-only` (a parseable final cl
 usable terminal evidence), or `no-evidence`. This is deliberately reporting-only: it never relaxes
 `success`, never reads raw transcript content, and never treats a free-baseline claim as equivalent
 to product-generated evidence. For `coverage_threshold_exceeded` specifically, accepted-run-audit
-sidecar schema v7 adds `terminal_evidence.coverage_gate_diagnostic`, a closed-vocabulary,
-privacy-safe lower-cause label such as `matched`, `coverage-only-not-terminal`,
+sidecars expose two layers. The legacy `terminal_evidence.coverage_gate_diagnostic` remains a
+single closed lower-cause label such as `matched`, `coverage-only-not-terminal`,
 `missing-threshold-gate`, `coverage-disabled`, `threshold-mismatch`, `observed-clean-tests`,
 `coverage-evidence-malformed`, or `coverage-outcome-mismatch`; older sidecars analyze as
-`not-recorded`. The label explains why a coverage scenario's programmatic evidence did or did not
-prove the coverage gate, without exposing raw commands, paths, or transcript prose.
+`not-recorded`. Schema-v8 sidecars additionally expose per-attempt coverage-gate facts and the
+final-answer comparison described above. Analysis schema v6 projects those into
+`coverage_gate_attempt_count`, `coverage_gate_terminal_canonicalization_reason`,
+`coverage_gate_contract_failures`, `final_answer_comparison_status`, and
+`final_answer_mismatch_fields`. These fields explain which structural contract failed; they do not
+claim why an agent chose a command, do not read raw transcript content, and do not change the
+meaning of `success`.
 
 **Summary.** Runs are grouped by the FULL `HARD_PARTITION_FIELDS` tuple (the identical Fairness
 Contract key `aggregate.mjs` already enforces, reused verbatim via `schemas.mjs`'s own
@@ -1623,7 +1658,10 @@ rate`, `task_outcome_matched_rate`, `answer_protocol_matched_rate`, `programmati
 available_rate`, `canonical_final_answer_available_rate`, `canonical_output_available_rate`,
 `success_rate` — `null`, never `NaN`, when the denominator is 0) plus `failure_class_counts`,
 `evidence_quality_distribution`, `coverage_gate_diagnostic_distribution`,
-and compact frequency-map distributions for `target_skill_invocation_ordinal`, `target_skill_
+`coverage_gate_terminal_canonicalization_reason_distribution`,
+`coverage_gate_contract_failure_distribution`, `final_answer_comparison_status_distribution`,
+`final_answer_mismatch_field_distribution`, and compact frequency-map distributions for
+`target_skill_invocation_ordinal`, `target_skill_
 attempt_ordinal`, `pre_skill_tool_calls`, and `post_skill_tool_calls_total`. `analyze` never
 computes a cross-condition comparison (e.g. a `current-skill`-vs-`no-skill` lift/delta) — each
 condition's runs land in their own group, exactly like the Fairness Contract already treats
@@ -1648,7 +1686,7 @@ structural design, `analyzeRunsDir`'s complete return value is passed through a 
 that still matches even after redaction — which nothing this module structurally emits should ever
 do — withholds the entire batch rather than returning content that failed its own safety check.
 
-**Schema v6 reporting fields.** Per-run entries and summary groups both gain `agent_runtime`,
+**Analysis schema v6 reporting fields.** Per-run entries and summary groups both gain `agent_runtime`,
 `execution_profile`, `skill_observation`, and `usage` — the FULL real object for a schema-v6
 record, or the literal `"not-recorded"` sentinel below v6 (never `null`, never inferred). Unlike
 `aggregate.mjs`'s own group_key projection, `execution_profile`/`skill_observation` here are the
@@ -1663,10 +1701,19 @@ with a runtime whose activation is not simply boolean. Group summaries additiona
 `usage_cached_input_distribution`, `usage_cache_write_distribution`, `usage_output_distribution`,
 `usage_reasoning_output_distribution` — deliberately no summed total field anywhere: runtime-
 native token counts are never rankable as if they shared a tokenizer or hidden prompt, so a single
-combined number would misleadingly imply they are. `ANALYSIS_SCHEMA` is **5** for the current
+combined number would misleadingly imply they are. `ANALYSIS_SCHEMA` is **6** for the current
 shape; bucketing/grouping is unchanged (still `HARD_PARTITION_FIELDS`, which itself gained the 3
 new structural keys — see "Fairness Contract" above, which `analyze` shares verbatim via
-`run-record-view.mjs`'s `withPartitionView()`).
+`run-record-view.mjs`'s `withPartitionView()`). Historical sidecars that predate v8 report
+coverage-attempt and final-answer comparison fields as `not-recorded`, `null`, `[]`, or `0`
+according to the field's closed shape; analysis never reinterprets legacy artifacts by replaying
+raw evidence.
+
+**Causality boundary.** These reports intentionally stop at structural facts. A
+`coverage_gate_contract_failures:["threshold"]` value means the observed coverage-gate threshold
+contract differed or was missing; it does not prove the skill, prompt, product, runtime, or agent
+caused that difference. Deciding whether a follow-up PR belongs in the skill protocol, grader,
+scenario, fixture, or provenance layer requires a separate review of the newly visible facts.
 
 **Explicit limitation**: no timing metric is derived or reported anywhere in this command's output
 — the committed schema-v5 sidecars carry event-INDEX ordering only, never per-event wall-clock
@@ -1913,7 +1960,7 @@ runbooks.
   mechanism analogous to `junit-evidence.mjs` — a Gradle attempt can only ever corroborate its own
   ordinary test-task contract (`expected.gradle` reuses `tests_executed`'s own key set verbatim),
   never the coverage-threshold decision itself, which is a `kmp-test`-only concept with no raw
-  Gradle equivalent. Prospective v7 accepted-run sidecars therefore carry a closed
+  Gradle equivalent. Frozen v7 accepted-run sidecars therefore carry a closed
   `coverage_gate_diagnostic` value so post-run analysis can distinguish "the agent ran clean tests
   but never armed the gate" from "the agent used a coverage-only command", "the threshold differed",
   or "the coverage evidence was malformed", without opening raw transcripts.

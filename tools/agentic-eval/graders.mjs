@@ -1550,6 +1550,7 @@ function evaluateKmpTestAttempt(bashResult, scenario, decision) {
   return {
     provider: 'kmp_test', subcommand: classification.subcommand, bashIndex: bashResult.index, resultIndex: bashResult.resultIndex,
     hasEvidence, malformed, targetMatches, intendedTargetMatches, outcomeMatches, parallelEvidenceInvalid, changedEvidenceInvalid, observedResult,
+    envelopeSubcommand: hasEvidence ? envelope.subcommand : null,
     minMissedLines: classification.minMissedLines,
     coverageDisabled: classification.coverageDisabled,
   };
@@ -1920,6 +1921,96 @@ const KMP_EVAL_RESULT_TESTS_EXECUTED_KEYS = new Set(['module', 'outcome_kind', '
 const KMP_EVAL_RESULT_COVERAGE_THRESHOLD_KEYS = new Set(['module', 'outcome_kind', 'total', 'passed', 'failed', 'missed_lines', 'threshold', 'modules_contributing']);
 const KMP_EVAL_RESULT_NO_APPLICABLE_KEYS = new Set(['module', 'outcome_kind']);
 const KMP_EVAL_RESULT_NO_APPLICABLE_OPTIONAL_COUNT_KEYS = ['total', 'passed', 'failed'];
+const KMP_EVAL_RESULT_FIELD_ORDER = [
+  'module', 'outcome_kind', 'total', 'passed', 'failed', 'missed_lines', 'threshold', 'modules_contributing',
+];
+const KMP_EVAL_CANONICAL_OUTCOME_KINDS = new Set([
+  'tests_executed',
+  'no_applicable_tests',
+  'tests_failed',
+  'coverage_threshold_exceeded',
+]);
+
+function expectedKmpEvalResultFieldsFor(observedResult) {
+  if (observedResult == null) return new Set();
+  if (observedResult.outcome_kind === 'coverage_threshold_exceeded') return KMP_EVAL_RESULT_COVERAGE_THRESHOLD_KEYS;
+  if (observedResult.outcome_kind === 'tests_executed' || observedResult.outcome_kind === 'tests_failed') return KMP_EVAL_RESULT_TESTS_EXECUTED_KEYS;
+  return KMP_EVAL_RESULT_NO_APPLICABLE_KEYS;
+}
+
+function orderedKmpEvalResultFields(fields) {
+  const fieldSet = new Set(fields);
+  return KMP_EVAL_RESULT_FIELD_ORDER.filter((f) => fieldSet.has(f));
+}
+
+function normalizeDeclaredOutcomeKind(block) {
+  if (typeof block?.outcome_kind !== 'string') return null;
+  return KMP_EVAL_CANONICAL_OUTCOME_KINDS.has(block.outcome_kind) ? block.outcome_kind : 'unrecognized';
+}
+
+function compareKmpEvalResultBlockToObserved(block, observedResult) {
+  const diagnostic = {
+    matches_observed: false,
+    comparison_status: 'no-observed-result',
+    declared_outcome_kind: normalizeDeclaredOutcomeKind(block),
+    observed_outcome_kind: observedResult?.outcome_kind ?? null,
+    missing_fields: [],
+    mismatch_fields: [],
+    unexpected_key_count: 0,
+  };
+  if (observedResult == null) return diagnostic;
+  if (block == null || typeof block !== 'object' || Array.isArray(block)) {
+    diagnostic.comparison_status = 'invalid-json';
+    return diagnostic;
+  }
+
+  const expectedFields = expectedKmpEvalResultFieldsFor(observedResult);
+  const allowedFields = observedResult.outcome_kind === 'no_applicable_tests'
+    ? new Set([...expectedFields, ...KMP_EVAL_RESULT_NO_APPLICABLE_OPTIONAL_COUNT_KEYS])
+    : expectedFields;
+  const keys = Object.keys(block);
+  diagnostic.unexpected_key_count = keys.filter((k) => !allowedFields.has(k)).length;
+  diagnostic.missing_fields = orderedKmpEvalResultFields([...expectedFields].filter((k) => !keys.includes(k)));
+
+  if (typeof block.module !== 'string' || normalizeModuleName(block.module) !== observedResult.module) {
+    diagnostic.mismatch_fields.push('module');
+  }
+  if (diagnostic.declared_outcome_kind !== observedResult.outcome_kind) {
+    diagnostic.mismatch_fields.push('outcome_kind');
+  }
+
+  const compareIntegerField = (field) => {
+    if (!expectedFields.has(field)) return;
+    if (!Number.isInteger(block[field]) || block[field] !== observedResult[field]) {
+      diagnostic.mismatch_fields.push(field);
+    }
+  };
+  for (const field of ['total', 'passed', 'failed', 'missed_lines', 'threshold', 'modules_contributing']) {
+    compareIntegerField(field);
+  }
+
+  if (observedResult.outcome_kind === 'no_applicable_tests') {
+    const presentCountKeys = KMP_EVAL_RESULT_NO_APPLICABLE_OPTIONAL_COUNT_KEYS.filter((k) => keys.includes(k));
+    if (presentCountKeys.length > 0) {
+      if (presentCountKeys.length !== KMP_EVAL_RESULT_NO_APPLICABLE_OPTIONAL_COUNT_KEYS.length) {
+        diagnostic.missing_fields.push(...KMP_EVAL_RESULT_NO_APPLICABLE_OPTIONAL_COUNT_KEYS.filter((k) => !keys.includes(k)));
+      } else {
+        for (const field of presentCountKeys) {
+          if (block[field] !== 0) diagnostic.mismatch_fields.push(field);
+        }
+      }
+    }
+  }
+
+  diagnostic.mismatch_fields = orderedKmpEvalResultFields(new Set(diagnostic.mismatch_fields));
+  if (diagnostic.missing_fields.length > 0 || diagnostic.unexpected_key_count > 0 || diagnostic.mismatch_fields.length > 0) {
+    diagnostic.comparison_status = 'field-mismatch';
+  } else {
+    diagnostic.comparison_status = 'matched';
+    diagnostic.matches_observed = true;
+  }
+  return diagnostic;
+}
 
 /** Strictly validates a parsed `KMP_EVAL_RESULT` block against the terminal attempt's OWN observed
  * facts (`observedResult`, derived by deriveObservedKmpTestResult/deriveObservedGradleResult from
@@ -1944,34 +2035,7 @@ const KMP_EVAL_RESULT_NO_APPLICABLE_OPTIONAL_COUNT_KEYS = ['total', 'passed', 'f
  * non-zero count). This is a single, bounded, explicitly-reasoned rule -- not the start of a new
  * enumerated-phrasings problem the rest of this file's redesign exists to avoid. */
 function kmpEvalResultBlockMatchesObserved(block, observedResult) {
-  if (observedResult == null) return false;
-  if (block == null || typeof block !== 'object' || Array.isArray(block)) return false;
-  if (typeof block.module !== 'string' || normalizeModuleName(block.module) !== observedResult.module) return false;
-  if (block.outcome_kind !== observedResult.outcome_kind) return false;
-
-  const keys = Object.keys(block);
-  // Checked BEFORE the isRanOutcome()-style grouping below -- coverage_threshold_exceeded's own key
-  // set genuinely differs (it needs missed_lines/threshold/modules_contributing, which the shared
-  // tests_executed/tests_failed shape has no room for).
-  if (observedResult.outcome_kind === 'coverage_threshold_exceeded') {
-    if (keys.length !== KMP_EVAL_RESULT_COVERAGE_THRESHOLD_KEYS.size || keys.some((k) => !KMP_EVAL_RESULT_COVERAGE_THRESHOLD_KEYS.has(k))) return false;
-    return Number.isInteger(block.total) && Number.isInteger(block.passed) && Number.isInteger(block.failed)
-      && block.total === observedResult.total && block.passed === observedResult.passed && block.failed === observedResult.failed
-      && Number.isInteger(block.missed_lines) && block.missed_lines === observedResult.missed_lines
-      && Number.isInteger(block.threshold) && block.threshold === observedResult.threshold
-      && Number.isInteger(block.modules_contributing) && block.modules_contributing === observedResult.modules_contributing;
-  }
-  if (observedResult.outcome_kind === 'tests_executed' || observedResult.outcome_kind === 'tests_failed') {
-    if (keys.length !== KMP_EVAL_RESULT_TESTS_EXECUTED_KEYS.size || keys.some((k) => !KMP_EVAL_RESULT_TESTS_EXECUTED_KEYS.has(k))) return false;
-    return Number.isInteger(block.total) && Number.isInteger(block.passed) && Number.isInteger(block.failed)
-      && block.total === observedResult.total && block.passed === observedResult.passed && block.failed === observedResult.failed;
-  }
-  // no_applicable_tests
-  if (keys.some((k) => !KMP_EVAL_RESULT_NO_APPLICABLE_KEYS.has(k) && !KMP_EVAL_RESULT_NO_APPLICABLE_OPTIONAL_COUNT_KEYS.includes(k))) return false;
-  const presentCountKeys = KMP_EVAL_RESULT_NO_APPLICABLE_OPTIONAL_COUNT_KEYS.filter((k) => keys.includes(k));
-  if (presentCountKeys.length === 0) return true;
-  if (presentCountKeys.length !== KMP_EVAL_RESULT_NO_APPLICABLE_OPTIONAL_COUNT_KEYS.length) return false;
-  return block.total === 0 && block.passed === 0 && block.failed === 0;
+  return compareKmpEvalResultBlockToObserved(block, observedResult).matches_observed;
 }
 
 /** @param {object|null} observedResult - the terminal attempt's own canonical observed facts (see
@@ -1980,19 +2044,46 @@ function kmpEvalResultBlockMatchesObserved(block, observedResult) {
  *   of what the final-answer block itself claims. */
 function evaluateFinalAnswer(finalText, observedResult) {
   const text = typeof finalText === 'string' ? finalText : '';
-  if (text.length === 0) return { passed: false, detail: 'no final answer text found', diagnostic: { found: false, parsed: false, ambiguous: false, matches_observed: false } };
+  const diagnosticFor = (base, comparison = {}) => ({
+    found: false,
+    parsed: false,
+    ambiguous: false,
+    matches_observed: false,
+    comparison_status: text.length === 0 ? 'no-final-text' : 'missing-block',
+    declared_outcome_kind: null,
+    observed_outcome_kind: observedResult?.outcome_kind ?? null,
+    missing_fields: [],
+    mismatch_fields: [],
+    unexpected_key_count: 0,
+    ...base,
+    ...comparison,
+  });
+  if (text.length === 0) return { passed: false, detail: 'no final answer text found', diagnostic: diagnosticFor({}) };
 
   const { found, parsed, ambiguous } = extractKmpEvalResultBlock(text);
-  if (!found) return { passed: false, detail: 'final answer contains no KMP_EVAL_RESULT block', diagnostic: { found: false, parsed: false, ambiguous: false, matches_observed: false } };
-  if (ambiguous) return { passed: false, detail: 'final answer contains more than one KMP_EVAL_RESULT block -- ambiguous, not resolved by picking one', diagnostic: { found: true, parsed: false, ambiguous: true, matches_observed: false } };
-  if (parsed == null) return { passed: false, detail: 'the KMP_EVAL_RESULT block did not parse as valid JSON', diagnostic: { found: true, parsed: false, ambiguous: false, matches_observed: false } };
+  if (!found) return { passed: false, detail: 'final answer contains no KMP_EVAL_RESULT block', diagnostic: diagnosticFor({}) };
+  if (ambiguous) return { passed: false, detail: 'final answer contains more than one KMP_EVAL_RESULT block -- ambiguous, not resolved by picking one', diagnostic: diagnosticFor({ found: true, ambiguous: true, comparison_status: 'ambiguous-block' }) };
+  if (parsed == null) return { passed: false, detail: 'the KMP_EVAL_RESULT block did not parse as valid JSON', diagnostic: diagnosticFor({ found: true, comparison_status: 'invalid-json' }) };
   if (observedResult == null) {
-    return { passed: false, detail: 'no well-formed, canonicalizable observed result from the terminal attempt to compare the KMP_EVAL_RESULT block against', diagnostic: { found: true, parsed: true, ambiguous: false, matches_observed: false } };
+    return {
+      passed: false,
+      detail: 'no well-formed, canonicalizable observed result from the terminal attempt to compare the KMP_EVAL_RESULT block against',
+      diagnostic: diagnosticFor({ found: true, parsed: true }, compareKmpEvalResultBlockToObserved(parsed, observedResult)),
+    };
   }
-  if (!kmpEvalResultBlockMatchesObserved(parsed, observedResult)) {
-    return { passed: false, detail: "the KMP_EVAL_RESULT block does not exactly match the facts observed in the terminal attempt's own evidence (module/outcome_kind/counts, or carries unexpected/missing keys)", diagnostic: { found: true, parsed: true, ambiguous: false, matches_observed: false } };
+  const comparison = compareKmpEvalResultBlockToObserved(parsed, observedResult);
+  if (!comparison.matches_observed) {
+    return {
+      passed: false,
+      detail: "the KMP_EVAL_RESULT block does not exactly match the facts observed in the terminal attempt's own evidence (module/outcome_kind/counts, or carries unexpected/missing keys)",
+      diagnostic: diagnosticFor({ found: true, parsed: true }, comparison),
+    };
   }
-  return { passed: true, detail: "the KMP_EVAL_RESULT block exactly matches the facts observed in the terminal attempt's own evidence", diagnostic: { found: true, parsed: true, ambiguous: false, matches_observed: true } };
+  return {
+    passed: true,
+    detail: "the KMP_EVAL_RESULT block exactly matches the facts observed in the terminal attempt's own evidence",
+    diagnostic: diagnosticFor({ found: true, parsed: true }, comparison),
+  };
 }
 
 function coverageGateAttemptContext(bashResults, scenario, decisionByAttempt) {
@@ -2032,7 +2123,126 @@ function coverageGateDiagnostic(terminal, evidenceWellFormed, scenario, context)
   return 'coverage-outcome-mismatch';
 }
 
-function terminalEvidenceDiagnostic(terminal, evidenceWellFormed, scenario, finalAnswer, coverageGateContext) {
+function thresholdRelationForAttempt(attempt, scenario) {
+  if (attempt.subcommand === 'coverage') return 'not-applicable';
+  const expected = scenario.expected.kmp_test.coverage.min_missed_lines;
+  if (attempt.minMissedLines == null || expected == null) return 'missing';
+  return String(attempt.minMissedLines) === String(expected) ? 'matches' : 'differs';
+}
+
+function coverageGateAttemptReason(attempt, evidenceWellFormed, scenario) {
+  if (attempt.provider !== 'kmp_test') return 'operation-not-eligible';
+  if (attempt.subcommand !== 'parallel') return 'operation-not-eligible';
+  if (attempt.envelopeSubcommand != null && attempt.envelopeSubcommand !== attempt.subcommand) return 'subcommand-mismatch';
+  if (attempt.coverageDisabled === true) return 'coverage-block-incoherent';
+  if (attempt.minMissedLines == null) return 'threshold-missing';
+  if (String(attempt.minMissedLines) !== String(scenario.expected.kmp_test.coverage.min_missed_lines)) return 'threshold-mismatch';
+  if (!attempt.hasEvidence || attempt.malformed === true) return 'result-status-contradiction';
+  if (attempt.parallelEvidenceInvalid === true) return 'test-detail-incoherent';
+  if (attempt.changedEvidenceInvalid === true) return 'dispatch-evidence-incoherent';
+  if (attempt.targetMatches !== true) return 'module-scope-incoherent';
+  if (attempt.outcomeMatches) return 'canonical';
+  if (!evidenceWellFormed && attempt.terminal_authoritative === true) return 'result-status-contradiction';
+  if (attempt.observedResult?.outcome_kind === 'tests_executed') return 'outcome-not-canonicalizable';
+  return 'outcome-not-canonicalizable';
+}
+
+function testsContractForCoverageAttempt(attempt) {
+  if (attempt.subcommand === 'coverage') return 'not-applicable';
+  const observed = attempt.observedResult;
+  if (observed == null) return 'unavailable';
+  return Number.isInteger(observed.total)
+    && Number.isInteger(observed.passed)
+    && Number.isInteger(observed.failed)
+    ? 'matches'
+    : 'differs';
+}
+
+function coverageContractForCoverageAttempt(attempt) {
+  if (attempt.subcommand === 'coverage') return 'not-applicable';
+  const observed = attempt.observedResult;
+  if (observed == null || observed.outcome_kind !== 'coverage_threshold_exceeded') return 'unavailable';
+  return Number.isInteger(observed.missed_lines)
+    && Number.isInteger(observed.threshold)
+    && Number.isInteger(observed.modules_contributing)
+    ? 'matches'
+    : 'differs';
+}
+
+function errorContractForCoverageAttempt(attempt) {
+  if (attempt.subcommand === 'coverage') return 'not-applicable';
+  const observed = attempt.observedResult;
+  if (observed == null) return 'unavailable';
+  return observed.outcome_kind === 'coverage_threshold_exceeded' ? 'matches' : 'unavailable';
+}
+
+function exitCodeContractForCoverageAttempt(attempt) {
+  if (attempt.subcommand === 'coverage') return 'not-applicable';
+  const observed = attempt.observedResult;
+  if (observed == null) return 'unavailable';
+  return observed.outcome_kind === 'coverage_threshold_exceeded' ? 'matches' : 'differs';
+}
+
+function coverageGateAttemptDiagnostics(bashResults, kmpTestAttempts, terminal, evidenceWellFormed, scenario, decisionByAttempt) {
+  if (scenario.expected.outcome_kind !== 'coverage_threshold_exceeded') return [];
+  const evaluatedByResultIndex = new Map(kmpTestAttempts.map((attempt) => [attempt.resultIndex, attempt]));
+  return bashResults
+    .map((b) => {
+      const decision = decisionByAttempt.get(b.id);
+      if (decision === 'deny' || decision === null) return null;
+      const classification = classifyBashCommand(b.command);
+      if (classification.kind !== 'kmp-test') return null;
+      if (classification.isPlanOnly) return null;
+      if (classification.subcommand !== 'parallel' && classification.subcommand !== 'coverage') return null;
+      if (classification.subcommand === 'parallel') {
+        return evaluatedByResultIndex.get(b.resultIndex) ?? {
+          provider: 'kmp_test',
+          subcommand: 'parallel',
+          resultIndex: b.resultIndex,
+          hasEvidence: false,
+          targetMatches: null,
+          outcomeMatches: null,
+          observedResult: null,
+          coverageDisabled: classification.coverageDisabled === true,
+          minMissedLines: classification.minMissedLines,
+        };
+      }
+      return {
+        provider: 'kmp_test',
+        subcommand: 'coverage',
+        resultIndex: b.resultIndex,
+        hasEvidence: b.resultContent != null,
+        targetMatches: null,
+        outcomeMatches: null,
+        observedResult: null,
+        coverageDisabled: false,
+        minMissedLines: classification.minMissedLines,
+      };
+    })
+    .filter(Boolean)
+    .map((attempt) => {
+      const reason = coverageGateAttemptReason(attempt, evidenceWellFormed, scenario);
+      const isCoverageOnly = attempt.subcommand === 'coverage';
+      const canonical = reason === 'canonical';
+      return {
+      tool_result_event_index: attempt.resultIndex,
+      recognized_operation: attempt.subcommand,
+      terminal_authoritative: terminal != null && attempt.resultIndex === terminal.resultIndex,
+      threshold_relation: thresholdRelationForAttempt(attempt, scenario),
+      canonicalization_status: isCoverageOnly ? 'not-applicable' : canonical ? 'canonical' : 'uncanonicalizable',
+      canonicalization_reason: reason,
+      tests_contract: testsContractForCoverageAttempt(attempt),
+      coverage_contract: coverageContractForCoverageAttempt(attempt),
+      error_contract: errorContractForCoverageAttempt(attempt),
+      exit_code_contract: exitCodeContractForCoverageAttempt(attempt),
+      target_matches_expected: isCoverageOnly ? null : attempt.targetMatches === true,
+      observed_outcome_kind: attempt.observedResult?.outcome_kind ?? null,
+      outcome_matches_expected: isCoverageOnly ? null : attempt.outcomeMatches === true,
+    };
+  });
+}
+
+function terminalEvidenceDiagnostic(terminal, evidenceWellFormed, scenario, finalAnswer, coverageGateContext, coverageGateAttempts) {
   const coverage_gate_diagnostic = coverageGateDiagnostic(terminal, evidenceWellFormed, scenario, coverageGateContext);
   if (terminal == null) {
     return {
@@ -2048,6 +2258,7 @@ function terminalEvidenceDiagnostic(terminal, evidenceWellFormed, scenario, fina
       observed_result: null,
       final_answer_block: finalAnswer.diagnostic,
       coverage_gate_diagnostic,
+      coverage_gate_attempts: coverageGateAttempts,
     };
   }
   const observed = terminal.observedResult;
@@ -2074,6 +2285,7 @@ function terminalEvidenceDiagnostic(terminal, evidenceWellFormed, scenario, fina
     observed_result: observedSummary,
     final_answer_block: finalAnswer.diagnostic,
     coverage_gate_diagnostic,
+    coverage_gate_attempts: coverageGateAttempts,
   };
 }
 
@@ -2274,6 +2486,7 @@ export function gradeScenarioCondition(conditionResult, scenario) {
   // best-effort derivation might otherwise have produced.
   const observedResult = evidenceWellFormed ? terminal.observedResult : null;
   const finalAnswer = evaluateFinalAnswer(observation.terminal.finalText, observedResult);
+  const coverageGateAttempts = coverageGateAttemptDiagnostics(bashResults, kmpTestAttempts, terminal, evidenceWellFormed, scenario, junitAttribution.decisionByAttempt);
   addCheck('final_answer_consistent_with_evidence', finalAnswer.passed, finalAnswer.detail);
 
   const success = expectedOutcomeMatched && finalAnswer.passed;
@@ -2350,6 +2563,6 @@ export function gradeScenarioCondition(conditionResult, scenario) {
     // file, or the capture bounds were exceeded, on some relevant Gradle attempt) -- see
     // junit-evidence.mjs's countEvidenceTaskJunit/attributeCondition.
     gradleJunitEvidenceUnreliable,
-    terminalEvidence: terminalEvidenceDiagnostic(terminal, evidenceWellFormed, scenario, finalAnswer, coverageGateContext),
+    terminalEvidence: terminalEvidenceDiagnostic(terminal, evidenceWellFormed, scenario, finalAnswer, coverageGateContext, coverageGateAttempts),
   };
 }

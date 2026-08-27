@@ -1143,6 +1143,11 @@ describe('buildSummary', () => {
         canonical_output_available: false,
         evidence_quality: 'product-canonical',
         coverage_gate_diagnostic: 'missing-threshold-gate',
+        coverage_gate_attempt_count: 1,
+        coverage_gate_terminal_canonicalization_reason: 'threshold-missing',
+        coverage_gate_contract_failures: ['canonicalization', 'threshold', 'coverage', 'error', 'exit_code', 'outcome'],
+        final_answer_comparison_status: 'field-mismatch',
+        final_answer_mismatch_fields: ['threshold'],
         programmatic_product_outcome_matched: true,
         final_answer_protocol_only_failure: true,
         success: false,
@@ -1166,6 +1171,11 @@ describe('buildSummary', () => {
         canonical_output_available: false,
         evidence_quality: 'claim-only',
         coverage_gate_diagnostic: 'no-terminal-evidence',
+        coverage_gate_attempt_count: 1,
+        coverage_gate_terminal_canonicalization_reason: 'operation-not-eligible',
+        coverage_gate_contract_failures: ['operation'],
+        final_answer_comparison_status: 'missing-block',
+        final_answer_mismatch_fields: [],
         programmatic_product_outcome_matched: false,
         final_answer_protocol_only_failure: true,
         success: false,
@@ -1208,6 +1218,28 @@ describe('buildSummary', () => {
     expect(group.coverage_gate_diagnostic_distribution).toEqual({
       'missing-threshold-gate': 1,
       'no-terminal-evidence': 1,
+    });
+    expect(group.coverage_gate_attempt_count_distribution).toEqual({ 1: 2 });
+    expect(group.coverage_gate_terminal_canonicalization_reason_distribution).toEqual({
+      'operation-not-eligible': 1,
+      'threshold-missing': 1,
+    });
+    expect(group.coverage_gate_contract_failure_distribution).toEqual({
+      canonicalization: 1,
+      coverage: 1,
+      error: 1,
+      exit_code: 1,
+      operation: 1,
+      outcome: 1,
+      threshold: 1,
+    });
+    expect(group.final_answer_comparison_status_distribution).toEqual({
+      'field-mismatch': 1,
+      'missing-block': 1,
+    });
+    expect(group.final_answer_mismatch_field_distribution).toEqual({
+      none: 1,
+      threshold: 1,
     });
     expect(group.programmatic_product_outcome_matched_count).toBe(1);
     expect(group.programmatic_product_outcome_matched_rate).toBe(0.5);

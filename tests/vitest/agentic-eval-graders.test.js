@@ -3499,6 +3499,13 @@ describe('gradeScenarioCondition -- a wrong-module attempt whose decision sideca
 });
 
 describe('gradeScenarioCondition -- coverage_threshold_exceeded (SCENARIO_5, the 5th outcome_kind)', () => {
+  function singleCoverageGateAttempt(step, finalAnswerText = SCENARIO_5_CORRECT_ANSWER) {
+    const cr = buildConditionResult([step], finalAnswerText);
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.terminalEvidence.coverage_gate_attempts).toHaveLength(1);
+    return grade.terminalEvidence.coverage_gate_attempts[0];
+  }
+
   it('accepts a well-formed condition -- single kmp_test attempt, terminal, success:true, all 8 checks pass', () => {
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED }],
@@ -3510,6 +3517,21 @@ describe('gradeScenarioCondition -- coverage_threshold_exceeded (SCENARIO_5, the
     expect(grade.checks).toHaveLength(8);
     expect(grade.checks.every((c) => c.passed)).toBe(true);
     expect(grade.terminalEvidence.coverage_gate_diagnostic).toBe('matched');
+    expect(grade.terminalEvidence.coverage_gate_attempts).toEqual([{
+      tool_result_event_index: 2,
+      recognized_operation: 'parallel',
+      terminal_authoritative: true,
+      canonicalization_status: 'canonical',
+      canonicalization_reason: 'canonical',
+      threshold_relation: 'matches',
+      tests_contract: 'matches',
+      coverage_contract: 'matches',
+      error_contract: 'matches',
+      exit_code_contract: 'matches',
+      target_matches_expected: true,
+      observed_outcome_kind: 'coverage_threshold_exceeded',
+      outcome_matches_expected: true,
+    }]);
   });
 
   it('diagnoses the live Evidence 1 class: parallel ran the module tests cleanly but never produced the coverage-threshold gate evidence', () => {
@@ -3535,6 +3557,42 @@ describe('gradeScenarioCondition -- coverage_threshold_exceeded (SCENARIO_5, the
     expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(false);
     expect(grade.terminalEvidence.present).toBe(false);
     expect(grade.terminalEvidence.coverage_gate_diagnostic).toBe('coverage-only-not-terminal');
+    expect(grade.terminalEvidence.coverage_gate_attempts).toEqual([{
+      tool_result_event_index: 2,
+      recognized_operation: 'coverage',
+      terminal_authoritative: false,
+      canonicalization_status: 'not-applicable',
+      canonicalization_reason: 'operation-not-eligible',
+      threshold_relation: 'not-applicable',
+      tests_contract: 'not-applicable',
+      coverage_contract: 'not-applicable',
+      error_contract: 'not-applicable',
+      exit_code_contract: 'not-applicable',
+      target_matches_expected: null,
+      observed_outcome_kind: null,
+      outcome_matches_expected: null,
+    }]);
+  });
+
+  it.each([
+    ['threshold-missing', { command: 'kmp-test parallel --module-filter :core:domain --json', resultContent: cleanCoverageGateFreeEnvelope() }, { threshold_relation: 'missing', observed_outcome_kind: 'tests_executed' }],
+    ['threshold-mismatch', { command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 40 --json', resultContent: coverageEnvelope({ errors: [{ code: 'coverage_threshold_exceeded', message: 'x', threshold: 40, missed_lines: 45 }] }) }, { threshold_relation: 'differs', observed_outcome_kind: null }],
+    ['coverage-block-incoherent', { command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --no-coverage --json', resultContent: cleanCoverageGateFreeEnvelope() }, { threshold_relation: 'matches', observed_outcome_kind: 'tests_executed' }],
+    ['result-status-contradiction', { command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: '{not-json' }, { threshold_relation: 'matches', observed_outcome_kind: null }],
+    ['subcommand-mismatch', { command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({ subcommand: 'doctor' }) }, { threshold_relation: 'matches', observed_outcome_kind: null }],
+    ['test-detail-incoherent', { command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({ parallel: { legs: [null] } }) }, { threshold_relation: 'matches', observed_outcome_kind: null }],
+    ['module-scope-incoherent', { command: 'kmp-test parallel --module-filter :core:common --min-missed-lines 15 --json', resultContent: coverageEnvelope({ modules: [{ name: 'core:common', type: 'jvm', coverage_plugin: null }] }) }, { threshold_relation: 'matches', observed_outcome_kind: null }],
+    ['outcome-not-canonicalizable', { command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: cleanCoverageGateFreeEnvelope() }, { threshold_relation: 'matches', observed_outcome_kind: 'tests_executed' }],
+  ])('surfaces closed coverage attempt reason %s without raw command text', (reason, step, expected) => {
+    const attempt = singleCoverageGateAttempt(step);
+    expect(attempt.canonicalization_status).toBe('uncanonicalizable');
+    expect(attempt.canonicalization_reason).toBe(reason);
+    expect(attempt.threshold_relation).toBe(expected.threshold_relation);
+    expect(attempt.observed_outcome_kind).toBe(expected.observed_outcome_kind);
+    const serialized = JSON.stringify(attempt);
+    expect(serialized).not.toContain('--module-filter');
+    expect(serialized).not.toContain(':core:domain');
+    expect(serialized).not.toContain(':core:common');
   });
 
   it('diagnoses a threshold mismatch without leaking the raw command string', () => {
@@ -4142,6 +4200,78 @@ describe('gradeScenarioCondition -- coverage_threshold_exceeded (SCENARIO_5, the
   });
 
   describe('final-answer (check 8) -- closed KMP_EVAL_RESULT key set for this outcome_kind', () => {
+    function gradeFinalAnswerBlock(blockText) {
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED }],
+        blockText,
+      );
+      return gradeScenarioCondition(cr, SCENARIO_5).terminalEvidence.final_answer_block;
+    }
+
+    const correctCoverageResultBlock = Object.freeze({
+      module: ':core:domain',
+      outcome_kind: 'coverage_threshold_exceeded',
+      total: 4,
+      passed: 4,
+      failed: 0,
+      missed_lines: 23,
+      threshold: 15,
+      modules_contributing: 1,
+    });
+
+    it('classifies empty final text as no-final-text', () => {
+      const diagnostic = gradeFinalAnswerBlock('');
+      expect(diagnostic.comparison_status).toBe('no-final-text');
+      expect(diagnostic.matches_observed).toBe(false);
+    });
+
+    it('classifies malformed JSON inside a KMP_EVAL_RESULT block as invalid-json', () => {
+      const diagnostic = gradeFinalAnswerBlock('KMP_EVAL_RESULT\n{"module":\nKMP_EVAL_RESULT_END\n');
+      expect(diagnostic.comparison_status).toBe('invalid-json');
+      expect(diagnostic.matches_observed).toBe(false);
+    });
+
+    it('classifies a parsed final block with no canonical observed result as no-observed-result', () => {
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test coverage --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope() }],
+        kmpEvalResultText('Coverage only is not terminal.', correctCoverageResultBlock),
+      );
+      const diagnostic = gradeScenarioCondition(cr, SCENARIO_5).terminalEvidence.final_answer_block;
+      expect(diagnostic.comparison_status).toBe('no-observed-result');
+      expect(diagnostic.observed_outcome_kind).toBe(null);
+      expect(diagnostic.matches_observed).toBe(false);
+    });
+
+    it.each([
+      ['module', { module: 'C:\\secret\\module' }],
+      ['outcome_kind', { outcome_kind: 'tests_executed' }],
+      ['total', { total: 5 }],
+      ['passed', { passed: 3 }],
+      ['failed', { failed: 1 }],
+      ['missed_lines', { missed_lines: 24 }],
+      ['threshold', { threshold: 16 }],
+      ['modules_contributing', { modules_contributing: 2 }],
+    ])('reports only the closed mismatch field name for %s', (field, override) => {
+      const diagnostic = gradeFinalAnswerBlock(kmpEvalResultText('Mismatch.', { ...correctCoverageResultBlock, ...override }));
+      expect(diagnostic.comparison_status).toBe('field-mismatch');
+      expect(diagnostic.missing_fields).toEqual([]);
+      expect(diagnostic.mismatch_fields).toEqual([field]);
+      expect(diagnostic.unexpected_key_count).toBe(0);
+      const serialized = JSON.stringify(diagnostic);
+      expect(serialized).not.toContain('C:\\secret');
+    });
+
+    it('collapses an arbitrary outcome value to unrecognized without leaking the arbitrary value', () => {
+      const diagnostic = gradeFinalAnswerBlock(kmpEvalResultText('Secret arbitrary outcome.', {
+        ...correctCoverageResultBlock,
+        outcome_kind: 'secret-unregistered-outcome',
+      }));
+      expect(diagnostic.comparison_status).toBe('field-mismatch');
+      expect(diagnostic.declared_outcome_kind).toBe('unrecognized');
+      expect(diagnostic.mismatch_fields).toEqual(['outcome_kind']);
+      expect(JSON.stringify(diagnostic)).not.toContain('secret-unregistered-outcome');
+    });
+
     it('rejects a block missing missed_lines/threshold/modules_contributing (the tests_executed-shaped subset alone is insufficient for this outcome)', () => {
       const cr = buildConditionResult(
         [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED }],
@@ -4149,6 +4279,7 @@ describe('gradeScenarioCondition -- coverage_threshold_exceeded (SCENARIO_5, the
       );
       const grade = gradeScenarioCondition(cr, SCENARIO_5);
       expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+      expect(grade.terminalEvidence.final_answer_block.comparison_status).toBe('field-mismatch');
       expect(grade.success).toBe(false);
     });
 
@@ -4159,6 +4290,7 @@ describe('gradeScenarioCondition -- coverage_threshold_exceeded (SCENARIO_5, the
       );
       const grade = gradeScenarioCondition(cr, SCENARIO_5);
       expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+      expect(grade.terminalEvidence.final_answer_block.comparison_status).toBe('field-mismatch');
       expect(grade.success).toBe(false);
     });
 
@@ -4169,6 +4301,7 @@ describe('gradeScenarioCondition -- coverage_threshold_exceeded (SCENARIO_5, the
       );
       const grade = gradeScenarioCondition(cr, SCENARIO_5);
       expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+      expect(grade.terminalEvidence.final_answer_block.comparison_status).toBe('missing-block');
       expect(grade.success).toBe(false);
     });
 

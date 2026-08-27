@@ -74,7 +74,11 @@ import {
 // product-vs-free-baseline interpretation explicit: product runs can be credited for canonical
 // programmatic evidence, and free-baseline runs can be reported as claim-only rather than silently
 // forced into the same product evidence contract.
-export const ANALYSIS_SCHEMA = 5;
+//
+// v5 -> v6 (coverage outcome observability): per-run entries and group summaries now expose v8
+// accepted-run-audit's privacy-safe final-answer comparison status and coverage-gate attempt
+// canonicalization/contract summaries. Historical sidecars report `not-recorded` / empty arrays.
+export const ANALYSIS_SCHEMA = 6;
 
 /** Closed vocabulary for `failure_class` -- exactly one per run, resolved by classifyFailure's own
  * documented precedence. `success` is not a "failure" in the literal sense; it is included so every
@@ -168,6 +172,8 @@ function finalAnswerBlockView(sidecar, finalAnswerConsistent) {
       found: typeof block.found === 'boolean' ? block.found : null,
       parsed: typeof block.parsed === 'boolean' ? block.parsed : null,
       matches_observed: typeof block.matches_observed === 'boolean' ? block.matches_observed : null,
+      comparison_status: typeof block.comparison_status === 'string' ? block.comparison_status : 'not-recorded',
+      mismatch_fields: Array.isArray(block.mismatch_fields) ? block.mismatch_fields.filter((f) => typeof f === 'string') : [],
     };
   }
   // Legacy sidecars (v1-v5) did not carry terminal_evidence.final_answer_block. Preserve a useful
@@ -176,7 +182,34 @@ function finalAnswerBlockView(sidecar, finalAnswerConsistent) {
     found: finalAnswerConsistent === true ? true : null,
     parsed: finalAnswerConsistent === true ? true : null,
     matches_observed: finalAnswerConsistent === true ? true : null,
+    comparison_status: 'not-recorded',
+    mismatch_fields: [],
   };
+}
+
+function coverageGateAttemptsView(sidecar) {
+  const attempts = sidecar?.terminal_evidence?.coverage_gate_attempts;
+  return Array.isArray(attempts) ? attempts.filter((a) => a != null && typeof a === 'object' && !Array.isArray(a)) : [];
+}
+
+function coverageGateContractFailures(attempts) {
+  const failures = new Set();
+  for (const attempt of attempts) {
+    if (attempt.recognized_operation === 'coverage') failures.add('operation');
+    if (attempt.canonicalization_status === 'uncanonicalizable') failures.add('canonicalization');
+    if (attempt.threshold_relation === 'differs' || attempt.threshold_relation === 'missing') failures.add('threshold');
+    if (attempt.tests_contract === 'differs' || attempt.tests_contract === 'unavailable') failures.add('tests');
+    if (attempt.coverage_contract === 'differs' || attempt.coverage_contract === 'unavailable') failures.add('coverage');
+    if (attempt.error_contract === 'differs' || attempt.error_contract === 'unavailable') failures.add('error');
+    if (attempt.exit_code_contract === 'differs' || attempt.exit_code_contract === 'unavailable') failures.add('exit_code');
+    if (attempt.target_matches_expected === false) failures.add('target');
+    if (attempt.outcome_matches_expected === false) failures.add('outcome');
+  }
+  return [...failures].sort();
+}
+
+function stringArrayOrEmpty(value) {
+  return Array.isArray(value) ? value.filter((item) => typeof item === 'string') : [];
 }
 
 function evidenceQualityFor({
@@ -368,6 +401,13 @@ export function analyzeRunRecord(record, sidecar) {
   const coverage_gate_diagnostic = typeof sidecar?.terminal_evidence?.coverage_gate_diagnostic === 'string'
     ? sidecar.terminal_evidence.coverage_gate_diagnostic
     : 'not-recorded';
+  const coverageGateAttempts = coverageGateAttemptsView(sidecar);
+  const terminalCoverageGateAttempt = coverageGateAttempts.find((a) => a.terminal_authoritative === true) ?? null;
+  const coverage_gate_attempt_count = coverageGateAttempts.length;
+  const coverage_gate_terminal_canonicalization_reason = terminalCoverageGateAttempt?.canonicalization_reason ?? 'not-recorded';
+  const coverage_gate_contract_failures = coverageGateContractFailures(coverageGateAttempts);
+  const final_answer_comparison_status = finalAnswerBlock.comparison_status;
+  const final_answer_mismatch_fields = finalAnswerBlock.mismatch_fields;
   const task_outcome_matched = expected_outcome_matched;
   const answer_protocol_matched = final_answer_consistent;
   const programmatic_evidence_available = terminal_authoritative_evidence_present === true
@@ -433,6 +473,11 @@ export function analyzeRunRecord(record, sidecar) {
       canonical_output_available,
       evidence_quality,
       coverage_gate_diagnostic,
+      coverage_gate_attempt_count,
+      coverage_gate_terminal_canonicalization_reason,
+      coverage_gate_contract_failures,
+      final_answer_comparison_status,
+      final_answer_mismatch_fields,
       success,
       failure_class,
       product_access_mode: productAccessModeFor(record),
@@ -631,6 +676,17 @@ function buildGroupSummary(groupKey, entries, record) {
     canonical_output_available_rate: rate(canonicalOutputAvailableCount, total),
     evidence_quality_distribution: buildDistribution(entries.map((e) => e.evidence_quality)),
     coverage_gate_diagnostic_distribution: buildDistribution(entries.map((e) => e.coverage_gate_diagnostic)),
+    coverage_gate_attempt_count_distribution: buildDistribution(entries.map((e) => e.coverage_gate_attempt_count)),
+    coverage_gate_terminal_canonicalization_reason_distribution: buildDistribution(entries.map((e) => e.coverage_gate_terminal_canonicalization_reason)),
+    coverage_gate_contract_failure_distribution: buildDistribution(entries.flatMap((e) => {
+      const failures = stringArrayOrEmpty(e.coverage_gate_contract_failures);
+      return failures.length > 0 ? failures : ['none'];
+    })),
+    final_answer_comparison_status_distribution: buildDistribution(entries.map((e) => e.final_answer_comparison_status)),
+    final_answer_mismatch_field_distribution: buildDistribution(entries.flatMap((e) => {
+      const fields = stringArrayOrEmpty(e.final_answer_mismatch_fields);
+      return fields.length > 0 ? fields : ['none'];
+    })),
     success_count: successCount,
     success_rate: rate(successCount, total),
     product_access_mode_distribution: buildDistribution(entries.map((e) => e.product_access_mode)),
