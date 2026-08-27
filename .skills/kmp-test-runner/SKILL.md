@@ -48,8 +48,12 @@ Resolve scope before acting.
    exact `modules[].name` (strip `:` for `--coverage-modules`) — never a different entry merely
    resembling by name, type, or platform. For `--module-filter`, first check `modules[]`: if the
    bound name's substring also matches another entry, ask instead of dispatching (`--coverage-modules`
-   is already exact). 2+ eligible: dispatch globally if broad, else ask. 0 eligible: report no
-   match; don't invent one.
+   is already exact). Keep the same resolved workflow and every mandatory modifier while retaining
+   the bound exact `modules[].name`. `describe` only completes unknown discovery data; it does not
+   reconstruct the workflow or remove a threshold. For a tests-plus-budget request, use one
+   canonical `parallel` dispatch with the bound exact `modules[].name` and the originally resolved
+   missed-lines threshold; never `coverage` first or a plain `parallel`. 2+ eligible: dispatch
+   globally if broad, else ask. 0 eligible: report no match; don't invent one.
 6. **Likely-no-tests target** — for `parallel`'s default (others: `flags-reference.md`): run
    `kmp-test describe --json --project-root .` once if not already run; inspect every `modules[]`
    entry's `test_tasks.unit`.

@@ -104,6 +104,11 @@ Android product flavors (e.g. `demo`/`prod`) make the plain `testDebugUnitTest` 
 - **No `--flavor`** on a flavored project → the flavor-agnostic umbrella `:module:test` (runs **every** flavor — correct but slower) + a non-fatal `flavor_defaulted_umbrella` warning listing the candidate flavors. Pass `--flavor <name>` to target one (faster, single-variant coverage).
 - Non-flavored projects are unaffected (`:module:testDebugUnitTest` as before).
 
+Discovery reports flavor availability; it does not choose one. An explicitly requested flavor or
+variant is preserved through discovery and dispatch. For a module-wide request, use no `--flavor`
+even when `flavors` are reported: keep the documented umbrella dispatch. If variant selection would
+change scope and the request is ambiguous, ask before running.
+
 ## Edge cases
 
 - **`--dry-run` vs `--list-only`**: dry-run shows the resolved spawn command (`plan.spawn_args[]`); list-only shows the resolved module set (`modules[]`) the spawn would iterate. Both exit 0 without gradle dispatch. Both can combine with `--isolated` to inspect the isolation shape.

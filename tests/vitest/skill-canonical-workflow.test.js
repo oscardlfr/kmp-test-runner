@@ -677,6 +677,118 @@ describe('unit-tests.md missed-lines budget bullet -- upper bound on missed/unco
   });
 });
 
+// A coverage budget is part of the user's requested dispatch, not an optional detail discovered
+// after module resolution. These checks deliberately span the Decision protocol's intent and
+// test-capability branches plus the two supporting references. They lock the relationship between
+// resolving intent, completing discovery, and choosing the terminal/recovery path without turning
+// a benchmark-specific module, threshold, or flavor into a copyable recipe.
+describe('Coverage-budget discovery preservation protocol', () => {
+  const unitTestsDoc = readFileSync(
+    path.join(SKILL_DIR, 'references', 'workflows', 'unit-tests.md'), 'utf8'
+  ).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const thresholdDoc = readFileSync(
+    path.join(SKILL_DIR, 'references', 'troubleshooting', 'coverage-threshold-exceeded.md'), 'utf8'
+  ).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+  function protocolSpan(startMarker, endMarker) {
+    const protocol = section('Decision protocol');
+    const start = protocol.indexOf(startMarker);
+    const end = protocol.indexOf(endMarker);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    return protocol.slice(start, end);
+  }
+
+  function productFlavorsSpan() {
+    const start = unitTestsDoc.indexOf('### Product flavors');
+    const end = unitTestsDoc.indexOf('## Edge cases');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    return unitTestsDoc.slice(start, end);
+  }
+
+  function intentGateSpan() {
+    const recoveryIdx = thresholdDoc.indexOf('## Recovery path');
+    expect(recoveryIdx).toBeGreaterThan(-1);
+    return thresholdDoc.slice(0, recoveryIdx);
+  }
+
+  it('links test-capability discovery to the same resolved workflow and every mandatory modifier', () => {
+    const intent = protocolSpan('Resolve the workflow first', '**Classify scope**');
+    const discovery = protocolSpan('**Test-capability target**', '**Likely-no-tests target**');
+
+    expect(intent).toMatch(/workflow[\s\S]*modifiers?[^.\n]*mandatory/i);
+    expect(discovery).toMatch(
+      /same\s+resolved\s+workflow[\s\S]{0,180}every\s+mandatory\s+modifier[\s\S]{0,180}bound\s+exact\s+`modules\[\]\.name`/i
+    );
+  });
+
+  it('makes describe complete only unknown discovery data, never reconstruct workflow or remove a threshold', () => {
+    const discovery = protocolSpan('**Test-capability target**', '**Likely-no-tests target**');
+
+    expect(discovery).toMatch(
+      /`describe`[\s\S]{0,160}only\s+completes?[\s\S]{0,120}unknown[\s\S]{0,160}does\s+not\s+reconstruct[\s\S]{0,120}workflow[\s\S]{0,120}threshold/i
+    );
+  });
+
+  it('keeps a tests-plus-budget request as one canonical parallel dispatch with the bound module and original threshold', () => {
+    const discovery = protocolSpan('**Test-capability target**', '**Likely-no-tests target**');
+
+    expect(discovery).toMatch(
+      /one\s+canonical\s+`parallel`\s+dispatch[\s\S]{0,180}bound\s+exact\s+`modules\[\]\.name`[\s\S]{0,180}original(?:ly)?\s+resolved\s+(?:integer\s+)?(?:missed-lines\s+)?threshold/i
+    );
+    expect(discovery).toMatch(/never[\s\S]{0,100}(?:`coverage`\s+first|a\s+plain\s+`parallel`)/i);
+  });
+
+  it('does not invent a flavor from discovery for a module-wide request and keeps the umbrella dispatch', () => {
+    const flavors = productFlavorsSpan();
+
+    expect(flavors).toMatch(
+      /no\s+`--flavor`[\s\S]{0,160}even\s+when[\s\S]{0,100}`flavors`[\s\S]{0,160}umbrella/i
+    );
+  });
+
+  it('preserves an explicitly requested flavor through discovery and dispatch', () => {
+    expect(productFlavorsSpan()).toMatch(
+      /explicit(?:ly)?\s+requested[\s\S]{0,100}(?:flavor|variant)[\s\S]{0,160}preserv(?:e|ed)[\s\S]{0,120}discovery[\s\S]{0,120}dispatch/i
+    );
+  });
+
+  it('treats a coherent threshold-exceeded envelope as terminal for inspection intent', () => {
+    const gate = intentGateSpan();
+
+    expect(gate).toMatch(
+      /inspect[\s\S]{0,80}check[\s\S]{0,80}verify[\s\S]{0,80}report[\s\S]{0,180}coherent[\s\S]{0,120}`coverage_threshold_exceeded`[\s\S]{0,120}terminal/i
+    );
+  });
+
+  it('enters recovery only for remediation intent and asks before changing code or a threshold when ambiguous', () => {
+    const gate = intentGateSpan();
+
+    expect(gate).toMatch(
+      /fix[\s\S]{0,80}improve[\s\S]{0,80}remediate[\s\S]{0,100}raise\s+coverage[\s\S]{0,140}recovery/i
+    );
+    expect(gate).toMatch(/ambiguous[\s\S]{0,180}ask[\s\S]{0,140}(?:tests|code|threshold)/i);
+  });
+
+  it('keeps the three canonical skill documents free of benchmark-specific recipes', () => {
+    const documents = [skillMd, unitTestsDoc, thresholdDoc];
+    for (const document of documents) {
+      expect(document).not.toContain('coverage-threshold-failure');
+      expect(document).not.toContain('NowInAndroid');
+      expect(document).not.toContain(':core:domain');
+      expect(document).not.toMatch(/--min-missed-lines\s+15\b/);
+    }
+  });
+
+  it('does not make module discovery copyable through executable placeholders', () => {
+    const discovery = protocolSpan('**Test-capability target**', '**Likely-no-tests target**');
+
+    expect(discovery).not.toMatch(/--module-filter\s+<[^>]*>/);
+    expect(discovery).not.toMatch(/--module-filter\s+module-name\b/);
+  });
+});
+
 // Closes the other PR #412 follow-up blocker: coverage.md:49 correctly says a 0 threshold
 // disables the gate; :95 of the same file and coverage-threshold-exceeded.md:35 both incorrectly
 // claimed 0 requires perfect coverage. Detector proven synthetically against the verbatim
