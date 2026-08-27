@@ -34,7 +34,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveBash } from '../../tools/agentic-eval/resolve-bash.mjs';
 import { validateAcceptedRunAuditSidecar, crossValidateAcceptedRunAuditAgainstRecord } from '../../tools/agentic-eval/accepted-run-audit.mjs';
-import { validateRejectionRow, REJECTION_DIAGNOSTICS_SCHEMA_V11 } from '../../tools/agentic-eval/rejection-diagnostics.mjs';
+import { validateRejectionRow, REJECTION_DIAGNOSTICS_SCHEMA_V12 } from '../../tools/agentic-eval/rejection-diagnostics.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -422,7 +422,7 @@ describe('5. run -- a genuinely missing tool_result fails the WHOLE matrix close
   // caught that throw but never assigned `rejectionId`, so cli.mjs's own `result.rejectionId == null`
   // branch misclassified a normal, well-understood rejection as a generic "finalizing_matrix"
   // incident instead of the clean "RUN FAILED: <reason>" strict already produces. Fixed by adding
-  // rejection-diagnostics schema 11 (REJECTION_DIAGNOSTICS_SCHEMA_V11): exclusive to a batch whose
+  // rejection-diagnostics schema 12 (REJECTION_DIAGNOSTICS_SCHEMA_V12): exclusive to a batch whose
   // every record is schema>=6 with execution_profile.policy_mode:"not_applicable", policy_sha256
   // exactly null, profile/attestation fields reporting which profile actually applied, and
   // privacy-safe per-cell observability for run-record error codes, correlation counts, and
@@ -446,7 +446,7 @@ describe('5. run -- a genuinely missing tool_result fails the WHOLE matrix close
     expect(existsSync(path.join(evidenceDirFor('scenario'), 'audit'))).toBe(false);
 
     const committed = readCommittedRejectionDiagnostic();
-    expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V11);
+    expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V12);
     expect(committed.execution_profile_id).toBe('sandboxed-unrestricted-v1');
     expect(committed.policy_mode).toBe('not_applicable');
     expect(committed.isolation_attestation_sha256).toMatch(/^[0-9a-f]{64}$/);
@@ -522,7 +522,7 @@ describe('6. run -- auth failure and a malformed stream still follow their curre
     expect(listEvidenceFiles('scenario')).toEqual([]);
 
     const committed = readCommittedRejectionDiagnostic();
-    expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V11);
+    expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V12);
     expect(committed.policy_mode).toBe('not_applicable');
     expect(committed.policy_sha256).toBeNull();
     expect(committed.cells[0].pre_inference_failure.signature_matched).toBe(false);
