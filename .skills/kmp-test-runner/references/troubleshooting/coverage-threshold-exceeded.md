@@ -37,6 +37,13 @@ Applies to `parallel` (when `--min-missed-lines` is passed) and `coverage`.
 4. **`--exclude-coverage` adjustment**: tightening or loosening the exclude list changes the aggregate baseline. A previously-stable gate may now fire when modules with high coverage are excluded.
 5. **JaCoCo + Kover mixed counting**: the aggregate is sum-of-modules regardless of tool. If a module's Kover XML reports differently from its JaCoCo XML, the count shifts. Usually small but can drift over time.
 
+## Choose terminal reporting or recovery
+
+For an **inspect**, **check**, **verify**, or **report** request, a coherent
+`coverage_threshold_exceeded` envelope is terminal: report the missed-lines value and gate, then
+stop. For **fix**, **improve**, **remediate**, or **raise coverage**, enter the recovery path below.
+If intent is ambiguous, report the finding and ask before changing tests, code, or the threshold.
+
 ## Recovery path
 
 For "real coverage regression":
