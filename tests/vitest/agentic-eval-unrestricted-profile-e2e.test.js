@@ -34,7 +34,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveBash } from '../../tools/agentic-eval/resolve-bash.mjs';
 import { validateAcceptedRunAuditSidecar, crossValidateAcceptedRunAuditAgainstRecord } from '../../tools/agentic-eval/accepted-run-audit.mjs';
-import { validateRejectionRow, REJECTION_DIAGNOSTICS_SCHEMA_V9 } from '../../tools/agentic-eval/rejection-diagnostics.mjs';
+import { validateRejectionRow, REJECTION_DIAGNOSTICS_SCHEMA_V10 } from '../../tools/agentic-eval/rejection-diagnostics.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -421,14 +421,14 @@ describe('5. run -- a genuinely missing tool_result fails the WHOLE matrix close
   // caught that throw but never assigned `rejectionId`, so cli.mjs's own `result.rejectionId == null`
   // branch misclassified a normal, well-understood rejection as a generic "finalizing_matrix"
   // incident instead of the clean "RUN FAILED: <reason>" strict already produces. Fixed by adding
-  // rejection-diagnostics schema 9 (REJECTION_DIAGNOSTICS_SCHEMA_V9): exclusive to a batch whose
+  // rejection-diagnostics schema 10 (REJECTION_DIAGNOSTICS_SCHEMA_V10): exclusive to a batch whose
   // every record is schema>=6 with execution_profile.policy_mode:"not_applicable", policy_sha256
   // exactly null, profile/attestation fields reporting which profile actually applied, and
   // privacy-safe per-cell observability for run-record error codes, correlation counts, and
-  // pre-inference summaries with closed cause codes plus exact timing/usage/token/tool-count metrics and
-  // closed grading summaries. v2/v3/v4/v5/v6/v7/v8 stay frozen. This test now proves the FULL, correct, end-to-end
+  // pre-inference summaries with closed cause codes, exact timing/usage/token/tool-count metrics,
+  // closed grading summaries, and terminal-evidence summaries. v2/v3/v4/v5/v6/v7/v8/v9 stay frozen. This test now proves the FULL, correct, end-to-end
   // rejection shape.
-  it('zero records written for ANY cell, fail-fast reported via the normal RUN FAILED path, a sanitized schema-9 rejection diagnostic written, no accepted-run-audit sidecar anywhere', async () => {
+  it('zero records written for ANY cell, fail-fast reported via the normal RUN FAILED path, a sanitized schema-10 rejection diagnostic written, no accepted-run-audit sidecar anywhere', async () => {
     const attestationPath = writeValidAttestation();
     const result = await runCli(
       runArgs(['--seed', '1', '--repeats', '1', ...UNRESTRICTED_EXECUTION_PROFILE_FLAGS(attestationPath)]),
@@ -445,7 +445,7 @@ describe('5. run -- a genuinely missing tool_result fails the WHOLE matrix close
     expect(existsSync(path.join(evidenceDirFor('scenario'), 'audit'))).toBe(false);
 
     const committed = readCommittedRejectionDiagnostic();
-    expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V9);
+    expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V10);
     expect(committed.execution_profile_id).toBe('sandboxed-unrestricted-v1');
     expect(committed.policy_mode).toBe('not_applicable');
     expect(committed.isolation_attestation_sha256).toMatch(/^[0-9a-f]{64}$/);
@@ -463,10 +463,14 @@ describe('5. run -- a genuinely missing tool_result fails the WHOLE matrix close
     expect(committed.cells[0].grading_summary.grading_checks.value).toEqual(
       expect.arrayContaining([expect.objectContaining({ name: 'tool_result_correlated', passed: false })]),
     );
+    expect(committed.cells[0].terminal_evidence_summary.schema).toBe(1);
+    expect(committed.cells[0].terminal_evidence_summary.source).toBe('runtime-reported');
+    expect(committed.cells[0].terminal_evidence_summary.coverage_gate_diagnostic).toBe('not-applicable');
     for (const check of committed.cells[0].grading_summary.grading_checks.value) {
       expect(Object.keys(check).sort()).toEqual(['evidence_event_indices', 'name', 'passed']);
     }
     expect(JSON.stringify(committed.cells[0].grading_summary)).not.toMatch(/free-text detail|prompt|response/);
+    expect(JSON.stringify(committed.cells[0].terminal_evidence_summary)).not.toMatch(/final_answer|prompt|response|tool_result_event_index/);
     expect(validateRejectionRow(committed).errors).toEqual([]);
     // The committed tier's own closed field set (just re-proven by validateRejectionRow above)
     // structurally admits no raw transcript content -- confirmed directly too: neither the
@@ -497,11 +501,11 @@ describe('6. run -- auth failure and a malformed stream still follow their curre
     expect(listEvidenceFiles('scenario')).toEqual([]);
   }, 30000);
 
-  // Same fixed rejection-diagnostics schema-9 contract as block 5's own test above (see its header
+  // Same fixed rejection-diagnostics schema-10 contract as block 5's own test above (see its header
   // comment for the full root-cause trace) -- a malformed-transcript rejection is ALSO a genuine
-  // fail-fast/hard-gate rejection, so it exercises the identical schema-9 path with a different
+  // fail-fast/hard-gate rejection, so it exercises the identical schema-10 path with a different
   // specific reason (cleanTranscriptOk:false here, toolResultsCompleteOk:false there).
-  it('a harness-integrity failure (malformed transcript) blocks the WHOLE matrix, identically under sandboxed-unrestricted-v1, with a sanitized schema-9 rejection diagnostic written', async () => {
+  it('a harness-integrity failure (malformed transcript) blocks the WHOLE matrix, identically under sandboxed-unrestricted-v1, with a sanitized schema-10 rejection diagnostic written', async () => {
     const attestationPath = writeValidAttestation();
     const result = await runCli(
       runArgs(['--seed', '1', '--repeats', '1', ...UNRESTRICTED_EXECUTION_PROFILE_FLAGS(attestationPath)]),
@@ -516,7 +520,7 @@ describe('6. run -- auth failure and a malformed stream still follow their curre
     expect(listEvidenceFiles('scenario')).toEqual([]);
 
     const committed = readCommittedRejectionDiagnostic();
-    expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V9);
+    expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V10);
     expect(committed.policy_mode).toBe('not_applicable');
     expect(committed.policy_sha256).toBeNull();
     expect(committed.cells[0].pre_inference_failure.signature_matched).toBe(false);
@@ -526,10 +530,13 @@ describe('6. run -- auth failure and a malformed stream still follow their curre
     expect(committed.cells[0].grading_summary.grading_checks.value).toEqual(
       expect.arrayContaining([expect.objectContaining({ name: 'authoritative_evidence_well_formed', passed: false })]),
     );
+    expect(committed.cells[0].terminal_evidence_summary.schema).toBe(1);
+    expect(committed.cells[0].terminal_evidence_summary.coverage_gate_diagnostic).toBe('not-applicable');
     for (const check of committed.cells[0].grading_summary.grading_checks.value) {
       expect(Object.keys(check).sort()).toEqual(['evidence_event_indices', 'name', 'passed']);
     }
     expect(JSON.stringify(committed.cells[0].grading_summary)).not.toMatch(/free-text detail|prompt|response/);
+    expect(JSON.stringify(committed.cells[0].terminal_evidence_summary)).not.toMatch(/final_answer|prompt|response|tool_result_event_index/);
     expect(validateRejectionRow(committed).errors).toEqual([]);
   }, 30000);
 });
