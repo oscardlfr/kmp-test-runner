@@ -120,9 +120,13 @@ describe('Evidence1 Hyper-V ops toolkit', () => {
     expect(verifier).toContain("raw_content_persisted = $false");
     expect(verifier).toContain("raw_content_printed = $false");
     expect(verifier).toContain("'-p', 'Return exactly AUTH_CANARY_OK. Do not use tools, files, or network tools.'");
-    expect(verifier).toContain("'--bare'");
+    expect(verifier).not.toContain("'--bare'");
+    expect(verifier).toContain("'--setting-sources', 'user'");
     expect(verifier).toContain("'--disable-slash-commands'");
     expect(verifier).toContain("'--tools', ''");
+    expect(verifier).toContain("'--strict-mcp-config'");
+    expect(verifier).toContain("'--mcp-config', $mcpConfigPath");
+    expect(verifier).toContain("Join-Path $env:TEMP 'evidence1-auth-canary'");
     expect(checkpoint).toContain('does not prove that the remote service accepts the credential');
     expect(checkpoint).toContain('run the separately authorized remote auth canary');
   });

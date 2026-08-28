@@ -110,18 +110,28 @@ foreach ($logonName in $candidates) {
         $captured = @()
         $processExitCode = $null
         $previousPreference = $ErrorActionPreference
+        $canaryRoot = Join-Path $env:TEMP 'evidence1-auth-canary'
+        $mcpConfigPath = Join-Path $canaryRoot 'empty-mcp.json'
+        $previousLocation = Get-Location
+        New-Item -ItemType Directory -Force -Path $canaryRoot | Out-Null
+        @{ mcpServers = @{} } | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $mcpConfigPath -Encoding UTF8
         $ErrorActionPreference = 'Continue'
         try {
+          Set-Location -LiteralPath $canaryRoot
           $captured = @(& $ClaudeCommand @(
               '-p', 'Return exactly AUTH_CANARY_OK. Do not use tools, files, or network tools.',
-              '--bare',
+              '--setting-sources', 'user',
               '--disable-slash-commands',
               '--tools', '',
+              '--strict-mcp-config',
+              '--mcp-config', $mcpConfigPath,
               '--output-format', 'stream-json',
               '--verbose'
             ) 2>&1)
           $processExitCode = $LASTEXITCODE
         } finally {
+          Set-Location -LiteralPath $previousLocation
+          Remove-Item -LiteralPath $mcpConfigPath -Force -ErrorAction SilentlyContinue
           $ErrorActionPreference = $previousPreference
         }
 

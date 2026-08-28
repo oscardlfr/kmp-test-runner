@@ -54,8 +54,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File docs\audits\evidence1-ho
 ```
 
 3. Run the separately authorized remote-auth canary. It makes one minimal Claude request without
-accessing a repository, skill, or tools. The invocation uses `--bare`, disables slash commands,
-and passes `--tools ""` so built-in tools are unavailable rather than merely discouraged in prose.
+accessing a repository, skill, or tools. It deliberately does not use `--bare`, because bare mode
+skips OAuth/keychain reads and cannot validate the interactive Claude login. Instead, it runs from
+an empty temporary directory with only user settings, disables slash commands and built-in tools,
+and forces an empty MCP configuration with `--strict-mcp-config`.
 Its only durable output is a privacy-safe record: event counts, terminal flags, sanitized HTTP
 statuses, and no raw model content. A successful
 `claude auth status` alone is not sufficient because it only proves local credential presence.
