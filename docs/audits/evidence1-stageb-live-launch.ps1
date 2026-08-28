@@ -36,6 +36,17 @@ $ScratchDir = 'C:\kmp-eval\scratch\agentic-evidence1-claude-2x2-windows-stage-b-
 $LogPath = Join-Path $ScratchDir 'STAGE-B-live.log'
 $GradleUserHomeSeedDir = Join-Path $env:USERPROFILE '.gradle'
 $ReadinessLedgerPath = Join-Path $ScratchDir 'READINESS.json'
+$RemoteAuthCanaryPath = 'C:\Evidence1Ops\STAGE-B-auth-canary.json'
+$RemoteAuthCanaryMaxAgeMinutes = 30
+
+$ForbiddenCredentialOverrideNames = @(
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CODE_USE_BEDROCK',
+  'CLAUDE_CODE_USE_VERTEX',
+  'CLAUDE_CODE_USE_FOUNDRY'
+)
 
 function Fail($Message) {
   Write-Error "HARD STOP: $Message"
@@ -147,7 +158,87 @@ function Assert-ClaudeAuthReady([string]$ClaudeCommand) {
 
   return [ordered]@{
     ok = $true
+    check_kind = 'local_credential_presence_only'
     logged_in = $true
+    remote_credential_validated = $false
+  }
+}
+
+function Assert-CredentialEnvironmentPosture {
+  $forbiddenNames = @(
+    Get-ChildItem Env: |
+      Where-Object {
+        $_.Name -in $ForbiddenCredentialOverrideNames -or
+        $_.Name -match 'OPENAI_API_KEY|GOOGLE_API_KEY|AZURE_OPENAI_API_KEY|GH_TOKEN|GITHUB_TOKEN|COPILOT_'
+      } |
+      Select-Object -ExpandProperty Name |
+      Sort-Object -Unique
+  )
+  if ($forbiddenNames.Count -gt 0) {
+    Fail "forbidden credential override environment variables present: $($forbiddenNames -join ', ')"
+  }
+  return [ordered]@{
+    ok = $true
+    forbidden_credential_override_names = @()
+  }
+}
+
+function Assert-RemoteAuthCanary([string]$ExpectedClaudeVersion) {
+  if (-not (Test-Path -LiteralPath $RemoteAuthCanaryPath -PathType Leaf)) {
+    Fail 'remote auth canary record is missing; run the separately authorized auth canary before live Evidence1'
+  }
+  try {
+    $canary = Get-Content -LiteralPath $RemoteAuthCanaryPath -Raw | ConvertFrom-Json -ErrorAction Stop
+  } catch {
+    Fail 'remote auth canary record is not valid JSON'
+  }
+
+  foreach ($field in @(
+      'schema', 'state', 'completed_at_utc', 'claude_version', 'local_auth_status_exit_code',
+      'process_exit_code', 'http_statuses', 'terminal', 'credential_override_names', 'privacy'
+    )) {
+    if (-not ($canary.PSObject.Properties.Name -contains $field)) {
+      Fail "remote auth canary record is missing required property: $field"
+    }
+  }
+  if ($canary.schema -ne 1 -or $canary.state -ne 'passed') {
+    Fail 'remote auth canary did not pass'
+  }
+  if ($canary.claude_version -notmatch [regex]::Escape($ExpectedClaudeVersion)) {
+    Fail "remote auth canary Claude version mismatch: $($canary.claude_version)"
+  }
+  if ($canary.local_auth_status_exit_code -ne 0 -or $canary.process_exit_code -ne 0) {
+    Fail 'remote auth canary did not complete with successful local and process exit codes'
+  }
+  if (@($canary.credential_override_names).Count -ne 0) {
+    Fail 'remote auth canary observed credential override environment variables'
+  }
+  if ($canary.privacy.raw_content_persisted -ne $false -or
+      $canary.privacy.raw_content_printed -ne $false -or
+      $canary.privacy.raw_content_read_in_memory_for_sanitization -ne $true) {
+    Fail 'remote auth canary privacy contract drifted'
+  }
+  if ($canary.terminal.present -ne $true -or $canary.terminal.is_error -ne $false) {
+    Fail 'remote auth canary did not produce a successful terminal result'
+  }
+  if (@($canary.http_statuses | Where-Object { $_ -eq 401 }).Count -gt 0) {
+    Fail 'remote auth canary observed HTTP 401'
+  }
+  try {
+    $completedAt = [DateTime]::Parse([string]$canary.completed_at_utc).ToUniversalTime()
+  } catch {
+    Fail 'remote auth canary completion timestamp is invalid'
+  }
+  $ageMinutes = ([DateTime]::UtcNow - $completedAt).TotalMinutes
+  if ($ageMinutes -lt 0 -or $ageMinutes -gt $RemoteAuthCanaryMaxAgeMinutes) {
+    Fail "remote auth canary is not fresh enough: age_minutes=$([Math]::Round($ageMinutes, 2)), max=$RemoteAuthCanaryMaxAgeMinutes"
+  }
+  return [ordered]@{
+    ok = $true
+    check_kind = 'remote_inference_auth_canary'
+    completed_at_utc = $completedAt.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+    age_minutes = [Math]::Round($ageMinutes, 2)
+    http_statuses = @($canary.http_statuses)
   }
 }
 
@@ -575,12 +666,7 @@ if (-not (Test-Path -LiteralPath $GradleUserHomeSeedDir -PathType Container)) {
   Fail "prewarmed Gradle user-home seed directory missing: $GradleUserHomeSeedDir"
 }
 
-$forbiddenEnv = Get-ChildItem Env: |
-  Where-Object { $_.Name -match 'ANTHROPIC_API_KEY|OPENAI_API_KEY|GOOGLE_API_KEY|AZURE_OPENAI_API_KEY|GH_TOKEN|GITHUB_TOKEN|COPILOT_' } |
-  Select-Object -ExpandProperty Name
-if (@($forbiddenEnv).Count -gt 0) {
-  Fail "forbidden secret-like environment variables present: $($forbiddenEnv -join ', ')"
-}
+$credentialEnvironment = Assert-CredentialEnvironmentPosture
 
 Push-Location $HarnessDir
 try {
@@ -606,6 +692,7 @@ try {
 
   $authCheck = Assert-ClaudeAuthReady $claude
   Assert-RestrictedNetwork
+  $remoteAuthCanary = Assert-RemoteAuthCanary $actualClaude
   $readiness = Read-ReadinessLedger
   $readinessCampaign = Require-JsonProperty $readiness '__live_campaign_dry_run' 'normalized readiness ledger'
 
@@ -653,7 +740,11 @@ try {
     harness_head = $head
     harness_tree = $tree
     claude = $actualClaude
-    auth = $authCheck
+    auth = [ordered]@{
+      local = $authCheck
+      environment = $credentialEnvironment
+      remote_canary = $remoteAuthCanary
+    }
     attestation = $attestationCheck
     readiness = [ordered]@{
       verdict = $readiness.verdict

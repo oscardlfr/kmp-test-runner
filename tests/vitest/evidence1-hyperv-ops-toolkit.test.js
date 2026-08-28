@@ -17,6 +17,8 @@ const portableOpsScripts = [
   'docs/audits/evidence1-hyperv-place-live-autorun.ps1',
   'docs/audits/evidence1-hyperv-read-live-progress.ps1',
   'docs/audits/evidence1-hyperv-copy-live-artifacts.ps1',
+  'docs/audits/evidence1-hyperv-verify-guest-claude-auth-direct.ps1',
+  'docs/audits/evidence1-hyperv-finalize-auth-checkpoint-offline.ps1',
   'docs/audits/evidence1-stageb-live-wrapper.ps1',
   'docs/audits/evidence1-stageb-live-launch.ps1',
   'docs/audits/evidence1-live-run-contract.psm1',
@@ -28,6 +30,7 @@ const elevatedRunnerAllowlist = [
   'evidence1-hyperv-read-live-operational-tail.ps1',
   'evidence1-hyperv-read-live-progress.ps1',
   'evidence1-hyperv-regenerate-readiness-direct.ps1',
+  'evidence1-hyperv-verify-guest-claude-auth-direct.ps1',
   'evidence1-hyperv-update-harness-from-bundle.ps1',
 ];
 
@@ -96,6 +99,31 @@ describe('Evidence1 Hyper-V ops toolkit', () => {
     expect(doc.toLowerCase()).toContain('raw transcript');
     expect(doc).toContain('TargetCommit');
     expect(doc).toContain('TargetTree');
+    expect(doc).toContain('remote-auth canary');
+    expect(doc).toContain('local credential presence');
+  });
+
+  it('requires a fresh remote-auth canary before a live launch', () => {
+    const launcher = read('docs/audits/evidence1-stageb-live-launch.ps1');
+    const verifier = read('docs/audits/evidence1-hyperv-verify-guest-claude-auth-direct.ps1');
+    const checkpoint = read('docs/audits/evidence1-hyperv-finalize-auth-checkpoint-offline.ps1');
+
+    expect(launcher).toContain('Assert-RemoteAuthCanary');
+    expect(launcher).toContain("'ANTHROPIC_AUTH_TOKEN'");
+    expect(launcher).toContain("'CLAUDE_CODE_OAUTH_TOKEN'");
+    expect(launcher).toContain("check_kind = 'local_credential_presence_only'");
+    expect(launcher).toContain('remote_credential_validated = $false');
+    expect(launcher).toContain("'http_statuses'");
+    expect(verifier).toContain('[switch]$RunRemoteAuthCanary');
+    expect(verifier).toContain('$RequiredRemoteAuthCanaryPhrase');
+    expect(verifier).toContain("raw_content_persisted = $false");
+    expect(verifier).toContain("raw_content_printed = $false");
+    expect(verifier).toContain("'-p', 'Return exactly AUTH_CANARY_OK. Do not use tools, files, or network tools.'");
+    expect(verifier).toContain("'--bare'");
+    expect(verifier).toContain("'--disable-slash-commands'");
+    expect(verifier).toContain("'--tools', ''");
+    expect(checkpoint).toContain('does not prove that the remote service accepts the credential');
+    expect(checkpoint).toContain('run the separately authorized remote auth canary');
   });
 
   it.skipIf(process.platform !== 'win32')('PowerShell Evidence1 ops entrypoints parse cleanly', () => {

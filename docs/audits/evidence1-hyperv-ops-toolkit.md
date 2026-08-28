@@ -53,7 +53,24 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File docs\audits\evidence1-ho
   -ScriptArgumentsJson '["-TargetCommit","<40-hex commit>","-TargetTree","<40-hex tree>"]'
 ```
 
-3. Place live autorun only after readiness PASS and a fresh live authorization phrase:
+3. Run the separately authorized remote-auth canary. It makes one minimal Claude request without
+accessing a repository, skill, or tools. The invocation uses `--bare`, disables slash commands,
+and passes `--tools ""` so built-in tools are unavailable rather than merely discouraged in prose.
+Its only durable output is a privacy-safe record: event counts, terminal flags, sanitized HTTP
+statuses, and no raw model content. A successful
+`claude auth status` alone is not sufficient because it only proves local credential presence.
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File docs\audits\evidence1-host-elevated-runner-client.ps1 `
+  -ScriptPath docs\audits\evidence1-hyperv-verify-guest-claude-auth-direct.ps1 `
+  -ScriptArgumentsJson '["-RunRemoteAuthCanary","-RemoteAuthCanaryAuthorizationPhrase","<exact separately authorized canary phrase>"]'
+```
+
+The canary record expires after 30 minutes and is invalidated by credential-override environment
+variables. Do not replace this step with an interactive-login artifact or a previous live result.
+
+4. Place live autorun only after readiness PASS, a fresh passing remote-auth canary, and a fresh
+live authorization phrase:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File docs\audits\evidence1-host-elevated-runner-client.ps1 `
@@ -61,21 +78,21 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File docs\audits\evidence1-ho
   -ScriptArgumentsJson '["-LiveAuthorizationPhrase","<literal authorization phrase>"]'
 ```
 
-4. Monitor progress without raw access:
+5. Monitor progress without raw access:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File docs\audits\evidence1-host-elevated-runner-client.ps1 `
   -ScriptPath docs\audits\evidence1-hyperv-read-live-progress.ps1
 ```
 
-5. If the progress summary is not enough, read bounded operational tails only:
+6. If the progress summary is not enough, read bounded operational tails only:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File docs\audits\evidence1-host-elevated-runner-client.ps1 `
   -ScriptPath docs\audits\evidence1-hyperv-read-live-operational-tail.ps1
 ```
 
-6. After the VM has stopped, copy terminal artifacts:
+7. After the VM has stopped, copy terminal artifacts:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File docs\audits\evidence1-host-elevated-runner-client.ps1 `
@@ -91,3 +108,5 @@ This toolkit is covered by `tests/vitest/evidence1-hyperv-ops-toolkit.test.js`, 
 - No private host paths or stale SHA pins in the versioned ops scripts.
 - Elevated runner allowlist remains narrow.
 - Documentation preserves the no-live authorization boundary.
+- A live launcher requires a recent privacy-safe remote-auth canary rather than treating local
+  login state as proof of remote credential acceptance.
