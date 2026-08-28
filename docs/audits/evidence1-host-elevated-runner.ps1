@@ -11,10 +11,10 @@ $ErrorActionPreference = 'Stop'
 
 $AllowedScripts = @(
   'evidence1-hyperv-copy-live-artifacts.ps1',
-  'evidence1-hyperv-place-live-autorun.ps1',
   'evidence1-hyperv-read-live-operational-tail.ps1',
   'evidence1-hyperv-read-live-progress.ps1',
   'evidence1-hyperv-regenerate-readiness-direct.ps1',
+  'evidence1-hyperv-start-authorized-live.ps1',
   'evidence1-hyperv-verify-guest-claude-auth-direct.ps1',
   'evidence1-hyperv-update-harness-from-bundle.ps1'
 )

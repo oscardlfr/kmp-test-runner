@@ -6,8 +6,8 @@ turning the host into a general-purpose elevated shell. It does not authorize li
 ## Boundary
 
 - The VM is still the isolation boundary for Evidence1 live execution.
-- The host scripts only place launchers, update the harness, read privacy-safe progress, or copy
-  finalized operational artifacts.
+- The host scripts update the harness, verify launch evidence, perform one controlled live handoff,
+  read privacy-safe progress, or copy finalized operational artifacts.
 - Raw transcript files and per-cell stderr transcript artifacts are never read by these scripts.
 - Do not run another live campaign from this PR. Live execution still requires the separate literal
   authorization phrase after readiness has passed.
@@ -31,6 +31,10 @@ The scheduled task runs as the interactive user with `RunLevel Highest`; it is i
 generic admin command runner. The allowlist is in
 `docs/audits/evidence1-host-elevated-runner.ps1`, and defaults to the directory that contains the
 runner itself.
+
+The runner does not expose a generic VM stop command or the low-level autorun placement script.
+The only allowlisted launch mutation is `evidence1-hyperv-start-authorized-live.ps1`, which owns the
+whole transition and delegates internally to the placement script after every gate has passed.
 
 ## Standard Retake Flow
 
@@ -71,14 +75,27 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File docs\audits\evidence1-ho
 The canary record expires after 30 minutes and is invalidated by credential-override environment
 variables. Do not replace this step with an interactive-login artifact or a previous live result.
 
-4. Place live autorun only after readiness PASS, a fresh passing remote-auth canary, and a fresh
-live authorization phrase:
+4. Start the authorized handoff only after readiness PASS, a fresh passing remote-auth canary, and
+a fresh live authorization phrase. The state flow is deliberately singular:
+
+`Running + verified -> Off -> Armed -> Running`
+
+The coordinator verifies the exact commit/tree anchors, verifies prior-run terminal custody, asks
+the guest to shut down through the normal Hyper-V integration path, stages one autorun while the
+VHD is offline, and starts the VM again. It never uses `Stop-VM -TurnOff`, never falls back to a
+hard power cut, and never replaces an existing autorun or run artifacts.
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File docs\audits\evidence1-host-elevated-runner-client.ps1 `
-  -ScriptPath docs\audits\evidence1-hyperv-place-live-autorun.ps1 `
-  -ScriptArgumentsJson '["-LiveAuthorizationPhrase","<literal authorization phrase>"]'
+  -ScriptPath docs\audits\evidence1-hyperv-start-authorized-live.ps1 `
+  -ScriptArgumentsJson '["-ExpectedTargetCommit","<40-hex commit>","-ExpectedTargetTree","<40-hex tree>","-LiveAuthorizationPhrase","<literal authorization phrase>"]'
 ```
+
+The command writes a privacy-safe handoff state record under
+`C:\kmp-eval\scratch\hyperv-start-authorized-live`. Treat any state other than `started` as a HARD
+STOP. Do not rerun the command to repair `stopping`, `off`, `armed`, or `failed`; inspect the state
+and preserve custody first. A previous `started` handoff can be superseded only after
+`evidence1-hyperv-copy-live-artifacts.ps1` has copied a valid terminal record for the same run id.
 
 5. Monitor progress without raw access:
 
@@ -109,6 +126,8 @@ This toolkit is covered by `tests/vitest/evidence1-hyperv-ops-toolkit.test.js`, 
 - PowerShell parse health on Windows.
 - No private host paths or stale SHA pins in the versioned ops scripts.
 - Elevated runner allowlist remains narrow.
+- The authorized live handoff owns the complete VM state transition without a hard-power fallback.
+- Existing autoruns and uncopied prior-run artifacts fail closed instead of being replaced.
 - Documentation preserves the no-live authorization boundary.
 - A live launcher requires a recent privacy-safe remote-auth canary rather than treating local
   login state as proof of remote credential acceptance.
