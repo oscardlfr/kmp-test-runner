@@ -636,7 +636,7 @@ describe('4. cli.mjs run --campaign-design -- fake-runtime campaign execution (r
 
     expect(incident.schema).toBe(2);
     expect(incident.failed_cell_correlation).toEqual({
-      schema: 1,
+      schema: 2,
       condition: 'current-skill',
       policy_mode: 'not_applicable',
       tool_use_counts_by_kind: { shell: 1, skill: 1, other: 0 },
@@ -644,6 +644,7 @@ describe('4. cli.mjs run --campaign-design -- fake-runtime campaign execution (r
       missing_result_counts_by_kind: { shell: 1, skill: 0, other: 0 },
       dispatch_status_counts: {
         hook_evaluated: 0, pre_dispatch_blocked: 0, result_correlated_no_policy: 0,
+        timeout_interrupted_no_policy: 0,
         unaccounted: 1, unclassified: 0,
       },
       correlation_issue_counts: {

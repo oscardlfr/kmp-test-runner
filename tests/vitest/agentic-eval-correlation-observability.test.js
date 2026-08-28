@@ -28,6 +28,7 @@ function dispatch(overrides = {}) {
     hookEvaluatedCount: 0,
     preDispatchBlockedCount: 0,
     resultCorrelatedNoPolicyCount: 0,
+    timeoutInterruptedNoPolicyCount: 0,
     unaccountedCount: 0,
     ...overrides,
   };
@@ -48,7 +49,7 @@ describe('buildCorrelationObservability', () => {
     });
 
     expect(summary).toEqual({
-      schema: 1,
+      schema: 2,
       condition: 'no-skill',
       policy_mode: 'not_applicable',
       tool_use_counts_by_kind: { shell: 1, skill: 1, other: 0 },
@@ -58,6 +59,7 @@ describe('buildCorrelationObservability', () => {
         hook_evaluated: 0,
         pre_dispatch_blocked: 0,
         result_correlated_no_policy: 1,
+        timeout_interrupted_no_policy: 0,
         unaccounted: 0,
         unclassified: 0,
       },
@@ -124,10 +126,29 @@ describe('buildCorrelationObservability', () => {
     const summary = buildCorrelationObservability({
       condition: 'no-skill', policyMode: 'not_applicable',
       observation: observation({ attempts: [attempt({ found: false })], effectiveIncomplete: [] }),
-      dispatchAccounting: dispatch({ unaccountedCount: 1 }),
+      dispatchAccounting: dispatch({ timeoutInterruptedNoPolicyCount: 1 }),
     });
     expect(summary.missing_result_counts_by_kind.shell).toBe(1);
+    expect(summary.dispatch_status_counts.timeout_interrupted_no_policy).toBe(1);
+    expect(summary.dispatch_status_counts.unaccounted).toBe(0);
     expect(summary.timeout_tolerance_applied).toBe(true);
+  });
+
+  it('keeps schema 1 readable while new summaries use schema 2', () => {
+    const current = buildCorrelationObservability({
+      condition: 'no-skill', policyMode: 'not_applicable',
+      observation: observation({ attempts: [attempt()] }),
+      dispatchAccounting: dispatch({ resultCorrelatedNoPolicyCount: 1 }),
+    });
+    const legacy = {
+      ...current,
+      schema: 1,
+      dispatch_status_counts: Object.fromEntries(
+        Object.entries(current.dispatch_status_counts).filter(([key]) => key !== 'timeout_interrupted_no_policy'),
+      ),
+    };
+    expect(validateCorrelationObservability(legacy)).toEqual({ ok: true, errors: [] });
+    expect(validateCorrelationObservability(current)).toEqual({ ok: true, errors: [] });
   });
 });
 

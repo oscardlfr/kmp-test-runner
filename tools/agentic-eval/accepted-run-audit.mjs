@@ -949,14 +949,14 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
           errors.push({ field: `${label}.dispatch_status`, message: `must be one of ${DISPATCH_STATUS_VALUES.join('|')}` });
         } else if (isBash) {
           if (tc.dispatch_status === 'not_applicable') {
-            errors.push({ field: `${label}.dispatch_status`, message: 'not_applicable is only for non-Bash tools -- a Bash entry is hook_evaluated, pre_dispatch_blocked, result_correlated_no_policy, or unaccounted' });
+            errors.push({ field: `${label}.dispatch_status`, message: `not_applicable is only for non-Bash tools -- a Bash entry must use one of ${DISPATCH_STATUS_VALUES.join('|')}` });
           }
-          // PR 4: result_correlated_no_policy is exclusive to no-policy sidecars
+          // No-policy-only statuses are exclusive to no-policy sidecars
           // (policyMode:"not_applicable") -- never reachable for v1/v2/v3, whose only Bash
           // dispatch statuses remain exactly
           // hook_evaluated/pre_dispatch_blocked/unaccounted (frozen, unchanged).
-          if (tc.dispatch_status === 'result_correlated_no_policy' && !isNoPolicySidecar) {
-            errors.push({ field: `${label}.dispatch_status`, message: 'result_correlated_no_policy is only valid on a no-policy sidecar' });
+          if ((tc.dispatch_status === 'result_correlated_no_policy' || tc.dispatch_status === 'timeout_interrupted_no_policy') && !isNoPolicySidecar) {
+            errors.push({ field: `${label}.dispatch_status`, message: `${tc.dispatch_status} is only valid on a no-policy sidecar` });
           }
           // hook_evaluated (a real policy-hook decision) can never appear on a no-policy sidecar -- no
           // PreToolUse:Bash hook is ever wired for policyMode:"not_applicable".
@@ -977,6 +977,10 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
           if (tc.dispatch_status === 'result_correlated_no_policy') {
             if (tc.policy_decision !== 'not-applicable') errors.push({ field: `${label}.policy_decision`, message: 'must be not-applicable when dispatch_status is result_correlated_no_policy -- no policy hook ever evaluated it' });
             if (tc.result_status === 'missing') errors.push({ field: `${label}.result_status`, message: 'must not be missing when dispatch_status is result_correlated_no_policy -- this status means a correlated result WAS found' });
+          }
+          if (tc.dispatch_status === 'timeout_interrupted_no_policy') {
+            if (tc.policy_decision !== 'not-applicable') errors.push({ field: `${label}.policy_decision`, message: 'must be not-applicable when dispatch_status is timeout_interrupted_no_policy -- no policy hook ever evaluated it' });
+            if (tc.result_status !== 'missing') errors.push({ field: `${label}.result_status`, message: 'must be missing when dispatch_status is timeout_interrupted_no_policy -- this status preserves the terminal timeout-truncated result' });
           }
           // unaccounted's own required policy_decision is schema-aware: v1/v2/v3 (policyMode:
           // "required") pair it with "missing" (a real decision was due and never arrived); v4

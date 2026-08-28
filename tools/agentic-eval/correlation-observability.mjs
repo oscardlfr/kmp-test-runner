@@ -10,9 +10,13 @@ const TOP_LEVEL_KEYS = Object.freeze([
   'missing_id_counts_by_kind', 'missing_result_counts_by_kind',
   'dispatch_status_counts', 'correlation_issue_counts', 'timeout_tolerance_applied',
 ]);
-const DISPATCH_COUNT_KEYS = Object.freeze([
+const DISPATCH_COUNT_KEYS_V1 = Object.freeze([
   'hook_evaluated', 'pre_dispatch_blocked', 'result_correlated_no_policy',
   'unaccounted', 'unclassified',
+]);
+const DISPATCH_COUNT_KEYS_V2 = Object.freeze([
+  'hook_evaluated', 'pre_dispatch_blocked', 'result_correlated_no_policy',
+  'timeout_interrupted_no_policy', 'unaccounted', 'unclassified',
 ]);
 const CORRELATION_ISSUE_KEYS = Object.freeze([
   'duplicate_tool_use_id', 'orphan_tool_result_missing_id',
@@ -57,7 +61,7 @@ export function validateCorrelationObservability(value) {
   if (!exactKeys(value, TOP_LEVEL_KEYS)) {
     return { ok: false, errors: [{ field: '$', code: 'invalid_shape' }] };
   }
-  if (value.schema !== 1) errors.push({ field: 'schema', code: 'invalid_value' });
+  if (value.schema !== 1 && value.schema !== 2) errors.push({ field: 'schema', code: 'invalid_value' });
   if (!CONDITIONS.includes(value.condition)) errors.push({ field: 'condition', code: 'invalid_value' });
   if (!POLICY_MODE_VALUES.includes(value.policy_mode)) errors.push({ field: 'policy_mode', code: 'invalid_value' });
 
@@ -70,10 +74,11 @@ export function validateCorrelationObservability(value) {
       if (!nonNegativeInteger(value[field][key])) errors.push({ field: `${field}.${key}`, code: 'invalid_value' });
     }
   }
-  if (!exactKeys(value.dispatch_status_counts, DISPATCH_COUNT_KEYS)) {
+  const dispatchCountKeys = value.schema === 1 ? DISPATCH_COUNT_KEYS_V1 : DISPATCH_COUNT_KEYS_V2;
+  if (!exactKeys(value.dispatch_status_counts, dispatchCountKeys)) {
     errors.push({ field: 'dispatch_status_counts', code: 'invalid_shape' });
   } else {
-    for (const key of DISPATCH_COUNT_KEYS) {
+    for (const key of dispatchCountKeys) {
       if (!nonNegativeInteger(value.dispatch_status_counts[key])) errors.push({ field: `dispatch_status_counts.${key}`, code: 'invalid_value' });
     }
   }
@@ -97,16 +102,27 @@ export function validateCorrelationObservability(value) {
       }
     }
   }
-  if (exactKeys(value.dispatch_status_counts, DISPATCH_COUNT_KEYS)
+  if (exactKeys(value.dispatch_status_counts, dispatchCountKeys)
     && exactKeys(value.tool_use_counts_by_kind, TOOL_ATTEMPT_KINDS)
-    && DISPATCH_COUNT_KEYS.every((key) => nonNegativeInteger(value.dispatch_status_counts[key]))
+    && dispatchCountKeys.every((key) => nonNegativeInteger(value.dispatch_status_counts[key]))
     && nonNegativeInteger(value.tool_use_counts_by_kind.shell)) {
-    const classifiedShellCount = DISPATCH_COUNT_KEYS.reduce((sum, key) => sum + value.dispatch_status_counts[key], 0);
+    const classifiedShellCount = dispatchCountKeys.reduce((sum, key) => sum + value.dispatch_status_counts[key], 0);
     if (classifiedShellCount !== value.tool_use_counts_by_kind.shell) {
       errors.push({ field: 'dispatch_status_counts', code: 'invalid_relation' });
     }
     if (value.policy_mode === 'required' && value.dispatch_status_counts.result_correlated_no_policy !== 0) {
       errors.push({ field: 'dispatch_status_counts.result_correlated_no_policy', code: 'invalid_relation' });
+    }
+    if (value.schema === 2 && value.policy_mode === 'required' && value.dispatch_status_counts.timeout_interrupted_no_policy !== 0) {
+      errors.push({ field: 'dispatch_status_counts.timeout_interrupted_no_policy', code: 'invalid_relation' });
+    }
+    if (value.schema === 2 && value.dispatch_status_counts.timeout_interrupted_no_policy > 0) {
+      if (value.timeout_tolerance_applied !== true) errors.push({ field: 'timeout_tolerance_applied', code: 'invalid_relation' });
+      if (value.dispatch_status_counts.timeout_interrupted_no_policy > 1) errors.push({ field: 'dispatch_status_counts.timeout_interrupted_no_policy', code: 'invalid_relation' });
+      if (exactKeys(value.missing_result_counts_by_kind, TOOL_ATTEMPT_KINDS)
+        && value.dispatch_status_counts.timeout_interrupted_no_policy > value.missing_result_counts_by_kind.shell) {
+        errors.push({ field: 'dispatch_status_counts.timeout_interrupted_no_policy', code: 'invalid_relation' });
+      }
     }
     if (value.policy_mode === 'not_applicable' && value.dispatch_status_counts.hook_evaluated !== 0) {
       errors.push({ field: 'dispatch_status_counts.hook_evaluated', code: 'invalid_relation' });
@@ -147,12 +163,13 @@ export function buildCorrelationObservability({ condition, policyMode, observati
     if (attempt.result.found === false) missingResultCounts[attempt.kind] += 1;
   }
 
-  const dispatchStatusCounts = zeroCounts(DISPATCH_COUNT_KEYS);
+  const dispatchStatusCounts = zeroCounts(DISPATCH_COUNT_KEYS_V2);
   if (dispatchAccounting != null) {
     const sourceFields = {
       hook_evaluated: 'hookEvaluatedCount',
       pre_dispatch_blocked: 'preDispatchBlockedCount',
       result_correlated_no_policy: 'resultCorrelatedNoPolicyCount',
+      timeout_interrupted_no_policy: 'timeoutInterruptedNoPolicyCount',
       unaccounted: 'unaccountedCount',
     };
     for (const [target, source] of Object.entries(sourceFields)) {
@@ -160,7 +177,7 @@ export function buildCorrelationObservability({ condition, policyMode, observati
       dispatchStatusCounts[target] = dispatchAccounting[source];
     }
   }
-  const classifiedShellCount = DISPATCH_COUNT_KEYS
+  const classifiedShellCount = DISPATCH_COUNT_KEYS_V2
     .filter((key) => key !== 'unclassified')
     .reduce((sum, key) => sum + dispatchStatusCounts[key], 0);
   if (classifiedShellCount > toolUseCounts.shell) throw new Error('correlation observability: dispatch count exceeds shell attempts');
@@ -179,7 +196,7 @@ export function buildCorrelationObservability({ condition, policyMode, observati
   }
 
   const summary = {
-    schema: 1,
+    schema: 2,
     condition,
     policy_mode: policyMode,
     tool_use_counts_by_kind: toolUseCounts,
@@ -194,4 +211,3 @@ export function buildCorrelationObservability({ condition, policyMode, observati
   if (!validation.ok) throw new Error('correlation observability: constructed invalid summary');
   return freezeSummary(summary);
 }
-

@@ -1263,6 +1263,37 @@ describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / cross
     expect(sidecar.terminal_evidence).toEqual(terminalEvidence());
   });
 
+  it('preserves the sole terminal timeout-truncated Bash result without treating it as unaccounted', () => {
+    const record = notApplicableRecord();
+    const events = [initEventStub(), bashToolUseEvent('t1', 'kmp-test doctor --json'), resultEventStub()];
+    const cr = conditionResultFrom(events, {
+      decisionByAttempt: new Map(),
+      dispatchAccounting: { dispatchStatusByAttempt: new Map([['t1', 'timeout_interrupted_no_policy']]) },
+    });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+
+    expect(sidecar.tool_calls[0]).toMatchObject({
+      dispatch_status: 'timeout_interrupted_no_policy',
+      policy_decision: 'not-applicable',
+      result_status: 'missing',
+      tool_result_event_index: null,
+    });
+    expect(sidecar.summary.dispatch_unaccounted_total).toBe(0);
+    expect(validateAcceptedRunAuditSidecar(sidecar).errors).toEqual([]);
+  });
+
+  it('rejects timeout_interrupted_no_policy when its result is present', () => {
+    const record = notApplicableRecord();
+    const events = [initEventStub(), bashToolUseEvent('t1', 'kmp-test doctor --json'), toolResultEvent('t1'), resultEventStub()];
+    const cr = conditionResultFrom(events, {
+      decisionByAttempt: new Map(),
+      dispatchAccounting: { dispatchStatusByAttempt: new Map([['t1', 'timeout_interrupted_no_policy']]) },
+    });
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+
+    expect(validateAcceptedRunAuditSidecar(sidecar).errors).toContainEqual(expect.objectContaining({ field: 'tool_calls[0].result_status' }));
+  });
+
   it('keeps no-policy operation allowlist-neutral while exposing a privacy-safe recognized kmp-test subcommand', () => {
     const record = notApplicableRecord();
     const cr = notApplicableConditionResult([
@@ -1542,6 +1573,18 @@ describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / cross
       { decisionByAttempt: new Map([['t1', 'allow']]), dispatchAccounting: { dispatchStatusByAttempt: new Map([['t1', 'result_correlated_no_policy']]) } },
     );
     const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+    expect(sidecar.schema).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3);
+    expect(validateAcceptedRunAuditSidecar(sidecar).errors.some((e) => e.field.endsWith('.dispatch_status'))).toBe(true);
+  });
+
+  it('a timeout_interrupted_no_policy Bash entry is rejected on a v1/v2/v3 sidecar', () => {
+    const record = v6Record();
+    const cr = conditionResultFrom(
+      [initEventStub(), bashToolUseEvent('t1', 'kmp-test doctor --json'), resultEventStub()],
+      { decisionByAttempt: new Map(), dispatchAccounting: { dispatchStatusByAttempt: new Map([['t1', 'timeout_interrupted_no_policy']]) } },
+    );
+    const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
+
     expect(sidecar.schema).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3);
     expect(validateAcceptedRunAuditSidecar(sidecar).errors.some((e) => e.field.endsWith('.dispatch_status'))).toBe(true);
   });

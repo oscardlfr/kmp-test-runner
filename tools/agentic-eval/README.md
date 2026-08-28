@@ -451,7 +451,11 @@ matrix is rejected anyway.
   `plan_only`, `policy_decision` (`allow|deny|missing|not-applicable`), `result_status`
   (`success|error|missing`), `phase` (`pre-signal|produced-signal|post-signal|no-signal`), and — in
   schema 2 and later — `dispatch_status`
-  (`hook_evaluated|pre_dispatch_blocked|result_correlated_no_policy|unaccounted|not_applicable`).
+  (`hook_evaluated|pre_dispatch_blocked|result_correlated_no_policy|timeout_interrupted_no_policy|unaccounted|not_applicable`).
+  `timeout_interrupted_no_policy` is the single terminal Bash call whose missing result is already
+  proven by the stream parser to be a legitimate process timeout truncation. It is valid only for a
+  `policy_mode:"not_applicable"` run, preserves `result_status:"missing"`, and never hides additional
+  or non-terminal correlation gaps.
   Schema 5 additionally carries `recognized_operation`, a closed structural `kmp-test` subcommand
   bucket (`parallel`, `describe`, `doctor`, etc., or `"other"`) used only for privacy-safe
   observability when `policy_mode:"not_applicable"` makes the record's policy allowlists null by

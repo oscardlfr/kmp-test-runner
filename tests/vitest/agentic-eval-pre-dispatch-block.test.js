@@ -18,7 +18,12 @@ import {
   isRecognizedPreDispatchBlock,
   findAllToolUsesWithResults,
 } from '../../tools/agentic-eval/stream-parser.mjs';
-import { buildBashDispatchAccounting, DISPATCH_STATUS_VALUES } from '../../tools/agentic-eval/dispatch-accounting.mjs';
+import {
+  buildBashDispatchAccounting,
+  buildObservationBashDispatchAccounting,
+  deriveTimeoutInterruptedBashAttemptIds,
+  DISPATCH_STATUS_VALUES,
+} from '../../tools/agentic-eval/dispatch-accounting.mjs';
 import { validateAcceptedRunAuditSidecar, buildAcceptedRunAuditSidecar } from '../../tools/agentic-eval/accepted-run-audit.mjs';
 import { cellTranscriptIntegrityOk } from '../../tools/agentic-eval/cell-integrity.mjs';
 
@@ -236,6 +241,7 @@ describe('buildBashDispatchAccounting -- canonical per-attempt classification', 
       'hookEvaluatedCount',
       'preDispatchBlockedCount',
       'resultCorrelatedNoPolicyCount',
+      'timeoutInterruptedNoPolicyCount',
       'unaccountedCount',
     ]);
   });
@@ -391,12 +397,10 @@ describe('buildBashDispatchAccounting -- canonical per-attempt classification', 
 // rejected by the validator in the other.
 describe('dispatch_status vocabulary has one source of truth', () => {
   it('every Bash dispatch status the accounting can emit is accepted by the sidecar validator', () => {
-    // PR 4 (agentic-eval-isolated-unrestricted-profile-v1): result_correlated_no_policy is
-    // deliberately excluded from this loop -- it is a genuinely NEW status the accounting module
-    // now emits (policyMode:"not_applicable"), but sidecar v1/v2/v3 (this test's own schema:2
-    // fixture) stay frozen and never accept it; only the new v4 validator does (Stage 6's own
-    // dedicated coverage in agentic-eval-accepted-run-audit.test.js).
-    for (const status of DISPATCH_STATUS_VALUES.filter((s) => s !== 'result_correlated_no_policy')) {
+    // No-policy-only statuses are deliberately excluded from this loop. Sidecar v1/v2/v3 (this
+    // test's schema:2 fixture) stay frozen; schema 8 validates them in accepted-run-audit tests.
+    const noPolicyOnlyStatuses = new Set(['result_correlated_no_policy', 'timeout_interrupted_no_policy']);
+    for (const status of DISPATCH_STATUS_VALUES.filter((s) => !noPolicyOnlyStatuses.has(s))) {
       const sidecar = {
         schema: 2, run_id: 'scenario-current-skill-abcd1234', run_schema: 5, run_kind: 'scenario',
         condition: 'current-skill', scenario_id: 's', first_useful_signal_event: null,
@@ -449,7 +453,7 @@ describe('dispatch_status vocabulary has one source of truth', () => {
   // policyMode:"not_applicable" (never emitted under "required"). "not_applicable" itself (the
   // POLICY_DECISION value, distinct from a dispatch STATUS) remains sidecar-only, as before.
   it('the accounting vocabulary is exactly the Bash statuses -- not_applicable (the policy_decision value) is sidecar-only', () => {
-    expect([...DISPATCH_STATUS_VALUES].sort()).toEqual(['hook_evaluated', 'pre_dispatch_blocked', 'result_correlated_no_policy', 'unaccounted']);
+    expect([...DISPATCH_STATUS_VALUES].sort()).toEqual(['hook_evaluated', 'pre_dispatch_blocked', 'result_correlated_no_policy', 'timeout_interrupted_no_policy', 'unaccounted']);
   });
 });
 
@@ -594,7 +598,7 @@ describe('requireDispatchAccounting is mandatory, never defaulted', () => {
 describe('buildBashDispatchAccounting -- policyMode:"not_applicable" (PR 4)', () => {
   const ZERO_HOOK_STATS = { hookCallCount: 0, hookResponseCount: 0, hookAllowCount: 0, hookDenyCount: 0, hookPairingOk: true, everyCallHooked: false };
 
-  function accounting(bashResults, preDispatchBlockedIds = []) {
+  function accounting(bashResults, preDispatchBlockedIds = [], timeoutInterruptedIds = []) {
     return buildBashDispatchAccounting({
       bashResults,
       hookStats: ZERO_HOOK_STATS,
@@ -603,6 +607,7 @@ describe('buildBashDispatchAccounting -- policyMode:"not_applicable" (PR 4)', ()
       // classification leak into a no-policy accounting.
       decisionByAttempt: new Map(bashResults.map((b) => [b.id, 'allow'])),
       preDispatchBlockedAttemptIds: new Set(preDispatchBlockedIds),
+      timeoutInterruptedAttemptIds: new Set(timeoutInterruptedIds),
       policyMode: 'not_applicable',
     });
   }
@@ -628,6 +633,27 @@ describe('buildBashDispatchAccounting -- policyMode:"not_applicable" (PR 4)', ()
     expect(out.dispatchStatusByAttempt.get('t1')).toBe('unaccounted');
     expect(out.unaccountedCount).toBe(1);
     expect(out.everyCallAccountedFor).toBe(false);
+  });
+
+  it('the exact terminal Bash interrupted by a legitimate timeout is traced without pretending a result exists', () => {
+    const out = accounting([{ id: 't1', resultFound: false }], [], ['t1']);
+    expect(out.dispatchStatusByAttempt.get('t1')).toBe('timeout_interrupted_no_policy');
+    expect(out.timeoutInterruptedNoPolicyCount).toBe(1);
+    expect(out.resultCorrelatedNoPolicyCount).toBe(0);
+    expect(out.unaccountedCount).toBe(0);
+    expect(out.everyCallAccountedFor).toBe(true);
+  });
+
+  it.each([
+    ['unknown id', [{ id: 't1', resultFound: false }], ['missing']],
+    ['already-correlated result', [{ id: 't1', resultFound: true }], ['t1']],
+    ['more than one interrupted id', [{ id: 't1', resultFound: false }, { id: 't2', resultFound: false }], ['t1', 't2']],
+  ])('fails closed for a malformed timeout-interrupted set: %s', (_label, calls, interruptedIds) => {
+    expect(accounting(calls, [], interruptedIds).everyCallAccountedFor).toBe(false);
+  });
+
+  it('a pre-dispatch block cannot simultaneously be classified as timeout-interrupted', () => {
+    expect(accounting([{ id: 't1', resultFound: false }], ['t1'], ['t1']).everyCallAccountedFor).toBe(false);
   });
 
   it('hook_evaluated is NEVER emitted under not_applicable, regardless of what decisionByAttempt claims', () => {
@@ -679,5 +705,50 @@ describe('buildBashDispatchAccounting -- policyMode:"not_applicable" (PR 4)', ()
       bashResults: [], hookStats: ZERO_HOOK_STATS, decisionByAttempt: new Map(), preDispatchBlockedAttemptIds: new Set(),
       policyMode: 'bogus',
     })).toThrow();
+  });
+});
+
+describe('deriveTimeoutInterruptedBashAttemptIds', () => {
+  function observation({ terminated = true, reason = 'timeout', strict = [], effective = [] } = {}) {
+    return {
+      process: { terminated, terminationReason: reason },
+      transcript: { strictIncompleteToolResults: strict, effectiveIncompleteToolResults: effective },
+    };
+  }
+
+  it('returns only the exact Bash id removed by the adapter timeout tolerance', () => {
+    const out = deriveTimeoutInterruptedBashAttemptIds(observation({
+      strict: [{ id: 't1', name: 'Bash', index: 7 }],
+      effective: [],
+    }));
+    expect([...out]).toEqual(['t1']);
+  });
+
+  it('the observation-aware entrypoint applies the same terminal timeout classification', () => {
+    const timeout = observation({
+      strict: [{ id: 't1', name: 'Bash', index: 7 }],
+      effective: [],
+    });
+    const out = buildObservationBashDispatchAccounting({
+      observation: timeout,
+      bashResults: [{ id: 't1', resultFound: false }],
+      hookStats: { hookCallCount: 0, hookResponseCount: 0, hookAllowCount: 0, hookDenyCount: 0, hookPairingOk: true, everyCallHooked: false },
+      decisionByAttempt: new Map(),
+      preDispatchBlockedAttemptIds: new Set(),
+      policyMode: 'not_applicable',
+    });
+
+    expect(out.dispatchStatusByAttempt.get('t1')).toBe('timeout_interrupted_no_policy');
+    expect(out.everyCallAccountedFor).toBe(true);
+  });
+
+  it.each([
+    ['not a timeout', observation({ terminated: false, strict: [{ id: 't1', name: 'Bash', index: 7 }] })],
+    ['effective result still incomplete', observation({ strict: [{ id: 't1', name: 'Bash', index: 7 }], effective: [{ id: 't1', name: 'Bash', index: 7 }] })],
+    ['more than one strict incomplete result', observation({ strict: [{ id: 't1', name: 'Bash', index: 7 }, { id: 't2', name: 'Bash', index: 8 }] })],
+    ['non-Bash terminal tool', observation({ strict: [{ id: 's1', name: 'Skill', index: 7 }] })],
+    ['missing id', observation({ strict: [{ id: null, name: 'Bash', index: 7 }] })],
+  ])('fails closed for %s', (_label, value) => {
+    expect(deriveTimeoutInterruptedBashAttemptIds(value).size).toBe(0);
   });
 });

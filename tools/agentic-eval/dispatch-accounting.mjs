@@ -30,6 +30,9 @@ const DISPATCH_STATUS = Object.freeze({
   // policyMode:"not_applicable" -- a Bash attempt with a correlated tool_result, where no policy
   // hook ever existed to evaluate it. Never emitted under policyMode:"required".
   RESULT_CORRELATED_NO_POLICY: 'result_correlated_no_policy',
+  // The runtime adapter proved that this was the sole chronologically-final incomplete Bash
+  // result removed by its strict timeout tolerance. This records interruption, never completion.
+  TIMEOUT_INTERRUPTED_NO_POLICY: 'timeout_interrupted_no_policy',
   UNACCOUNTED: 'unaccounted',
 });
 
@@ -37,6 +40,7 @@ export const DISPATCH_STATUS_VALUES = Object.freeze([
   DISPATCH_STATUS.HOOK_EVALUATED,
   DISPATCH_STATUS.PRE_DISPATCH_BLOCKED,
   DISPATCH_STATUS.RESULT_CORRELATED_NO_POLICY,
+  DISPATCH_STATUS.TIMEOUT_INTERRUPTED_NO_POLICY,
   DISPATCH_STATUS.UNACCOUNTED,
 ]);
 
@@ -74,13 +78,21 @@ export const POLICY_MODE_VALUES = Object.freeze(['required', 'not_applicable']);
  *   preDispatchBlockedCount: number, resultCorrelatedNoPolicyCount: number, unaccountedCount: number,
  *   everyCallAccountedFor: boolean}}
  */
-export function buildBashDispatchAccounting({ bashResults, hookStats, decisionByAttempt, preDispatchBlockedAttemptIds, policyMode = 'required' }) {
+export function buildBashDispatchAccounting({
+  bashResults,
+  hookStats,
+  decisionByAttempt,
+  preDispatchBlockedAttemptIds,
+  timeoutInterruptedAttemptIds = new Set(),
+  policyMode = 'required',
+}) {
   if (policyMode !== 'required' && policyMode !== 'not_applicable') {
     throw new Error(`buildBashDispatchAccounting: policyMode must be "required" or "not_applicable" -- got ${JSON.stringify(policyMode)}`);
   }
   const calls = Array.isArray(bashResults) ? bashResults : [];
   const decisions = decisionByAttempt instanceof Map ? decisionByAttempt : new Map();
   const recognized = preDispatchBlockedAttemptIds instanceof Set ? preDispatchBlockedAttemptIds : new Set();
+  const timeoutInterrupted = timeoutInterruptedAttemptIds instanceof Set ? timeoutInterruptedAttemptIds : new Set();
   const callsById = new Map();
   for (const call of calls) {
     if (typeof call?.id === 'string' && call.id.length > 0) callsById.set(call.id, call);
@@ -104,6 +116,13 @@ export function buildBashDispatchAccounting({ bashResults, hookStats, decisionBy
   for (const id of recognized) {
     if (!seenIds.has(id)) identityOk = false;
   }
+  // The adapter tolerance can remove at most one final incomplete result. The accounting consumes
+  // that already-proven identity; it never infers a timeout from a missing result on its own.
+  if (timeoutInterrupted.size > 1) identityOk = false;
+  for (const id of timeoutInterrupted) {
+    const call = callsById.get(id);
+    if (!seenIds.has(id) || call?.resultFound !== false || recognized.has(id)) identityOk = false;
+  }
 
   const dispatchStatusByAttempt = new Map();
 
@@ -116,6 +135,7 @@ export function buildBashDispatchAccounting({ bashResults, hookStats, decisionBy
     // is unaccounted; there is no third "policy said no" outcome under this profile.
     let preDispatchBlockedCount = 0;
     let resultCorrelatedNoPolicyCount = 0;
+    let timeoutInterruptedNoPolicyCount = 0;
     let unaccountedCount = 0;
     for (const id of seenIds) {
       const isRecognizedBlock = recognized.has(id);
@@ -127,6 +147,9 @@ export function buildBashDispatchAccounting({ bashResults, hookStats, decisionBy
       } else if (call?.resultFound === true) {
         status = DISPATCH_STATUS.RESULT_CORRELATED_NO_POLICY;
         resultCorrelatedNoPolicyCount += 1;
+      } else if (timeoutInterrupted.has(id)) {
+        status = DISPATCH_STATUS.TIMEOUT_INTERRUPTED_NO_POLICY;
+        timeoutInterruptedNoPolicyCount += 1;
       } else {
         status = DISPATCH_STATUS.UNACCOUNTED;
         unaccountedCount += 1;
@@ -135,7 +158,7 @@ export function buildBashDispatchAccounting({ bashResults, hookStats, decisionBy
     }
     const everyCallAccountedFor = identityOk
       && dispatchStatusByAttempt.size === calls.length
-      && calls.length === preDispatchBlockedCount + resultCorrelatedNoPolicyCount + unaccountedCount
+      && calls.length === preDispatchBlockedCount + resultCorrelatedNoPolicyCount + timeoutInterruptedNoPolicyCount + unaccountedCount
       // An empty array is valid ONLY when there really were no Bash attempts -- calls.length===0
       // makes this trivially true, never masking attempts this function was never shown.
       && unaccountedCount === 0;
@@ -144,6 +167,7 @@ export function buildBashDispatchAccounting({ bashResults, hookStats, decisionBy
       hookEvaluatedCount: 0,
       preDispatchBlockedCount,
       resultCorrelatedNoPolicyCount,
+      timeoutInterruptedNoPolicyCount,
       unaccountedCount,
       everyCallAccountedFor,
     };
@@ -200,7 +224,46 @@ export function buildBashDispatchAccounting({ bashResults, hookStats, decisionBy
     hookEvaluatedCount,
     preDispatchBlockedCount,
     resultCorrelatedNoPolicyCount: 0,
+    timeoutInterruptedNoPolicyCount: 0,
     unaccountedCount,
     everyCallAccountedFor,
   };
+}
+
+/**
+ * Projects the runtime adapter's existing strict-vs-effective timeout decision onto Bash ids.
+ * It returns a non-empty set only for the exact one-entry shape already accepted by
+ * findIncompleteToolResultsToleratingTimeout; malformed or ambiguous input fails closed.
+ */
+export function deriveTimeoutInterruptedBashAttemptIds(observation) {
+  if (observation?.process?.terminated !== true || observation.process.terminationReason !== 'timeout') return new Set();
+  const strict = observation?.transcript?.strictIncompleteToolResults;
+  const effective = observation?.transcript?.effectiveIncompleteToolResults;
+  if (!Array.isArray(strict) || !Array.isArray(effective) || strict.length !== 1 || effective.length !== 0) return new Set();
+  const entry = strict[0];
+  if (entry?.name !== 'Bash' || typeof entry.id !== 'string' || entry.id.length === 0) return new Set();
+  return new Set([entry.id]);
+}
+
+/**
+ * Canonical observation-aware entrypoint used by every runtime path. Keeping the timeout projection
+ * here prevents campaign, matrix and pair execution from drifting in how they account for the same
+ * normalized observation.
+ */
+export function buildObservationBashDispatchAccounting({
+  observation,
+  bashResults,
+  hookStats,
+  decisionByAttempt,
+  preDispatchBlockedAttemptIds,
+  policyMode = 'required',
+}) {
+  return buildBashDispatchAccounting({
+    bashResults,
+    hookStats,
+    decisionByAttempt,
+    preDispatchBlockedAttemptIds,
+    timeoutInterruptedAttemptIds: deriveTimeoutInterruptedBashAttemptIds(observation),
+    policyMode,
+  });
 }
