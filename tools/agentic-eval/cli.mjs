@@ -53,7 +53,7 @@ import { LATEST_RUN_SCHEMA, SUPPORTED_RUN_SCHEMAS, validateRun, validateScenario
 import { materializeCalibrationProject, materializeScenarioProject, removeScenarioWorktree, realpath } from './materialize.mjs';
 import { msSinceOrigin, fingerprintNames, canonicalNamesKey, selectShellAttempts } from './runtimes/contract.mjs';
 import { acquireSharedEvalResources, runSingleCondition, runScenarioMatrix, runScenarioCampaign, reportCleanupFailures } from './matrix-runner.mjs';
-import { buildBashDispatchAccounting } from './dispatch-accounting.mjs';
+import { buildObservationBashDispatchAccounting } from './dispatch-accounting.mjs';
 // resolveSelection is the ONLY way this file ever learns which runtime adapter to use --
 // cli.mjs never imports runtimes/claude-code.mjs directly (registries.mjs is the sole allowed
 // importer of that module; see agentic-eval-runtime-boundary.test.js).
@@ -947,9 +947,11 @@ async function runConditionPair({
         const preDispatchBlockedAttemptIds = new Set(
           shellAttempts.filter((b) => b.preDispatchBlock?.recognized === true).map((b) => b.id),
         );
-        const dispatchAccounting = buildBashDispatchAccounting({
+        const dispatchAccounting = buildObservationBashDispatchAccounting({
+          observation: conditionResult.observation,
           bashResults: shellAttempts, hookStats: conditionResult.observation.hookStats,
-          decisionByAttempt: new Map(), preDispatchBlockedAttemptIds, policyMode,
+          decisionByAttempt: new Map(), preDispatchBlockedAttemptIds,
+          policyMode,
         });
         return { ...conditionResult, dispatchAccounting };
       }

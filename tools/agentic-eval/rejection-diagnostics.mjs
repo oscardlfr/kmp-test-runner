@@ -1563,7 +1563,7 @@ export function validateRejectionRow(row) {
         }
         const correlationValidation = validateCorrelationObservability(cell.correlation_observability);
         if (!correlationValidation.ok) {
-          errors.push({ field: `cells[${i}].correlation_observability`, message: `must match correlation-observability schema v1 (${JSON.stringify(correlationValidation.errors)})` });
+          errors.push({ field: `cells[${i}].correlation_observability`, message: `must match a supported correlation-observability schema (${JSON.stringify(correlationValidation.errors)})` });
         } else {
           if (cell.correlation_observability.condition !== cell.condition) {
             errors.push({ field: `cells[${i}].correlation_observability.condition`, message: 'must match the rejection cell condition exactly' });

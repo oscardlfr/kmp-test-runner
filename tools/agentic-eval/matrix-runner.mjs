@@ -27,7 +27,7 @@ import { materializeSkillSnapshot, materializeGradleUserHome, realpath, applyFix
 import { computeSkillSnapshotArtifact } from './input-artifacts.mjs';
 import { buildRunMatrix, buildConditionOrders } from './randomizer.mjs';
 import { attributeCondition } from './junit-evidence.mjs';
-import { buildBashDispatchAccounting } from './dispatch-accounting.mjs';
+import { buildObservationBashDispatchAccounting } from './dispatch-accounting.mjs';
 import { cellTranscriptIntegrityOk } from './cell-integrity.mjs';
 import { buildCorrelationObservability } from './correlation-observability.mjs';
 import { tagIncidentPhase } from './durable-journal.mjs';
@@ -625,7 +625,8 @@ export async function runScenarioMatrix({
         // earliest point the classification is derivable at all -- and it must exist before the
         // cell gate below reads it.
         const dispatchAccounting = junitAttribution
-          ? buildBashDispatchAccounting({
+          ? buildObservationBashDispatchAccounting({
+              observation: conditionResult.observation,
               bashResults: shellAttempts,
               hookStats: conditionResult.observation.hookStats,
               decisionByAttempt: junitAttribution.decisionByAttempt,
@@ -861,7 +862,8 @@ export async function runScenarioCampaign({
           rmSync(conditionResult.evidenceDir, { recursive: true, force: true });
         }
         const dispatchAccounting = junitAttribution
-          ? buildBashDispatchAccounting({
+          ? buildObservationBashDispatchAccounting({
+              observation: conditionResult.observation,
               bashResults: shellAttempts,
               hookStats: conditionResult.observation.hookStats,
               decisionByAttempt: junitAttribution.decisionByAttempt,
