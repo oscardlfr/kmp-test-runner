@@ -11,7 +11,9 @@ const portableOpsScripts = [
   'docs/audits/evidence1-host-elevated-runner.ps1',
   'docs/audits/evidence1-host-elevated-runner-client.ps1',
   'docs/audits/evidence1-host-elevated-runner-install.ps1',
+  'docs/audits/evidence1-live-handoff-contract.psm1',
   'docs/audits/evidence1-hyperv-regenerate-readiness-direct.ps1',
+  'docs/audits/evidence1-hyperv-start-authorized-live.ps1',
   'docs/audits/evidence1-hyperv-read-live-operational-tail.ps1',
   'docs/audits/evidence1-hyperv-update-harness-from-bundle.ps1',
   'docs/audits/evidence1-hyperv-place-live-autorun.ps1',
@@ -26,10 +28,10 @@ const portableOpsScripts = [
 
 const elevatedRunnerAllowlist = [
   'evidence1-hyperv-copy-live-artifacts.ps1',
-  'evidence1-hyperv-place-live-autorun.ps1',
   'evidence1-hyperv-read-live-operational-tail.ps1',
   'evidence1-hyperv-read-live-progress.ps1',
   'evidence1-hyperv-regenerate-readiness-direct.ps1',
+  'evidence1-hyperv-start-authorized-live.ps1',
   'evidence1-hyperv-verify-guest-claude-auth-direct.ps1',
   'evidence1-hyperv-update-harness-from-bundle.ps1',
 ];
@@ -85,8 +87,10 @@ describe('Evidence1 Hyper-V ops toolkit', () => {
     for (const deliberatelyExcluded of [
       'evidence1-hyperv-create-runner-vm.ps1',
       'evidence1-hyperv-open-vmconnect.ps1',
+      'evidence1-hyperv-place-live-autorun.ps1',
       'evidence1-hyperv-restore-checkpoint.ps1',
       'evidence1-hyperv-restart-vmms-if-safe.ps1',
+      'evidence1-hyperv-stop-runner-vm.ps1',
     ]) {
       expect(entries).not.toContain(deliberatelyExcluded);
     }
@@ -101,6 +105,43 @@ describe('Evidence1 Hyper-V ops toolkit', () => {
     expect(doc).toContain('TargetTree');
     expect(doc).toContain('remote-auth canary');
     expect(doc).toContain('local credential presence');
+    expect(doc).toContain('evidence1-hyperv-start-authorized-live.ps1');
+    expect(doc).toContain('Running + verified -> Off -> Armed -> Running');
+  });
+
+  it('owns the live state transition without a hard power cut', () => {
+    const handoff = read('docs/audits/evidence1-hyperv-start-authorized-live.ps1');
+
+    expect(handoff).toContain('Assert-Evidence1LiveHandoffEvidence');
+    expect(handoff).toContain('Assert-Evidence1PreviousRunCustody');
+    expect(handoff).toContain('Stop-VM -Name $VMName -Confirm:$false -AsJob');
+    expect(handoff).toContain('Start-VM -Name $VMName');
+    expect(handoff).toContain('previous handoff and copied terminal custody run_id mismatch');
+    expect(handoff).toContain('Archive-PreviousHandoff');
+    expect(handoff).toContain("$VMName = 'Evidence1-Runner'");
+    expect(handoff).toContain('$ReadinessMaxAgeMinutes = 60');
+    expect(handoff).toContain('$RemoteAuthMaxAgeMinutes = 30');
+    expect(handoff).not.toContain('[string]$ReadinessReportPath');
+    expect(handoff).not.toContain('[int]$RemoteAuthMaxAgeMinutes');
+    expect(handoff).not.toContain('-TurnOff');
+    expect(handoff).not.toContain('Stop-VM -Name $VMName -Force');
+
+    const stopIndex = handoff.indexOf('Stop-VM -Name $VMName -Confirm:$false -AsJob');
+    const placeIndex = handoff.indexOf('Invoke-PlaceLiveAutorun $script:PriorCustody.run_id');
+    const startIndex = handoff.indexOf('Start-VM -Name $VMName');
+    expect(stopIndex).toBeGreaterThan(0);
+    expect(placeIndex).toBeGreaterThan(stopIndex);
+    expect(startIndex).toBeGreaterThan(placeIndex);
+  });
+
+  it('refuses to replace an already armed live autorun', () => {
+    const place = read('docs/audits/evidence1-hyperv-place-live-autorun.ps1');
+
+    expect(place).toContain('existing live autorun');
+    expect(place).toContain('refusing to replace');
+    expect(place).toContain("area = 'scratch'; name = 'STAGE-B-live.log'");
+    expect(place).toContain('archived_operational_artifacts');
+    expect(place).not.toContain("Remove-Required (Join-Path $startupDir 'Evidence1RunLive.cmd')");
   });
 
   it('requires a fresh remote-auth canary before a live launch', () => {
