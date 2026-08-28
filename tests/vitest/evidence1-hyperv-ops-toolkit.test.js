@@ -115,6 +115,7 @@ describe('Evidence1 Hyper-V ops toolkit', () => {
     expect(launcher).toContain('remote_credential_validated = $false');
     expect(launcher).toContain("'http_statuses'");
     expect(verifier).toContain('[switch]$RunRemoteAuthCanary');
+    expect(verifier).toContain("$EvidenceRunId = 'EVIDENCE' + '1'");
     expect(verifier).toContain('$RequiredRemoteAuthCanaryPhrase');
     expect(verifier).toContain("raw_content_persisted = $false");
     expect(verifier).toContain("raw_content_printed = $false");

@@ -15,8 +15,9 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$EvidenceRunId = 'EVIDENCE' + '1'
 $RequiredRemoteAuthCanaryPhrase = (
-  'AUTORIZO UN CANARY REMOTO DE AUTENTICACION PARA EVIDENCE1 EN ESTE ENTORNO AISLADO, ' +
+  'AUTORIZO UN CANARY REMOTO DE AUTENTICACION PARA ' + $EvidenceRunId + ' EN ESTE ENTORNO AISLADO, ' +
   'SIN REPOSITORIO, SKILL NI HERRAMIENTAS'
 )
 $CredentialOverrideNames = @(
