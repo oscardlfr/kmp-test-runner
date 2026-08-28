@@ -40,8 +40,17 @@ function Assert-PathInside([string]$Candidate, [string]$Root, [string]$Label) {
 }
 
 function Invoke-HostGit([string[]]$Arguments, [string]$Step) {
-  $output = & git.exe @Arguments 2>&1
-  $exit = $LASTEXITCODE
+  $output = @()
+  $exit = $null
+  $previousErrorActionPreference = $ErrorActionPreference
+  try {
+    # Git writes progress such as "From <remote>" to stderr even on success.
+    $ErrorActionPreference = 'Continue'
+    $output = @(& git.exe @Arguments 2>&1)
+    $exit = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
   if ($exit -ne 0) {
     Fail "$Step failed with exit code $exit`: $($output -join ' ')"
   }

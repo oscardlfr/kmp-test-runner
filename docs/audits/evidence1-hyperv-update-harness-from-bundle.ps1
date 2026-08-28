@@ -38,8 +38,17 @@ function Assert-PathInside([string]$Candidate, [string]$Root, [string]$Label) {
 
 function Invoke-Checked([string]$Exe, [string[]]$Arguments, [string]$Step) {
   Write-Host "[hyperv-update-harness] $Step"
-  $output = & $Exe @Arguments 2>&1
-  $exit = $LASTEXITCODE
+  $output = @()
+  $exit = $null
+  $previousErrorActionPreference = $ErrorActionPreference
+  try {
+    # Git writes progress such as "From <remote>" to stderr even on success.
+    $ErrorActionPreference = 'Continue'
+    $output = @(& $Exe @Arguments 2>&1)
+    $exit = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
   if ($output) {
     $output | ForEach-Object { Write-Host $_ }
   }

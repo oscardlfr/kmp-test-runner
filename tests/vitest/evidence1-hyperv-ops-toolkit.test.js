@@ -127,6 +127,19 @@ describe('Evidence1 Hyper-V ops toolkit', () => {
     expect(checkpoint).toContain('run the separately authorized remote auth canary');
   });
 
+  it('treats Git stderr as diagnostic output and decides success from its exit code', () => {
+    for (const file of [
+      'docs/audits/evidence1-hyperv-update-harness-from-bundle.ps1',
+      'docs/audits/evidence1-hyperv-regenerate-readiness-direct.ps1',
+    ]) {
+      const source = read(file);
+      expect(source).toContain('$previousErrorActionPreference = $ErrorActionPreference');
+      expect(source).toContain("$ErrorActionPreference = 'Continue'");
+      expect(source).toContain('$ErrorActionPreference = $previousErrorActionPreference');
+      expect(source).toContain('$exit = $LASTEXITCODE');
+    }
+  });
+
   it.skipIf(process.platform !== 'win32')('PowerShell Evidence1 ops entrypoints parse cleanly', () => {
     const fileList = portableOpsScripts
       .map(file => `'${resolve(root, file).replaceAll("'", "''")}'`)
