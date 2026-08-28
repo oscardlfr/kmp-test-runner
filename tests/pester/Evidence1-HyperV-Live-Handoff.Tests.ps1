@@ -108,6 +108,28 @@ Describe 'Evidence1 live handoff evidence contract' {
         $actual.target_tree | Should -Be $script:Tree
     }
 
+    It 'accepts the observed Claude CLI version label when its canonical version is pinned' {
+        $readiness = New-ReadinessReport
+        $auth = New-AuthReport
+        $observedVersion = "$($script:ClaudeVersion) (Claude Code)"
+        $readiness.guest.tools.claude = $observedVersion
+        $auth.guest_report.claude_version = $observedVersion
+        $auth.guest_report.remote_auth_canary.claude_version = $observedVersion
+
+        $actual = Invoke-LiveHandoffEvidenceAssertion -Readiness $readiness -Auth $auth
+
+        $actual.ok | Should -BeTrue
+    }
+
+    It 'rejects an observed Claude CLI label with a different canonical version' {
+        $readiness = New-ReadinessReport
+        $readiness.guest.tools.claude = '2.1.239 (Claude Code)'
+
+        {
+            Invoke-LiveHandoffEvidenceAssertion -Readiness $readiness -Auth (New-AuthReport)
+        } | Should -Throw '*readiness guest Claude version mismatch*'
+    }
+
     It 'rejects stale remote-auth evidence' {
         {
             Invoke-LiveHandoffEvidenceAssertion `

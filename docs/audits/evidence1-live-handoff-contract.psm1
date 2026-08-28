@@ -83,6 +83,20 @@ function Assert-Evidence1NoValues {
     }
 }
 
+function Get-Evidence1PinnedClaudeVersion {
+    param(
+        [Parameter(Mandatory = $true)][string]$Value,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    # Claude Code reports its pinned semver either bare or followed by this stable product label.
+    $match = [regex]::Match($Value, '^\s*(?<version>\d+\.\d+\.\d+)(?:\s+\(Claude Code\))?\s*$')
+    if (-not $match.Success) {
+        throw "$Label is not a recognized Claude Code version"
+    }
+    return $match.Groups['version'].Value
+}
+
 function Assert-Evidence1FreshTimestamp {
     param(
         [Parameter(Mandatory = $true)][DateTime]$TimestampUtc,
@@ -128,6 +142,7 @@ function Assert-Evidence1LiveHandoffEvidence {
     if ([string]::IsNullOrWhiteSpace($ExpectedClaudeVersion)) {
         throw 'expected Claude version is empty'
     }
+    $expectedClaudeCanonical = Get-Evidence1PinnedClaudeVersion $ExpectedClaudeVersion 'expected Claude version'
     $expectedAttestationFull = [System.IO.Path]::GetFullPath($ExpectedAttestationPath)
 
     if ((Get-Evidence1Property $ReadinessReport 'verdict' 'readiness') -ne 'PASS') {
@@ -171,7 +186,10 @@ function Assert-Evidence1LiveHandoffEvidence {
         throw 'readiness guest planned session count mismatch'
     }
     $guestTools = Get-Evidence1Property $guest 'tools' 'readiness.guest'
-    if ([string](Get-Evidence1Property $guestTools 'claude' 'readiness.guest.tools') -ne $ExpectedClaudeVersion) {
+    $readinessClaudeCanonical = Get-Evidence1PinnedClaudeVersion `
+        ([string](Get-Evidence1Property $guestTools 'claude' 'readiness.guest.tools')) `
+        'readiness guest Claude version'
+    if ($readinessClaudeCanonical -ne $expectedClaudeCanonical) {
         throw 'readiness guest Claude version mismatch'
     }
     $actualAttestationFull = [System.IO.Path]::GetFullPath(
@@ -207,7 +225,10 @@ function Assert-Evidence1LiveHandoffEvidence {
     if ((Get-Evidence1Property $authGuest 'verdict' 'auth.guest_report') -ne 'PASS') {
         throw 'auth guest verdict is not PASS'
     }
-    if ([string](Get-Evidence1Property $authGuest 'claude_version' 'auth.guest_report') -ne $ExpectedClaudeVersion) {
+    $authClaudeCanonical = Get-Evidence1PinnedClaudeVersion `
+        ([string](Get-Evidence1Property $authGuest 'claude_version' 'auth.guest_report')) `
+        'auth guest Claude version'
+    if ($authClaudeCanonical -ne $expectedClaudeCanonical) {
         throw 'auth guest Claude version mismatch'
     }
     Assert-Evidence1NoValues `
@@ -235,7 +256,10 @@ function Assert-Evidence1LiveHandoffEvidence {
     if ((Get-Evidence1Property $canary 'process_exit_code' 'auth.remote_auth_canary') -ne 0) {
         throw 'remote auth canary process failed'
     }
-    if ([string](Get-Evidence1Property $canary 'claude_version' 'auth.remote_auth_canary') -ne $ExpectedClaudeVersion) {
+    $canaryClaudeCanonical = Get-Evidence1PinnedClaudeVersion `
+        ([string](Get-Evidence1Property $canary 'claude_version' 'auth.remote_auth_canary')) `
+        'remote auth canary Claude version'
+    if ($canaryClaudeCanonical -ne $expectedClaudeCanonical) {
         throw 'remote auth canary Claude version mismatch'
     }
     if ((Get-Evidence1Property $canary 'parse_error_count' 'auth.remote_auth_canary') -ne 0) {
