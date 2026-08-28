@@ -508,14 +508,21 @@ matrix is rejected anyway.
   `tool_call_ordinal`, `recognized_operation` (`parallel|coverage`), `terminal_authoritative`,
   `canonicalization_status` (`canonical|uncanonicalizable|not-applicable`),
   `canonicalization_reason` (closed enum such as `canonical`, `operation-not-eligible`,
-  `threshold-missing`, `threshold-mismatch`, `coverage-block-incoherent`,
-  `subcommand-mismatch`, `result-status-contradiction`, `test-detail-incoherent`,
-  `module-scope-incoherent`, or `outcome-not-canonicalizable`), `threshold_relation`
+  `subcommand-mismatch`, `plan-mode-contradiction`, `result-status-contradiction`,
+  `test-counters-incoherent`, `warnings-malformed`, `skipped-malformed`,
+  `oversized-junit-incomplete`, `module-scope-incoherent`, `dispatch-evidence-incoherent`,
+  `test-detail-incoherent`, `threshold-missing`, `threshold-mismatch`,
+  `coverage-block-incoherent`, `error-contract-incoherent`, `exit-code-incoherent`, or
+  `outcome-not-canonicalizable`), `threshold_relation`
   (`matches|differs|missing|not-applicable`), `tests_contract`, `coverage_contract`,
   `error_contract`, and `exit_code_contract` (`matches|differs|unavailable|not-applicable`),
   `target_matches_expected`, `observed_outcome_kind`, and `outcome_matches_expected`. It never
   stores raw commands, argv, module filters, thresholds as typed by the agent, paths, stderr,
   prompt text, or response prose.
+
+  These reasons are derived from the same fail-closed canonicalization path used by grading. They
+  explain which structural contract prevented an observed result from being canonicalized, but
+  never change `success`, `expected_outcome_matched`, terminal selection, or any grading check.
 
   v8 also extends `terminal_evidence.final_answer_block` with a closed structural comparison of
   the final `KMP_EVAL_RESULT` block against the canonical observed result:

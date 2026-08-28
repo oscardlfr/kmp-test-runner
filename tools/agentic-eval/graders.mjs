@@ -1125,22 +1125,24 @@ function deriveCoherentCoverageFacts(covBlock, err, module, warnings) {
 /**
  * Derives the closed-form canonical facts a kmp-test envelope's OWN content actually shows --
  * never scenario.expected, never a comparison against it, purely a structural reading of
- * already-extracted, already-classified evidence. Returns `null` whenever the envelope's shape
- * can't be attributed to exactly one real outcome without guessing (competing/incoherent error
- * shapes, an unattributable module, missing/malformed per-test detail, incoherent counters, or an
- * execution/plan-mode contradiction) -- the caller (gradeScenarioCondition, via
- * evaluateFinalAnswer) treats `null` as "no observed facts to compare the final answer against,"
- * failing check 8 closed rather than falling back to any expected value.
+ * already-extracted, already-classified evidence. Returns a tagged result so an
+ * uncanonicalizable envelope remains fail-closed while retaining one closed, privacy-safe reason
+ * for diagnostics. The reason never contains command text, paths, module names, error messages,
+ * or any other envelope value.
  * @param {boolean|null|undefined} resultIsError - this attempt's own tool_result-level error flag
  *   (bashResult.resultIsError) -- checked for the identical resultIsError:true+exit_code:0
  *   contradiction validateKmpEnvelopeForAttempt's expected-comparison path already guards against.
- * @returns {null
- *   | {module:string, outcome_kind:'tests_executed', total:number, passed:number, failed:number}
- *   | {module:string, outcome_kind:'tests_failed', total:number, passed:number, failed:number}
- *   | {module:string, outcome_kind:'coverage_threshold_exceeded', total:number, passed:number,
- *       failed:number, missed_lines:number, threshold:number, modules_contributing:number}
- *   | {module:string, outcome_kind:'no_applicable_tests'}}
+ * @returns {{status:'canonical', reason:'canonical', result:object}
+ *   | {status:'uncanonicalizable', reason:string, result:null}}
  */
+function canonicalKmpResult(result) {
+  return { status: 'canonical', reason: 'canonical', result };
+}
+
+function uncanonicalizableKmpResult(reason) {
+  return { status: 'uncanonicalizable', reason, result: null };
+}
+
 function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
   // The envelope's own self-reported subcommand must agree with what was actually invoked -- a
   // stale or mismatched tool_result (the command said `parallel`, the attached envelope's own
@@ -1148,27 +1150,27 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
   // attempt at all, regardless of how plausible its other fields look. Mirrors
   // validateKmpEnvelopeForAttempt's own identical first check for the expected-comparison path --
   // observed-facts derivation must be no less careful than that.
-  if (envelope.subcommand !== classification.subcommand) return null;
+  if (envelope.subcommand !== classification.subcommand) return uncanonicalizableKmpResult('subcommand-mismatch');
   // Execution/plan-mode coherence -- mirrors validateKmpEnvelopeForAttempt's own identical
   // fail-closed allowlist (see that function's own doc comment for the full "wrong-typed value"
   // rationale): the ONLY acceptable states are "field absent" or "field explicitly false". A
   // command with no --dry-run/--list-only in its own text (so it was never excluded earlier as
   // plan-only) paired with an envelope that itself claims plan-only mode must not be trusted.
-  if (envelope.dry_run !== undefined && envelope.dry_run !== false) return null;
-  if (envelope.parallel?.list_only !== undefined && envelope.parallel?.list_only !== false) return null;
+  if (envelope.dry_run !== undefined && envelope.dry_run !== false) return uncanonicalizableKmpResult('plan-mode-contradiction');
+  if (envelope.parallel?.list_only !== undefined && envelope.parallel?.list_only !== false) return uncanonicalizableKmpResult('plan-mode-contradiction');
   // resultIsError:true contradicting a CLEAN exit_code:0 claim is wrong under any plausible
   // convention -- same deliberately ONE-directional check as validateKmpEnvelopeForAttempt's own
   // (see that function's own doc comment for why the reverse direction is not asserted).
-  if (resultIsError === true && envelope.exit_code === 0) return null;
+  if (resultIsError === true && envelope.exit_code === 0) return uncanonicalizableKmpResult('result-status-contradiction');
   // Shared closed-form arithmetic coherence (non-negative integers, total===passed+failed) for
   // ALL branches below -- a task-level counter set that doesn't add up to itself is never
   // trustworthy evidence, independent of which specific outcome shape it's otherwise claiming.
-  if (!isCoherentTestsCounters(envelope.tests)) return null;
+  if (!isCoherentTestsCounters(envelope.tests)) return uncanonicalizableKmpResult('test-counters-incoherent');
   // `warnings`/`skipped` must both structurally be arrays -- a real envelope always carries both
   // keys this way (possibly empty), so anything else (absent, wrong-typed) is itself untrustworthy
   // evidence, independent of whether any SPECIFIC entry ends up mattering below.
-  if (!Array.isArray(envelope.warnings)) return null;
-  if (!Array.isArray(envelope.skipped)) return null;
+  if (!Array.isArray(envelope.warnings)) return uncanonicalizableKmpResult('warnings-malformed');
+  if (!Array.isArray(envelope.skipped)) return uncanonicalizableKmpResult('skipped-malformed');
   // Every entry of BOTH arrays, not just ones a later branch happens to inspect the content of --
   // an array containing even ONE malformed entry (null, a scalar, a nested array, an empty/missing
   // required field) is itself untrustworthy evidence, since real production never emits anything
@@ -1178,14 +1180,14 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
   // CONTENTS must be trustworthy before any branch below relies on membership/code tests against
   // them (hasOversizedJunitWarning and COVERAGE_INCOMPLETE_WARNING_CODES membership, just below,
   // and the skipped-module cardinality checks inside the modules.length===1 branch).
-  if (!envelope.warnings.every(isWellFormedWarningEntry)) return null;
-  if (!envelope.skipped.every(isWellFormedSkippedEntry)) return null;
+  if (!envelope.warnings.every(isWellFormedWarningEntry)) return uncanonicalizableKmpResult('warnings-malformed');
+  if (!envelope.skipped.every(isWellFormedSkippedEntry)) return uncanonicalizableKmpResult('skipped-malformed');
   // An oversized-XML skip anywhere in the envelope means individual_total/test_failures may be
   // incomplete -- checked here, universally, BEFORE branching on modules.length, so it covers
   // no_applicable_tests (modules:[], no "observed module" to scope a match against at all) exactly
   // as it covers the three count-bearing outcome shapes below (see hasOversizedJunitWarning's own
   // doc comment for why this is deliberately NOT limited to the observed module).
-  if (hasOversizedJunitWarning(envelope.warnings)) return null;
+  if (hasOversizedJunitWarning(envelope.warnings)) return uncanonicalizableKmpResult('oversized-junit-incomplete');
 
   const individualTotal = envelope.tests.individual_total;
   // A genuinely zero task-level total can never legitimately carry individual test cases -- if no
@@ -1193,11 +1195,11 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
   // asserted: a real executed task can legitimately have individual_total:0 (e.g. a task with zero
   // real test cases of its own), so this is deliberately one-directional, exactly like the
   // resultIsError/exit_code check above.
-  if (envelope.tests.total === 0 && individualTotal !== 0) return null;
+  if (envelope.tests.total === 0 && individualTotal !== 0) return uncanonicalizableKmpResult('test-counters-incoherent');
 
   if (envelope.modules.length === 1) {
     const module = normalizeModuleName(envelope.modules[0]?.name);
-    if (typeof module !== 'string' || module.length === 0) return null;
+    if (typeof module !== 'string' || module.length === 0) return uncanonicalizableKmpResult('module-scope-incoherent');
     // recordLegResults (lib/orchestrators/parallel/result-rollup.js) increments `state.tests.total`
     // and pushes/updates the module's own `state.modules[]` entry TOGETHER, in the SAME per-task
     // loop iteration, unconditionally, for every task in taskList -- a module can never appear here
@@ -1205,7 +1207,7 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
     // envelope.tests.total. (The universal individualTotal!==0 check above only ever fires the
     // REVERSE direction -- a nonzero individual_total alongside total:0 -- and does not by itself
     // exclude total:0 when individual_total is ALSO 0.)
-    if (envelope.tests.total === 0) return null;
+    if (envelope.tests.total === 0) return uncanonicalizableKmpResult('test-counters-incoherent');
     // A module the envelope itself also lists as skipped cannot simultaneously be the module this
     // branch is about to report real test facts FOR -- "executed with real results" and "skipped
     // entirely" are mutually exclusive claims about the SAME module within one attempt. Every
@@ -1221,7 +1223,7 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
     // naming a different module is therefore unattributable, adversarial evidence -- checked here,
     // unconditionally, before any single-leg/multi-leg branching, since it disqualifies the whole
     // envelope regardless of dispatch shape.
-    if (envelope.skipped.some((s) => normalizeModuleName(s.module) !== module)) return null;
+    if (envelope.skipped.some((s) => normalizeModuleName(s.module) !== module)) return uncanonicalizableKmpResult('module-scope-incoherent');
     // Scoped to a `changed` dispatch or a single-leg `parallel` dispatch specifically: a genuine
     // `test_type:"all"` dispatch (legsForAll, MIN_LEGS_FOR_ALL === 3) can legitimately execute a
     // module in one leg while a DIFFERENT leg skips that same module for an unrelated
@@ -1229,7 +1231,7 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
     // below, but NOT unconditionally: they always owe an EXACT correspondence (see below).
     const isSingleTargetDispatch = classification.subcommand === 'changed' || envelope.parallel?.legs?.length === 1;
     if (isSingleTargetDispatch) {
-      if (envelope.skipped.length > 0) return null;
+      if (envelope.skipped.length > 0) return uncanonicalizableKmpResult('module-scope-incoherent');
     } else {
       // A round-7 review reproduced a real gap in the multi-leg exemption above: it accepted ANY
       // multi-leg envelope naming the observed module in skipped[], even one where every single
@@ -1263,13 +1265,13 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
         ? legs.filter((leg) => leg && typeof leg.execution === 'object' && leg.execution !== null
           && EXECUTION_MODE_KEYS.every((k) => leg.execution[k] === 0)).length
         : 0;
-      if (envelope.skipped.length !== zeroExecutionLegCount) return null;
+      if (envelope.skipped.length !== zeroExecutionLegCount) return uncanonicalizableKmpResult('dispatch-evidence-incoherent');
     }
     // A genuine per-individual-test skip has no representation in any closed form below (the
     // KMP_EVAL_RESULT schema itself carries no `skipped` key) -- with any skipped case present,
     // `passed`/`failed` could not be derived from `individualTotal` alone without guessing which
     // of the skipped cases would otherwise have counted as which.
-    if (envelope.tests.skipped !== 0) return null;
+    if (envelope.tests.skipped !== 0) return uncanonicalizableKmpResult('test-detail-incoherent');
     // A genuine `parallel` envelope's own internal coherence (leg shapes, per-leg exit/failed
     // agreement, and both aggregate-cardinality invariants against envelope.tests.total/failed) is
     // independently re-checked here via the SAME validator the rest of this file already trusts --
@@ -1282,21 +1284,21 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
     // `changed` envelope never carries a `parallel` block at all (real production invariant -- see
     // changedEvidenceInvalid's own doc comment) -- scoped to `parallel` specifically, mirroring
     // parallelEvidenceInvalid's own identical `classification.subcommand !== 'changed'` guard.
-    if (classification.subcommand !== 'changed' && !validateParallelEvidence(envelope, classification.testType)) return null;
+    if (classification.subcommand !== 'changed' && !validateParallelEvidence(envelope, classification.testType)) return uncanonicalizableKmpResult('test-detail-incoherent');
 
     if (envelope.errors.length === 0) {
       // A genuinely clean run -- every individual test that ran also passed. Cross-checked against
       // the task-level failed counter too -- an envelope claiming no error entries while its own
       // tests.failed counter disagrees is self-contradictory, not real clean-pass evidence. A
       // clean-pass claim must also not carry stray per-test failure detail for this module.
-      if (envelope.tests.failed !== 0) return null;
-      if (hasContradictoryTestFailures(envelope.modules[0])) return null;
+      if (envelope.tests.failed !== 0) return uncanonicalizableKmpResult('test-counters-incoherent');
+      if (hasContradictoryTestFailures(envelope.modules[0])) return uncanonicalizableKmpResult('test-detail-incoherent');
       // The envelope's own exit_code must agree with classifyExitCode's real, single-source-of-truth
       // mapping (lib/envelope/exit-codes.js -- the SAME function every real orchestrator's own
       // exit-code decision goes through) for a clean run with no errors: SUCCESS (0). An envelope
       // otherwise reading "clean" but reporting a nonzero exit_code contradicts itself.
-      if (envelope.exit_code !== classifyExitCode(envelope.errors, { testsFailed: 0 })) return null;
-      return { module, outcome_kind: 'tests_executed', total: individualTotal, passed: individualTotal, failed: 0 };
+      if (envelope.exit_code !== classifyExitCode(envelope.errors, { testsFailed: 0 })) return uncanonicalizableKmpResult('exit-code-incoherent');
+      return canonicalKmpResult({ module, outcome_kind: 'tests_executed', total: individualTotal, passed: individualTotal, failed: 0 });
     }
 
     const coverageErrors = envelope.errors.filter((e) => e && e.code === 'coverage_threshold_exceeded');
@@ -1307,28 +1309,28 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
       // claim can never be genuine observed evidence when the invoked command requested
       // --no-coverage, independent of how internally coherent the envelope's own coverage.* fields
       // otherwise look.
-      if (classification.coverageDisabled) return null;
+      if (classification.coverageDisabled) return uncanonicalizableKmpResult('coverage-block-incoherent');
       // A coverage-gate failure is still a genuinely clean TEST pass underneath (see this
       // function's own coverage_threshold_exceeded return, below) -- the task-level failed counter
       // must agree, and the same stray-failure-detail contradiction applies as the clean-run
       // branch above.
-      if (envelope.tests.failed !== 0) return null;
-      if (hasContradictoryTestFailures(envelope.modules[0])) return null;
+      if (envelope.tests.failed !== 0) return uncanonicalizableKmpResult('test-counters-incoherent');
+      if (hasContradictoryTestFailures(envelope.modules[0])) return uncanonicalizableKmpResult('test-detail-incoherent');
       const err = coverageErrors[0];
       const coverageFacts = deriveCoherentCoverageFacts(envelope.coverage, err, module, envelope.warnings);
-      if (coverageFacts == null) return null;
+      if (coverageFacts == null) return uncanonicalizableKmpResult('coverage-block-incoherent');
       // The error's own echoed threshold must agree with the --min-missed-lines value actually
       // invoked on THIS command -- a stale/mismatched tool_result whose error names a different
       // threshold than the one this specific command line asked for cannot be trusted, regardless
       // of the error's own internal coverage self-consistency (mirrors
       // validateKmpEnvelopeForAttempt's identical command-vs-envelope coherence check).
-      if (classification.minMissedLines == null || String(coverageFacts.threshold) !== classification.minMissedLines) return null;
-      if (envelope.exit_code !== classifyExitCode(envelope.errors, { testsFailed: 0 })) return null;
-      return {
+      if (classification.minMissedLines == null || String(coverageFacts.threshold) !== classification.minMissedLines) return uncanonicalizableKmpResult('threshold-mismatch');
+      if (envelope.exit_code !== classifyExitCode(envelope.errors, { testsFailed: 0 })) return uncanonicalizableKmpResult('exit-code-incoherent');
+      return canonicalKmpResult({
         module, outcome_kind: 'coverage_threshold_exceeded',
         total: individualTotal, passed: individualTotal, failed: 0,
         missed_lines: coverageFacts.missed_lines, threshold: coverageFacts.threshold, modules_contributing: coverageFacts.modules_contributing,
-      };
+      });
     }
 
     const moduleFailedErrors = envelope.errors.filter((e) => e && e.code === 'module_failed' && normalizeModuleName(e.module) === module);
@@ -1339,8 +1341,8 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
       // task's tests never actually ran (see evaluateGradleAttempt's identical, longer-standing
       // reasoning for the Gradle-provider equivalent of this same discriminator). Required genuine
       // ABSENCE, not merely inequality with true, so a wrong-typed value is rejected identically.
-      if ('setup_failed' in soleError) return null;
-      if (typeof soleError.task !== 'string' || soleError.task.length === 0) return null;
+      if ('setup_failed' in soleError) return uncanonicalizableKmpResult('error-contract-incoherent');
+      if (typeof soleError.task !== 'string' || soleError.task.length === 0) return uncanonicalizableKmpResult('error-contract-incoherent');
       // recordLegResults (lib/orchestrators/parallel/result-rollup.js) increments
       // `state.tests.failed` by exactly 1 in the SAME per-task loop iteration that pushes a
       // `module_failed` error for that task -- the two counts are produced together, one-to-one,
@@ -1351,39 +1353,39 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
       // this module or another, would need its own separate error entry, contradicting the
       // `envelope.errors.length === 1` guard on this branch, or the observed module's own
       // module_failed-error cardinality this filter already fixed at 1).
-      if (envelope.tests.failed !== moduleFailedErrors.length) return null;
+      if (envelope.tests.failed !== moduleFailedErrors.length) return uncanonicalizableKmpResult('test-counters-incoherent');
       const failures = envelope.modules[0].test_failures;
-      if (!Array.isArray(failures) || failures.length === 0 || !failures.every(isWellFormedTestFailureEntry)) return null;
-      if (failures.length > individualTotal) return null; // impossible shape -- more real failures than total cases
-      if (envelope.exit_code !== classifyExitCode(envelope.errors, { testsFailed: envelope.tests.failed })) return null;
-      return { module, outcome_kind: 'tests_failed', total: individualTotal, passed: individualTotal - failures.length, failed: failures.length };
+      if (!Array.isArray(failures) || failures.length === 0 || !failures.every(isWellFormedTestFailureEntry)) return uncanonicalizableKmpResult('test-detail-incoherent');
+      if (failures.length > individualTotal) return uncanonicalizableKmpResult('test-detail-incoherent'); // impossible shape -- more real failures than total cases
+      if (envelope.exit_code !== classifyExitCode(envelope.errors, { testsFailed: envelope.tests.failed })) return uncanonicalizableKmpResult('exit-code-incoherent');
+      return canonicalKmpResult({ module, outcome_kind: 'tests_failed', total: individualTotal, passed: individualTotal - failures.length, failed: failures.length });
     }
 
-    return null; // competing or unrecognized error shape -- fail closed rather than guess
+    return uncanonicalizableKmpResult('error-contract-incoherent');
   }
 
   if (envelope.modules.length === 0) {
     // Real production never sets `parallel` on this early-exit at all -- see
     // validateParallelEvidence's own sibling comment on this exact invariant. A `parallel` block
     // present alongside an empty modules[] is self-contradictory: no way to tell which half lies.
-    if (envelope.parallel !== undefined) return null;
+    if (envelope.parallel !== undefined) return uncanonicalizableKmpResult('dispatch-evidence-incoherent');
     // `caused_by_filter:true` specifically -- the ONLY no_test_modules shape this closed form
     // models (an agent-invoked --module-filter resolving to zero modules; the OTHER real shape,
     // a project genuinely lacking any test infrastructure at all, is a structurally different fact
     // this corpus's own no_applicable_tests scenario never represents -- see
     // lib/envelope/exit-codes.js's own CONFIG_ERROR_CODES/ENV_ERROR_CODES split).
     const noTestErrors = envelope.errors.filter((e) => e && e.code === 'no_test_modules' && e.caused_by_filter === true);
-    if (envelope.errors.length !== 1 || noTestErrors.length !== 1) return null;
+    if (envelope.errors.length !== 1 || noTestErrors.length !== 1) return uncanonicalizableKmpResult('error-contract-incoherent');
     // A genuine "nothing resolved" claim must carry all-zero counters -- any nonzero value here
     // directly contradicts "no applicable tests were ever found or run."
     if (envelope.tests.total !== 0 || envelope.tests.passed !== 0 || envelope.tests.failed !== 0
-      || envelope.tests.skipped !== 0 || individualTotal !== 0) return null;
-    if (envelope.exit_code !== classifyExitCode(envelope.errors, { testsFailed: 0 })) return null;
+      || envelope.tests.skipped !== 0 || individualTotal !== 0) return uncanonicalizableKmpResult('test-counters-incoherent');
+    if (envelope.exit_code !== classifyExitCode(envelope.errors, { testsFailed: 0 })) return uncanonicalizableKmpResult('exit-code-incoherent');
     // The early-exit this branch models returns BEFORE any per-module coverage aggregation ever
     // runs -- a coverage block claiming real aggregated data (a numeric missed_lines, a non-empty
     // plugin list, or the later-aggregation-only module_buckets/modules_contributing keys) is
     // therefore evidence of a different code path entirely, impossible here.
-    if (!isCoherentNoApplicableTestsCoverageBlock(envelope.coverage)) return null;
+    if (!isCoherentNoApplicableTestsCoverageBlock(envelope.coverage)) return uncanonicalizableKmpResult('coverage-block-incoherent');
     // Module identity: envelope.modules[] is empty by definition for this outcome_kind, so the
     // ONLY two real shapes are (a) the invoked --module-filter itself matched zero real modules at
     // all -- skipped[] is then genuinely empty too, and the filter's own literal text is the
@@ -1397,24 +1399,24 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
     let module;
     if (envelope.skipped.length === 0) {
       module = canonicalModuleFilterIdentity(classification.moduleFilter);
-      if (module == null) return null;
+      if (module == null) return uncanonicalizableKmpResult('module-scope-incoherent');
     } else {
       // Exactly one candidate required -- two or more skipped entries here would mean the invoked
       // filter matched multiple real modules, each individually skipped, with no single one of
       // them safely reportable as THE observed module without guessing which.
-      if (envelope.skipped.length !== 1) return null;
+      if (envelope.skipped.length !== 1) return uncanonicalizableKmpResult('module-scope-incoherent');
       const skippedModule = normalizeModuleName(envelope.skipped[0].module);
-      if (typeof skippedModule !== 'string' || skippedModule.length === 0) return null;
+      if (typeof skippedModule !== 'string' || skippedModule.length === 0) return uncanonicalizableKmpResult('module-scope-incoherent');
       // The skipped entry's own module must actually be reachable from the invoked --module-filter
       // under the real production matcher -- an entry naming some unrelated module the filter
       // could never have matched at all is unattributable, adversarial evidence.
-      if (typeof classification.moduleFilter !== 'string' || !matchModuleFilter(skippedModule, classification.moduleFilter)) return null;
+      if (typeof classification.moduleFilter !== 'string' || !matchModuleFilter(skippedModule, classification.moduleFilter)) return uncanonicalizableKmpResult('module-scope-incoherent');
       module = skippedModule;
     }
-    return { module, outcome_kind: 'no_applicable_tests' };
+    return canonicalKmpResult({ module, outcome_kind: 'no_applicable_tests' });
   }
 
-  return null; // more than one dispatched module -- no single module can be safely attributed
+  return uncanonicalizableKmpResult('module-scope-incoherent');
 }
 
 /** @returns {null | {provider:'kmp_test', bashIndex:number, resultIndex:number|null,
@@ -1545,11 +1547,16 @@ function evaluateKmpTestAttempt(bashResult, scenario, decision) {
   // shapes (see its own doc comment). The caller (gradeScenarioCondition) only ever trusts this
   // field once it has ALSO confirmed evidenceWellFormed (hasEvidence && !malformed &&
   // !parallelEvidenceInvalid && !changedEvidenceInvalid) for whichever attempt becomes terminal.
-  const observedResult = hasEvidence ? deriveObservedKmpTestResult(envelope, classification, bashResult.resultIsError) : null;
+  const observedDerivation = hasEvidence
+    ? deriveObservedKmpTestResult(envelope, classification, bashResult.resultIsError)
+    : uncanonicalizableKmpResult('result-status-contradiction');
+  const observedResult = observedDerivation.result;
 
   return {
     provider: 'kmp_test', subcommand: classification.subcommand, bashIndex: bashResult.index, resultIndex: bashResult.resultIndex,
     hasEvidence, malformed, targetMatches, intendedTargetMatches, outcomeMatches, parallelEvidenceInvalid, changedEvidenceInvalid, observedResult,
+    observedResultCanonicalizationStatus: observedDerivation.status,
+    observedResultCanonicalizationReason: observedDerivation.reason,
     envelopeSubcommand: hasEvidence ? envelope.subcommand : null,
     minMissedLines: classification.minMissedLines,
     coverageDisabled: classification.coverageDisabled,
@@ -2138,9 +2145,12 @@ function coverageGateAttemptReason(attempt, evidenceWellFormed, scenario) {
   if (attempt.minMissedLines == null) return 'threshold-missing';
   if (String(attempt.minMissedLines) !== String(scenario.expected.kmp_test.coverage.min_missed_lines)) return 'threshold-mismatch';
   if (!attempt.hasEvidence || attempt.malformed === true) return 'result-status-contradiction';
+  if (attempt.targetMatches !== true) return 'module-scope-incoherent';
+  if (attempt.observedResultCanonicalizationStatus === 'uncanonicalizable') {
+    return attempt.observedResultCanonicalizationReason;
+  }
   if (attempt.parallelEvidenceInvalid === true) return 'test-detail-incoherent';
   if (attempt.changedEvidenceInvalid === true) return 'dispatch-evidence-incoherent';
-  if (attempt.targetMatches !== true) return 'module-scope-incoherent';
   if (attempt.outcomeMatches) return 'canonical';
   if (!evidenceWellFormed && attempt.terminal_authoritative === true) return 'result-status-contradiction';
   if (attempt.observedResult?.outcome_kind === 'tests_executed') return 'outcome-not-canonicalizable';
