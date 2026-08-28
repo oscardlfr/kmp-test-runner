@@ -1372,6 +1372,45 @@ describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / cross
     expect(JSON.stringify(sidecar)).not.toContain('--min-missed-lines');
   });
 
+  it('preserves a typed uncanonicalizable reason without copying private attempt data', () => {
+    const record = notApplicableRecord();
+    const cr = notApplicableConditionResult([
+      initEventStub(),
+      bashToolUseEvent('t1', 'kmp-test parallel --module-filter secretmodule123 --min-missed-lines 15 --json'),
+      toolResultEvent('t1'),
+      resultEventStub(),
+    ]);
+    const sidecar = buildAcceptedRunAuditSidecar({
+      record,
+      conditionResult: cr,
+      terminalAuthoritativeEventIndex: 2,
+      terminalEvidence: terminalEvidence({
+        coverage_gate_attempts: [{
+          tool_result_event_index: 2,
+          recognized_operation: 'parallel',
+          terminal_authoritative: true,
+          canonicalization_status: 'uncanonicalizable',
+          canonicalization_reason: 'coverage-block-incoherent',
+          threshold_relation: 'matches',
+          tests_contract: 'matches',
+          coverage_contract: 'differs',
+          error_contract: 'matches',
+          exit_code_contract: 'matches',
+          target_matches_expected: true,
+          observed_outcome_kind: null,
+          outcome_matches_expected: false,
+        }],
+      }),
+      targetPluginName: TARGET_PLUGIN_NAME,
+      targetSkillName: TARGET_SKILL_NAME,
+    });
+
+    expect(sidecar.terminal_evidence.coverage_gate_attempts[0].canonicalization_reason).toBe('coverage-block-incoherent');
+    expect(validateAcceptedRunAuditSidecar(sidecar).errors).toEqual([]);
+    expect(JSON.stringify(sidecar)).not.toContain('secretmodule123');
+    expect(JSON.stringify(sidecar)).not.toContain('--min-missed-lines');
+  });
+
   it('rejects stale coverage_gate_attempts fields from the pre-v8 draft shape', () => {
     const record = notApplicableRecord();
     const cr = notApplicableConditionResult([initEventStub(), bashToolUseEvent('t1', 'kmp-test parallel --json'), toolResultEvent('t1'), resultEventStub()]);

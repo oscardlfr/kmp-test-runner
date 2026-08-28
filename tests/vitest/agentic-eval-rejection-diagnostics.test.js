@@ -2706,6 +2706,23 @@ describe('rejection-diagnostics schema 12 -- rejected coverage-gate attempt obse
     expect(validateRejectionRow(committed).errors).toEqual([]);
   });
 
+  it('preserves a typed lower canonicalization cause in the privacy-safe terminal projection', () => {
+    const { committed } = buildSchema12(terminalEvidence({
+      coverage_gate_attempts: [coverageGateAttempt({
+        canonicalization_status: 'uncanonicalizable',
+        canonicalization_reason: 'coverage-block-incoherent',
+        coverage_contract: 'differs',
+        observed_outcome_kind: null,
+        outcome_matches_expected: false,
+      })],
+    }));
+    const summary = committed.cells[0].coverage_gate_attempt_summary;
+    expect(summary.terminal_canonicalization_reason).toBe('coverage-block-incoherent');
+    expect(summary.terminal_coverage_contract).toBe('differs');
+    expect(validateRejectionRow(committed).errors).toEqual([]);
+    expect(JSON.stringify(summary)).not.toMatch(/command|argv|path|module|prompt|response|text/i);
+  });
+
   it('records absent terminal evidence as not-recorded with no terminal facts', () => {
     const { committed } = buildSchema12(terminalEvidence({ coverage_gate_attempts: [] }));
     expect(committed.cells[0].coverage_gate_attempt_summary).toEqual({

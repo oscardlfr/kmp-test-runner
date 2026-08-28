@@ -484,6 +484,12 @@ function coverageEnvelope(overrides = {}) {
 }
 const KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED = coverageEnvelope();
 
+function mutateCoverageEnvelope(mutator) {
+  const envelope = JSON.parse(coverageEnvelope());
+  mutator(envelope);
+  return JSON.stringify(envelope);
+}
+
 function cleanCoverageGateFreeEnvelope(overrides = {}) {
   return JSON.stringify({
     tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0',
@@ -3503,6 +3509,7 @@ describe('gradeScenarioCondition -- coverage_threshold_exceeded (SCENARIO_5, the
     const cr = buildConditionResult([step], finalAnswerText);
     const grade = gradeScenarioCondition(cr, SCENARIO_5);
     expect(grade.terminalEvidence.coverage_gate_attempts).toHaveLength(1);
+    expect(grade.success).toBe(false);
     return grade.terminalEvidence.coverage_gate_attempts[0];
   }
 
@@ -3582,6 +3589,14 @@ describe('gradeScenarioCondition -- coverage_threshold_exceeded (SCENARIO_5, the
     ['subcommand-mismatch', { command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({ subcommand: 'doctor' }) }, { threshold_relation: 'matches', observed_outcome_kind: null }],
     ['test-detail-incoherent', { command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({ parallel: { legs: [null] } }) }, { threshold_relation: 'matches', observed_outcome_kind: null }],
     ['module-scope-incoherent', { command: 'kmp-test parallel --module-filter :core:common --min-missed-lines 15 --json', resultContent: coverageEnvelope({ modules: [{ name: 'core:common', type: 'jvm', coverage_plugin: null }] }) }, { threshold_relation: 'matches', observed_outcome_kind: null }],
+    ['plan-mode-contradiction', { command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({ dry_run: true }) }, { threshold_relation: 'matches', observed_outcome_kind: null }],
+    ['test-counters-incoherent', { command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: mutateCoverageEnvelope((e) => { e.tests.total = 2; }) }, { threshold_relation: 'matches', observed_outcome_kind: null }],
+    ['warnings-malformed', { command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({ warnings: [null] }) }, { threshold_relation: 'matches', observed_outcome_kind: null }],
+    ['skipped-malformed', { command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({ skipped: [null] }) }, { threshold_relation: 'matches', observed_outcome_kind: null }],
+    ['oversized-junit-incomplete', { command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({ warnings: [{ code: 'junit_xml_oversized', message: 'bounded fixture warning', module: 'core:domain', task: ':core:domain:test', file: 'TEST-x.xml', size_bytes: 20, max_bytes: 10 }] }) }, { threshold_relation: 'matches', observed_outcome_kind: null }],
+    ['coverage-block-incoherent', { command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: mutateCoverageEnvelope((e) => { e.coverage.missed_lines = 22; }) }, { threshold_relation: 'matches', observed_outcome_kind: null }],
+    ['error-contract-incoherent', { command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({ errors: [{ code: 'unexpected_shape' }] }) }, { threshold_relation: 'matches', observed_outcome_kind: null }],
+    ['exit-code-incoherent', { command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({ exit_code: 0 }) }, { threshold_relation: 'matches', observed_outcome_kind: null }],
     ['outcome-not-canonicalizable', { command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: cleanCoverageGateFreeEnvelope() }, { threshold_relation: 'matches', observed_outcome_kind: 'tests_executed' }],
   ])('surfaces closed coverage attempt reason %s without raw command text', (reason, step, expected) => {
     const attempt = singleCoverageGateAttempt(step);
