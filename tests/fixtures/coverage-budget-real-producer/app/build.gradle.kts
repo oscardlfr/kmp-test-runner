@@ -20,8 +20,8 @@ tasks.test {
 // configuration action that wins over the init-script's earlier one, permanently
 // defeating the autofix for cases that need real XML.
 //
-// The PR A E2E producer test (Evidence1 success-recovery runbook Section 8.8)
-// needs a THIRD real case where XML is deliberately absent. It gates the same
+// The real-producer E2E test needs a THIRD real case where XML is
+// deliberately absent. It gates the same
 // later-wins-on-registration-order behavior behind a Gradle project property
 // (-PcoverageBudgetE2eDisableXml=true) instead of --no-coverage-xml-autofix,
 // because that flag was found NOT to suppress the autofix init-script's
