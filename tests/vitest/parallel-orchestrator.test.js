@@ -41,7 +41,7 @@
 //  35.  Empty modules list → no_test_modules error, exit 3
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, utimesSync } from 'node:fs';
+import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, utimesSync, cpSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { isGradleCall, effectiveGradleArgs, isStopCall } from './_spawn-helpers.js';
@@ -103,6 +103,99 @@ function makeProject(modules, opts = {}) {
     }
   }
   return dir;
+}
+
+function writeFixtureFile(filePath, content) {
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  writeFileSync(filePath, content);
+}
+
+function makeConventionFlavorCoverageContractProject() {
+  const dir = mkdtempSync(path.join(tmpdir(), 'kmp-flavored-coverage-contract-'));
+  cpSync(path.resolve('tests/fixtures/convention-flavors'), dir, { recursive: true });
+  workDir = dir;
+  return dir;
+}
+
+function coverageContractJunit({ failing = false } = {}) {
+  return '<testsuite>'
+    + '<testcase name="sameNameOne" classname="contract.SharedTest"/>'
+    + '<testcase name="sameNameTwo" classname="contract.SharedTest">'
+    + (failing ? '<failure type="java.lang.AssertionError" message="contract failure"/>' : '')
+    + '</testcase>'
+    + '</testsuite>';
+}
+
+function coverageContractXml(missed, covered) {
+  return '<report><package name="contract">'
+    + '<sourcefile name="CoverageContract.kt">'
+    + '<line nr="1" mi="1" ci="0"/>'
+    + `<counter type="LINE" missed="${missed}" covered="${covered}"/>`
+    + '</sourcefile></package></report>';
+}
+
+function makeCoverageContractSpawn(projectRoot, { failingTests = false, resolutionFail = false } = {}) {
+  const calls = [];
+  const fn = (cmd, args, opts) => {
+    const call = { cmd, args: [...args], cwd: opts?.cwd ?? null, env: opts?.env ?? null };
+    calls.push(call);
+    const taskArgs = effectiveGradleArgs(call).filter((arg) => arg.startsWith(':'));
+    const testTask = taskArgs.find((task) => /:test(?:DemoDebugUnitTest)?$/.test(task));
+    const coverageTask = taskArgs.find((task) => /:createDemoDebugUnitTestCoverageReport$/.test(task));
+
+    if (testTask && resolutionFail) {
+      return {
+        status: 1,
+        stdout: `Cannot locate tasks that match '${testTask}'\n`,
+        stderr: '',
+        signal: null,
+        error: null,
+      };
+    }
+
+    if (testTask) {
+      const variants = testTask.endsWith(':test')
+        ? ['testDemoDebugUnitTest', 'testProdDebugUnitTest']
+        : ['testDemoDebugUnitTest'];
+      for (const variant of variants) {
+        writeFixtureFile(
+          path.join(projectRoot, 'core-foo', 'build', 'test-results', variant, 'TEST-contract.SharedTest.xml'),
+          coverageContractJunit({ failing: failingTests && variant === 'testDemoDebugUnitTest' }),
+        );
+      }
+      return {
+        status: failingTests ? 1 : 0,
+        stdout: `> Task ${testTask}${failingTests ? ' FAILED' : ''}\nBUILD ${failingTests ? 'FAILED' : 'SUCCESSFUL'} in 1s\n`,
+        stderr: '',
+        signal: null,
+        error: null,
+      };
+    }
+
+    if (coverageTask) {
+      writeFixtureFile(
+        path.join(projectRoot, 'core-foo', 'build', 'reports', 'coverage', 'test', 'demo', 'debug', 'report.xml'),
+        coverageContractXml(23, 77),
+      );
+      return {
+        status: 0,
+        stdout: `> Task ${coverageTask}\nBUILD SUCCESSFUL in 1s\n`,
+        stderr: '',
+        signal: null,
+        error: null,
+      };
+    }
+
+    return { status: 0, stdout: 'BUILD SUCCESSFUL in 1s\n', stderr: '', signal: null, error: null };
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+function coverageContractTaskCalls(spawn) {
+  return spawn.calls
+    .filter(isGradleCall)
+    .map((call) => effectiveGradleArgs(call).filter((arg) => arg.startsWith(':')));
 }
 
 // Spawn stub. Records every call. Returns canned gradle output (BUILD SUCCESSFUL
@@ -1844,6 +1937,139 @@ describe('runParallel', () => {
   // now survive TOGETHER: a coverage_threshold_exceeded error (the pre-
   // existing regression guard above) alongside a coverage_parse_failed
   // warning, both propagated to the parallel envelope in the same run.
+  describe('deterministic flavored coverage-budget producer contract', () => {
+    it('runs the umbrella test task, counts every flavor, and gates the deterministic representative', async () => {
+      const dir = makeConventionFlavorCoverageContractProject();
+      const spawn = makeCoverageContractSpawn(dir);
+      const { envelope, exitCode } = await runParallel({
+        projectRoot: dir,
+        args: [
+          '--test-type', 'androidUnit',
+          '--module-filter', ':core-foo',
+          '--min-missed-lines', '15',
+          '--output-file', path.join(dir, 'coverage-contract.md'),
+        ],
+        spawn,
+        log: () => {},
+      });
+
+      expect(coverageContractTaskCalls(spawn)).toEqual([
+        [':core-foo:test'],
+        [':core-foo:createDemoDebugUnitTestCoverageReport'],
+      ]);
+      expect(envelope.tests.individual_total).toBe(4);
+      expect(envelope.coverage.missed_lines).toBe(23);
+      expect(envelope.coverage.modules_contributing).toBe(1);
+      expect(envelope.coverage.module_buckets).toEqual({
+        with_data: ['core-foo'],
+        no_xml: ['app'],
+        parse_errored: [],
+        skipped_by_user: [],
+      });
+      expect(envelope.errors.map((error) => error.code)).toEqual(['coverage_threshold_exceeded']);
+      expect(envelope.errors[0]).toMatchObject({ threshold: 15, missed_lines: 23 });
+      expect(exitCode).toBe(1);
+      expect(envelope.exit_code).toBe(1);
+    });
+
+    it('an explicit flavor narrows tests and coverage while preserving the same threshold contract', async () => {
+      const dir = makeConventionFlavorCoverageContractProject();
+      const spawn = makeCoverageContractSpawn(dir);
+      const { envelope, exitCode } = await runParallel({
+        projectRoot: dir,
+        args: [
+          '--test-type', 'androidUnit',
+          '--module-filter', ':core-foo',
+          '--flavor', 'demo',
+          '--min-missed-lines', '15',
+          '--output-file', path.join(dir, 'coverage-contract-demo.md'),
+        ],
+        spawn,
+        log: () => {},
+      });
+
+      expect(coverageContractTaskCalls(spawn)).toEqual([
+        [':core-foo:testDemoDebugUnitTest'],
+        [':core-foo:createDemoDebugUnitTestCoverageReport'],
+      ]);
+      expect(envelope.tests.individual_total).toBe(2);
+      expect(envelope.coverage.missed_lines).toBe(23);
+      expect(envelope.coverage.modules_contributing).toBe(1);
+      expect(envelope.errors.map((error) => error.code)).toEqual(['coverage_threshold_exceeded']);
+      expect(envelope.warnings.some((warning) => warning.code === 'flavor_defaulted_umbrella')).toBe(false);
+      expect(exitCode).toBe(1);
+    });
+
+    it('keeps a prior module failure distinct from the later coverage threshold result', async () => {
+      const dir = makeConventionFlavorCoverageContractProject();
+      const spawn = makeCoverageContractSpawn(dir, { failingTests: true });
+      const { envelope, exitCode } = await runParallel({
+        projectRoot: dir,
+        args: [
+          '--test-type', 'androidUnit',
+          '--module-filter', ':core-foo',
+          '--min-missed-lines', '15',
+          '--output-file', path.join(dir, 'coverage-contract-mixed.md'),
+        ],
+        spawn,
+        log: () => {},
+      });
+
+      expect(coverageContractTaskCalls(spawn)).toEqual([
+        [':core-foo:test'],
+        [':core-foo:createDemoDebugUnitTestCoverageReport'],
+      ]);
+      expect(envelope.errors.map((error) => error.code)).toEqual([
+        'module_failed',
+        'coverage_threshold_exceeded',
+      ]);
+      const moduleFailed = envelope.errors[0];
+      expect(moduleFailed.setup_failed).toBeUndefined();
+      const coreModule = envelope.modules.find((module) => module.name === 'core-foo');
+      expect(coreModule.test_failures).toEqual([
+        {
+          test: 'contract.SharedTest.sameNameTwo',
+          cause: 'contract failure',
+          type: 'java.lang.AssertionError',
+        },
+      ]);
+      expect(envelope.warnings.some((warning) => warning.code === 'coverage_report_dispatch_failed')).toBe(false);
+      expect(exitCode).toBe(1);
+      expect(envelope.exit_code).toBe(1);
+    });
+
+    it('preserves environment-error exit priority when coverage also exceeds the budget', async () => {
+      const dir = makeConventionFlavorCoverageContractProject();
+      const spawn = makeCoverageContractSpawn(dir, { resolutionFail: true });
+      const { envelope, exitCode } = await runParallel({
+        projectRoot: dir,
+        args: [
+          '--test-type', 'androidUnit',
+          '--module-filter', ':core-foo',
+          '--min-missed-lines', '15',
+          '--output-file', path.join(dir, 'coverage-contract-environment.md'),
+        ],
+        spawn,
+        log: () => {},
+      });
+
+      expect(coverageContractTaskCalls(spawn)).toEqual([
+        [':core-foo:test'],
+        [':core-foo:test'],
+        [':core-foo:createDemoDebugUnitTestCoverageReport'],
+      ]);
+      expect(envelope.tests.individual_total).toBe(0);
+      expect(envelope.errors.map((error) => error.code)).toEqual([
+        'module_failed',
+        'task_not_found',
+        'coverage_threshold_exceeded',
+      ]);
+      expect(envelope.errors[2]).toMatchObject({ threshold: 15, missed_lines: 23 });
+      expect(exitCode).toBe(3);
+      expect(envelope.exit_code).toBe(3);
+    });
+  });
+
   it('aggregation warnings survive threshold failure via the in-process coverage call', async () => {
     const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
     const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
