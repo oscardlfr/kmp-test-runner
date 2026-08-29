@@ -26,11 +26,21 @@
 // fixture's actual JaCoCo XML before assuming a flake.
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { mkdtempSync, cpSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+
+// execFile (not execFileSync) for the real CLI invocation below: a
+// synchronous, multi-second child-process wait blocks this worker's entire
+// event loop, starving vitest's own internal IPC heartbeat
+// ("Timeout calling 'onTaskUpdate'") on a slower/colder CI runner even
+// though the test's own assertions would have passed. execFile keeps the
+// invocation a genuine, real child process (never a mock) while yielding
+// the event loop for the ~5-90s a cold Gradle build can take.
+const execFileAsync = promisify(execFile);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE_SRC = path.join(__dirname, '..', 'fixtures', 'coverage-budget-real-producer');
@@ -65,30 +75,35 @@ function setupProject() {
 }
 
 // Runs the REAL CLI entry point as a real child process — never in-process,
-// never with an injected spawn/parser. Returns the parsed JSON envelope plus
-// the real process exit code.
-function runRealCli(projectRoot, extraArgs = []) {
+// never with an injected spawn/parser — asynchronously, so this test never
+// blocks vitest's own event loop while a real (possibly cold, multi-second)
+// Gradle build runs. Returns the parsed JSON envelope plus the real process
+// exit code.
+async function runRealCli(projectRoot, extraArgs = []) {
   let stdout;
   let exitCode = 0;
   try {
-    stdout = execFileSync(
+    const result = await execFileAsync(
       process.execPath,
       [CLI_ENTRY, 'parallel', '--json', '--project-root', projectRoot, ...extraArgs],
-      { encoding: 'utf8', timeout: TEST_TIMEOUT_MS },
+      { encoding: 'utf8', timeout: TEST_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 },
     );
+    stdout = result.stdout;
   } catch (e) {
     // A discriminated non-zero exit (1/2/3) still writes the JSON envelope to
-    // stdout; execFileSync throws for any non-zero exit, so recover it here.
+    // stdout; promisified execFile rejects for any non-zero exit (Node core's
+    // own execFile[promisify.custom] still attaches stdout/stderr/code to the
+    // rejected error), so recover it here.
     stdout = e.stdout;
-    exitCode = typeof e.status === 'number' ? e.status : 1;
+    exitCode = typeof e.code === 'number' ? e.code : 1;
   }
   return { envelope: JSON.parse(stdout), exitCode };
 }
 
 describe('coverage-budget-real-producer — real Gradle/JaCoCo/Kotlin E2E (Section 8.8)', () => {
-  it('threshold below the real missed-line count -> coverage_threshold_exceeded, exit 1, real with_data', () => {
+  it('threshold below the real missed-line count -> coverage_threshold_exceeded, exit 1, real with_data', async () => {
     const dir = setupProject();
-    const { envelope, exitCode } = runRealCli(dir, ['--min-missed-lines', '3']);
+    const { envelope, exitCode } = await runRealCli(dir, ['--min-missed-lines', '3']);
     expect(exitCode).toBe(1);
     expect(envelope.tests).toMatchObject({ total: 1, passed: 1, failed: 0 });
     expect(envelope.coverage.missed_lines).toBe(4);
@@ -103,16 +118,16 @@ describe('coverage-budget-real-producer — real Gradle/JaCoCo/Kotlin E2E (Secti
     }]);
   }, TEST_TIMEOUT_MS);
 
-  it('threshold above the real missed-line count -> success, exit 0', () => {
+  it('threshold above the real missed-line count -> success, exit 0', async () => {
     const dir = setupProject();
-    const { envelope, exitCode } = runRealCli(dir, ['--min-missed-lines', '5']);
+    const { envelope, exitCode } = await runRealCli(dir, ['--min-missed-lines', '5']);
     expect(exitCode).toBe(0);
     expect(envelope.tests).toMatchObject({ total: 1, passed: 1, failed: 0 });
     expect(envelope.coverage.missed_lines).toBe(4);
     expect(envelope.errors).toEqual([]);
   }, TEST_TIMEOUT_MS);
 
-  it('report XML deliberately disabled + positive budget -> coverage_data_unavailable/target-no-xml, exit 3', () => {
+  it('report XML deliberately disabled + positive budget -> coverage_data_unavailable/target-no-xml, exit 3', async () => {
     const dir = setupProject();
     // -PcoverageBudgetE2eDisableXml=true (see the fixture's build.gradle.kts)
     // forces xml.required=false for real, registered AFTER (so it wins over)
@@ -122,7 +137,7 @@ describe('coverage-budget-real-producer — real Gradle/JaCoCo/Kotlin E2E (Secti
     // graph shape — a pre-existing bug outside PR A's allowlist
     // (lib/orchestrators/orchestrator-utils.js#shouldAutofixCoverageXml /
     // dispatchCoverageReports), reported separately, not fixed by this PR.
-    const { envelope, exitCode } = runRealCli(
+    const { envelope, exitCode } = await runRealCli(
       dir, ['--min-missed-lines', '3', '--gradle-args', '-PcoverageBudgetE2eDisableXml=true'],
     );
     expect(exitCode).toBe(3);
