@@ -185,6 +185,17 @@ describe('Evidence1 Hyper-V ops toolkit', () => {
     }
   });
 
+  it('archives only untracked finalized scenario artifacts before updating the harness', () => {
+    const updater = read('docs/audits/evidence1-hyperv-update-harness-from-bundle.ps1');
+
+    expect(updater).toContain("'?? tools/runs/agentic-eval-scenario/'");
+    expect(updater).toContain("git.exe ls-files --others --exclude-standard -- 'tools/runs/agentic-eval-scenario'");
+    expect(updater).toContain("$scenarioArtifactRoot = 'tools/runs/agentic-eval-scenario/'");
+    expect(updater).toContain('archived_untracked_scenario_files');
+    expect(updater).toContain('content_read = $false');
+    expect(updater).not.toContain("'tools\\runs\\agentic-eval-scenario'\n        ))");
+  });
+
   it.skipIf(process.platform !== 'win32')('PowerShell Evidence1 ops entrypoints parse cleanly', () => {
     const fileList = portableOpsScripts
       .map(file => `'${resolve(root, file).replaceAll("'", "''")}'`)
