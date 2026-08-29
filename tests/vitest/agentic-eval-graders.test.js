@@ -5785,3 +5785,156 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
     expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(true);
   });
 });
+
+// Evidence1 success-recovery PR B, Stage B1 (docs/audits/agentic-eval-evidence1-success-recovery-
+// v1-runbook.md, Section 9.10): RED tests for the new, additive `outcome_assessment` neutral
+// scorer. Reuses SCENARIO_5 (coverage-threshold-failure, the historical scenario) and its own
+// already-verified ground truth (4 tests, 23 missed lines, 15-line threshold) rather than
+// inventing a parallel fixture -- this scenario is never edited, only read. Every case below is
+// numbered to match Section 9.10's own literal enumeration 1:1.
+describe('gradeScenarioCondition -- outcome_assessment (neutral scorer, Stage B1)', () => {
+  const NO_BLOCK_TEXT = 'The module tests pass and coverage looks fine, no further detail provided.';
+  const MALFORMED_BLOCK_TEXT = 'Some prose about the result.\n\nKMP_EVAL_RESULT\n{not valid json\nKMP_EVAL_RESULT_END\n';
+  const WRONG_CLAIM_TEXT = kmpEvalResultText(
+    "The :core:domain module's tests all pass with no coverage issues.",
+    { module: ':core:domain', outcome_kind: 'tests_executed', total: 4, passed: 4, failed: 0 },
+  );
+
+  it('[case 1] baseline: correct claim, zero product tool use -> task true, Product E2E null', () => {
+    const cr = buildConditionResult([], SCENARIO_5_CORRECT_ANSWER);
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.outcomeAssessment.task_outcome_matched).toBe(true);
+    expect(grade.outcomeAssessment.task_outcome_reason).toBe('matched');
+    expect(grade.outcomeAssessment.product_e2e_success).toBeNull();
+  });
+
+  it('[case 2] baseline: incorrect claim, zero product tool use -> task false', () => {
+    const cr = buildConditionResult([], WRONG_CLAIM_TEXT);
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.outcomeAssessment.task_outcome_matched).toBe(false);
+    expect(grade.outcomeAssessment.task_outcome_reason).toBe('mismatched');
+  });
+
+  it('[case 3] baseline: no KMP_EVAL_RESULT block at all -> task null, reason claim-missing, protocol false', () => {
+    const cr = buildConditionResult([], NO_BLOCK_TEXT);
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.outcomeAssessment.task_outcome_matched).toBeNull();
+    expect(grade.outcomeAssessment.task_outcome_reason).toBe('claim-missing');
+    expect(grade.outcomeAssessment.answer_protocol_matched).toBe(false);
+  });
+
+  it('[case 4] baseline: malformed JSON inside the KMP_EVAL_RESULT block -> task null, reason claim-malformed', () => {
+    const cr = buildConditionResult([], MALFORMED_BLOCK_TEXT);
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.outcomeAssessment.task_outcome_matched).toBeNull();
+    expect(grade.outcomeAssessment.task_outcome_reason).toBe('claim-malformed');
+  });
+
+  it('[case 5] Product exact: matching kmp-test envelope and matching claim -> task true, evidence matched, protocol true, E2E true', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.outcomeAssessment.task_outcome_matched).toBe(true);
+    expect(grade.outcomeAssessment.provider_evidence_kind).toBe('kmp-test-envelope');
+    expect(grade.outcomeAssessment.provider_evidence_status).toBe('matched');
+    expect(grade.outcomeAssessment.answer_protocol_matched).toBe(true);
+    expect(grade.outcomeAssessment.product_e2e_success).toBe(true);
+  });
+
+  it('[case 6] Product exact evidence but no final block -> evidence matched, task null, protocol false, E2E false', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED }],
+      NO_BLOCK_TEXT,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.outcomeAssessment.provider_evidence_kind).toBe('kmp-test-envelope');
+    expect(grade.outcomeAssessment.provider_evidence_status).toBe('matched');
+    expect(grade.outcomeAssessment.task_outcome_matched).toBeNull();
+    expect(grade.outcomeAssessment.answer_protocol_matched).toBe(false);
+    expect(grade.outcomeAssessment.product_e2e_success).toBe(false);
+  });
+
+  it('[case 7] Product structured but uncanonicalizable envelope -> evidence partial, never a canonical/matched label', () => {
+    const incoherentEnvelope = mutateCoverageEnvelope((e) => {
+      e.tests.total = 999; // contradicts passed+failed+skipped -- must fail canonicalization
+    });
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: incoherentEnvelope }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    // Cross-check against the EXISTING (pre-PR-B) grader: this mutation must already be treated
+    // as not-well-formed evidence today, independent of the new scorer, or this case proves nothing.
+    expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(false);
+    expect(grade.outcomeAssessment.provider_evidence_kind).toBe('kmp-test-envelope');
+    expect(grade.outcomeAssessment.provider_evidence_status).toBe('partial');
+  });
+
+  it('[case 8] Product canonicalizable but wrong outcome -> evidence mismatched, task false', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --json', resultContent: cleanCoverageGateFreeEnvelope() }],
+      WRONG_CLAIM_TEXT,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.outcomeAssessment.provider_evidence_status).toBe('mismatched');
+    expect(grade.outcomeAssessment.task_outcome_matched).toBe(false);
+  });
+
+  it('[case 9] correct claim with zero evidence -> task true, but evidence is claim-only/unavailable', () => {
+    const cr = buildConditionResult([], SCENARIO_5_CORRECT_ANSWER);
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.outcomeAssessment.task_outcome_matched).toBe(true);
+    expect(grade.outcomeAssessment.provider_evidence_kind).toBe('claim-only');
+    expect(grade.outcomeAssessment.provider_evidence_status).toBe('unavailable');
+  });
+
+  it('[case 10] task_outcome_matched does not move when only expected_outcome_matched (legacy, evidence-driven) changes', () => {
+    const correctCr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const correctGrade = gradeScenarioCondition(correctCr, SCENARIO_5);
+    // Evidence now targets a DIFFERENT module (a real target mismatch) -- expectedOutcomeMatched
+    // (legacy, check 5-gated) must flip to false. The final claim text is left byte-identical --
+    // still the one string that genuinely matches ground truth -- so the neutral,
+    // claim-vs-ground-truth task_outcome_matched must not move.
+    const wrongTargetEnvelope = mutateCoverageEnvelope((e) => {
+      e.modules = [{ name: 'other-module', type: 'android', coverage_plugin: 'jacoco' }];
+      e.coverage.module_buckets = { with_data: ['other-module'], no_xml: [], parse_errored: [], skipped_by_user: [] };
+      e.coverage.modules_with_jacoco_plugin = ['other-module'];
+    });
+    const mutatedCr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: wrongTargetEnvelope }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const mutatedGrade = gradeScenarioCondition(mutatedCr, SCENARIO_5);
+    expect(correctGrade.expectedOutcomeMatched).toBe(true);
+    expect(mutatedGrade.expectedOutcomeMatched).toBe(false);
+    expect(mutatedGrade.outcomeAssessment.task_outcome_matched).toBe(correctGrade.outcomeAssessment.task_outcome_matched);
+    expect(mutatedGrade.outcomeAssessment.task_outcome_matched).toBe(true);
+  });
+
+  it('[case 11] legacy grader fields (checks[], expectedOutcomeMatched, success) survive unchanged alongside the new outcome_assessment object', () => {
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.checks).toHaveLength(8);
+    expect(grade.checks.every((c) => c.passed)).toBe(true);
+    expect(grade.expectedOutcomeMatched).toBe(true);
+    expect(grade.success).toBe(true);
+    expect(grade.outcomeAssessment).toBeTruthy();
+    expect(grade.outcomeAssessment.schema).toBe(1);
+  });
+
+  it('[case 12] legacy success is false for a FreeBaseline-shaped run the neutral scorer credits as correct -- success is never a fair cross-arm headline', () => {
+    const cr = buildConditionResult([], SCENARIO_5_CORRECT_ANSWER);
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.success).toBe(false);
+    expect(grade.outcomeAssessment.task_outcome_matched).toBe(true);
+    expect(grade.outcomeAssessment.product_e2e_success).toBeNull();
+  });
+});
