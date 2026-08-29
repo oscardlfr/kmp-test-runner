@@ -251,13 +251,15 @@ try {
       $head = (& git.exe rev-parse HEAD).Trim()
       $tree = (& git.exe rev-parse 'HEAD^{tree}').Trim()
       $archivedUntracked = @()
+      $archivedUntrackedScenarioFiles = 0
       $status = (& git.exe status --short)
       if ($status) {
         $statusLines = @($status | ForEach-Object { [string]$_ })
         $allowedPrefixes = @(
           '?? tools/runs/agentic-eval-journal/',
           '?? tools/runs/agentic-eval-incident/',
-          '?? tools/runs/agentic-eval-rejected/'
+          '?? tools/runs/agentic-eval-rejected/',
+          '?? tools/runs/agentic-eval-scenario/'
         )
         $unexpected = @($statusLines | Where-Object {
           $line = $_
@@ -285,6 +287,38 @@ try {
             }
           }
         }
+
+        # This directory also contains tracked corpus fixtures. Archive only the
+        # untracked finalized records rather than moving the directory wholesale.
+        $scenarioArtifactRoot = 'tools/runs/agentic-eval-scenario/'
+        $scenarioUntrackedOutput = @(& git.exe ls-files --others --exclude-standard -- 'tools/runs/agentic-eval-scenario')
+        if ($LASTEXITCODE -ne 0) {
+          FailGuest 'git ls-files for finalized scenario artifacts failed'
+        }
+        $scenarioUntracked = @($scenarioUntrackedOutput | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
+        $scenarioArchiveRoot = Join-Path $archiveRoot 'tools_runs_agentic-eval-scenario'
+        foreach ($relativeFile in $scenarioUntracked) {
+          if (-not $relativeFile.StartsWith($scenarioArtifactRoot, [StringComparison]::Ordinal)) {
+            FailGuest "unexpected untracked scenario artifact path: $relativeFile"
+          }
+          $relativeWithinScenario = $relativeFile.Substring($scenarioArtifactRoot.Length)
+          if ([string]::IsNullOrWhiteSpace($relativeWithinScenario)) {
+            FailGuest "empty relative scenario artifact path: $relativeFile"
+          }
+          $sourcePath = Join-Path $HarnessDir ($relativeFile -replace '/', '\')
+          if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+            FailGuest "untracked scenario artifact is not a file: $relativeFile"
+          }
+          $destinationPath = Join-Path $scenarioArchiveRoot ($relativeWithinScenario -replace '/', '\')
+          New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destinationPath) | Out-Null
+          Move-Item -LiteralPath $sourcePath -Destination $destinationPath -Force
+          $archivedUntracked += [ordered]@{
+            source = $sourcePath
+            destination = $destinationPath
+            content_read = $false
+          }
+          $archivedUntrackedScenarioFiles++
+        }
         $status = (& git.exe status --short)
       }
       if ($head -ne $TargetCommit) { FailGuest "HEAD mismatch: $head" }
@@ -301,6 +335,7 @@ try {
         archived_invalid_harness = $archivedInvalidHarness
         status_short = $status
         archived_untracked_paths = $archivedUntracked
+        archived_untracked_scenario_files = $archivedUntrackedScenarioFiles
         node_version = $nodeVersion
         claude_version = $claudeVersion
       }

@@ -158,10 +158,23 @@ function makeCoverageContractSpawn(projectRoot, { failingTests = false, resoluti
         ? ['testDemoDebugUnitTest', 'testProdDebugUnitTest']
         : ['testDemoDebugUnitTest'];
       for (const variant of variants) {
+        const junitPath = path.join(
+          projectRoot,
+          'core-foo',
+          'build',
+          'test-results',
+          variant,
+          'TEST-contract.SharedTest.xml',
+        );
         writeFixtureFile(
-          path.join(projectRoot, 'core-foo', 'build', 'test-results', variant, 'TEST-contract.SharedTest.xml'),
+          junitPath,
           coverageContractJunit({ failing: failingTests && variant === 'testDemoDebugUnitTest' }),
         );
+        // This fixture exercises the coverage-budget producer, not stale-XML
+        // filtering. Pin the generated report after runStartMs so filesystem
+        // timestamp precision cannot make the result Node/platform-dependent.
+        const fresh = new Date(Date.now() + 1_000);
+        utimesSync(junitPath, fresh, fresh);
       }
       return {
         status: failingTests ? 1 : 0,
