@@ -3535,6 +3535,16 @@ describe('gradeScenarioCondition -- coverage_threshold_exceeded (SCENARIO_5, the
       coverage_contract: 'matches',
       error_contract: 'matches',
       exit_code_contract: 'matches',
+      error_count: 1,
+      error_code_buckets: {
+        coverage_threshold_exceeded: 1,
+        module_failed: 0,
+        gradle_timeout: 0,
+        no_test_modules: 0,
+        environment_other: 0,
+        configuration: 0,
+        other: 0,
+      },
       target_matches_expected: true,
       observed_outcome_kind: 'coverage_threshold_exceeded',
       outcome_matches_expected: true,
@@ -3575,6 +3585,8 @@ describe('gradeScenarioCondition -- coverage_threshold_exceeded (SCENARIO_5, the
       coverage_contract: 'not-applicable',
       error_contract: 'not-applicable',
       exit_code_contract: 'not-applicable',
+      error_count: null,
+      error_code_buckets: null,
       target_matches_expected: null,
       observed_outcome_kind: null,
       outcome_matches_expected: null,
@@ -3608,6 +3620,65 @@ describe('gradeScenarioCondition -- coverage_threshold_exceeded (SCENARIO_5, the
     expect(serialized).not.toContain('--module-filter');
     expect(serialized).not.toContain(':core:domain');
     expect(serialized).not.toContain(':core:common');
+  });
+
+  it('summarizes an incoherent error contract with closed privacy-safe buckets only', () => {
+    const secretMessage = 'private path C:/users/private/project and command text';
+    const attempt = singleCoverageGateAttempt({
+      command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json',
+      resultContent: coverageEnvelope({
+        errors: [
+          { code: 'coverage_threshold_exceeded', message: secretMessage, threshold: 15, missed_lines: 23 },
+          { code: 'module_failed', message: secretMessage, module: 'core:domain', task: ':core:domain:test' },
+          { code: 'private_future_code', message: secretMessage },
+        ],
+      }),
+    });
+
+    expect(attempt).toMatchObject({
+      canonicalization_reason: 'error-contract-incoherent',
+      error_count: 3,
+      error_code_buckets: {
+        coverage_threshold_exceeded: 1,
+        module_failed: 1,
+        gradle_timeout: 0,
+        no_test_modules: 0,
+        environment_other: 0,
+        configuration: 0,
+        other: 1,
+      },
+    });
+    const serialized = JSON.stringify(attempt);
+    expect(serialized).not.toContain(secretMessage);
+    expect(serialized).not.toContain('private_future_code');
+    expect(serialized).not.toContain(':core:domain:test');
+  });
+
+  it('maps every public error family into the fixed taxonomy and malformed entries to other', () => {
+    const attempt = singleCoverageGateAttempt({
+      command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json',
+      resultContent: coverageEnvelope({
+        errors: [
+          { code: 'coverage_threshold_exceeded', threshold: 15, missed_lines: 23 },
+          { code: 'gradle_timeout' },
+          { code: 'task_not_found' },
+          { code: 'no_test_modules' },
+          { code: 'flavor_unused' },
+          {},
+        ],
+      }),
+    });
+
+    expect(attempt.error_count).toBe(6);
+    expect(attempt.error_code_buckets).toEqual({
+      coverage_threshold_exceeded: 1,
+      module_failed: 0,
+      gradle_timeout: 1,
+      no_test_modules: 1,
+      environment_other: 1,
+      configuration: 1,
+      other: 1,
+    });
   });
 
   it('diagnoses a threshold mismatch without leaking the raw command string', () => {

@@ -13,6 +13,7 @@ import {
   ACCEPTED_AUDIT_SIDECAR_SCHEMA_V6,
   ACCEPTED_AUDIT_SIDECAR_SCHEMA_V7,
   ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8,
+  ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9,
   LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA,
   SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS,
   acceptedAuditRelativePathFor,
@@ -254,14 +255,14 @@ describe('buildAcceptedRunAuditSidecar -- top-level identity + shape', () => {
   it('freezes the sidecar schema constants and the nested summary / tool_calls[] field inventories', () => {
     expect(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1).toBe(1);
     expect(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2).toBe(2);
-    // Coverage-outcome observability follow-up: LATEST is now 8 (v8, the new
+    // Coverage-error-contract observability follow-up: LATEST is now 9 (v9, the new
     // policy_mode:"not_applicable" sidecar with terminal evidence, a closed coverage-gate
     // diagnostic, per-attempt coverage-gate summaries, and final-answer mismatch reasons) -- this record has
     // no not_applicable execution_profile, so it still produces a byte-for-byte v3 sidecar below
     // (expectedAcceptedAuditSchemaFor's own fallback), proving LATEST advancing never silently
     // redirects a strict/policy-required record away from v3.
-    expect(LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA).toBe(8);
-    expect([...SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS]).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA).toBe(9);
+    expect([...SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
 
     const record = baseRecord({
       hook_call_count: 1,
@@ -1201,17 +1202,17 @@ describe('expectedAcceptedAuditSchemaFor -- explicit per-record/profile dispatch
     expect(expectedAcceptedAuditSchemaFor(v6Record())).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3);
     expect(expectedAcceptedAuditSchemaFor({ schema: 6 })).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3);
   });
-  it('schema:6 with policy_mode:"not_applicable" resolves to v8', () => {
+  it('schema:6 with policy_mode:"not_applicable" resolves to v9', () => {
     const record = v6Record({ execution_profile: { ...v6Record().execution_profile, policy_mode: 'not_applicable' } });
-    expect(expectedAcceptedAuditSchemaFor(record)).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8);
+    expect(expectedAcceptedAuditSchemaFor(record)).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9);
   });
-  it('never uses LATEST as a selector -- LATEST=8 today, but a required-policy schema:6 record still resolves to v3', () => {
-    expect(LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA).toBe(8);
+  it('never uses LATEST as a selector -- LATEST=9 today, but a required-policy schema:6 record still resolves to v3', () => {
+    expect(LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA).toBe(9);
     expect(expectedAcceptedAuditSchemaFor(v6Record())).toBe(3);
   });
 });
 
-describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / crossValidateAcceptedRunAuditAgainstRecord -- sidecar v8 no-policy observability', () => {
+describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / crossValidateAcceptedRunAuditAgainstRecord -- sidecar v9 no-policy observability', () => {
   const FAKE_ATTESTATION_SHA256 = 'f'.repeat(64);
 
   // Mirrors what buildRunRecord (cli.mjs) actually produces for a policy_mode:"not_applicable"
@@ -1242,11 +1243,11 @@ describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / cross
     return conditionResultFrom(events, { decisionByAttempt: new Map(), dispatchAccounting: { dispatchStatusByAttempt } });
   }
 
-  it('builds schema 8 with the 3 no-policy top-level fields, dispatch_unaccounted_total, structural recognized_operation, terminal_evidence, coverage_gate_diagnostic, and coverage_gate_attempts', () => {
+  it('builds schema 9 with the 3 no-policy top-level fields, dispatch_unaccounted_total, structural recognized_operation, terminal_evidence, coverage_gate_diagnostic, and coverage_gate_attempts', () => {
     const record = notApplicableRecord();
     const cr = notApplicableConditionResult([initEventStub(), bashToolUseEvent('t1', 'kmp-test doctor --json'), toolResultEvent('t1'), resultEventStub()]);
     const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
-    expect(sidecar.schema).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8);
+    expect(sidecar.schema).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9);
     expect(sidecar.execution_profile_id).toBe('sandboxed-unrestricted-v1');
     expect(sidecar.policy_mode).toBe('not_applicable');
     expect(sidecar.isolation_attestation_sha256).toBe(FAKE_ATTESTATION_SHA256);
@@ -1306,7 +1307,7 @@ describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / cross
     ]);
     const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
 
-    expect(sidecar.schema).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8);
+    expect(sidecar.schema).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9);
     expect(sidecar.tool_calls[0]).toMatchObject({ tool_kind: 'kmp-test', operation: 'other', recognized_operation: 'parallel' });
     expect(sidecar.tool_calls[1]).toMatchObject({ tool_kind: 'kmp-test', operation: 'other', recognized_operation: 'describe' });
     expect(validateAcceptedRunAuditSidecar(sidecar).errors).toEqual([]);
@@ -1315,7 +1316,7 @@ describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / cross
     expect(JSON.stringify(sidecar)).not.toContain('C:/secret/project');
   });
 
-  it('accepts schema 8 coverage_gate_attempts with the closed coverage-outcome observability contract', () => {
+  it('accepts schema 9 coverage_gate_attempts with closed privacy-safe error buckets', () => {
     const record = notApplicableRecord();
     const cr = notApplicableConditionResult([
       initEventStub(),
@@ -1337,6 +1338,16 @@ describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / cross
         coverage_contract: 'matches',
         error_contract: 'matches',
         exit_code_contract: 'matches',
+        error_count: 1,
+        error_code_buckets: {
+          coverage_threshold_exceeded: 1,
+          module_failed: 0,
+          gradle_timeout: 0,
+          no_test_modules: 0,
+          environment_other: 0,
+          configuration: 0,
+          other: 0,
+        },
         target_matches_expected: true,
         observed_outcome_kind: 'coverage_threshold_exceeded',
         outcome_matches_expected: true,
@@ -1363,6 +1374,16 @@ describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / cross
       coverage_contract: 'matches',
       error_contract: 'matches',
       exit_code_contract: 'matches',
+      error_count: 1,
+      error_code_buckets: {
+        coverage_threshold_exceeded: 1,
+        module_failed: 0,
+        gradle_timeout: 0,
+        no_test_modules: 0,
+        environment_other: 0,
+        configuration: 0,
+        other: 0,
+      },
       target_matches_expected: true,
       observed_outcome_kind: 'coverage_threshold_exceeded',
       outcome_matches_expected: true,
@@ -1370,6 +1391,60 @@ describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / cross
     expect(validateAcceptedRunAuditSidecar(sidecar).errors).toEqual([]);
     expect(JSON.stringify(sidecar)).not.toContain('secretmodule123');
     expect(JSON.stringify(sidecar)).not.toContain('--min-missed-lines');
+  });
+
+  it.each([
+    ['a partial null pair', (attempt) => { attempt.error_code_buckets = null; }],
+    ['a negative bucket', (attempt) => { attempt.error_code_buckets.module_failed = -1; }],
+    ['a bucket sum different from error_count', (attempt) => { attempt.error_count = 2; }],
+    ['an unknown bucket without echoing its private key', (attempt) => { attempt.error_code_buckets.private_secret_code = 1; }],
+  ])('rejects schema 9 error summaries with %s', (_label, mutate) => {
+    const record = notApplicableRecord();
+    const cr = notApplicableConditionResult([
+      initEventStub(),
+      bashToolUseEvent('t1', 'kmp-test parallel --min-missed-lines 15 --json'),
+      toolResultEvent('t1'),
+      resultEventStub(),
+    ]);
+    const sidecar = buildAcceptedRunAuditSidecar({
+      record,
+      conditionResult: cr,
+      terminalAuthoritativeEventIndex: 2,
+      terminalEvidence: terminalEvidence({
+        coverage_gate_attempts: [{
+          tool_result_event_index: 2,
+          recognized_operation: 'parallel',
+          terminal_authoritative: true,
+          canonicalization_status: 'canonical',
+          canonicalization_reason: 'canonical',
+          threshold_relation: 'matches',
+          tests_contract: 'matches',
+          coverage_contract: 'matches',
+          error_contract: 'matches',
+          exit_code_contract: 'matches',
+          error_count: 1,
+          error_code_buckets: {
+            coverage_threshold_exceeded: 1,
+            module_failed: 0,
+            gradle_timeout: 0,
+            no_test_modules: 0,
+            environment_other: 0,
+            configuration: 0,
+            other: 0,
+          },
+          target_matches_expected: true,
+          observed_outcome_kind: 'coverage_threshold_exceeded',
+          outcome_matches_expected: true,
+        }],
+      }),
+      targetPluginName: TARGET_PLUGIN_NAME,
+      targetSkillName: TARGET_SKILL_NAME,
+    });
+
+    mutate(sidecar.terminal_evidence.coverage_gate_attempts[0]);
+    const serializedErrors = JSON.stringify(validateAcceptedRunAuditSidecar(sidecar).errors);
+    expect(serializedErrors).not.toBe('[]');
+    expect(serializedErrors).not.toContain('private_secret_code');
   });
 
   it('preserves a typed uncanonicalizable reason without copying private attempt data', () => {
@@ -1396,6 +1471,16 @@ describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / cross
           coverage_contract: 'differs',
           error_contract: 'matches',
           exit_code_contract: 'matches',
+          error_count: 1,
+          error_code_buckets: {
+            coverage_threshold_exceeded: 1,
+            module_failed: 0,
+            gradle_timeout: 0,
+            no_test_modules: 0,
+            environment_other: 0,
+            configuration: 0,
+            other: 0,
+          },
           target_matches_expected: true,
           observed_outcome_kind: null,
           outcome_matches_expected: false,
@@ -1450,7 +1535,7 @@ describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / cross
     expect(JSON.stringify(sidecar)).not.toContain('private-secret-subcommand');
   });
 
-  it('still accepts frozen legacy v4/v5 no-policy sidecars without terminal_evidence and frozen v6 without coverage_gate_diagnostic', () => {
+  it('still accepts frozen legacy v4-v8 sidecars without widening their closed contracts', () => {
     const record = notApplicableRecord();
     const cr = notApplicableConditionResult([initEventStub(), bashToolUseEvent('t1', 'kmp-test doctor --json'), toolResultEvent('t1'), resultEventStub()]);
     const sidecar = buildAcceptedRunAuditSidecar({ record, conditionResult: cr, terminalAuthoritativeEventIndex: null, terminalEvidence: terminalEvidence(), targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME });
@@ -1487,10 +1572,19 @@ describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / cross
     delete legacyV7.terminal_evidence.final_answer_block.missing_fields;
     delete legacyV7.terminal_evidence.final_answer_block.mismatch_fields;
     delete legacyV7.terminal_evidence.final_answer_block.unexpected_key_count;
+    const legacyV8 = {
+      ...sidecar,
+      schema: ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8,
+      terminal_evidence: {
+        ...sidecar.terminal_evidence,
+        coverage_gate_attempts: sidecar.terminal_evidence.coverage_gate_attempts.map(({ error_count: _errorCount, error_code_buckets: _errorCodeBuckets, ...attempt }) => attempt),
+      },
+    };
     expect(validateAcceptedRunAuditSidecar(legacyV4).errors).toEqual([]);
     expect(validateAcceptedRunAuditSidecar(legacyV5).errors).toEqual([]);
     expect(validateAcceptedRunAuditSidecar(legacyV6).errors).toEqual([]);
     expect(validateAcceptedRunAuditSidecar(legacyV7).errors).toEqual([]);
+    expect(validateAcceptedRunAuditSidecar(legacyV8).errors).toEqual([]);
   });
 
   it('rejects terminal_evidence keys outside the closed privacy-safe schema', () => {

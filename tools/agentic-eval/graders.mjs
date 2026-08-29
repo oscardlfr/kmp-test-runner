@@ -27,6 +27,7 @@ import { ENVELOPE_SCHEMA_VERSION, classifyExitCode } from '../../lib/envelope/ex
 import { TEST_TYPE_VALUES, COVERAGE_TOOL_VALUES } from '../../lib/parsers/argv-constants.js';
 import { classifyBashCommand, normalizeModuleName } from './command-classify.mjs';
 import { matchModuleFilter } from '../../lib/orchestrators/module-filter.js';
+import { summarizeCoverageGateErrors } from './coverage-gate-observability.mjs';
 
 /** The fixed, canonical set of check names every gradeScenarioCondition() result's `checks` array
  * must contain -- exactly these 8, no more, no fewer, enforced by schemas.mjs's validateRun() for
@@ -1551,12 +1552,14 @@ function evaluateKmpTestAttempt(bashResult, scenario, decision) {
     ? deriveObservedKmpTestResult(envelope, classification, bashResult.resultIsError)
     : uncanonicalizableKmpResult('result-status-contradiction');
   const observedResult = observedDerivation.result;
+  const errorSummary = hasEvidence ? summarizeCoverageGateErrors(envelope.errors) : null;
 
   return {
     provider: 'kmp_test', subcommand: classification.subcommand, bashIndex: bashResult.index, resultIndex: bashResult.resultIndex,
     hasEvidence, malformed, targetMatches, intendedTargetMatches, outcomeMatches, parallelEvidenceInvalid, changedEvidenceInvalid, observedResult,
     observedResultCanonicalizationStatus: observedDerivation.status,
     observedResultCanonicalizationReason: observedDerivation.reason,
+    errorSummary,
     envelopeSubcommand: hasEvidence ? envelope.subcommand : null,
     minMissedLines: classification.minMissedLines,
     coverageDisabled: classification.coverageDisabled,
@@ -2245,6 +2248,8 @@ function coverageGateAttemptDiagnostics(bashResults, kmpTestAttempts, terminal, 
       coverage_contract: coverageContractForCoverageAttempt(attempt),
       error_contract: errorContractForCoverageAttempt(attempt),
       exit_code_contract: exitCodeContractForCoverageAttempt(attempt),
+      error_count: isCoverageOnly ? null : attempt.errorSummary?.error_count ?? null,
+      error_code_buckets: isCoverageOnly ? null : attempt.errorSummary?.error_code_buckets ?? null,
       target_matches_expected: isCoverageOnly ? null : attempt.targetMatches === true,
       observed_outcome_kind: attempt.observedResult?.outcome_kind ?? null,
       outcome_matches_expected: isCoverageOnly ? null : attempt.outcomeMatches === true,

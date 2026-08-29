@@ -482,24 +482,25 @@ matrix is rejected anyway.
   **not** independently prove the original raw transcript's own content, which was never committed
   in the first place and is not recoverable from the sidecar.
 
-  **Schema versions, and the construction-time vs at-rest evidentiary boundary.** Eight versions
+  **Schema versions, and the construction-time vs at-rest evidentiary boundary.** Nine versions
   coexist: **v1** (frozen — the 92 historical committed sidecars), **v2** (frozen — the 64 committed
   sidecars written since, adding per-call `dispatch_status` and `summary.pre_dispatch_blocked_total`;
   both v1 and v2 still require literally `run_schema: 5`), **v3** (schema-v6 policy-required
   records and later runtime-neutral policy-required records), **v4** and **v5** (frozen legacy
   schema-v6 no-policy sidecars), **v6** (runtime-neutral no-policy sidecars, v5 plus
-  terminal evidence), **v7** (frozen no-policy coverage-gate diagnostic sidecars), and **v8**
-  (current runtime-neutral no-policy sidecars, v7 plus coverage-outcome observability).
+  terminal evidence), **v7** (frozen no-policy coverage-gate diagnostic sidecars), **v8**
+  (frozen coverage-outcome observability), and **v9** (current runtime-neutral no-policy sidecars,
+  v8 plus privacy-safe error-contract counts).
   Validation dispatches on the sidecar's own real version and fails closed on anything outside
-  `{1, 2, 3, 4, 5, 6, 7, 8}`; a record's
+  `{1, 2, 3, 4, 5, 6, 7, 8, 9}`; a record's
   `accepted_audit.schema` must equal the schema of the sidecar it points at, checked during
   cross-validation. A schema-v5 run record accepts only sidecar schema 1 or 2; a schema-v6-or-later
   policy-required record produces sidecar schema 3; a schema-v6-or-later no-policy record now
-  produces sidecar schema 8 while schemas 4, 5, 6, and 7 remain accepted for already-written legacy
+  produces sidecar schema 9 while schemas 4 through 8 remain accepted for already-written legacy
   artifacts. That
   equality was implicit while only one version existed and is now asserted per the compatible pair.
 
-  **v8 coverage-outcome observability.** v8 is restricted to runtime-neutral no-policy scenario
+  **v8/v9 coverage-outcome observability.** v8 and v9 are restricted to runtime-neutral no-policy scenario
   records (`run_schema >= 6`, `policy_mode:"not_applicable"`). It preserves v6 semantics and adds
   `terminal_evidence.coverage_gate_attempts`, an array of closed, privacy-safe summaries for each
   non-plan-only `kmp-test parallel` or `kmp-test coverage` attempt when the scenario's expected
@@ -520,11 +521,18 @@ matrix is rejected anyway.
   stores raw commands, argv, module filters, thresholds as typed by the agent, paths, stderr,
   prompt text, or response prose.
 
+  v9 additionally carries `error_count` and `error_code_buckets` on each attempt. The buckets are
+  the fixed categories `coverage_threshold_exceeded`, `module_failed`, `gradle_timeout`,
+  `no_test_modules`, `environment_other`, `configuration`, and `other`; their non-negative counts
+  must sum exactly to `error_count`. Both fields are `null` when no parallel envelope was available
+  and for coverage-only attempts. Unknown error codes collapse to `other`; raw codes, messages,
+  task/module names, commands, and paths are never copied.
+
   These reasons are derived from the same fail-closed canonicalization path used by grading. They
   explain which structural contract prevented an observed result from being canonicalized, but
   never change `success`, `expected_outcome_matched`, terminal selection, or any grading check.
 
-  v8 also extends `terminal_evidence.final_answer_block` with a closed structural comparison of
+  v8 and v9 also extend `terminal_evidence.final_answer_block` with a closed structural comparison of
   the final `KMP_EVAL_RESULT` block against the canonical observed result:
   `comparison_status` (`no-final-text|missing-block|ambiguous-block|invalid-json|
   no-observed-result|field-mismatch|matched`), `declared_outcome_kind` (canonical outcome,

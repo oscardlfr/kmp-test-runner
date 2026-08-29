@@ -31,6 +31,7 @@ import { classifyBashCommand } from './command-classify.mjs';
 import { assertCleanOrThrowObject } from './privacy.mjs';
 import { DISPATCH_STATUS_VALUES as BASH_DISPATCH_STATUS_VALUES } from './dispatch-accounting.mjs';
 import { canonicalJsonSha256 } from './canonical-json.mjs';
+import { COVERAGE_GATE_ERROR_BUCKET_FIELDS } from './coverage-gate-observability.mjs';
 
 /**
  * Sidecar schema versions. v1 and v2 are FROZEN -- their field lists and validation rules must
@@ -82,8 +83,12 @@ export const ACCEPTED_AUDIT_SIDECAR_SCHEMA_V7 = 7;
 // diagnostics for the final KMP_EVAL_RESULT block plus per-attempt coverage-gate
 // canonicalization/contract summaries. v1-v7 remain frozen.
 export const ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8 = 8;
-export const LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA = 8;
-export const SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS = Object.freeze([1, 2, 3, 4, 5, 6, 7, 8]);
+// PR coverage-error-contract-observability: v9 preserves v8 and adds only a total error count plus
+// closed error-code buckets to each coverage-gate attempt. Unknown codes collapse to `other`;
+// messages and other content-bearing fields never enter the sidecar. v1-v8 remain frozen.
+export const ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9 = 9;
+export const LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA = 9;
+export const SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS = Object.freeze([1, 2, 3, 4, 5, 6, 7, 8, 9]);
 
 const SIDECAR_TOP_FIELDS_V1V2 = [
   'schema', 'run_id', 'run_schema', 'run_kind', 'condition', 'scenario_id',
@@ -124,7 +129,7 @@ const SUMMARY_FIELDS_V4 = [...SUMMARY_FIELDS_V2, 'dispatch_unaccounted_total'];
  */
 export function expectedAcceptedAuditSchemaFor(record) {
   if (!(record?.schema >= 6)) return ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2;
-  if (record.execution_profile?.policy_mode === 'not_applicable') return ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8;
+  if (record.execution_profile?.policy_mode === 'not_applicable') return ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9;
   return ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3;
 }
 
@@ -155,6 +160,7 @@ export function computeRunProvenanceSha256(record) {
  * silently borrow another version's field list. v3 reuses v2's tool_calls/summary shape verbatim
  * (Section E: "V3 conserva tool calls y summary de v2"). */
 function topFieldsFor(schema) {
+  if (schema === 9) return SIDECAR_TOP_FIELDS_V6;
   if (schema === 8) return SIDECAR_TOP_FIELDS_V6;
   if (schema === 7) return SIDECAR_TOP_FIELDS_V6;
   if (schema === 6) return SIDECAR_TOP_FIELDS_V6;
@@ -165,13 +171,13 @@ function topFieldsFor(schema) {
 function toolCallFieldsFor(schema) {
   if (schema === 1) return TOOL_CALL_FIELDS_V1;
   if (schema === 2 || schema === 3 || schema === 4) return TOOL_CALL_FIELDS_V2;
-  if (schema === 5 || schema === 6 || schema === 7 || schema === 8) return TOOL_CALL_FIELDS_V5;
+  if (schema === 5 || schema === 6 || schema === 7 || schema === 8 || schema === 9) return TOOL_CALL_FIELDS_V5;
   return null;
 }
 function summaryFieldsFor(schema) {
   if (schema === 1) return SUMMARY_FIELDS_V1;
   if (schema === 2 || schema === 3) return SUMMARY_FIELDS_V2;
-  if (schema === 4 || schema === 5 || schema === 6 || schema === 7 || schema === 8) return SUMMARY_FIELDS_V4;
+  if (schema === 4 || schema === 5 || schema === 6 || schema === 7 || schema === 8 || schema === 9) return SUMMARY_FIELDS_V4;
   return null;
 }
 /** The run record schema compatibility a given sidecar schema requires (Section E's compatibility
@@ -180,7 +186,7 @@ function summaryFieldsFor(schema) {
  * separately as an unknown version). */
 function runSchemaRequirementFor(sidecarSchema) {
   if (sidecarSchema === 1 || sidecarSchema === 2) return { exact: 5 };
-  if (sidecarSchema === 3 || sidecarSchema === 4 || sidecarSchema === 5 || sidecarSchema === 6 || sidecarSchema === 7 || sidecarSchema === 8) return { min: 6 };
+  if (sidecarSchema === 3 || sidecarSchema === 4 || sidecarSchema === 5 || sidecarSchema === 6 || sidecarSchema === 7 || sidecarSchema === 8 || sidecarSchema === 9) return { min: 6 };
   return null;
 }
 
@@ -247,7 +253,7 @@ const TERMINAL_COVERAGE_GATE_DIAGNOSTIC_VALUES = [
   'coverage-evidence-malformed',
   'coverage-outcome-mismatch',
 ];
-const TERMINAL_COVERAGE_GATE_ATTEMPT_FIELDS = [
+const TERMINAL_COVERAGE_GATE_ATTEMPT_FIELDS_V8 = [
   'tool_call_ordinal',
   'recognized_operation',
   'terminal_authoritative',
@@ -261,6 +267,11 @@ const TERMINAL_COVERAGE_GATE_ATTEMPT_FIELDS = [
   'target_matches_expected',
   'observed_outcome_kind',
   'outcome_matches_expected',
+];
+const TERMINAL_COVERAGE_GATE_ATTEMPT_FIELDS_V9 = [
+  ...TERMINAL_COVERAGE_GATE_ATTEMPT_FIELDS_V8,
+  'error_count',
+  'error_code_buckets',
 ];
 const TERMINAL_COVERAGE_GATE_RECOGNIZED_OPERATION_VALUES = ['parallel', 'coverage'];
 const TERMINAL_COVERAGE_GATE_THRESHOLD_RELATION_VALUES = ['matches', 'differs', 'missing', 'not-applicable'];
@@ -420,7 +431,8 @@ function classifyToolCall(a, { acceptedAuditSchema, allowedGradleTasks, allowedK
   if (acceptedAuditSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5
     || acceptedAuditSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V6
     || acceptedAuditSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V7
-    || acceptedAuditSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8) out.recognized_operation = recognizedOperation;
+    || acceptedAuditSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8
+    || acceptedAuditSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9) out.recognized_operation = recognizedOperation;
   return out;
 }
 
@@ -439,6 +451,8 @@ function materializeCoverageGateAttemptsForSidecar(coverageGateAttempts, toolCal
       coverage_contract: attempt.coverage_contract ?? 'unavailable',
       error_contract: attempt.error_contract ?? 'unavailable',
       exit_code_contract: attempt.exit_code_contract ?? 'unavailable',
+      error_count: attempt.error_count ?? null,
+      error_code_buckets: attempt.error_code_buckets ?? null,
       target_matches_expected: attempt.target_matches_expected ?? null,
       observed_outcome_kind: attempt.observed_outcome_kind ?? null,
       outcome_matches_expected: attempt.outcome_matches_expected ?? null,
@@ -447,7 +461,7 @@ function materializeCoverageGateAttemptsForSidecar(coverageGateAttempts, toolCal
 }
 
 function materializeTerminalEvidenceForSidecar(terminalEvidence, toolCalls, sidecarSchema) {
-  if (terminalEvidence == null || sidecarSchema !== ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8) return terminalEvidence;
+  if (terminalEvidence == null || sidecarSchema !== ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9) return terminalEvidence;
   return {
     ...terminalEvidence,
     coverage_gate_attempts: materializeCoverageGateAttemptsForSidecar(terminalEvidence.coverage_gate_attempts, toolCalls),
@@ -518,7 +532,8 @@ export function buildAcceptedRunAuditSidecar({ record, conditionResult, terminal
     || sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5
     || sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V6
     || sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V7
-    || sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8;
+    || sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8
+    || sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9;
   const policyApplies = !isNoPolicySidecarSchema;
   const policyDenialsTotal = policyApplies ? toolCalls.filter((tc) => isBashKind(tc) && tc.policy_decision === 'deny').length : null;
   // Counts ONLY genuinely unaccounted Bash calls under policyApplies (v1-v3's own historical
@@ -566,7 +581,8 @@ export function buildAcceptedRunAuditSidecar({ record, conditionResult, terminal
   }
   if (sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V6
     || sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V7
-    || sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8) {
+    || sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8
+    || sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9) {
     built.terminal_evidence = materializeTerminalEvidenceForSidecar(terminalEvidence, toolCalls, sidecarSchema);
   }
   return built;
@@ -614,7 +630,7 @@ function validateNullableBoolean(value, field, errors) {
 function terminalEvidenceFieldsForSidecarSchema(schema) {
   if (schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V6) return TERMINAL_EVIDENCE_TOP_FIELDS_V6;
   if (schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V7) return TERMINAL_EVIDENCE_TOP_FIELDS_V7;
-  if (schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8) return TERMINAL_EVIDENCE_TOP_FIELDS_V8;
+  if (schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8 || schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9) return TERMINAL_EVIDENCE_TOP_FIELDS_V8;
   return null;
 }
 
@@ -647,7 +663,7 @@ function validateFinalAnswerBlock(finalBlock, field, errors, schema) {
     errors.push({ field, message: 'must be an object' });
     return;
   }
-  const fields = schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8
+  const fields = schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8 || schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9
     ? TERMINAL_FINAL_ANSWER_BLOCK_FIELDS_V8
     : TERMINAL_FINAL_ANSWER_BLOCK_FIELDS_V6V7;
   rejectUnrecognizedKeys(finalBlock, fields, field, errors);
@@ -657,7 +673,7 @@ function validateFinalAnswerBlock(finalBlock, field, errors, schema) {
   for (const f of TERMINAL_FINAL_ANSWER_BLOCK_FIELDS_V6V7) {
     if (f in finalBlock) validateNullableBoolean(finalBlock[f], `${field}.${f}`, errors);
   }
-  if (schema !== ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8) return;
+  if (schema !== ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8 && schema !== ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9) return;
   if (!TERMINAL_FINAL_ANSWER_COMPARISON_STATUS_VALUES.includes(finalBlock.comparison_status)) {
     errors.push({ field: `${field}.comparison_status`, message: `must be one of ${TERMINAL_FINAL_ANSWER_COMPARISON_STATUS_VALUES.join('|')}` });
   }
@@ -676,7 +692,48 @@ function validateFinalAnswerBlock(finalBlock, field, errors, schema) {
   }
 }
 
-function validateCoverageGateAttempts(coverageGateAttempts, field, errors, toolCalls, terminalAuthoritativeEvent) {
+function coverageGateAttemptFieldsForSidecarSchema(schema) {
+  return schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9
+    ? TERMINAL_COVERAGE_GATE_ATTEMPT_FIELDS_V9
+    : TERMINAL_COVERAGE_GATE_ATTEMPT_FIELDS_V8;
+}
+
+function validateCoverageGateErrorSummary(attempt, label, errors) {
+  const count = attempt.error_count;
+  const buckets = attempt.error_code_buckets;
+  validateNullableNonNegativeInteger(count, `${label}.error_count`, errors);
+  if (count === null) {
+    if (buckets !== null) errors.push({ field: `${label}.error_code_buckets`, message: 'must be null when error_count is null' });
+    return;
+  }
+  if (buckets == null || typeof buckets !== 'object' || Array.isArray(buckets)) {
+    errors.push({ field: `${label}.error_code_buckets`, message: 'must be an object when error_count is present' });
+    return;
+  }
+  if (Object.keys(buckets).some((key) => !COVERAGE_GATE_ERROR_BUCKET_FIELDS.includes(key))) {
+    errors.push({ field: `${label}.error_code_buckets`, message: 'contains an unrecognized bucket -- only the closed schema buckets are allowed' });
+  }
+  let bucketTotal = 0;
+  for (const bucket of COVERAGE_GATE_ERROR_BUCKET_FIELDS) {
+    const value = buckets[bucket];
+    if (!(bucket in buckets)) {
+      errors.push({ field: `${label}.error_code_buckets.${bucket}`, message: 'missing required field' });
+    } else if (!(Number.isInteger(value) && value >= 0)) {
+      errors.push({ field: `${label}.error_code_buckets.${bucket}`, message: 'must be a non-negative integer' });
+    } else {
+      bucketTotal += value;
+    }
+  }
+  if (bucketTotal !== count) {
+    errors.push({ field: `${label}.error_code_buckets`, message: 'bucket counts must sum exactly to error_count' });
+  }
+  if (attempt.error_contract === 'matches'
+    && (count !== 1 || buckets.coverage_threshold_exceeded !== 1)) {
+    errors.push({ field: `${label}.error_code_buckets`, message: 'a matching coverage error contract must contain exactly one coverage_threshold_exceeded error' });
+  }
+}
+
+function validateCoverageGateAttempts(coverageGateAttempts, field, errors, toolCalls, terminalAuthoritativeEvent, schema) {
   if (!Array.isArray(coverageGateAttempts)) {
     errors.push({ field, message: 'must be an array' });
     return;
@@ -684,14 +741,15 @@ function validateCoverageGateAttempts(coverageGateAttempts, field, errors, toolC
   let previousOrdinal = -1;
   const seenOrdinals = new Set();
   let terminalCount = 0;
+  const attemptFields = coverageGateAttemptFieldsForSidecarSchema(schema);
   coverageGateAttempts.forEach((attempt, i) => {
     const label = `${field}[${i}]`;
     if (attempt == null || typeof attempt !== 'object' || Array.isArray(attempt)) {
       errors.push({ field: label, message: 'must be an object' });
       return;
     }
-    rejectUnrecognizedKeys(attempt, TERMINAL_COVERAGE_GATE_ATTEMPT_FIELDS, label, errors);
-    for (const f of TERMINAL_COVERAGE_GATE_ATTEMPT_FIELDS) {
+    rejectUnrecognizedKeys(attempt, attemptFields, label, errors);
+    for (const f of attemptFields) {
       if (!(f in attempt)) errors.push({ field: `${label}.${f}`, message: 'missing required field' });
     }
     if (!Number.isInteger(attempt.tool_call_ordinal) || attempt.tool_call_ordinal < 0) {
@@ -759,6 +817,12 @@ function validateCoverageGateAttempts(coverageGateAttempts, field, errors, toolC
       if (attempt.target_matches_expected !== null) errors.push({ field: `${label}.target_matches_expected`, message: 'must be null for coverage-only attempts' });
       if (attempt.outcome_matches_expected !== null) errors.push({ field: `${label}.outcome_matches_expected`, message: 'must be null for coverage-only attempts' });
     }
+    if (schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9) {
+      validateCoverageGateErrorSummary(attempt, label, errors);
+      if (attempt.recognized_operation === 'coverage' && (attempt.error_count !== null || attempt.error_code_buckets !== null)) {
+        errors.push({ field: `${label}.error_count`, message: 'coverage-only attempts must not claim a parallel envelope error summary' });
+      }
+    }
     if (attempt.terminal_authoritative) terminalCount += 1;
   });
   if (terminalCount > 1) {
@@ -824,7 +888,7 @@ function validateTerminalEvidence(terminalEvidence, field, errors, schema) {
   }
 
   validateFinalAnswerBlock(terminalEvidence.final_answer_block, `${field}.final_answer_block`, errors, schema);
-  if ((schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V7 || schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8)
+  if ((schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V7 || schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8 || schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9)
     && !TERMINAL_COVERAGE_GATE_DIAGNOSTIC_VALUES.includes(terminalEvidence.coverage_gate_diagnostic)) {
     errors.push({ field: `${field}.coverage_gate_diagnostic`, message: `must be one of ${TERMINAL_COVERAGE_GATE_DIAGNOSTIC_VALUES.join('|')}` });
   }
@@ -871,11 +935,11 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
   // v2+ carry dispatch_status. v4/v5 are legacy no-policy sidecars; v6 keeps that contract and
   // adds terminal evidence; v7 keeps v6 and adds the closed coverage-gate diagnostic leaf; v8
   // keeps v7 and adds per-attempt coverage/final-answer mismatch observability.
-  const hasDispatchStatusShape = schema === 2 || schema === 3 || schema === 4 || schema === 5 || schema === 6 || schema === 7 || schema === 8;
-  const hasProvenanceHash = schema === 3 || schema === 4 || schema === 5 || schema === 6 || schema === 7 || schema === 8;
+  const hasDispatchStatusShape = schema === 2 || schema === 3 || schema === 4 || schema === 5 || schema === 6 || schema === 7 || schema === 8 || schema === 9;
+  const hasProvenanceHash = schema === 3 || schema === 4 || schema === 5 || schema === 6 || schema === 7 || schema === 8 || schema === 9;
   const isV4 = schema === 4;
-  const isV5OrLaterNoPolicy = schema === 5 || schema === 6 || schema === 7 || schema === 8;
-  const hasTerminalEvidence = schema === 6 || schema === 7 || schema === 8;
+  const isV5OrLaterNoPolicy = schema === 5 || schema === 6 || schema === 7 || schema === 8 || schema === 9;
+  const hasTerminalEvidence = schema === 6 || schema === 7 || schema === 8 || schema === 9;
   const isNoPolicySidecar = isV4 || isV5OrLaterNoPolicy;
   if (typeof sidecar.run_id !== 'string' || sidecar.run_id.length === 0) errors.push({ field: 'run_id', message: 'must be a non-empty string' });
   const runSchemaRequirement = runSchemaRequirementFor(schema);
@@ -1149,8 +1213,8 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
   }
   if (hasTerminalEvidence) {
     validateTerminalEvidence(sidecar.terminal_evidence, 'terminal_evidence', errors, sidecar.schema);
-    if (schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8 && sidecar.terminal_evidence != null && typeof sidecar.terminal_evidence === 'object' && !Array.isArray(sidecar.terminal_evidence)) {
-      validateCoverageGateAttempts(sidecar.terminal_evidence.coverage_gate_attempts, 'terminal_evidence.coverage_gate_attempts', errors, toolCalls, sidecar.terminal_authoritative_event);
+    if ((schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8 || schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9) && sidecar.terminal_evidence != null && typeof sidecar.terminal_evidence === 'object' && !Array.isArray(sidecar.terminal_evidence)) {
+      validateCoverageGateAttempts(sidecar.terminal_evidence.coverage_gate_attempts, 'terminal_evidence.coverage_gate_attempts', errors, toolCalls, sidecar.terminal_authoritative_event, schema);
     }
   }
 
@@ -1270,7 +1334,8 @@ export function crossValidateAcceptedRunAuditAgainstRecord(sidecar, record) {
     || sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5
     || sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V6
     || sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V7
-    || sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8) {
+    || sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8
+    || sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9) {
     const expected = computeRunProvenanceSha256(record);
     if (sidecar.run_provenance_sha256 !== expected) {
       errors.push({ field: 'run_provenance_sha256', message: `sidecar run_provenance_sha256 (${sidecar.run_provenance_sha256}) does not match recomputed value from record (${expected})` });
@@ -1285,7 +1350,8 @@ export function crossValidateAcceptedRunAuditAgainstRecord(sidecar, record) {
     || sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5
     || sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V6
     || sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V7
-    || sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8) {
+    || sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8
+    || sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9) {
     const ep = record.execution_profile ?? {};
     if (sidecar.execution_profile_id !== ep.id) {
       errors.push({ field: 'execution_profile_id', message: `sidecar execution_profile_id (${sidecar.execution_profile_id}) does not match record execution_profile.id (${ep.id})` });

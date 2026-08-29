@@ -1850,7 +1850,7 @@ describe('schema v6/v7 (agentic-eval-runtime-neutral-records-v1 + product-access
   // `it.each([0, 3, -1, '1', 1.5, null])('REJECTS an unsupported sidecar schema (%j)')`, which
   // already covers the v5-rejects-3 direction as one case among several out-of-range values --
   // this block makes both directions of the v5/v6 pairing explicit and independently readable.
-  describe('accepted_audit -- v6 requires sidecar schema 3, 4, 5, or 6 (never 1 or 2)', () => {
+  describe('accepted_audit -- v6 requires a sidecar schema from 3 through 9 (never 1 or 2)', () => {
     function v6ScenarioBase(overrides = {}) {
       return v6Base({
         run_kind: 'scenario', benchmark_eligible: true, scenario_id: 'kampkit-android-host-test-discovery',
@@ -1860,7 +1860,7 @@ describe('schema v6/v7 (agentic-eval-runtime-neutral-records-v1 + product-access
       });
     }
 
-    it.each([3, 4, 5, 6])('ACCEPTS sidecar schema %i for a schema:6 scenario record', (schema) => {
+    it.each([3, 4, 5, 6, 7, 8, 9])('ACCEPTS sidecar schema %i for a schema:6 scenario record', (schema) => {
       const run = v6ScenarioBase({ accepted_audit: { schema, relative_path: 'audit/scenario-current-skill-abcd1234.json', sha256: 'a'.repeat(64) } });
       expect(validateRun(run).errors.some((e) => e.field === 'accepted_audit.schema')).toBe(false);
     });
@@ -1870,7 +1870,7 @@ describe('schema v6/v7 (agentic-eval-runtime-neutral-records-v1 + product-access
       expect(validateRun(run).errors.some((e) => e.field === 'accepted_audit.schema')).toBe(true);
     });
 
-    it.each([3, 4, 5, 6])('REJECTS sidecar schema %i for a schema:5 scenario record (v5 requires v1 or v2)', (schema) => {
+    it.each([3, 4, 5, 6, 7, 8, 9])('REJECTS sidecar schema %i for a schema:5 scenario record (v5 requires v1 or v2)', (schema) => {
       const run = v5Base({
         run_kind: 'scenario', benchmark_eligible: true, scenario_id: 'kampkit-android-host-test-discovery',
         grading_checks: { value: GRADING_CHECK_NAMES.map((name) => ({ name, passed: true, detail: 'ok', evidence_event_indices: [] })), reason: null },

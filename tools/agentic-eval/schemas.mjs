@@ -22,6 +22,7 @@ import {
   ACCEPTED_AUDIT_SIDECAR_SCHEMA_V6,
   ACCEPTED_AUDIT_SIDECAR_SCHEMA_V7,
   ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8,
+  ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9,
 } from './accepted-run-audit.mjs';
 import { classifyExitCode, EXIT } from '../../lib/envelope/exit-codes.js';
 // canonicalStructuredValue moved to canonical-json.mjs (this PR) -- re-exported here verbatim so
@@ -913,7 +914,7 @@ export function validateRun(run) {
         // selector here (that would exclude v3/v4 the moment LATEST advances past them).
         const compatibleSidecarSchemas = run.schema === 5
           ? [ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2]
-          : [ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V6, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V7, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8];
+          : [ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V6, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V7, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9];
         if (!compatibleSidecarSchemas.includes(audit.schema)) {
           errors.push({ field: 'accepted_audit.schema', message: `must be one of ${compatibleSidecarSchemas.join('|')} for a schema:${run.schema} record (got ${JSON.stringify(audit.schema)})` });
         }
