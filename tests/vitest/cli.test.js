@@ -681,6 +681,17 @@ describe('classifyExitCode (central exit-code contract mapping)', () => {
     ];
     expect(classifyExitCode(errors)).toBe(EXIT.CONFIG_ERROR);
   });
+
+  // PR A — Evidence1 success-recovery runbook, Section 8.3: two new discriminated
+  // error codes for the coverage-budget fail-closed contract.
+  // coverage_data_unavailable (runtime not evaluable) is an ENV_ERROR_CODES
+  // member (exit 3); coverage_budget_without_coverage (contradictory flags) is
+  // a CONFIG_ERROR_CODES member (exit 2). Both are aditive — no envelope schema
+  // bump (Section 8.3 "Schema del envelope").
+  it('classifies the new PR A coverage-budget codes: coverage_data_unavailable -> ENV_ERROR (3), coverage_budget_without_coverage -> CONFIG_ERROR (2)', () => {
+    expect(classifyExitCode([{ code: 'coverage_data_unavailable' }])).toBe(EXIT.ENV_ERROR);
+    expect(classifyExitCode([{ code: 'coverage_budget_without_coverage' }])).toBe(EXIT.CONFIG_ERROR);
+  });
 });
 
 describe('envErrorJson', () => {

@@ -5723,6 +5723,320 @@ describe('runParallel — coverage report dispatch (Fix 2)', () => {
   });
 });
 
+// PR A — Evidence1 success-recovery runbook, Section 8.4: `requiredCoverageModules`
+// is an internal parameter threaded from the ALREADY-RESOLVED test-dispatch set
+// (post applyModuleFilters) into the in-process coverage call. It must never be
+// serialized as `--coverage-modules` (contractual: '--module-filter does not
+// implicitly become --coverage-modules', above, and tools/agentic-eval/graders.mjs's
+// isCoherentTargetScopedCoverageBlock, read-only in this PR) and must never change
+// module_buckets/plugin-lists/the aggregate. A positive budget that cannot be
+// evaluated (report dispatch failed, aggregation threw, or contradictory
+// --no-coverage/--coverage-tool none flags) must fail closed instead of silently
+// succeeding.
+describe('PR A — coverage budget fail-closed at the parallel-dispatch layer (requiredCoverageModules)', () => {
+  const jacocoModule = {
+    name: 'core',
+    build: 'plugins { kotlin("jvm") }\njacoco {}\n',
+    sourceSets: ['commonMain', 'jvmMain', 'jvmTest'],
+  };
+
+  it('threads requiredCoverageModules from the resolved dispatch set, never as --coverage-modules argv', async () => {
+    const dir = makeProject([
+      { name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      { name: 'feature', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const stubCoverage = makeRunCoverageStub();
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--min-missed-lines', '15'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(stubCoverage.calls.length).toBe(1);
+    expect(stubCoverage.calls[0].args).not.toContain('--coverage-modules');
+    expect(stubCoverage.calls[0].requiredCoverageModules).toEqual(['core', 'feature']);
+  });
+
+  // Review finding #3: requiredCoverageModules must reflect modules ACTUALLY
+  // dispatched (executeLeg's own taskOwners, post per-leg filtering), never
+  // the pre-leg-filtering `modules` set. SKIP_DESKTOP_MODULES excludes
+  // 'feature' from the desktop/common leg entirely (cascade-retry.js's own
+  // partitionBySkipEnv) -- it must never be required for coverage either.
+  it('a module excluded by SKIP_*_MODULES at the per-leg level is never required for coverage', async () => {
+    const dir = makeProject([
+      { name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      { name: 'feature', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const stubCoverage = makeRunCoverageStub();
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--min-missed-lines', '15'],
+      spawn,
+      env: { ...process.env, SKIP_DESKTOP_MODULES: 'feature' },
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(stubCoverage.calls[0].requiredCoverageModules).toEqual(['core']);
+  });
+
+  // Same finding, the OTHER exclusion mechanism cascade-retry.js's own step 2
+  // applies: a module with no resolvable gradle task for THIS leg (here, an
+  // android-only module under the common/desktop leg) never gets a taskList
+  // entry at all -- also never required.
+  it('a module with no compatible task for this leg is never required for coverage', async () => {
+    const dir = makeProject([
+      { name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      {
+        name: 'androidOnly',
+        build: 'plugins {\n  id("com.android.library")\n}\n',
+        sourceSets: ['androidUnitTest'],
+      },
+    ]);
+    const stubCoverage = makeRunCoverageStub();
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--min-missed-lines', '15'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(stubCoverage.calls[0].requiredCoverageModules).toEqual(['core']);
+  });
+
+  // Review finding #2: androidInstrumented/ios/macos legs never produce
+  // jacoco/kover coverage report data (those report tasks aggregate the UNIT
+  // test task only), even when the leg genuinely dispatched a real task for
+  // a module that ALSO carries a coverage plugin. --test-type all is the
+  // multi-leg case the finding names explicitly.
+  it('--test-type all: a module dispatched ONLY via androidInstrumented (never a unit-coverage leg) is never required for coverage', async () => {
+    const dir = makeProject([
+      { name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      {
+        name: 'instrumentedOnly',
+        build: 'plugins {\n  id("com.android.library")\n  jacoco\n}\n',
+        sourceSets: ['androidInstrumentedTest'],
+      },
+    ]);
+    const stubCoverage = makeRunCoverageStub();
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'all', '--min-missed-lines', '15'],
+      spawn,
+      adbProbe: () => [{ serial: 'emulator-5554' }],
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    // instrumentedOnly genuinely got a real androidInstrumented task
+    // dispatched (proving this isn't just "excluded from every leg"), but
+    // that leg is never coverage-relevant -- it must stay out of the
+    // required set even though it carries a real jacoco plugin.
+    const androidInstrumentedLeg = spawn.calls
+      .filter(isGradleCall)
+      .map(effectiveGradleArgs)
+      .find((a) => a.some((arg) => /connectedAndroidTest|connectedDebugAndroidTest/.test(arg)));
+    expect(androidInstrumentedLeg).toBeTruthy();
+    expect(stubCoverage.calls[0].requiredCoverageModules).not.toContain('instrumentedOnly');
+    expect(stubCoverage.calls[0].requiredCoverageModules).toEqual(['core']);
+  });
+
+  // Review finding #2 (second half): buildCoverageReportTasks must ALSO be
+  // scoped to the same actually-dispatched-via-a-unit-coverage-leg set, not
+  // the pre-leg-filtering `modules` array -- otherwise a report task could
+  // still be generated for a module excluded by SKIP_*_MODULES, wasting a
+  // gradle invocation on a module that was never actually unit-tested this
+  // run. Runs the REAL coverage-orchestrator.js (no stub) so the report-task
+  // dispatch is genuinely exercised end-to-end.
+  it('a module excluded via SKIP_*_MODULES (and carrying a real coverage plugin) never gets a coverage report task dispatched', async () => {
+    const dir = makeProject([
+      jacocoModule,
+      {
+        name: 'feature',
+        build: 'plugins {\n  kotlin("jvm")\n  jacoco\n}\n',
+        sourceSets: ['commonMain', 'jvmMain', 'jvmTest'],
+      },
+    ]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'desktop', '--coverage-tool', 'jacoco', '--min-missed-lines', '15'],
+      spawn,
+      env: { ...process.env, SKIP_DESKTOP_MODULES: 'feature' },
+      log: () => {},
+    });
+    const reportTaskCalls = spawn.calls
+      .filter(isGradleCall)
+      .map(effectiveGradleArgs)
+      .filter((a) => a.some((arg) => /jacocoTestReport/.test(arg)));
+    expect(reportTaskCalls.some((a) => a.some((arg) => arg.includes(':feature:')))).toBe(false);
+    expect(reportTaskCalls.some((a) => a.some((arg) => arg.includes(':core:')))).toBe(true);
+    // makeSpawnStub writes no real XML for either module, so the ONLY
+    // required target ('core') correctly fails target-no-xml -- the point
+    // proven above (never :feature:) holds regardless of this outcome.
+    expect(envelope.errors).toEqual([
+      expect.objectContaining({ code: 'coverage_data_unavailable', reason: 'target-no-xml' }),
+    ]);
+  });
+
+  // Post-review fix (findings #2/#3): this test now runs the REAL
+  // coverage-orchestrator.js (no runCoverageInjection stub) so it actually
+  // proves the envelope's coverage block stays structurally well-formed
+  // (module_buckets present, cardinality matching the plugin lists) instead
+  // of being left at step 7's incomplete {tool, missed_lines, plugin-lists}
+  // placeholder — and that a STALE XML already on disk from an earlier run
+  // is never read as fresh proof once THIS run's report task fails (rule 11).
+  it('report-task failure + budget>0 -> coverage_data_unavailable/report-dispatch-failed, well-formed buckets, stale XML never trusted, exit 3', async () => {
+    const dir = makeProject([jacocoModule]);
+    const staleXmlPath = path.join(dir, 'core', 'build', 'reports', 'jacoco', 'jacocoTestReport.xml');
+    mkdirSync(path.dirname(staleXmlPath), { recursive: true });
+    writeFileSync(
+      staleXmlPath,
+      '<report><package name="p"><sourcefile name="F.kt"><line nr="1" mi="0" ci="1"/></sourcefile></package></report>',
+    );
+    const spawn = (cmd, args, opts) => {
+      spawn.calls.push({ cmd, args: [...args], cwd: opts?.cwd ?? null, env: opts?.env ?? null });
+      const flat = args.join(' ');
+      if (/jacocoTestReport/.test(flat)) {
+        return { status: 1, stdout: '> Task :core:jacocoTestReport FAILED\nBUILD FAILED in 1s\n', stderr: '', signal: null, error: null };
+      }
+      return { status: 0, stdout: 'BUILD SUCCESSFUL in 1s\n', stderr: '', signal: null, error: null };
+    };
+    spawn.calls = [];
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'desktop', '--coverage-tool', 'jacoco', '--min-missed-lines', '15'],
+      spawn,
+      log: () => {},
+    });
+    expect(envelope.warnings.some(w => w.code === 'coverage_report_dispatch_failed')).toBe(true);
+    expect(envelope.errors).toEqual([
+      expect.objectContaining({ code: 'coverage_data_unavailable', threshold: 15, reason: 'report-dispatch-failed' }),
+    ]);
+    expect(exitCode).toBe(3);
+    expect(envelope.coverage.modules_with_jacoco_plugin).toEqual(['core']);
+    expect(envelope.coverage.modules_contributing).toBe(0);
+    expect(envelope.coverage.module_buckets).toEqual({
+      with_data: [], no_xml: ['core'], parse_errored: [], skipped_by_user: [],
+    });
+  });
+
+  // Post-review fix (finding #3): threshold 0 (the default, no
+  // --min-missed-lines) must stay byte-identical to pre-PR-A behavior even
+  // when the report task fails this run -- never-trust-possibly-stale-XML is
+  // a GATE-only hardening. With no budget requested there is no gate to
+  // protect, so coverage-orchestrator.js must read whatever XML genuinely
+  // sits on disk exactly as it always did, not force every dispatched
+  // module to no_xml.
+  it('report-task failure with threshold 0 (no budget) -> XML still read normally, no forced no_xml, no new error', async () => {
+    const dir = makeProject([jacocoModule]);
+    const xmlPath = path.join(dir, 'core', 'build', 'reports', 'jacoco', 'jacocoTestReport.xml');
+    mkdirSync(path.dirname(xmlPath), { recursive: true });
+    writeFileSync(xmlPath, coverageContractXml(7, 3));
+    const spawn = (cmd, args, opts) => {
+      spawn.calls.push({ cmd, args: [...args], cwd: opts?.cwd ?? null, env: opts?.env ?? null });
+      const flat = args.join(' ');
+      if (/jacocoTestReport/.test(flat)) {
+        return { status: 1, stdout: '> Task :core:jacocoTestReport FAILED\nBUILD FAILED in 1s\n', stderr: '', signal: null, error: null };
+      }
+      return { status: 0, stdout: 'BUILD SUCCESSFUL in 1s\n', stderr: '', signal: null, error: null };
+    };
+    spawn.calls = [];
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'desktop', '--coverage-tool', 'jacoco'], // no --min-missed-lines -> threshold 0
+      spawn,
+      log: () => {},
+    });
+    expect(envelope.warnings.some(w => w.code === 'coverage_report_dispatch_failed')).toBe(true);
+    expect(envelope.errors).toEqual([]);
+    expect(exitCode).toBe(0);
+    expect(envelope.coverage.missed_lines).toBe(7);
+    expect(envelope.coverage.modules_contributing).toBe(1);
+    expect(envelope.coverage.module_buckets).toEqual({
+      with_data: ['core'], no_xml: [], parse_errored: [], skipped_by_user: [],
+    });
+  });
+
+  // Post-review fix (finding #5): the exception path cannot ask
+  // coverage-orchestrator.js to build its own block (it never returned), and
+  // must never fabricate a no_xml claim an arbitrary exception can't back up
+  // (no_xml means specifically "XML missing on disk" — docs/envelope-contract.md).
+  // module_buckets stays honestly empty; the already-known plugin lists are
+  // preserved untouched; the resulting accounting gap surfaces via the
+  // EXISTING coverage_aggregation_drift warning (detected/accounted:0/unaccounted),
+  // reused rather than inventing a new signal or a new bucket.
+  it('aggregation exception + budget>0 -> coverage_data_unavailable/aggregation-failed, honest empty buckets + coverage_aggregation_drift, exit 3', async () => {
+    const dir = makeProject([{
+      name: 'core',
+      build: 'plugins {\n  id("org.jetbrains.kotlinx.kover")\n  kotlin("jvm")\n}\n',
+      sourceSets: ['commonMain', 'jvmMain', 'jvmTest'],
+    }]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const throwingCoverage = async () => { throw new Error('boom'); };
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--coverage-tool', 'kover', '--min-missed-lines', '15'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: throwingCoverage,
+    });
+    expect(envelope.warnings.some(w => w.code === 'coverage_aggregation_failed')).toBe(true);
+    expect(envelope.errors).toEqual([
+      expect.objectContaining({ code: 'coverage_data_unavailable', threshold: 15, reason: 'aggregation-failed' }),
+    ]);
+    expect(exitCode).toBe(3);
+    // Known project fact, preserved -- untouched by the exception.
+    expect(envelope.coverage.modules_with_kover_plugin).toEqual(['core']);
+    expect(envelope.coverage.missed_lines).toBeNull();
+    expect(envelope.coverage.modules_contributing).toBe(0);
+    // Honestly empty -- never claims 'core' is specifically no_xml.
+    expect(envelope.coverage.module_buckets).toEqual({
+      with_data: [], no_xml: [], parse_errored: [], skipped_by_user: [],
+    });
+    expect(envelope.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: 'coverage_aggregation_drift', detected: 1, accounted: 0, unaccounted: 1,
+        }),
+      ]),
+    );
+  });
+
+  it('--no-coverage + budget>0 -> coverage_budget_without_coverage, CONFIG_ERROR exit 2, zero gradle spawns', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub();
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--no-coverage', '--min-missed-lines', '15'],
+      spawn,
+      log: () => {},
+    });
+    expect(exitCode).toBe(2);
+    expect(envelope.errors).toEqual([
+      expect.objectContaining({ code: 'coverage_budget_without_coverage' }),
+    ]);
+    expect(spawn.calls.length).toBe(0);
+  });
+
+  it('--coverage-tool none + budget>0 -> same config error, zero gradle spawns', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub();
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--coverage-tool', 'none', '--min-missed-lines', '15'],
+      spawn,
+      log: () => {},
+    });
+    expect(exitCode).toBe(2);
+    expect(envelope.errors[0].code).toBe('coverage_budget_without_coverage');
+    expect(spawn.calls.length).toBe(0);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Part A — pickGradleTaskFor JS/Wasm guard for explicit common/desktop
 // ---------------------------------------------------------------------------

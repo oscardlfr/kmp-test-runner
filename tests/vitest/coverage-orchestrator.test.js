@@ -1160,3 +1160,230 @@ describe('PR-17 — threshold/aggregation integrity', () => {
     expect(w.modules).toEqual(['a']);
   });
 });
+
+// PR A — Evidence1 success-recovery runbook, Section 8: `kmp-test` must fail
+// closed (never silently succeed) when the user requests a positive coverage
+// budget (--min-missed-lines N > 0) and the product cannot actually evaluate
+// it. `requiredCoverageModules` is an INTERNAL parameter (never a CLI flag,
+// never `--coverage-modules`) that `parallel-orchestrator.js` threads in from
+// its own already-resolved test-dispatch set (see parallel-orchestrator.test.js
+// for the threading contract). It is used ONLY to decide whether the budget is
+// evaluable — it must never alter module_buckets, plugin lists, `allRows`, or
+// the aggregate (Section 8.4; contractually required by
+// `tools/agentic-eval/graders.mjs`'s `isCoherentTargetScopedCoverageBlock`,
+// which independently re-derives module_buckets <-> plugin-list equality and
+// requires `skipped_by_user` to stay empty for a well-formed envelope).
+// Standalone `coverage` (no requiredCoverageModules) keeps the simpler
+// project-wide `no-contributing-data` fallback only (rule 8.4.10).
+describe('PR A — coverage budget fail-closed (requiredCoverageModules)', () => {
+  it('zero contributors (no plugin detected anywhere) + budget>0 -> coverage_data_unavailable/no-contributing-data, exit 3, existing warning preserved', async () => {
+    const projectRoot = makeProject([{ name: 'plain' }]); // no kover, no jacoco
+    const parseCoverageXml = makeParseCoverageStub();
+    const { envelope, exitCode } = await runCoverage({
+      projectRoot,
+      args: ['--min-missed-lines', '15'],
+      parseCoverageXml,
+    });
+    expect(exitCode).toBe(3);
+    expect(envelope.errors).toEqual([
+      expect.objectContaining({ code: 'coverage_data_unavailable', threshold: 15, reason: 'no-contributing-data' }),
+    ]);
+    // Additive, not a replacement: the pre-existing warning still fires.
+    expect(envelope.warnings.some((w) => w.code === 'no_coverage_data')).toBe(true);
+  });
+
+  it('required target absent from plugin lists/buckets entirely -> coverage_data_unavailable/target-not-detected, exit 3', async () => {
+    const projectRoot = makeProject([{ name: 'untouched', coverage: 'kover' }]);
+    dropFakeXml(projectRoot, 'untouched', 'kover');
+    const parseCoverageXml = makeParseCoverageStub({
+      rowsByModule: { untouched: ['untouched|p|F.kt|F|1|0|1|100|'] },
+    });
+    const { envelope, exitCode } = await runCoverage({
+      projectRoot,
+      args: ['--min-missed-lines', '15'],
+      parseCoverageXml,
+      requiredCoverageModules: ['app'], // never detected/dispatched at all
+    });
+    expect(exitCode).toBe(3);
+    expect(envelope.errors).toEqual([
+      expect.objectContaining({ code: 'coverage_data_unavailable', threshold: 15, reason: 'target-not-detected' }),
+    ]);
+    // The unrelated module's own accounting is completely unaffected.
+    expect(envelope.coverage.module_buckets.with_data).toEqual(['untouched']);
+  });
+
+  it('required target in no_xml -> coverage_data_unavailable/target-no-xml, exit 3', async () => {
+    const projectRoot = makeProject([{ name: 'app', coverage: 'kover' }]);
+    // No dropFakeXml for 'app' -> lands in no_xml.
+    const parseCoverageXml = makeParseCoverageStub();
+    const { envelope, exitCode } = await runCoverage({
+      projectRoot,
+      args: ['--min-missed-lines', '15'],
+      parseCoverageXml,
+      requiredCoverageModules: ['app'],
+    });
+    expect(exitCode).toBe(3);
+    expect(envelope.errors).toEqual([
+      expect.objectContaining({ code: 'coverage_data_unavailable', threshold: 15, reason: 'target-no-xml' }),
+    ]);
+  });
+
+  it('required target in parse_errored -> coverage_data_unavailable/target-parse-error, exit 3', async () => {
+    const projectRoot = makeProject([{ name: 'app', coverage: 'kover' }]);
+    dropFakeXml(projectRoot, 'app', 'kover');
+    const parseCoverageXml = makeParseCoverageStub({ rowsByModule: { app: [] }, status: 1 });
+    const { envelope, exitCode } = await runCoverage({
+      projectRoot,
+      args: ['--min-missed-lines', '15'],
+      parseCoverageXml,
+      requiredCoverageModules: ['app'],
+    });
+    expect(exitCode).toBe(3);
+    expect(envelope.errors).toEqual([
+      expect.objectContaining({ code: 'coverage_data_unavailable', threshold: 15, reason: 'target-parse-error' }),
+    ]);
+  });
+
+  // Review finding #1: --coverage-modules/--exclude-coverage narrow the
+  // user's OWN coverage scope (discoverCoverageModules' skippedByUser). A
+  // module the test dispatch touched but the user explicitly excluded from
+  // COVERAGE must never be treated as an unavailable required target --
+  // reproduced exactly as reported: with_data:['app'], skipped_by_user:['lib'],
+  // required:['app','lib'] must NOT return target-not-detected. Mirrors
+  // `kmp-test parallel --coverage-modules app --min-missed-lines 15` on a
+  // project where the test dispatch touched both `app` and `lib`.
+  it('required target excluded via --coverage-modules (skipped_by_user) is never treated as unavailable', async () => {
+    const projectRoot = makeProject([
+      { name: 'app', coverage: 'kover' },
+      { name: 'lib', coverage: 'kover' },
+    ]);
+    dropFakeXml(projectRoot, 'app', 'kover');
+    const parseCoverageXml = makeParseCoverageStub({
+      rowsByModule: { app: ['app|p|F.kt|F|0|5|5|0|1-5'] },
+    });
+    const { envelope, exitCode } = await runCoverage({
+      projectRoot,
+      args: ['--coverage-modules', 'app', '--min-missed-lines', '15'],
+      parseCoverageXml,
+      requiredCoverageModules: ['app', 'lib'],
+    });
+    expect(exitCode).toBe(0);
+    expect(envelope.errors).toEqual([]);
+    expect(envelope.coverage.module_buckets).toEqual({
+      with_data: ['app'], no_xml: [], parse_errored: [], skipped_by_user: ['lib'],
+    });
+  });
+
+  // Same shape as above, but via --exclude-coverage (the OTHER flag that
+  // populates skipped_by_user) and a threshold that WOULD exceed if 'lib'
+  // were wrongly required — proves the fix isn't just "returns 0 errors" but
+  // genuinely evaluates the budget against 'app' alone.
+  it('required target excluded via --exclude-coverage (skipped_by_user) is never treated as unavailable', async () => {
+    const projectRoot = makeProject([
+      { name: 'app', coverage: 'kover' },
+      { name: 'lib', coverage: 'kover' },
+    ]);
+    dropFakeXml(projectRoot, 'app', 'kover');
+    const parseCoverageXml = makeParseCoverageStub({
+      rowsByModule: { app: ['app|p|F.kt|F|0|5|5|0|1-5'] },
+    });
+    const { envelope, exitCode } = await runCoverage({
+      projectRoot,
+      args: ['--exclude-coverage', 'lib', '--min-missed-lines', '3'],
+      parseCoverageXml,
+      requiredCoverageModules: ['app', 'lib'],
+    });
+    expect(exitCode).toBe(1);
+    expect(envelope.errors).toEqual([
+      expect.objectContaining({ code: 'coverage_threshold_exceeded', threshold: 3, missed_lines: 5 }),
+    ]);
+  });
+
+  it('required target with data + a FOREIGN module in no_xml -> target still evaluable, buckets/plugin-lists byte-identical to the no-requiredCoverageModules shape', async () => {
+    const projectRoot = makeProject([
+      { name: 'core-foo', coverage: 'kover' },
+      { name: 'app', coverage: 'kover' },
+    ]);
+    dropFakeXml(projectRoot, 'core-foo', 'kover');
+    // 'app' gets no XML -> no_xml, but it is NOT a required target.
+    const parseCoverageXml = makeParseCoverageStub({
+      rowsByModule: { 'core-foo': ['core-foo|p|F.kt|F|0|10|10|0|1-10'] },
+    });
+    const { envelope, exitCode } = await runCoverage({
+      projectRoot,
+      args: ['--min-missed-lines', '15'],
+      parseCoverageXml,
+      requiredCoverageModules: ['core-foo'],
+    });
+    expect(exitCode).toBe(0);
+    expect(envelope.errors).toEqual([]);
+    expect(envelope.coverage.module_buckets).toEqual({
+      with_data: ['core-foo'],
+      no_xml: ['app'],
+      parse_errored: [],
+      skipped_by_user: [],
+    });
+    expect(envelope.coverage.modules_with_kover_plugin).toEqual(['app', 'core-foo']);
+  });
+
+  it('required target with data, missed > threshold -> ONLY coverage_threshold_exceeded; error missed_lines === envelope.coverage.missed_lines', async () => {
+    const projectRoot = makeProject([{ name: 'core-foo', coverage: 'kover' }]);
+    dropFakeXml(projectRoot, 'core-foo', 'kover');
+    const parseCoverageXml = makeParseCoverageStub({
+      rowsByModule: { 'core-foo': ['core-foo|p|F.kt|F|0|23|23|0|1-23'] },
+    });
+    const { envelope, exitCode } = await runCoverage({
+      projectRoot,
+      args: ['--min-missed-lines', '15'],
+      parseCoverageXml,
+      requiredCoverageModules: ['core-foo'],
+    });
+    expect(exitCode).toBe(1);
+    expect(envelope.errors).toHaveLength(1);
+    expect(envelope.errors[0].code).toBe('coverage_threshold_exceeded');
+    expect(envelope.coverage.missed_lines).toBe(23);
+    expect(envelope.errors[0].missed_lines).toBe(envelope.coverage.missed_lines);
+    expect(envelope.errors.some((e) => e.code === 'coverage_data_unavailable')).toBe(false);
+  });
+
+  it('threshold 0 + requiredCoverageModules present -> gate stays disabled, no new errors (regression guard)', async () => {
+    const projectRoot = makeProject([{ name: 'app', coverage: 'kover' }]); // no xml on disk
+    const parseCoverageXml = makeParseCoverageStub();
+    const { envelope, exitCode } = await runCoverage({
+      projectRoot,
+      args: [],
+      parseCoverageXml,
+      requiredCoverageModules: ['app'],
+    });
+    expect(exitCode).toBe(0);
+    expect(envelope.errors).toEqual([]);
+  });
+
+  it('--coverage-tool none + budget>0 -> coverage_budget_without_coverage, CONFIG_ERROR exit 2, zero parser calls', async () => {
+    const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
+    const parseCoverageXml = makeParseCoverageStub();
+    const { envelope, exitCode } = await runCoverage({
+      projectRoot,
+      args: ['--coverage-tool', 'none', '--min-missed-lines', '15'],
+      parseCoverageXml,
+    });
+    expect(exitCode).toBe(2);
+    expect(envelope.errors).toEqual([
+      expect.objectContaining({ code: 'coverage_budget_without_coverage' }),
+    ]);
+    expect(parseCoverageXml.calls).toHaveLength(0);
+  });
+
+  it('--no-coverage alias + budget>0 -> same coverage_budget_without_coverage config error, zero parser calls', async () => {
+    const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
+    const parseCoverageXml = makeParseCoverageStub();
+    const { envelope, exitCode } = await runCoverage({
+      projectRoot,
+      args: ['--no-coverage', '--min-missed-lines', '15'],
+      parseCoverageXml,
+    });
+    expect(exitCode).toBe(2);
+    expect(envelope.errors[0].code).toBe('coverage_budget_without_coverage');
+    expect(parseCoverageXml.calls).toHaveLength(0);
+  });
+});
