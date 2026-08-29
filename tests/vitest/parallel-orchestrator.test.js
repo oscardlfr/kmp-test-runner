@@ -5759,8 +5759,69 @@ describe('PR A — coverage budget fail-closed at the parallel-dispatch layer (r
     expect(stubCoverage.calls[0].requiredCoverageModules).toEqual(['core', 'feature']);
   });
 
-  it('report-task failure + budget>0 -> coverage_data_unavailable/report-dispatch-failed alongside the existing warning, exit 3', async () => {
+  // Review finding #3: requiredCoverageModules must reflect modules ACTUALLY
+  // dispatched (executeLeg's own taskOwners, post per-leg filtering), never
+  // the pre-leg-filtering `modules` set. SKIP_DESKTOP_MODULES excludes
+  // 'feature' from the desktop/common leg entirely (cascade-retry.js's own
+  // partitionBySkipEnv) -- it must never be required for coverage either.
+  it('a module excluded by SKIP_*_MODULES at the per-leg level is never required for coverage', async () => {
+    const dir = makeProject([
+      { name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      { name: 'feature', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const stubCoverage = makeRunCoverageStub();
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--min-missed-lines', '15'],
+      spawn,
+      env: { ...process.env, SKIP_DESKTOP_MODULES: 'feature' },
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(stubCoverage.calls[0].requiredCoverageModules).toEqual(['core']);
+  });
+
+  // Same finding, the OTHER exclusion mechanism cascade-retry.js's own step 2
+  // applies: a module with no resolvable gradle task for THIS leg (here, an
+  // android-only module under the common/desktop leg) never gets a taskList
+  // entry at all -- also never required.
+  it('a module with no compatible task for this leg is never required for coverage', async () => {
+    const dir = makeProject([
+      { name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      {
+        name: 'androidOnly',
+        build: 'plugins {\n  id("com.android.library")\n}\n',
+        sourceSets: ['androidUnitTest'],
+      },
+    ]);
+    const stubCoverage = makeRunCoverageStub();
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--min-missed-lines', '15'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(stubCoverage.calls[0].requiredCoverageModules).toEqual(['core']);
+  });
+
+  // Post-review fix (findings #2/#3): this test now runs the REAL
+  // coverage-orchestrator.js (no runCoverageInjection stub) so it actually
+  // proves the envelope's coverage block stays structurally well-formed
+  // (module_buckets present, cardinality matching the plugin lists) instead
+  // of being left at step 7's incomplete {tool, missed_lines, plugin-lists}
+  // placeholder — and that a STALE XML already on disk from an earlier run
+  // is never read as fresh proof once THIS run's report task fails (rule 11).
+  it('report-task failure + budget>0 -> coverage_data_unavailable/report-dispatch-failed, well-formed buckets, stale XML never trusted, exit 3', async () => {
     const dir = makeProject([jacocoModule]);
+    const staleXmlPath = path.join(dir, 'core', 'build', 'reports', 'jacoco', 'jacocoTestReport.xml');
+    mkdirSync(path.dirname(staleXmlPath), { recursive: true });
+    writeFileSync(
+      staleXmlPath,
+      '<report><package name="p"><sourcefile name="F.kt"><line nr="1" mi="0" ci="1"/></sourcefile></package></report>',
+    );
     const spawn = (cmd, args, opts) => {
       spawn.calls.push({ cmd, args: [...args], cwd: opts?.cwd ?? null, env: opts?.env ?? null });
       const flat = args.join(' ');
@@ -5775,17 +5836,30 @@ describe('PR A — coverage budget fail-closed at the parallel-dispatch layer (r
       args: ['--test-type', 'desktop', '--coverage-tool', 'jacoco', '--min-missed-lines', '15'],
       spawn,
       log: () => {},
-      runCoverageInjection: makeRunCoverageStub(),
     });
     expect(envelope.warnings.some(w => w.code === 'coverage_report_dispatch_failed')).toBe(true);
     expect(envelope.errors).toEqual([
       expect.objectContaining({ code: 'coverage_data_unavailable', threshold: 15, reason: 'report-dispatch-failed' }),
     ]);
     expect(exitCode).toBe(3);
+    expect(envelope.coverage.modules_with_jacoco_plugin).toEqual(['core']);
+    expect(envelope.coverage.modules_contributing).toBe(0);
+    expect(envelope.coverage.module_buckets).toEqual({
+      with_data: [], no_xml: ['core'], parse_errored: [], skipped_by_user: [],
+    });
   });
 
-  it('aggregation exception + budget>0 -> coverage_data_unavailable/aggregation-failed alongside the existing warning, exit 3', async () => {
-    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+  // Post-review fix (finding #2): the exception path cannot ask
+  // coverage-orchestrator.js to build its own well-formed block (it never
+  // returned), so parallel-orchestrator.js's own buildUnavailableCoverageBlock
+  // fallback must produce a cardinality-respecting module_buckets from
+  // whatever plugin lists were already known.
+  it('aggregation exception + budget>0 -> coverage_data_unavailable/aggregation-failed, well-formed fallback buckets, exit 3', async () => {
+    const dir = makeProject([{
+      name: 'core',
+      build: 'plugins {\n  id("org.jetbrains.kotlinx.kover")\n  kotlin("jvm")\n}\n',
+      sourceSets: ['commonMain', 'jvmMain', 'jvmTest'],
+    }]);
     const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
     const throwingCoverage = async () => { throw new Error('boom'); };
     const { envelope, exitCode } = await runParallel({
@@ -5800,6 +5874,11 @@ describe('PR A — coverage budget fail-closed at the parallel-dispatch layer (r
       expect.objectContaining({ code: 'coverage_data_unavailable', threshold: 15, reason: 'aggregation-failed' }),
     ]);
     expect(exitCode).toBe(3);
+    expect(envelope.coverage.modules_with_kover_plugin).toEqual(['core']);
+    expect(envelope.coverage.modules_contributing).toBe(0);
+    expect(envelope.coverage.module_buckets).toEqual({
+      with_data: [], no_xml: ['core'], parse_errored: [], skipped_by_user: [],
+    });
   });
 
   it('--no-coverage + budget>0 -> coverage_budget_without_coverage, CONFIG_ERROR exit 2, zero gradle spawns', async () => {

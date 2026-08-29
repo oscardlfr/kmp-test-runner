@@ -1244,6 +1244,61 @@ describe('PR A — coverage budget fail-closed (requiredCoverageModules)', () =>
     ]);
   });
 
+  // Review finding #1: --coverage-modules/--exclude-coverage narrow the
+  // user's OWN coverage scope (discoverCoverageModules' skippedByUser). A
+  // module the test dispatch touched but the user explicitly excluded from
+  // COVERAGE must never be treated as an unavailable required target --
+  // reproduced exactly as reported: with_data:['app'], skipped_by_user:['lib'],
+  // required:['app','lib'] must NOT return target-not-detected. Mirrors
+  // `kmp-test parallel --coverage-modules app --min-missed-lines 15` on a
+  // project where the test dispatch touched both `app` and `lib`.
+  it('required target excluded via --coverage-modules (skipped_by_user) is never treated as unavailable', async () => {
+    const projectRoot = makeProject([
+      { name: 'app', coverage: 'kover' },
+      { name: 'lib', coverage: 'kover' },
+    ]);
+    dropFakeXml(projectRoot, 'app', 'kover');
+    const parseCoverageXml = makeParseCoverageStub({
+      rowsByModule: { app: ['app|p|F.kt|F|0|5|5|0|1-5'] },
+    });
+    const { envelope, exitCode } = await runCoverage({
+      projectRoot,
+      args: ['--coverage-modules', 'app', '--min-missed-lines', '15'],
+      parseCoverageXml,
+      requiredCoverageModules: ['app', 'lib'],
+    });
+    expect(exitCode).toBe(0);
+    expect(envelope.errors).toEqual([]);
+    expect(envelope.coverage.module_buckets).toEqual({
+      with_data: ['app'], no_xml: [], parse_errored: [], skipped_by_user: ['lib'],
+    });
+  });
+
+  // Same shape as above, but via --exclude-coverage (the OTHER flag that
+  // populates skipped_by_user) and a threshold that WOULD exceed if 'lib'
+  // were wrongly required — proves the fix isn't just "returns 0 errors" but
+  // genuinely evaluates the budget against 'app' alone.
+  it('required target excluded via --exclude-coverage (skipped_by_user) is never treated as unavailable', async () => {
+    const projectRoot = makeProject([
+      { name: 'app', coverage: 'kover' },
+      { name: 'lib', coverage: 'kover' },
+    ]);
+    dropFakeXml(projectRoot, 'app', 'kover');
+    const parseCoverageXml = makeParseCoverageStub({
+      rowsByModule: { app: ['app|p|F.kt|F|0|5|5|0|1-5'] },
+    });
+    const { envelope, exitCode } = await runCoverage({
+      projectRoot,
+      args: ['--exclude-coverage', 'lib', '--min-missed-lines', '3'],
+      parseCoverageXml,
+      requiredCoverageModules: ['app', 'lib'],
+    });
+    expect(exitCode).toBe(1);
+    expect(envelope.errors).toEqual([
+      expect.objectContaining({ code: 'coverage_threshold_exceeded', threshold: 3, missed_lines: 5 }),
+    ]);
+  });
+
   it('required target with data + a FOREIGN module in no_xml -> target still evaluable, buckets/plugin-lists byte-identical to the no-requiredCoverageModules shape', async () => {
     const projectRoot = makeProject([
       { name: 'core-foo', coverage: 'kover' },
