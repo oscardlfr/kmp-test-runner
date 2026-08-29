@@ -21,7 +21,7 @@
 // 8-point coverage map (this PR's own runbook, Stage 7):
 //  1. run --dry-run strict regression (default profile's dry-run JSON stays byte-for-byte).
 //  2. run --dry-run unrestricted, with a synthetic isolation attestation.
-//  3+4. Unrestricted current-skill AND no-skill, full acceptance -> schema v6 record + v8 sidecar.
+//  3+4. Unrestricted current-skill AND no-skill, full acceptance -> schema v6 record + v9 sidecar.
 //  5. A genuinely missing tool_result fails the WHOLE matrix closed -- never an accepted sidecar.
 //  6. Auth failure / a malformed stream still follow their pre-existing, profile-independent phases.
 //  7. calibrate and smoke traverse the fake path with zero hook events and real accounting.
@@ -303,7 +303,7 @@ describe('2. run --dry-run -- sandboxed-unrestricted-v1, with a synthetic isolat
 });
 
 describe('3+4. run -- sandboxed-unrestricted-v1, current-skill AND no-skill, full acceptance', () => {
-  it('repeats=2: writes 4 schema-v6 records with a v8 accepted-run-audit sidecar each, honest null policy fields, and real no-policy dispatch accounting', async () => {
+  it('repeats=2: writes 4 schema-v6 records with a v9 accepted-run-audit sidecar each, honest null policy fields, and real no-policy dispatch accounting', async () => {
     const attestationPath = writeValidAttestation();
     const result = await runCli(
       runArgs(['--seed', '13', '--repeats', '2', ...UNRESTRICTED_EXECUTION_PROFILE_FLAGS(attestationPath)]),
@@ -358,10 +358,10 @@ describe('3+4. run -- sandboxed-unrestricted-v1, current-skill AND no-skill, ful
       expect(record.success.value).toBe(true);
       expect(record.benchmark_eligible).toBe(true);
 
-      // schema v6 run record with accepted-run-audit sidecar v8 -- never v3, the moment
+    // schema v6 run record with accepted-run-audit sidecar v9 -- never v3, the moment
       // policy_mode:"not_applicable" is what actually produced this record. v8 is the
       // privacy-safe terminal coverage/final-answer observability extension; the record schema stays v6.
-      expect(record.accepted_audit.schema).toBe(8);
+    expect(record.accepted_audit.schema).toBe(9);
     }
 
     // The sidecar written to disk, read back and independently validated/cross-validated --
@@ -370,7 +370,7 @@ describe('3+4. run -- sandboxed-unrestricted-v1, current-skill AND no-skill, ful
     // path, not just their own dedicated unit tests.
     for (const record of records) {
       const sidecar = readAcceptedAuditSidecar(record.run_id);
-      expect(sidecar.schema).toBe(8);
+      expect(sidecar.schema).toBe(9);
       expect(sidecar.execution_profile_id).toBe('sandboxed-unrestricted-v1');
       expect(sidecar.policy_mode).toBe('not_applicable');
       expect(sidecar.isolation_attestation_sha256).toBe(record.execution_profile.isolation_attestation_sha256);
