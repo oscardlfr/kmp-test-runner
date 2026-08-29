@@ -5723,6 +5723,116 @@ describe('runParallel — coverage report dispatch (Fix 2)', () => {
   });
 });
 
+// PR A — Evidence1 success-recovery runbook, Section 8.4: `requiredCoverageModules`
+// is an internal parameter threaded from the ALREADY-RESOLVED test-dispatch set
+// (post applyModuleFilters) into the in-process coverage call. It must never be
+// serialized as `--coverage-modules` (contractual: '--module-filter does not
+// implicitly become --coverage-modules', above, and tools/agentic-eval/graders.mjs's
+// isCoherentTargetScopedCoverageBlock, read-only in this PR) and must never change
+// module_buckets/plugin-lists/the aggregate. A positive budget that cannot be
+// evaluated (report dispatch failed, aggregation threw, or contradictory
+// --no-coverage/--coverage-tool none flags) must fail closed instead of silently
+// succeeding.
+describe('PR A — coverage budget fail-closed at the parallel-dispatch layer (requiredCoverageModules)', () => {
+  const jacocoModule = {
+    name: 'core',
+    build: 'plugins { kotlin("jvm") }\njacoco {}\n',
+    sourceSets: ['commonMain', 'jvmMain', 'jvmTest'],
+  };
+
+  it('threads requiredCoverageModules from the resolved dispatch set, never as --coverage-modules argv', async () => {
+    const dir = makeProject([
+      { name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      { name: 'feature', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const stubCoverage = makeRunCoverageStub();
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--min-missed-lines', '15'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: stubCoverage,
+    });
+    expect(stubCoverage.calls.length).toBe(1);
+    expect(stubCoverage.calls[0].args).not.toContain('--coverage-modules');
+    expect(stubCoverage.calls[0].requiredCoverageModules).toEqual(['core', 'feature']);
+  });
+
+  it('report-task failure + budget>0 -> coverage_data_unavailable/report-dispatch-failed alongside the existing warning, exit 3', async () => {
+    const dir = makeProject([jacocoModule]);
+    const spawn = (cmd, args, opts) => {
+      spawn.calls.push({ cmd, args: [...args], cwd: opts?.cwd ?? null, env: opts?.env ?? null });
+      const flat = args.join(' ');
+      if (/jacocoTestReport/.test(flat)) {
+        return { status: 1, stdout: '> Task :core:jacocoTestReport FAILED\nBUILD FAILED in 1s\n', stderr: '', signal: null, error: null };
+      }
+      return { status: 0, stdout: 'BUILD SUCCESSFUL in 1s\n', stderr: '', signal: null, error: null };
+    };
+    spawn.calls = [];
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'desktop', '--coverage-tool', 'jacoco', '--min-missed-lines', '15'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    expect(envelope.warnings.some(w => w.code === 'coverage_report_dispatch_failed')).toBe(true);
+    expect(envelope.errors).toEqual([
+      expect.objectContaining({ code: 'coverage_data_unavailable', threshold: 15, reason: 'report-dispatch-failed' }),
+    ]);
+    expect(exitCode).toBe(3);
+  });
+
+  it('aggregation exception + budget>0 -> coverage_data_unavailable/aggregation-failed alongside the existing warning, exit 3', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const throwingCoverage = async () => { throw new Error('boom'); };
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--coverage-tool', 'kover', '--min-missed-lines', '15'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: throwingCoverage,
+    });
+    expect(envelope.warnings.some(w => w.code === 'coverage_aggregation_failed')).toBe(true);
+    expect(envelope.errors).toEqual([
+      expect.objectContaining({ code: 'coverage_data_unavailable', threshold: 15, reason: 'aggregation-failed' }),
+    ]);
+    expect(exitCode).toBe(3);
+  });
+
+  it('--no-coverage + budget>0 -> coverage_budget_without_coverage, CONFIG_ERROR exit 2, zero gradle spawns', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub();
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--no-coverage', '--min-missed-lines', '15'],
+      spawn,
+      log: () => {},
+    });
+    expect(exitCode).toBe(2);
+    expect(envelope.errors).toEqual([
+      expect.objectContaining({ code: 'coverage_budget_without_coverage' }),
+    ]);
+    expect(spawn.calls.length).toBe(0);
+  });
+
+  it('--coverage-tool none + budget>0 -> same config error, zero gradle spawns', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub();
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--coverage-tool', 'none', '--min-missed-lines', '15'],
+      spawn,
+      log: () => {},
+    });
+    expect(exitCode).toBe(2);
+    expect(envelope.errors[0].code).toBe('coverage_budget_without_coverage');
+    expect(spawn.calls.length).toBe(0);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Part A — pickGradleTaskFor JS/Wasm guard for explicit common/desktop
 // ---------------------------------------------------------------------------
