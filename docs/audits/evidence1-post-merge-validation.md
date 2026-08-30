@@ -85,6 +85,16 @@ structured failure and investigate the product/toolchain; do not modify the grad
 FreeBaseline plan for `coverage-threshold-failure-v2`. Both use the registered CLI planning
 contract, not a slice of an eight-cell result.
 
+The registered designs are `claude-product-canary-v1` and
+`claude-free-baseline-canary-v1`. The CLI contract is:
+
+```text
+node tools/agentic-eval/cli.mjs run --scenario coverage-threshold-failure-v2 --source-repo-dir <isolated-source> --runtime claude-code --campaign-design <registered-canary-design> --seed 20260821 --max-budget-usd 2.00 --isolation-attestation-file <fresh-attestation> --dry-run
+```
+
+Use the operational V3 script for guest execution and report validation; the CLI spelling here
+documents the actual interface. Neither `--repeats` nor an ad hoc arm selector is needed.
+
 Each plan must contain exactly one session with the pinned harness/source/scenario, the fresh
 attestation binding, and the expected condition/product-access mode. Product uses
 `current-skill` with `product-assisted`; FreeBaseline uses `no-skill` with
