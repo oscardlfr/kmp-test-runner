@@ -1984,7 +1984,14 @@ describe('analyzeRunRecord -- task_outcome_available_ms (analysis schema 7, Stag
     expect(notEvaluableEntry.task_outcome_available_ms).toBeNull();
 
     // schema<8 never has outcome_assessment at all -- must also report null, never throw.
-    const legacy = scenarioRecord({ schema: 5 });
+    // condition/skill_invoked/skill_invocation_event forced to the no-skill shape (mirrors this
+    // describe block's own sibling fixtures above) -- this test is about task_outcome_available_ms
+    // only, and a default current-skill fixture paired with a zero-entries sidecar is internally
+    // incoherent (claims an invocation with no confirmed sidecar entry to correlate it to).
+    const legacy = scenarioRecord({
+      schema: 5, condition: 'no-skill',
+      skill_invoked: { value: false, reason: null }, skill_invocation_event: null,
+    });
     const { entry: legacyEntry } = analyzeRunRecord(legacy, sidecarFor(legacy, { entries: [] }));
     expect(legacyEntry.task_outcome_available_ms).toBeNull();
   });
