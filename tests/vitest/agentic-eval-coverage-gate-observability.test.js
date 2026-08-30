@@ -154,10 +154,27 @@ describe('validateOutcomeObservabilitySummary -- the single shared validator bot
         expect(errors.filter((e) => e.field.startsWith('x.execution_mode_counts'))).toEqual([]);
       }
     });
-    it.each([-1, 1.5, '2', true])('rejects a %j count for one mode', (bad) => {
+    it.each([-1, 1.5, '2', true, null])('rejects a %j count for one mode', (bad) => {
       const counts = { ...wellFormedSummary().execution_mode_counts, fresh: bad };
       const errors = validateOutcomeObservabilitySummary(wellFormedSummary({ execution_mode_counts: counts }), 'x');
       expect(errors.some((e) => e.field === 'x.execution_mode_counts.fresh')).toBe(true);
+    });
+    // Review-round finding: this block previously only checked valid-value acceptance and
+    // invalid-COUNT rejection, never a missing/extra KEY -- unlike warning_code_counts just above,
+    // which already covers both. A validator that accepted arbitrary keys inside
+    // execution_mode_counts would have passed every test here, contradicting "closed count map"
+    // (Section 9.9), requirement 9.11.2 (extra keys rejected), and the privacy-safe boundary
+    // (an arbitrary key name is exactly the kind of free-form content this object must never
+    // carry).
+    it('rejects a missing required mode', () => {
+      const { fresh: _omit, ...counts } = wellFormedSummary().execution_mode_counts;
+      const errors = validateOutcomeObservabilitySummary(wellFormedSummary({ execution_mode_counts: counts }), 'x');
+      expect(errors.some((e) => e.field === 'x.execution_mode_counts.fresh')).toBe(true);
+    });
+    it('rejects an unrecognized mode', () => {
+      const counts = { ...wellFormedSummary().execution_mode_counts, made_up_mode: 0 };
+      const errors = validateOutcomeObservabilitySummary(wellFormedSummary({ execution_mode_counts: counts }), 'x');
+      expect(errors.some((e) => e.field === 'x.execution_mode_counts.made_up_mode')).toBe(true);
     });
   });
 
