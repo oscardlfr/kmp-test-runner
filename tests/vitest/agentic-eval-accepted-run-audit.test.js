@@ -4,6 +4,9 @@
 // validator + cross-validator + a thin build/redact/hash orchestration helper, all exercised here
 // with synthetic conditionResult/record inputs -- no real Claude session, no subprocess.
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1,
   ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2,
@@ -32,9 +35,20 @@ import {
 // same parsing logic runtimes/claude-code.mjs's own normalizeObservations composes, so there is no
 // risk of this file's mapping silently diverging from the real one.
 import { findAllToolUsesWithResults, isTargetSkillReference, isRecognizedPreDispatchBlock } from '../../tools/agentic-eval/stream-parser.mjs';
+// Evidence1 success-recovery PR B, Stage B2 (review-round finding): the single authorized module
+// for Section 9.9's closed enums and shared validator -- imported here verbatim, never
+// re-declared, so this file's own enum expectations can never silently drift from
+// rejection-diagnostics.mjs's identical import of the same symbols.
+import {
+  FLAVOR_RELATION_VALUES, TEST_TYPE_RELATION_VALUES, COVERAGE_TARGET_STATUS_VALUES,
+  COVERAGE_REPORT_STATUS_VALUES, EXECUTION_MODE_VALUES, COVERAGE_GATE_WARNING_BUCKET_FIELDS,
+  validateOutcomeObservabilitySummary,
+} from '../../tools/agentic-eval/coverage-gate-observability.mjs';
 
 const TARGET_PLUGIN_NAME = 'kmp-test-runner';
 const TARGET_SKILL_NAME = 'kmp-test-runner';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
 function initEventStub() {
   return { type: 'system', subtype: 'init' };
@@ -1748,20 +1762,33 @@ describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / cross
 
 // Evidence1 success-recovery PR B, Stage B2 (docs/audits/agentic-eval-evidence1-success-recovery-
 // v1-runbook.md, Section 9.11): accepted sidecar schema 10 -- requirement 4 (schema 10 projects
-// the new common observability summary for BOTH policy modes) and requirement 7 (accepted and
-// rejected diagnostics share the same closed enums, Section 9.9). Deliberately contrasts with the
-// v3 test just above: unlike v3 (policy-required, fields absent entirely), schema 10 is
-// self-describing in BOTH policy modes -- a new, intentional design for a brand-new schema, never
-// a retroactive change to v3's own frozen shape.
+// BOTH the record's own outcome_assessment object AND the new common observability summary, for
+// BOTH policy modes) and requirement 7 (accepted and rejected diagnostics share the exact same
+// closed enums -- imported here from the single authorized module, coverage-gate-observability.mjs,
+// never a second independently-maintained copy; see agentic-eval-coverage-gate-observability.test.js
+// for that module's own direct tests). Deliberately contrasts with the v3 test just above: unlike
+// v3 (policy-required, fields absent entirely), schema 10 is self-describing in BOTH policy modes.
+//
+// Review-round finding: the schema:8 fixtures below MUST be records `validateRun` (schemas.mjs)
+// would actually accept -- v6Record()'s default run_kind is 'scenario' (this whole file's own
+// domain), so schema 8 REQUIRES a real, non-null outcome_assessment object (never omitted); a
+// calibration-shaped fixture would instead require outcome_assessment:null explicitly. Building
+// sidecars from a run-record shape `validateRun` would itself reject proves nothing about how the
+// real pipeline behaves.
 describe('accepted sidecar schema 10 (Evidence1 success-recovery PR B, Section 9.4.3/9.9) -- any policy_mode, run schema 8+', () => {
   const FAKE_ATTESTATION_SHA256_V10 = 'f'.repeat(64);
+  const REAL_OUTCOME_ASSESSMENT = Object.freeze({
+    schema: 1, task_outcome_matched: true, task_outcome_reason: 'matched',
+    answer_protocol_matched: true, provider_evidence_kind: 'kmp-test-envelope',
+    provider_evidence_status: 'matched', product_e2e_success: true,
+  });
 
   function schema8PolicyRequiredRecord(overrides = {}) {
-    return v6Record({ schema: 8, ...overrides });
+    return v6Record({ schema: 8, outcome_assessment: REAL_OUTCOME_ASSESSMENT, ...overrides });
   }
   function schema8NotApplicableRecord(overrides = {}) {
     return v6Record({
-      schema: 8,
+      schema: 8, outcome_assessment: REAL_OUTCOME_ASSESSMENT,
       execution_profile: {
         ...v6Record().execution_profile,
         id: 'sandboxed-unrestricted-v1', policy_mode: 'not_applicable',
@@ -1778,9 +1805,9 @@ describe('accepted sidecar schema 10 (Evidence1 success-recovery PR B, Section 9
       { decisionByAttempt: new Map([['t1', 'allow']]) },
     );
   }
-  function buildFor(record, terminal = terminalEvidence()) {
+  function buildFor(record, terminal = terminalEvidence(), conditionResult = minimalConditionResult()) {
     return buildAcceptedRunAuditSidecar({
-      record, conditionResult: minimalConditionResult(), terminalAuthoritativeEventIndex: null,
+      record, conditionResult, terminalAuthoritativeEventIndex: null,
       terminalEvidence: terminal, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME,
     });
   }
@@ -1810,45 +1837,65 @@ describe('accepted sidecar schema 10 (Evidence1 success-recovery PR B, Section 9
     expect(sidecar.isolation_attestation_sha256).toBe(FAKE_ATTESTATION_SHA256_V10);
   });
 
+  // Requirement 4 (review-round finding): schema 10 projects the record's OWN outcome_assessment
+  // object verbatim -- entirely structural/closed-vocabulary by its own schema design (9.5), so a
+  // straight passthrough carries zero privacy risk, unlike terminal_evidence's raw content.
+  it.each(['policy-required', 'not_applicable'])('preserves the record\'s own outcome_assessment object verbatim (%s)', (mode) => {
+    const record = mode === 'policy-required' ? schema8PolicyRequiredRecord() : schema8NotApplicableRecord();
+    const sidecar = buildFor(record);
+    expect(sidecar.outcome_assessment).toEqual(REAL_OUTCOME_ASSESSMENT);
+  });
+
   it('every schema:10 sidecar carries its own outcome_observability_summary object, in both policy modes', () => {
     for (const record of [schema8PolicyRequiredRecord(), schema8NotApplicableRecord()]) {
       const sidecar = buildFor(record);
       expect(sidecar.outcome_observability_summary).toBeTruthy();
       expect(sidecar.outcome_observability_summary.schema).toBe(1);
+      expect(validateOutcomeObservabilitySummary(sidecar.outcome_observability_summary, 'outcome_observability_summary')).toEqual([]);
     }
   });
 
-  // Requirement 7: accepted and rejected use the same enums (Section 9.9's closed vocabularies).
-  it.each([
-    ['flavor_relation', ['absent', 'explicit-match', 'explicit-mismatch', 'unexpected', 'not-applicable', 'not-recorded']],
-    ['test_type_relation', ['absent', 'match', 'mismatch', 'not-applicable', 'not-recorded']],
-    ['coverage_target_status', ['with-data', 'no-xml', 'parse-error', 'unavailable', 'not-applicable', 'not-recorded']],
-    ['coverage_report_status', ['not-attempted', 'success', 'failed', 'unavailable', 'not-recorded']],
-  ])('%s falls back to one of Section 9.9\'s closed enum values when no source data exists to compute it', (field, allowed) => {
-    const sidecar = buildFor(schema8PolicyRequiredRecord(), null);
-    expect(allowed).toContain(sidecar.outcome_observability_summary[field]);
-  });
+  // Requirement 2/7 (review-round finding): every allowed enum value is genuinely ACCEPTED by
+  // THIS file's real validator (not merely a member of a locally-duplicated array), and one
+  // unrecognized value is genuinely REJECTED -- both checked against the single shared module
+  // both accepted-run-audit.mjs and rejection-diagnostics.mjs import from, so the two consumers
+  // can never silently diverge on vocabulary.
+  const ENUM_FIELDS = [
+    ['flavor_relation', FLAVOR_RELATION_VALUES],
+    ['test_type_relation', TEST_TYPE_RELATION_VALUES],
+    ['coverage_target_status', COVERAGE_TARGET_STATUS_VALUES],
+    ['coverage_report_status', COVERAGE_REPORT_STATUS_VALUES],
+  ];
+  for (const [field, values] of ENUM_FIELDS) {
+    // A single test with an internal loop, not it.each(values) -- values is undefined until
+    // coverage-gate-observability.mjs actually exports it, and it.each(undefined) would crash
+    // this whole FILE at collection time (before any test runs), taking every one of this file's
+    // 125+ pre-existing tests down with it. A for-of over undefined throws INSIDE this one test
+    // body instead -- a clean, isolated RED failure.
+    it(`${field} accepts every allowed value once forced into the built sidecar`, () => {
+      for (const value of values) {
+        const sidecar = buildFor(schema8PolicyRequiredRecord(), null);
+        sidecar.outcome_observability_summary[field] = value;
+        expect(validateAcceptedRunAuditSidecar(sidecar).errors.some((e) => e.field.endsWith(field))).toBe(false);
+      }
+    });
+    it(`validateAcceptedRunAuditSidecar rejects an unrecognized ${field}`, () => {
+      const sidecar = buildFor(schema8PolicyRequiredRecord(), null);
+      sidecar.outcome_observability_summary[field] = 'totally-not-a-real-value';
+      expect(validateAcceptedRunAuditSidecar(sidecar).errors.some((e) => e.field.endsWith(field))).toBe(true);
+    });
+  }
 
   it('execution_mode_counts falls back to a closed map keyed by Section 9.9\'s enum, all zero, when no source data exists', () => {
     const sidecar = buildFor(schema8PolicyRequiredRecord(), null);
-    expect(sidecar.outcome_observability_summary.execution_mode_counts).toEqual({
-      fresh: 0, 'from-cache': 0, 'up-to-date': 0, 'no-evidence': 0, 'not-recorded': 0,
-    });
+    expect(sidecar.outcome_observability_summary.execution_mode_counts).toEqual(
+      Object.fromEntries(EXECUTION_MODE_VALUES.map((v) => [v, 0])),
+    );
   });
 
   it('warning_code_counts is a closed map of exactly the approved coverage warning codes to non-negative integers', () => {
     const sidecar = buildFor(schema8PolicyRequiredRecord(), null);
-    const counts = sidecar.outcome_observability_summary.warning_code_counts;
-    const approved = [
-      'no_coverage_data', 'coverage_xml_disabled', 'coverage_xml_oversized', 'coverage_parse_failed',
-      'coverage_aggregation_drift', 'coverage_report_write_failed', 'coverage_report_dispatch_failed',
-      'coverage_aggregation_failed', 'coverage_aggregation_skipped',
-    ];
-    expect(Object.keys(counts).sort()).toEqual(approved.sort());
-    for (const v of Object.values(counts)) {
-      expect(Number.isInteger(v)).toBe(true);
-      expect(v).toBeGreaterThanOrEqual(0);
-    }
+    expect(Object.keys(sidecar.outcome_observability_summary.warning_code_counts).sort()).toEqual(COVERAGE_GATE_WARNING_BUCKET_FIELDS.slice().sort());
   });
 
   it('module_failed_setup_count is a non-negative integer or null when no source data exists', () => {
@@ -1857,14 +1904,8 @@ describe('accepted sidecar schema 10 (Evidence1 success-recovery PR B, Section 9
     expect(value === null || (Number.isInteger(value) && value >= 0)).toBe(true);
   });
 
-  // Requirement 8: privacy tripwire rejects command/path/id/time/prose.
-  it('outcome_observability_summary never leaks a raw command, path, tool-use id, or timestamp', () => {
-    const sidecar = buildFor(schema8PolicyRequiredRecord());
-    const json = JSON.stringify(sidecar.outcome_observability_summary);
-    expect(json).not.toMatch(/kmp-test doctor|gradlew|\.\/|C:\\|\/home\/|2026-\d\d-\d\d|"t1"/i);
-  });
-
-  // Requirement 9: counts negativos o floats se rechazan.
+  // Requirement 9: counts negativos o floats se rechazan (via the shared validator, exercised
+  // through this file's own validateAcceptedRunAuditSidecar).
   it.each([-1, 1.5, '2', true])('validateAcceptedRunAuditSidecar rejects a module_failed_setup_count of %j', (bad) => {
     const sidecar = buildFor(schema8PolicyRequiredRecord(), null);
     sidecar.outcome_observability_summary.module_failed_setup_count = bad;
@@ -1881,5 +1922,38 @@ describe('accepted sidecar schema 10 (Evidence1 success-recovery PR B, Section 9
     const sidecar = buildFor(schema8PolicyRequiredRecord(), null);
     sidecar.outcome_observability_summary.raw_command = 'kmp-test parallel --module-filter secret';
     expect(validateAcceptedRunAuditSidecar(sidecar).errors.some((e) => e.field.includes('outcome_observability_summary'))).toBe(true);
+  });
+
+  // Requirement 8 (review-round finding): inject REAL sentinels into the INPUT (a command
+  // carrying a distinctive module name, a distinctive path, the conditionResult's own tool-use
+  // id, a distinctive timestamp-shaped string) and prove the summary ACTIVELY discards them --
+  // checking only a default, coincidentally-clean fixture does not prove discarding happened.
+  it('outcome_observability_summary discards a sentinel module name, path, tool-use id, and timestamp present in the real input', () => {
+    const sentinelConditionResult = conditionResultFrom(
+      [
+        initEventStub(),
+        bashToolUseEvent('sentinel-tool-use-id-99', 'kmp-test parallel --module-filter sentinel-secret-module-77 --project-root /home/sentinel/secret-path --json'),
+        toolResultEvent('sentinel-tool-use-id-99'),
+        resultEventStub(),
+      ],
+      { decisionByAttempt: new Map([['sentinel-tool-use-id-99', 'allow']]) },
+    );
+    const sentinelTerminal = terminalEvidence({
+      observed_result: { ...terminalEvidence().observed_result, module_matches_expected: true },
+    });
+    const sidecar = buildFor(schema8PolicyRequiredRecord(), sentinelTerminal, sentinelConditionResult);
+    const json = JSON.stringify(sidecar.outcome_observability_summary);
+    expect(json).not.toMatch(/sentinel-secret-module-77|sentinel-tool-use-id-99|\/home\/sentinel\/secret-path|--module-filter|--project-root/i);
+  });
+
+  // Requirement 10 (P2 review-round finding): buildAcceptedRunAuditSidecar's own
+  // outcome_observability_summary assembly never parses a transcript or reads a file -- mirrors
+  // the identical static-source-guard pattern already established for buildRejectionDiagnostics.
+  it('outcome_observability_summary is assembled from already-computed structured data -- never a parser or raw file read', () => {
+    const source = readFileSync(path.join(REPO_ROOT, 'tools', 'agentic-eval', 'accepted-run-audit.mjs'), 'utf8');
+    const start = source.indexOf('export function buildAcceptedRunAuditSidecar');
+    const end = source.indexOf('export function validateAcceptedRunAuditSidecar');
+    const builder = source.slice(start, end);
+    expect(builder).not.toMatch(/parse(?:Stream|Transcript)|readFileSync\(/i);
   });
 });
