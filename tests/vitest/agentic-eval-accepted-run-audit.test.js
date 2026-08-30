@@ -1938,7 +1938,7 @@ describe('accepted sidecar schema 10 (Evidence1 success-recovery PR B, Section 9
     const sentinelConditionResult = conditionResultFrom(
       [
         initEventStub(),
-        bashToolUseEvent('sentinel-tool-use-id-99', 'kmp-test parallel --module-filter sentinel-secret-module-77 --project-root /home/sentinel/secret-path --json'),
+        bashToolUseEvent('sentinel-tool-use-id-99', 'kmp-test parallel --module-filter sentinel-secret-module-77 --project-root /srv/sentinel-fixture/secret-path --json'),
         toolResultEvent('sentinel-tool-use-id-99', { content: `Ran at ${SENTINEL_TIMESTAMP} -- ${SENTINEL_PROSE}` }),
         resultEventStub(),
       ],
@@ -1949,7 +1949,7 @@ describe('accepted sidecar schema 10 (Evidence1 success-recovery PR B, Section 9
     });
     const sidecar = buildFor(schema8PolicyRequiredRecord(), sentinelTerminal, sentinelConditionResult);
     const json = JSON.stringify(sidecar.outcome_observability_summary);
-    expect(json).not.toMatch(/sentinel-secret-module-77|sentinel-tool-use-id-99|\/home\/sentinel\/secret-path|--module-filter|--project-root|2027-01-15T03:22:47|sentinel-free-text-prose-detail-should-never-leak/i);
+    expect(json).not.toMatch(/sentinel-secret-module-77|sentinel-tool-use-id-99|\/srv\/sentinel-fixture\/secret-path|--module-filter|--project-root|2027-01-15T03:22:47|sentinel-free-text-prose-detail-should-never-leak/i);
   });
 
   // Requirement 10 (P2 review-round finding): buildAcceptedRunAuditSidecar's own
