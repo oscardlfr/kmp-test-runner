@@ -91,6 +91,90 @@ function dryPlan(product) {
 
 const hasPowerShell = !spawnSync('pwsh', ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.Major'], { windowsHide: true }).error;
 describe.skipIf(!hasPowerShell)('Evidence1 validation operations functional contract', () => {
+  it('schema2 preserves independent product, postflight and persistence failures and actual process facts', () => {
+    const dir = mkdtempSync(resolve(tmpdir(), 'e1-validation-diagnostics-'));
+    try {
+      const result = ps(`$m=Get-Module evidence1-validation-ops
+        & $m {
+          param($dir)
+          function Invoke-E1OwnedProcess { return @{ExitCode=3;TimedOut=$false;WallSeconds=2.75;CleanupOk=$true} }
+          $r=Invoke-E1WetAttempt $dir '${commit}' '${tree}' 'synthetic' 'synthetic' 'synthetic'
+          function Write-E1Record { throw 'PRIVATE_DISK_DETAIL' }
+          $r=Complete-E1Attempt $r $dir { throw 'repo_dirty' }
+          $r | ConvertTo-Json -Depth 10 -Compress
+        } ${quote(dir)}`);
+      expect(result.schema).toBe(2);
+      expect(result.failures).toEqual({ primary: 'product_contract', postflight: 'repo_dirty', persistence: 'terminal_write_failed', transport: null });
+      expect(result.processes.product).toEqual({ exit_code: 3, wall_seconds: 2.75, timed_out: false, cleanup_ok: true });
+      expect(result.live_records_created).toBeNull();
+      expect(JSON.stringify(result)).not.toContain('PRIVATE');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('schema2 validates every failure enum and process field without coercion or unknown keys', () => {
+    const result = ps(`$r=New-E1Result 'wet-v2' '${commit}' '${tree}'
+      $out=@()
+      foreach($slot in @('primary','postflight','persistence','transport')) {
+        $r.failures[$slot]='repo_dirty'
+        $null=ConvertTo-E1SafeResult $r 'wet-v2' '${commit}' '${tree}'
+        foreach($bad in @('PRIVATE_ERROR','REPO_DIRTY',1,$false,@('repo_dirty'))) {
+          $r.failures[$slot]=$bad
+          try { $null=ConvertTo-E1SafeResult $r 'wet-v2' '${commit}' '${tree}'; $out+=$false } catch { $out+=$true }
+        }
+        $r.failures[$slot]=$null
+      }
+      $r.processes.product=@{exit_code=3;wall_seconds=2.5;timed_out=$false;cleanup_ok=$true}
+      $r.product_invocations=1
+      $null=ConvertTo-E1SafeResult $r 'wet-v2' '${commit}' '${tree}'
+      foreach($pair in @(@('exit_code','3'),@('exit_code',1.5),@('wall_seconds','2.5'),@('wall_seconds',-1),@('wall_seconds',[double]::NaN),@('timed_out',0),@('cleanup_ok','true'))) {
+        $old=$r.processes.product[$pair[0]]; $r.processes.product[$pair[0]]=$pair[1]
+        try { $null=ConvertTo-E1SafeResult $r 'wet-v2' '${commit}' '${tree}'; $out+=$false } catch { $out+=$true }
+        $r.processes.product[$pair[0]]=$old
+      }
+      foreach($object in @($r.failures,$r.processes,$r.processes.product)) {
+        $object['extra']='PRIVATE_DETAIL'
+        try { $null=ConvertTo-E1SafeResult $r 'wet-v2' '${commit}' '${tree}'; $out+=$false } catch { $out+=$true }
+        $object.Remove('extra')
+      }
+      $out | ConvertTo-Json -Compress`);
+    expect(result).toEqual(Array(30).fill(true));
+  });
+
+  it('reads historical schema1 without fabricating process metrics or independent failure causes', () => {
+    const historical = { schema: 1, operation: 'wet-v2', state: 'failed', failure_code: 'product_contract', stage: 'postflight',
+      target_commit: commit, target_tree: tree, source_commit: source, agent_calls: 0, live_records_created: 0,
+      product_invocations: 1, dry_plan_invocations: 0, product_report_build_writes_expected: true,
+      checks: { postflight: false }, hashes: {} };
+    expect(ps(`ConvertTo-E1SafeResult (${json(historical)}) 'wet-v2' '${commit}' '${tree}' | ConvertTo-Json -Depth 10 -Compress`)).toEqual(historical);
+  });
+
+  it('records a transport error independently of an already failed product result', () => {
+    const result = ps(`$r=New-E1Result 'wet-v2' '${commit}' '${tree}'
+      Set-E1Failure $r 'primary' 'product_contract'
+      Set-E1Failure $r 'transport' 'readiness_changed'
+      ConvertTo-E1SafeResult $r 'wet-v2' '${commit}' '${tree}' | ConvertTo-Json -Depth 10 -Compress`);
+    expect(result.failures).toEqual({ primary: 'product_contract', postflight: null, persistence: null, transport: 'readiness_changed' });
+    expect(result.failure_code).toBe('readiness_changed');
+  });
+
+  it('stops on a failed initial marker flush and classifies persistence separately from product', () => {
+    const dir = mkdtempSync(resolve(tmpdir(), 'e1-validation-marker-'));
+    try {
+      const result = ps(`$m=Get-Module evidence1-validation-ops
+        & $m {
+          param($dir)
+          $script:calls=0; $script:writes=0
+          function Invoke-E1OwnedProcess { $script:calls++; throw 'PRIVATE_PRODUCT_CALLED' }
+          function Write-E1Record { $script:writes++; if($script:writes -eq 1) {throw 'PRIVATE_DISK'} }
+          $r=Invoke-E1WetAttempt $dir '${commit}' '${tree}' 'synthetic' 'synthetic' 'synthetic'
+          @{result=$r;calls=$script:calls} | ConvertTo-Json -Depth 10 -Compress
+        } ${quote(dir)}`);
+      expect(result.calls).toBe(0);
+      expect(result.result.failures).toEqual({ primary: null, postflight: null, persistence: 'terminal_write_failed', transport: null });
+      expect(result.result.processes.product).toBeNull();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('checks the real wet envelope and emits only fixed booleans', () => {
     const checks = ps(`Get-E1WetChecks (${json(envelope)}) 1 299.9 | ConvertTo-Json -Compress`);
     expect(Object.values(checks).every(value => value === true)).toBe(true);
@@ -329,6 +413,7 @@ describe.skipIf(!hasPowerShell)('Evidence1 validation operations functional cont
   it('requires every wet success check and hash, rejects null counters and preserves safe error codes', () => {
     expect(ps(`$r = New-E1Result 'wet-v2' '${commit}' '${tree}'
       $r.state='passed'; $r.stage='complete'; $r.failure_code='none'; $r.product_invocations=1; $r.live_records_created=0
+      Set-E1ProcessObservation $r 'product' @{ExitCode=1;WallSeconds=1;TimedOut=$false;CleanupOk=$true}
       $r.checks=Get-E1WetChecks (${json(envelope)}) 1 1
       foreach($k in @('guest_identity','preflight','postflight','module_target','gradle_daemon_disabled','owned_tree_stopped','not_timed_out')) { $r.checks[$k]=$true }
       foreach($k in @('readiness_sha256','ledger_sha256','attestation_sha256','attestation_canonical_sha256','validation_module_sha256','scenario_sha256','product_entry_sha256','product_stdout_sha256','records_metadata_before_sha256','records_metadata_after_sha256','execution_profile_sha256','execution_profile_registry_sha256')) { $r.hashes[$k]='a'*64 }
@@ -340,11 +425,19 @@ describe.skipIf(!hasPowerShell)('Evidence1 validation operations functional cont
       foreach($k in @($r.hashes.Keys)) {
         $r.hashes.Remove($k); try { $null=ConvertTo-E1SafeResult $r 'wet-v2' '${commit}' '${tree}'; $out+=$false } catch { $out+=$true }; $r.hashes[$k]='a'*64
       }
+      $metrics=$r.processes.product; $r.processes.product=$null
+      try { $null=ConvertTo-E1SafeResult $r 'wet-v2' '${commit}' '${tree}'; $out+=$false } catch { $out+=$true }
+      $r.processes.product=$metrics
+      foreach($bad in @(@('exit_code',3),@('timed_out',$true),@('cleanup_ok',$false),@('wall_seconds',301))) {
+        $old=$metrics[$bad[0]]; $metrics[$bad[0]]=$bad[1]
+        try { $null=ConvertTo-E1SafeResult $r 'wet-v2' '${commit}' '${tree}'; $out+=$false } catch { $out+=$true }
+        $metrics[$bad[0]]=$old
+      }
       $r.live_records_created=$null
       try { $null=ConvertTo-E1SafeResult $r 'wet-v2' '${commit}' '${tree}'; $out+=$false } catch { $out+=$true }
       $codes=@(); foreach($message in @('repo_dirty','SECRET /private/path repo_dirty')) { try { throw $message } catch { $codes += Get-E1FailureCode $_ } }
       @{ checks=$out; codes=$codes } | ConvertTo-Json -Compress`))
-      .toEqual({ checks: Array(37).fill(true), codes: ['repo_dirty', 'preflight_failed'] });
+      .toEqual({ checks: Array(42).fill(true), codes: ['repo_dirty', 'preflight_failed'] });
   });
 
   it('checks the received module bytes before evaluating any code', () => {
