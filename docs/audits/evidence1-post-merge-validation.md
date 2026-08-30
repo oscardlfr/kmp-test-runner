@@ -136,3 +136,9 @@ fallback to the full matrix. Remote authentication must then be refreshed under 
 Before accepting any future runbook as executable, map every step to a versioned command,
 its accepted parameters, a meaningful automated test, and its output validator. Missing
 capabilities are implementation prerequisites, not surprises deferred to post-merge validation.
+
+Windows process containment is checked against Microsoft's
+[Job Objects documentation](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects).
+Timeout cleanup must cover the invocation's descendants without terminating unrelated host or
+guest work. A terminal PASS must be persisted only after postflight custody and anchor checks,
+never immediately after the product process exits.
