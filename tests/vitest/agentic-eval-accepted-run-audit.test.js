@@ -269,14 +269,13 @@ describe('buildAcceptedRunAuditSidecar -- top-level identity + shape', () => {
   it('freezes the sidecar schema constants and the nested summary / tool_calls[] field inventories', () => {
     expect(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1).toBe(1);
     expect(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2).toBe(2);
-    // Coverage-error-contract observability follow-up: LATEST is now 9 (v9, the new
-    // policy_mode:"not_applicable" sidecar with terminal evidence, a closed coverage-gate
-    // diagnostic, per-attempt coverage-gate summaries, and final-answer mismatch reasons) -- this record has
-    // no not_applicable execution_profile, so it still produces a byte-for-byte v3 sidecar below
-    // (expectedAcceptedAuditSchemaFor's own fallback), proving LATEST advancing never silently
-    // redirects a strict/policy-required record away from v3.
-    expect(LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA).toBe(9);
-    expect([...SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    // Evidence1 success-recovery PR B: LATEST is now 10 (v10, the first schema exclusive to a run
+    // schema:8+ record, produced for BOTH policy_mode values) -- this record has schema:6 (not 8)
+    // and no not_applicable execution_profile, so it still produces a byte-for-byte v3 sidecar
+    // below (expectedAcceptedAuditSchemaFor's own fallback), proving LATEST advancing never
+    // silently redirects a schema<8, strict/policy-required record away from v3.
+    expect(LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA).toBe(10);
+    expect([...SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
 
     const record = baseRecord({
       hook_call_count: 1,
@@ -1220,8 +1219,8 @@ describe('expectedAcceptedAuditSchemaFor -- explicit per-record/profile dispatch
     const record = v6Record({ execution_profile: { ...v6Record().execution_profile, policy_mode: 'not_applicable' } });
     expect(expectedAcceptedAuditSchemaFor(record)).toBe(ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9);
   });
-  it('never uses LATEST as a selector -- LATEST=9 today, but a required-policy schema:6 record still resolves to v3', () => {
-    expect(LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA).toBe(9);
+  it('never uses LATEST as a selector -- LATEST=10 today, but a required-policy schema:6 record still resolves to v3', () => {
+    expect(LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA).toBe(10);
     expect(expectedAcceptedAuditSchemaFor(v6Record())).toBe(3);
   });
 });

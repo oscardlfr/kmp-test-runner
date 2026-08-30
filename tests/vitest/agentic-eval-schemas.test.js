@@ -1033,9 +1033,13 @@ describe('schema v1/v2/v3/v4/v5 dispatch (decision 6, extended for v3 -- foreign
 // legacy fields -- these four groups are the sole canonical source for runtime/profile/skill/
 // usage identity going forward.
 describe('schema v6/v7 (agentic-eval-runtime-neutral-records-v1 + product-access mode) -- agent_runtime/execution_profile/skill_observation/usage/product_access_mode', () => {
-  it('SUPPORTED_RUN_SCHEMAS accepts 1 through 7; LATEST_RUN_SCHEMA is 7', () => {
-    expect(SUPPORTED_RUN_SCHEMAS).toEqual([1, 2, 3, 4, 5, 6, 7]);
-    expect(LATEST_RUN_SCHEMA).toBe(7);
+  // Evidence1 success-recovery PR B adds schema 8 -- SUPPORTED_RUN_SCHEMAS/LATEST_RUN_SCHEMA are a
+  // single CURRENT array/value, never a frozen historical snapshot (mirrors the identical
+  // maintenance pattern this exact assertion already went through at v6 -> v7); see the dedicated
+  // "schema v8" describe block below for schema 8's own full contract.
+  it('SUPPORTED_RUN_SCHEMAS accepts 1 through 8; LATEST_RUN_SCHEMA is 8', () => {
+    expect(SUPPORTED_RUN_SCHEMAS).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(LATEST_RUN_SCHEMA).toBe(8);
   });
 
   const VALID_SCOPE_ID_V6 = '22222222-3333-4444-8555-666666666666';

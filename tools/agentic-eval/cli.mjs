@@ -1318,6 +1318,11 @@ function buildRunRecord({
     // overloaded into notes/errors.
     success: isScenario ? nullableMetric(gradeResult.success) : nullableMetric(null, `${runKind} run -- success grading not applicable`),
     expected_outcome_matched: isScenario ? nullableMetric(gradeResult.expectedOutcomeMatched) : nullableMetric(null, notApplicableReason),
+    // outcome_assessment (Evidence1 success-recovery PR B, schema v8, Section 9.4.1): a bare
+    // object (or null), never nullableMetric-wrapped -- mirrors accepted_audit's identical bare
+    // shape. graders.mjs's gradeScenarioCondition always returns a real, non-null object; null
+    // strictly for non-scenario run kinds, where outcome_assessment does not apply at all.
+    outcome_assessment: isScenario ? gradeResult.outcomeAssessment : null,
     first_useful_signal_ms: isScenario
       ? nullableMetric(
           gradeResult.firstUsefulSignalEventIndex != null

@@ -31,7 +31,11 @@ import { classifyBashCommand } from './command-classify.mjs';
 import { assertCleanOrThrowObject } from './privacy.mjs';
 import { DISPATCH_STATUS_VALUES as BASH_DISPATCH_STATUS_VALUES } from './dispatch-accounting.mjs';
 import { canonicalJsonSha256 } from './canonical-json.mjs';
-import { COVERAGE_GATE_ERROR_BUCKET_FIELDS } from './coverage-gate-observability.mjs';
+import {
+  COVERAGE_GATE_ERROR_BUCKET_FIELDS,
+  validateOutcomeObservabilitySummary,
+  emptyOutcomeObservabilitySummary,
+} from './coverage-gate-observability.mjs';
 
 /**
  * Sidecar schema versions. v1 and v2 are FROZEN -- their field lists and validation rules must
@@ -87,8 +91,17 @@ export const ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8 = 8;
 // closed error-code buckets to each coverage-gate attempt. Unknown codes collapse to `other`;
 // messages and other content-bearing fields never enter the sidecar. v1-v8 remain frozen.
 export const ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9 = 9;
-export const LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA = 9;
-export const SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS = Object.freeze([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+// Evidence1 success-recovery PR B (Section 9.4.3): v10 is the FIRST schema exclusive to a run
+// schema:8+ record, checked BEFORE the policy_mode dispatch and produced for BOTH policy_mode
+// values (unlike every schema below it, each exclusive to exactly one policy_mode). It carries
+// the record's own outcome_assessment object verbatim (already closed-vocabulary/structural by
+// its own schema design -- a safe passthrough) plus one new common, privacy-safe
+// outcome_observability_summary object (Section 9.9), identical in shape to rejection
+// diagnostics schema 13's own per-cell projection -- both consume the single shared enum/
+// validator module, coverage-gate-observability.mjs. v1-v9 remain frozen.
+export const ACCEPTED_AUDIT_SIDECAR_SCHEMA_V10 = 10;
+export const LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA = 10;
+export const SUPPORTED_ACCEPTED_AUDIT_SIDECAR_SCHEMAS = Object.freeze([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
 
 const SIDECAR_TOP_FIELDS_V1V2 = [
   'schema', 'run_id', 'run_schema', 'run_kind', 'condition', 'scenario_id',
@@ -100,6 +113,10 @@ const SIDECAR_TOP_FIELDS_V3 = [...SIDECAR_TOP_FIELDS_V1V2, 'run_provenance_sha25
 // exactly the ambiguity the runbook's own dry-run rule warns against elsewhere).
 const SIDECAR_TOP_FIELDS_V4 = [...SIDECAR_TOP_FIELDS_V3, 'execution_profile_id', 'policy_mode', 'isolation_attestation_sha256'];
 const SIDECAR_TOP_FIELDS_V6 = [...SIDECAR_TOP_FIELDS_V4, 'terminal_evidence'];
+// v10 (Section 9.4 rule 3): self-describing in BOTH policy modes, so it keeps v6's whole shape
+// (never conditionally drops execution_profile_id/policy_mode/isolation_attestation_sha256/
+// terminal_evidence the way v3 does for policy-required) and adds exactly the 2 new common fields.
+const SIDECAR_TOP_FIELDS_V10 = [...SIDECAR_TOP_FIELDS_V6, 'outcome_assessment', 'outcome_observability_summary'];
 const TOOL_CALL_FIELDS_V1 = [
   'ordinal', 'tool_use_event_index', 'tool_result_event_index', 'tool_kind', 'operation',
   'plan_only', 'policy_decision', 'result_status', 'phase',
@@ -128,6 +145,10 @@ const SUMMARY_FIELDS_V4 = [...SUMMARY_FIELDS_V2, 'dispatch_unaccounted_total'];
  * -- fails toward the existing, more-constrained v3 contract, never toward the newer no-policy one).
  */
 export function expectedAcceptedAuditSchemaFor(record) {
+  // Evidence1 success-recovery PR B (Section 9.4.3): checked BEFORE the policy_mode dispatch,
+  // and regardless of it -- a schema:8+ record always produces sidecar v10, in EITHER policy
+  // mode (unlike every schema below it, each exclusive to exactly one policy_mode).
+  if (record?.schema >= 8) return ACCEPTED_AUDIT_SIDECAR_SCHEMA_V10;
   if (!(record?.schema >= 6)) return ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2;
   if (record.execution_profile?.policy_mode === 'not_applicable') return ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9;
   return ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3;
@@ -160,6 +181,7 @@ export function computeRunProvenanceSha256(record) {
  * silently borrow another version's field list. v3 reuses v2's tool_calls/summary shape verbatim
  * (Section E: "V3 conserva tool calls y summary de v2"). */
 function topFieldsFor(schema) {
+  if (schema === 10) return SIDECAR_TOP_FIELDS_V10;
   if (schema === 9) return SIDECAR_TOP_FIELDS_V6;
   if (schema === 8) return SIDECAR_TOP_FIELDS_V6;
   if (schema === 7) return SIDECAR_TOP_FIELDS_V6;
@@ -171,22 +193,24 @@ function topFieldsFor(schema) {
 function toolCallFieldsFor(schema) {
   if (schema === 1) return TOOL_CALL_FIELDS_V1;
   if (schema === 2 || schema === 3 || schema === 4) return TOOL_CALL_FIELDS_V2;
-  if (schema === 5 || schema === 6 || schema === 7 || schema === 8 || schema === 9) return TOOL_CALL_FIELDS_V5;
+  if (schema === 5 || schema === 6 || schema === 7 || schema === 8 || schema === 9 || schema === 10) return TOOL_CALL_FIELDS_V5;
   return null;
 }
 function summaryFieldsFor(schema) {
   if (schema === 1) return SUMMARY_FIELDS_V1;
   if (schema === 2 || schema === 3) return SUMMARY_FIELDS_V2;
-  if (schema === 4 || schema === 5 || schema === 6 || schema === 7 || schema === 8 || schema === 9) return SUMMARY_FIELDS_V4;
+  if (schema === 4 || schema === 5 || schema === 6 || schema === 7 || schema === 8 || schema === 9 || schema === 10) return SUMMARY_FIELDS_V4;
   return null;
 }
 /** The run record schema compatibility a given sidecar schema requires (Section E's compatibility
- * matrix) -- v1/v2 require exactly 5 (frozen); v3/v4/v5/v6 require the runtime-neutral record
- * family, schema >= 6. An unknown sidecar schema has no required run_schema of its own (validated
- * separately as an unknown version). */
+ * matrix) -- v1/v2 require exactly 5 (frozen); v3/v4/v5/v6/v7/v8/v9 require the runtime-neutral
+ * record family, schema >= 6; v10 requires the outcome_assessment record family, schema >= 8. An
+ * unknown sidecar schema has no required run_schema of its own (validated separately as an
+ * unknown version). */
 function runSchemaRequirementFor(sidecarSchema) {
   if (sidecarSchema === 1 || sidecarSchema === 2) return { exact: 5 };
   if (sidecarSchema === 3 || sidecarSchema === 4 || sidecarSchema === 5 || sidecarSchema === 6 || sidecarSchema === 7 || sidecarSchema === 8 || sidecarSchema === 9) return { min: 6 };
+  if (sidecarSchema === 10) return { min: 8 };
   return null;
 }
 
@@ -432,7 +456,8 @@ function classifyToolCall(a, { acceptedAuditSchema, allowedGradleTasks, allowedK
     || acceptedAuditSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V6
     || acceptedAuditSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V7
     || acceptedAuditSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8
-    || acceptedAuditSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9) out.recognized_operation = recognizedOperation;
+    || acceptedAuditSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9
+    || acceptedAuditSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V10) out.recognized_operation = recognizedOperation;
   return out;
 }
 
@@ -461,11 +486,66 @@ function materializeCoverageGateAttemptsForSidecar(coverageGateAttempts, toolCal
 }
 
 function materializeTerminalEvidenceForSidecar(terminalEvidence, toolCalls, sidecarSchema) {
-  if (terminalEvidence == null || sidecarSchema !== ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9) return terminalEvidence;
+  if (terminalEvidence == null || (sidecarSchema !== ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9 && sidecarSchema !== ACCEPTED_AUDIT_SIDECAR_SCHEMA_V10)) return terminalEvidence;
   return {
     ...terminalEvidence,
     coverage_gate_attempts: materializeCoverageGateAttemptsForSidecar(terminalEvidence.coverage_gate_attempts, toolCalls),
   };
+}
+
+// Section 9.9: coverage_target_status derived from terminalEvidence's own existing, already-closed
+// coverage_gate_diagnostic -- never a new independently-invented signal. Exhaustive over every
+// TERMINAL_COVERAGE_GATE_DIAGNOSTIC_VALUES member so a future new diagnostic value fails loud
+// (falls through to the honest 'not-recorded' default below) rather than silently mis-bucketing.
+const COVERAGE_TARGET_STATUS_BY_DIAGNOSTIC = Object.freeze({
+  'not-applicable': 'not-applicable',
+  'coverage-disabled': 'no-xml',
+  'coverage-evidence-malformed': 'parse-error',
+  matched: 'with-data',
+  'threshold-mismatch': 'with-data',
+  'coverage-outcome-mismatch': 'with-data',
+  'observed-clean-tests': 'with-data',
+  'no-terminal-evidence': 'unavailable',
+  'non-kmp-test-terminal': 'unavailable',
+  'missing-threshold-gate': 'unavailable',
+  'coverage-only-not-terminal': 'unavailable',
+});
+
+function anyCoverageReportErrorBucketHit(coverageGateAttempts) {
+  if (!Array.isArray(coverageGateAttempts)) return false;
+  return coverageGateAttempts.some((a) => {
+    const buckets = a?.error_code_buckets;
+    return buckets != null && (buckets.coverage_report_write_failed > 0 || buckets.coverage_report_dispatch_failed > 0);
+  });
+}
+
+/**
+ * Builds the Section 9.9 outcome_observability_summary from already-computed structured data ONLY
+ * (never parses a transcript or reads a file -- mirrors the identical static-source-guard
+ * convention already established for buildRejectionDiagnostics; see this file's own test asserting
+ * the builder body contains no parser/readFileSync call). The harness does not currently capture
+ * any flavor/test-type/warning-code/module-setup-failure/execution-mode signal anywhere upstream
+ * of this function, so those 5 fields honestly fall back to emptyOutcomeObservabilitySummary's own
+ * not-recorded/all-zero/null defaults -- Section 9.9 explicitly says the summary is projected
+ * "cuando los datos existan" (when the data exists), never fabricated when it does not.
+ * coverage_target_status/coverage_report_status are the two fields this harness CAN genuinely
+ * derive today, both grounded directly in terminalEvidence's own existing
+ * coverage_gate_diagnostic / coverage_gate_attempts[].error_code_buckets fields.
+ */
+function buildOutcomeObservabilitySummary(terminalEvidence) {
+  const summary = emptyOutcomeObservabilitySummary();
+  const diagnostic = terminalEvidence?.coverage_gate_diagnostic;
+  if (Object.prototype.hasOwnProperty.call(COVERAGE_TARGET_STATUS_BY_DIAGNOSTIC, diagnostic)) {
+    summary.coverage_target_status = COVERAGE_TARGET_STATUS_BY_DIAGNOSTIC[diagnostic];
+  }
+  if (anyCoverageReportErrorBucketHit(terminalEvidence?.coverage_gate_attempts)) {
+    summary.coverage_report_status = 'failed';
+  } else if (summary.coverage_target_status === 'with-data') {
+    summary.coverage_report_status = 'success';
+  } else if (summary.coverage_target_status === 'not-applicable') {
+    summary.coverage_report_status = 'not-attempted';
+  }
+  return summary;
 }
 
 /**
@@ -500,6 +580,11 @@ export function buildAcceptedRunAuditSidecar({ record, conditionResult, terminal
   // PR 4: the ONE semantic switch classifyToolCall's own policy_decision derivation keys off.
   const policyMode = record.execution_profile?.policy_mode === 'not_applicable' ? 'not_applicable' : 'required';
   const sidecarSchema = expectedAcceptedAuditSchemaFor(record);
+  // Section 9.4 rule 3: v10 is self-describing in BOTH policy modes -- unlike v4-v9 (exclusively
+  // not_applicable), so its OWN policy accounting must key off the record's real policyMode, never
+  // off isNoPolicySidecarSchema (which stays exclusively about the v4-v9 schema family below).
+  const isV10 = sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V10;
+  const isV10NotApplicable = isV10 && policyMode === 'not_applicable';
 
   const toolCalls = allToolAttempts.map((a, ordinal) => ({
     ordinal,
@@ -534,7 +619,7 @@ export function buildAcceptedRunAuditSidecar({ record, conditionResult, terminal
     || sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V7
     || sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8
     || sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9;
-  const policyApplies = !isNoPolicySidecarSchema;
+  const policyApplies = !isNoPolicySidecarSchema && !isV10NotApplicable;
   const policyDenialsTotal = policyApplies ? toolCalls.filter((tc) => isBashKind(tc) && tc.policy_decision === 'deny').length : null;
   // Counts ONLY genuinely unaccounted Bash calls under policyApplies (v1-v3's own historical
   // meaning). A recognized pre-dispatch block is deliberately excluded: no decision was ever due
@@ -565,25 +650,40 @@ export function buildAcceptedRunAuditSidecar({ record, conditionResult, terminal
       policy_denials_after_first_signal: policyDenialsAfter,
       policy_decisions_missing: policyDecisionsMissing,
       pre_dispatch_blocked_total: preDispatchBlockedTotal,
-      ...(isNoPolicySidecarSchema ? { dispatch_unaccounted_total: dispatchUnaccountedTotal } : {}),
+      ...(isNoPolicySidecarSchema || isV10 ? { dispatch_unaccounted_total: dispatchUnaccountedTotal } : {}),
     },
   };
   // Decision H: provenance SHA is recomputed for strict and no-policy sidecars -- never gated on
   // `sidecarSchema === LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA` (LATEST can advance independently;
   // that comparison would silently stop stamping it on every v3/strict sidecar the moment it does).
-  if (sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3 || isNoPolicySidecarSchema) {
+  if (sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3 || isNoPolicySidecarSchema || isV10) {
     built.run_provenance_sha256 = computeRunProvenanceSha256(record);
   }
   if (isNoPolicySidecarSchema) {
     built.execution_profile_id = record.execution_profile.id;
     built.policy_mode = record.execution_profile.policy_mode;
     built.isolation_attestation_sha256 = record.execution_profile.isolation_attestation_sha256;
+  } else if (isV10) {
+    // Section 9.4 rule 3 / review-round finding: v10 is self-describing regardless of policy mode
+    // -- policy_mode is the NORMALIZED policyMode (never the record's own possibly-undefined raw
+    // execution_profile.policy_mode, which v4-v9 can read directly only because they are exclusive
+    // to the one case where that raw value is always literally "not_applicable").
+    built.execution_profile_id = record.execution_profile.id;
+    built.policy_mode = policyMode;
+    built.isolation_attestation_sha256 = record.execution_profile.isolation_attestation_sha256;
   }
   if (sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V6
     || sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V7
     || sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8
-    || sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9) {
+    || sidecarSchema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9
+    || isV10) {
     built.terminal_evidence = materializeTerminalEvidenceForSidecar(terminalEvidence, toolCalls, sidecarSchema);
+  }
+  if (isV10) {
+    // Verbatim passthrough (Section 9.5's own object is already closed-vocabulary/structural) --
+    // never re-derived here, so it can never drift from the run record's own scorer output.
+    built.outcome_assessment = record.outcome_assessment;
+    built.outcome_observability_summary = buildOutcomeObservabilitySummary(terminalEvidence);
   }
   return built;
 }
@@ -630,7 +730,7 @@ function validateNullableBoolean(value, field, errors) {
 function terminalEvidenceFieldsForSidecarSchema(schema) {
   if (schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V6) return TERMINAL_EVIDENCE_TOP_FIELDS_V6;
   if (schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V7) return TERMINAL_EVIDENCE_TOP_FIELDS_V7;
-  if (schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8 || schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9) return TERMINAL_EVIDENCE_TOP_FIELDS_V8;
+  if (schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8 || schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9 || schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V10) return TERMINAL_EVIDENCE_TOP_FIELDS_V8;
   return null;
 }
 
@@ -663,7 +763,7 @@ function validateFinalAnswerBlock(finalBlock, field, errors, schema) {
     errors.push({ field, message: 'must be an object' });
     return;
   }
-  const fields = schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8 || schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9
+  const fields = schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8 || schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9 || schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V10
     ? TERMINAL_FINAL_ANSWER_BLOCK_FIELDS_V8
     : TERMINAL_FINAL_ANSWER_BLOCK_FIELDS_V6V7;
   rejectUnrecognizedKeys(finalBlock, fields, field, errors);
@@ -673,7 +773,7 @@ function validateFinalAnswerBlock(finalBlock, field, errors, schema) {
   for (const f of TERMINAL_FINAL_ANSWER_BLOCK_FIELDS_V6V7) {
     if (f in finalBlock) validateNullableBoolean(finalBlock[f], `${field}.${f}`, errors);
   }
-  if (schema !== ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8 && schema !== ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9) return;
+  if (schema !== ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8 && schema !== ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9 && schema !== ACCEPTED_AUDIT_SIDECAR_SCHEMA_V10) return;
   if (!TERMINAL_FINAL_ANSWER_COMPARISON_STATUS_VALUES.includes(finalBlock.comparison_status)) {
     errors.push({ field: `${field}.comparison_status`, message: `must be one of ${TERMINAL_FINAL_ANSWER_COMPARISON_STATUS_VALUES.join('|')}` });
   }
@@ -693,7 +793,7 @@ function validateFinalAnswerBlock(finalBlock, field, errors, schema) {
 }
 
 function coverageGateAttemptFieldsForSidecarSchema(schema) {
-  return schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9
+  return (schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9 || schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V10)
     ? TERMINAL_COVERAGE_GATE_ATTEMPT_FIELDS_V9
     : TERMINAL_COVERAGE_GATE_ATTEMPT_FIELDS_V8;
 }
@@ -888,7 +988,7 @@ function validateTerminalEvidence(terminalEvidence, field, errors, schema) {
   }
 
   validateFinalAnswerBlock(terminalEvidence.final_answer_block, `${field}.final_answer_block`, errors, schema);
-  if ((schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V7 || schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8 || schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9)
+  if ((schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V7 || schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8 || schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9 || schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V10)
     && !TERMINAL_COVERAGE_GATE_DIAGNOSTIC_VALUES.includes(terminalEvidence.coverage_gate_diagnostic)) {
     errors.push({ field: `${field}.coverage_gate_diagnostic`, message: `must be one of ${TERMINAL_COVERAGE_GATE_DIAGNOSTIC_VALUES.join('|')}` });
   }
@@ -935,12 +1035,33 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
   // v2+ carry dispatch_status. v4/v5 are legacy no-policy sidecars; v6 keeps that contract and
   // adds terminal evidence; v7 keeps v6 and adds the closed coverage-gate diagnostic leaf; v8
   // keeps v7 and adds per-attempt coverage/final-answer mismatch observability.
-  const hasDispatchStatusShape = schema === 2 || schema === 3 || schema === 4 || schema === 5 || schema === 6 || schema === 7 || schema === 8 || schema === 9;
-  const hasProvenanceHash = schema === 3 || schema === 4 || schema === 5 || schema === 6 || schema === 7 || schema === 8 || schema === 9;
+  const isV10 = schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V10;
+  const hasDispatchStatusShape = schema === 2 || schema === 3 || schema === 4 || schema === 5 || schema === 6 || schema === 7 || schema === 8 || schema === 9 || isV10;
+  const hasProvenanceHash = schema === 3 || schema === 4 || schema === 5 || schema === 6 || schema === 7 || schema === 8 || schema === 9 || isV10;
   const isV4 = schema === 4;
   const isV5OrLaterNoPolicy = schema === 5 || schema === 6 || schema === 7 || schema === 8 || schema === 9;
-  const hasTerminalEvidence = schema === 6 || schema === 7 || schema === 8 || schema === 9;
+  const hasTerminalEvidence = schema === 6 || schema === 7 || schema === 8 || schema === 9 || isV10;
+  // isNoPolicySidecar stays EXCLUSIVELY about the v4-v9 schema family (a SCHEMA-shape fact: these
+  // versions only ever exist for a not_applicable record). v10 cannot join this flag -- Section 9.4
+  // rule 3 makes it self-describing in BOTH policy modes, so "does this schema exclusively
+  // represent a not_applicable run" is no longer true for it.
   const isNoPolicySidecar = isV4 || isV5OrLaterNoPolicy;
+  // hasSelfDescribingIdentity gates the "execution_profile_id/policy_mode/isolation_attestation_
+  // sha256 are always-present top fields" shape check (schema-driven: v4-v9 always, v10 always).
+  const hasSelfDescribingIdentity = isNoPolicySidecar || isV10;
+  // policyDoesNotApplyToThisSidecar is the PER-INSTANCE runtime fact the policy-accounting checks
+  // below key off instead of the schema number: true for every v4-v9 sidecar (schema-exclusive),
+  // and for a v10 sidecar ONLY when ITS OWN policy_mode field says not_applicable -- a v10 sidecar
+  // built from a policy-required record must still enforce v1-v3's real-count contract.
+  const isV10NotApplicable = isV10 && sidecar.policy_mode === 'not_applicable';
+  const policyDoesNotApplyToThisSidecar = isNoPolicySidecar || isV10NotApplicable;
+  // recognized_operation is structural/privacy-safe and, on v10, always present regardless of
+  // policy mode (see classifyToolCall's own inclusion set) -- a SHAPE fact, not a policy fact.
+  const hasRecognizedOperationShape = isV5OrLaterNoPolicy || isV10;
+  // dispatch_unaccounted_total is a real, always-computed structural count on every v4-v9 AND
+  // every v10 sidecar (SUMMARY_FIELDS_V4, in both v10 policy modes) -- a SHAPE fact, never gated on
+  // whether policy applies to this particular instance.
+  const hasDispatchUnaccountedTotalShape = isNoPolicySidecar || isV10;
   if (typeof sidecar.run_id !== 'string' || sidecar.run_id.length === 0) errors.push({ field: 'run_id', message: 'must be a non-empty string' });
   const runSchemaRequirement = runSchemaRequirementFor(schema);
   if (runSchemaRequirement?.exact != null && sidecar.run_schema !== runSchemaRequirement.exact) {
@@ -957,16 +1078,33 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
   // No-policy top-level fields (Decision H). policy_mode is a closed LITERAL here (not merely one of
   // the 2 registry-level enum values) -- v4/v5 exist exclusively for "not_applicable"; a no-policy
   // sidecar claiming "required" would be a self-contradiction (schema6+policy_mode:required always
-  // selects v3 -- see expectedAcceptedAuditSchemaFor).
-  if (isNoPolicySidecar) {
+  // selects v3 -- see expectedAcceptedAuditSchemaFor). v10 (Section 9.4 rule 3) is the one schema
+  // self-describing in BOTH modes: policy_mode may legitimately be either closed value, and
+  // isolation_attestation_sha256 tracks whichever one it actually is (a real hash under
+  // not_applicable, exactly null under required -- mirroring what v3 omitted the field for
+  // entirely, just now expressed as a present-but-null field instead of an absent one).
+  if (hasSelfDescribingIdentity) {
     if (typeof sidecar.execution_profile_id !== 'string' || !/^[a-z0-9][a-z0-9-]*$/.test(sidecar.execution_profile_id)) {
       errors.push({ field: 'execution_profile_id', message: 'must be a lowercase-slug execution profile id' });
     }
-    if (sidecar.policy_mode !== 'not_applicable') {
-      errors.push({ field: 'policy_mode', message: `must be exactly "not_applicable" for sidecar schema ${schema}` });
-    }
-    if (!/^[0-9a-f]{64}$/.test(sidecar.isolation_attestation_sha256)) {
-      errors.push({ field: 'isolation_attestation_sha256', message: `must be a lowercase 64-char hex SHA-256 string -- never null for a schema-${schema} sidecar` });
+    if (isV10) {
+      if (sidecar.policy_mode !== 'required' && sidecar.policy_mode !== 'not_applicable') {
+        errors.push({ field: 'policy_mode', message: `must be exactly "required" or "not_applicable" for sidecar schema ${schema}` });
+      }
+      if (sidecar.policy_mode === 'not_applicable') {
+        if (!/^[0-9a-f]{64}$/.test(sidecar.isolation_attestation_sha256)) {
+          errors.push({ field: 'isolation_attestation_sha256', message: `must be a lowercase 64-char hex SHA-256 string when policy_mode is not_applicable on a schema-${schema} sidecar` });
+        }
+      } else if (sidecar.isolation_attestation_sha256 !== null) {
+        errors.push({ field: 'isolation_attestation_sha256', message: `must be exactly null when policy_mode is required on a schema-${schema} sidecar` });
+      }
+    } else {
+      if (sidecar.policy_mode !== 'not_applicable') {
+        errors.push({ field: 'policy_mode', message: `must be exactly "not_applicable" for sidecar schema ${schema}` });
+      }
+      if (!/^[0-9a-f]{64}$/.test(sidecar.isolation_attestation_sha256)) {
+        errors.push({ field: 'isolation_attestation_sha256', message: `must be a lowercase 64-char hex SHA-256 string -- never null for a schema-${schema} sidecar` });
+      }
     }
   }
   if (sidecar.run_kind !== 'scenario') errors.push({ field: 'run_kind', message: 'must be exactly "scenario" -- a sidecar only ever exists for a scenario record' });
@@ -1019,12 +1157,13 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
           // (policyMode:"not_applicable") -- never reachable for v1/v2/v3, whose only Bash
           // dispatch statuses remain exactly
           // hook_evaluated/pre_dispatch_blocked/unaccounted (frozen, unchanged).
-          if ((tc.dispatch_status === 'result_correlated_no_policy' || tc.dispatch_status === 'timeout_interrupted_no_policy') && !isNoPolicySidecar) {
-            errors.push({ field: `${label}.dispatch_status`, message: `${tc.dispatch_status} is only valid on a no-policy sidecar` });
+          if ((tc.dispatch_status === 'result_correlated_no_policy' || tc.dispatch_status === 'timeout_interrupted_no_policy') && !policyDoesNotApplyToThisSidecar) {
+            errors.push({ field: `${label}.dispatch_status`, message: `${tc.dispatch_status} is only valid on a sidecar whose own policy_mode is not_applicable` });
           }
-          // hook_evaluated (a real policy-hook decision) can never appear on a no-policy sidecar -- no
-          // PreToolUse:Bash hook is ever wired for policyMode:"not_applicable".
-          if (tc.dispatch_status === 'hook_evaluated' && isNoPolicySidecar) {
+          // hook_evaluated (a real policy-hook decision) can never appear where policy does not
+          // apply to THIS sidecar instance -- no PreToolUse:Bash hook is ever wired for
+          // policyMode:"not_applicable", on v4-v9 or on a not_applicable v10 alike.
+          if (tc.dispatch_status === 'hook_evaluated' && policyDoesNotApplyToThisSidecar) {
             errors.push({ field: `${label}.dispatch_status`, message: `hook_evaluated can never appear on a schema-${schema} (not_applicable) sidecar` });
           }
           const decisionIsAllowDeny = tc.policy_decision === 'allow' || tc.policy_decision === 'deny';
@@ -1051,7 +1190,7 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
           // (policyMode:"not_applicable") pairs it with "not-applicable" (no decision was ever due
           // in the first place) -- see classifyToolCall's own identical branch.
           if (tc.dispatch_status === 'unaccounted') {
-            const expectedMissingDecision = isNoPolicySidecar ? 'not-applicable' : 'missing';
+            const expectedMissingDecision = policyDoesNotApplyToThisSidecar ? 'not-applicable' : 'missing';
             if (tc.policy_decision !== expectedMissingDecision) {
               errors.push({ field: `${label}.policy_decision`, message: `must be ${expectedMissingDecision} when dispatch_status is unaccounted on a schema-${schema} sidecar` });
             }
@@ -1071,7 +1210,7 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
         // not-applicable regardless of dispatch_status (result_correlated_no_policy/
         // pre_dispatch_blocked/unaccounted alike) -- no policy hook ever existed to produce a real
         // allow/deny/missing category under that profile.
-        const notApplicableExempt = isNoPolicySidecar || (hasDispatchStatusShape && tc.dispatch_status === 'pre_dispatch_blocked');
+        const notApplicableExempt = policyDoesNotApplyToThisSidecar || (hasDispatchStatusShape && tc.dispatch_status === 'pre_dispatch_blocked');
         if (tc.policy_decision === 'not-applicable' && !notApplicableExempt) errors.push({ field: `${label}.policy_decision`, message: 'a Bash-family entry must have a real decision category (allow/deny/missing), never not-applicable' });
         // Per-tool_kind operation domain (review finding 1b/1c/1d) -- previously unchecked for
         // EVERY Bash-family entry, so an arbitrary or contradictory operation string (or even a
@@ -1089,7 +1228,7 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
             errors.push({ field: `${label}.operation`, message: 'must be a non-empty string for tool_kind kmp-test (membership against the record\'s own allowlist is checked during cross-validation)' });
           }
         }
-        if (isV5OrLaterNoPolicy) {
+        if (hasRecognizedOperationShape) {
           if (tc.tool_kind === 'kmp-test') {
             if (!KMP_TEST_RECOGNIZED_OPERATION_VALUES.includes(tc.recognized_operation)) {
               errors.push({ field: `${label}.recognized_operation`, message: `must be one of ${KMP_TEST_RECOGNIZED_OPERATION_VALUES.join('|')} for tool_kind kmp-test on a schema-${schema} sidecar` });
@@ -1101,7 +1240,7 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
       } else {
         if (tc.plan_only !== null) errors.push({ field: `${label}.plan_only`, message: 'must be null for a Skill/unexpected-tool tool_kind' });
         if (tc.operation !== null) errors.push({ field: `${label}.operation`, message: 'must be null for a Skill/unexpected-tool tool_kind' });
-        if (isV5OrLaterNoPolicy && tc.recognized_operation !== null) errors.push({ field: `${label}.recognized_operation`, message: `must be null except for tool_kind kmp-test on a schema-${schema} sidecar` });
+        if (hasRecognizedOperationShape && tc.recognized_operation !== null) errors.push({ field: `${label}.recognized_operation`, message: `must be null except for tool_kind kmp-test on a schema-${schema} sidecar` });
         if (tc.policy_decision !== 'not-applicable') errors.push({ field: `${label}.policy_decision`, message: 'must be exactly not-applicable for a Skill/unexpected-tool tool_kind' });
       }
 
@@ -1134,7 +1273,7 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
       // never a trivially-zero real count (no Bash entry can ever have policy_decision:deny/missing
       // under not_applicable, so a real 0 here would misleadingly claim these were genuinely
       // evaluated and found clean).
-      if (!isNoPolicySidecar) {
+      if (!policyDoesNotApplyToThisSidecar) {
         const deniedCount = bashEntries.filter((tc) => tc.policy_decision === 'deny').length;
         if (summary.policy_denials_total !== deniedCount) errors.push({ field: 'summary.policy_denials_total', message: 'must equal the number of Bash-family entries with policy_decision:deny' });
         const missingCount = bashEntries.filter((tc) => tc.policy_decision === 'missing').length;
@@ -1148,22 +1287,25 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
           errors.push({ field: 'summary.pre_dispatch_blocked_total', message: 'must equal the number of Bash-family entries with dispatch_status:pre_dispatch_blocked' });
         }
       }
-      if (isNoPolicySidecar) {
-        // dispatch_unaccounted_total (Decision H): exact cardinality of genuinely unaccounted
-        // Bash-family entries -- the REAL acceptance-gate counter under not_applicable, where
-        // policy_decisions_missing can no longer serve that role (it is unconditionally null).
+      if (hasDispatchUnaccountedTotalShape) {
+        // dispatch_unaccounted_total (Decision H, extended to v10 by Section 9.4 rule 3): exact
+        // cardinality of genuinely unaccounted Bash-family entries -- a SHAPE-driven recompute, not
+        // gated on whether policy applies to this instance (v10 computes and validates the real
+        // count in both policy modes).
         const unaccountedCount = bashEntries.filter((tc) => tc.dispatch_status === 'unaccounted').length;
         if (summary.dispatch_unaccounted_total !== unaccountedCount) {
           errors.push({ field: 'summary.dispatch_unaccounted_total', message: 'must equal the number of Bash-family entries with dispatch_status:unaccounted' });
         }
       }
     }
-    if (isNoPolicySidecar) {
+    if (policyDoesNotApplyToThisSidecar) {
       for (const f of ['policy_denials_total', 'policy_decisions_missing', 'policy_denials_before_first_signal', 'policy_denials_after_first_signal']) {
         if (summary[f] !== null) {
-          errors.push({ field: `summary.${f}`, message: `must be exactly null on a schema-${schema} sidecar -- no policy hook ever evaluated this run` });
+          errors.push({ field: `summary.${f}`, message: `must be exactly null on a schema-${schema} sidecar whose policy_mode is not_applicable -- no policy hook ever evaluated this run` });
         }
       }
+    }
+    if (hasDispatchUnaccountedTotalShape) {
       if (!(Number.isInteger(summary.dispatch_unaccounted_total) && summary.dispatch_unaccounted_total >= 0)) {
         errors.push({ field: 'summary.dispatch_unaccounted_total', message: `must be a non-negative integer -- never null, this is the real acceptance-gate counter for a schema-${schema} sidecar` });
       }
@@ -1205,17 +1347,34 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
   if (summaryIsObject && Number.isInteger(summary.policy_decisions_missing) && summary.policy_decisions_missing !== 0) {
     errors.push({ field: 'summary.policy_decisions_missing', message: 'must be exactly 0 -- a sidecar only ever accompanies an accepted run, so every Bash-family policy decision must have resolved to allow or deny' });
   }
-  // PR 4: the identical acceptance-gate, for a no-policy sidecar's own real counter -- Decision H:
-  // "dispatch_unaccounted_total ... debe ser 0 en todo sidecar aceptado, strict o no-policy". A
-  // missing result must never be accepted just because policy does not apply.
-  if (isNoPolicySidecar && Number.isInteger(summary.dispatch_unaccounted_total) && summary.dispatch_unaccounted_total !== 0) {
+  // PR 4 (extended to v10 by Section 9.4 rule 3): the identical acceptance-gate, for the real
+  // dispatch_unaccounted_total counter -- Decision H: "dispatch_unaccounted_total ... debe ser 0
+  // en todo sidecar aceptado, strict o no-policy". A missing result must never be accepted just
+  // because policy does not apply.
+  if (hasDispatchUnaccountedTotalShape && Number.isInteger(summary.dispatch_unaccounted_total) && summary.dispatch_unaccounted_total !== 0) {
     errors.push({ field: 'summary.dispatch_unaccounted_total', message: 'must be exactly 0 -- a sidecar only ever accompanies an accepted run, so every Bash-family attempt must have a correlated result or a recognized pre-dispatch block' });
   }
   if (hasTerminalEvidence) {
     validateTerminalEvidence(sidecar.terminal_evidence, 'terminal_evidence', errors, sidecar.schema);
-    if ((schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8 || schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9) && sidecar.terminal_evidence != null && typeof sidecar.terminal_evidence === 'object' && !Array.isArray(sidecar.terminal_evidence)) {
+    if ((schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8 || schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9 || isV10) && sidecar.terminal_evidence != null && typeof sidecar.terminal_evidence === 'object' && !Array.isArray(sidecar.terminal_evidence)) {
       validateCoverageGateAttempts(sidecar.terminal_evidence.coverage_gate_attempts, 'terminal_evidence.coverage_gate_attempts', errors, toolCalls, sidecar.terminal_authoritative_event, schema);
     }
+  }
+  // Evidence1 success-recovery PR B, Section 9.5/9.9: v10-exclusive additions. outcome_assessment
+  // is a verbatim passthrough of an already-closed-vocabulary, already-validated (at the run-record
+  // level, by schemas.mjs's validateOutcomeAssessment) object -- re-validating its own internal
+  // enums here would require importing schemas.mjs, which already imports the
+  // ACCEPTED_AUDIT_SIDECAR_SCHEMA_* constants FROM this file, so this file importing back from
+  // schemas.mjs would be a genuine circular dependency (Section 9.4 rule 10's own HARD STOP
+  // condition). A basic object-shape gate is proportionate defense here; verbatim-match against the
+  // record it was built from is crossValidateAcceptedRunAuditAgainstRecord's job, below.
+  // outcome_observability_summary DOES reuse the one shared validator -- neither this file nor
+  // rejection-diagnostics.mjs re-implements Section 9.9's enums independently.
+  if (isV10) {
+    if (sidecar.outcome_assessment == null || typeof sidecar.outcome_assessment !== 'object' || Array.isArray(sidecar.outcome_assessment)) {
+      errors.push({ field: 'outcome_assessment', message: 'must be an object' });
+    }
+    errors.push(...validateOutcomeObservabilitySummary(sidecar.outcome_observability_summary, 'outcome_observability_summary'));
   }
 
   // Phase correctness + post-signal summary recompute (review finding 1e/1f) -- previously only
@@ -1250,10 +1409,11 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
       if (summary.post_signal_tool_calls !== expectedPostSignalToolCalls) {
         errors.push({ field: 'summary.post_signal_tool_calls', message: `must equal the number of tool_calls[] entries with tool_use_event_index > ${firstSignalIndex} (expected ${expectedPostSignalToolCalls}, got ${JSON.stringify(summary.post_signal_tool_calls)})` });
       }
-      // PR 4: skipped for a no-policy sidecar -- policy_denials_before/after_first_signal are
-      // unconditionally null there (checked separately, above), so there is nothing to recompute
-      // against; no Bash entry can ever have policy_decision:deny under not_applicable.
-      if (!isNoPolicySidecar) {
+      // PR 4: skipped wherever policy does not apply to this sidecar instance --
+      // policy_denials_before/after_first_signal are unconditionally null there (checked separately,
+      // above), so there is nothing to recompute against; no Bash entry can ever have
+      // policy_decision:deny under not_applicable.
+      if (!policyDoesNotApplyToThisSidecar) {
         const bashEntries = toolCalls.filter(isBashKind);
         const expectedBefore = bashEntries.filter((tc) => tc.policy_decision === 'deny' && Number.isInteger(tc.tool_use_event_index) && tc.tool_use_event_index <= firstSignalIndex).length;
         if (summary.policy_denials_before_first_signal !== expectedBefore) {
@@ -1335,7 +1495,8 @@ export function crossValidateAcceptedRunAuditAgainstRecord(sidecar, record) {
     || sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V6
     || sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V7
     || sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8
-    || sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9) {
+    || sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9
+    || sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V10) {
     const expected = computeRunProvenanceSha256(record);
     if (sidecar.run_provenance_sha256 !== expected) {
       errors.push({ field: 'run_provenance_sha256', message: `sidecar run_provenance_sha256 (${sidecar.run_provenance_sha256}) does not match recomputed value from record (${expected})` });
@@ -1361,6 +1522,34 @@ export function crossValidateAcceptedRunAuditAgainstRecord(sidecar, record) {
     }
     if (sidecar.isolation_attestation_sha256 !== ep.isolation_attestation_sha256) {
       errors.push({ field: 'isolation_attestation_sha256', message: 'sidecar isolation_attestation_sha256 does not match record execution_profile.isolation_attestation_sha256' });
+    }
+  }
+
+  // v10 only (Section 9.4 rule 3): the identical cross-validation, but against the record's OWN
+  // NORMALIZED policy mode rather than its raw (possibly-undefined for a policy-required record)
+  // execution_profile.policy_mode -- see buildAcceptedRunAuditSidecar's own identical
+  // normalization. A separate block, not a widened v4-v9 condition: v4-v9's plain
+  // `sidecar.policy_mode !== ep.policy_mode` would spuriously fail for a policy-required v10
+  // sidecar, whose raw record field is typically absent rather than the literal string "required".
+  // outcome_assessment is cross-checked here too -- the one place a genuine drift between the
+  // sidecar's passthrough and the record's own scorer output would be caught (the self-contained
+  // validator above only checks it is an object, to avoid importing schemas.mjs and creating a
+  // circular dependency -- see that check's own comment).
+  if (sidecar.schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V10) {
+    const ep = record.execution_profile ?? {};
+    const expectedPolicyMode = ep.policy_mode === 'not_applicable' ? 'not_applicable' : 'required';
+    if (sidecar.execution_profile_id !== ep.id) {
+      errors.push({ field: 'execution_profile_id', message: `sidecar execution_profile_id (${sidecar.execution_profile_id}) does not match record execution_profile.id (${ep.id})` });
+    }
+    if (sidecar.policy_mode !== expectedPolicyMode) {
+      errors.push({ field: 'policy_mode', message: `sidecar policy_mode (${sidecar.policy_mode}) does not match the record's own normalized policy mode (${expectedPolicyMode})` });
+    }
+    const expectedIsolationAttestationSha256 = ep.isolation_attestation_sha256 ?? null;
+    if (sidecar.isolation_attestation_sha256 !== expectedIsolationAttestationSha256) {
+      errors.push({ field: 'isolation_attestation_sha256', message: 'sidecar isolation_attestation_sha256 does not match record execution_profile.isolation_attestation_sha256' });
+    }
+    if (JSON.stringify(sidecar.outcome_assessment ?? null) !== JSON.stringify(record.outcome_assessment ?? null)) {
+      errors.push({ field: 'outcome_assessment', message: 'sidecar outcome_assessment does not match the record\'s own field verbatim' });
     }
   }
 

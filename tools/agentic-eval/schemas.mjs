@@ -23,6 +23,7 @@ import {
   ACCEPTED_AUDIT_SIDECAR_SCHEMA_V7,
   ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8,
   ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9,
+  ACCEPTED_AUDIT_SIDECAR_SCHEMA_V10,
 } from './accepted-run-audit.mjs';
 import { classifyExitCode, EXIT } from '../../lib/envelope/exit-codes.js';
 // canonicalStructuredValue moved to canonical-json.mjs (this PR) -- re-exported here verbatim so
@@ -42,8 +43,8 @@ export { canonicalStructuredValue };
 // alike) stamps on NEW records going forward; `SUPPORTED_RUN_SCHEMAS` is what validateRun()
 // still accepts, so the 8 historical files keep validating under their original v1 rules
 // unchanged (see the RUN_CANONICAL_FIELDS_V1/_V2/_V3 split and validateRun's dispatch, below).
-export const SUPPORTED_RUN_SCHEMAS = [1, 2, 3, 4, 5, 6, 7];
-export const LATEST_RUN_SCHEMA = 7;
+export const SUPPORTED_RUN_SCHEMAS = [1, 2, 3, 4, 5, 6, 7, 8];
+export const LATEST_RUN_SCHEMA = 8;
 export const CURRENT_SCENARIO_SCHEMA = 1;
 // v1 -> v2 (review-round-2 fix): group_key's own SHAPE changed -- it gained the
 // `ambient_skill_profile` partition field -- so this is bumped exactly like LATEST_RUN_SCHEMA is
@@ -149,6 +150,27 @@ const V7_FIELDS = ['product_access_mode'];
 const RUN_CANONICAL_FIELDS_V7 = [
   ...RUN_CANONICAL_FIELDS_V6,
   ...V7_FIELDS,
+];
+
+// Schema v8 (Evidence1 success-recovery PR B, Section 9.4/9.5) = v7 + outcome_assessment. A
+// closed, neutral scorer verdict -- required (non-null object) for run_kind:scenario, null for
+// every other run_kind -- computed ADDITIONALLY to expected_outcome_matched/success/grading_checks
+// above, never replacing or aliasing them (Section 9.6).
+const V8_FIELDS = ['outcome_assessment'];
+const RUN_CANONICAL_FIELDS_V8 = [
+  ...RUN_CANONICAL_FIELDS_V7,
+  ...V8_FIELDS,
+];
+
+// Section 9.5's exact closed vocabularies -- exported so graders.mjs (the sole producer) and this
+// file's own validator can never independently drift on what values are legal.
+export const TASK_OUTCOME_REASON_VALUES = ['matched', 'mismatched', 'claim-missing', 'claim-malformed', 'ground-truth-unavailable'];
+export const PROVIDER_EVIDENCE_KIND_VALUES = ['kmp-test-envelope', 'gradle-junit', 'gradle-coverage', 'mixed-standard-tools', 'claim-only', 'none'];
+export const PROVIDER_EVIDENCE_STATUS_VALUES = ['matched', 'mismatched', 'partial', 'unavailable'];
+const OUTCOME_ASSESSMENT_SCHEMA = 1;
+const OUTCOME_ASSESSMENT_KEYS = [
+  'schema', 'task_outcome_matched', 'task_outcome_reason', 'answer_protocol_matched',
+  'provider_evidence_kind', 'provider_evidence_status', 'product_e2e_success',
 ];
 
 // IDs throughout schema v6 use one closed lowercase charset.
@@ -587,6 +609,7 @@ const ACCEPTED_AUDIT_RELATIVE_PATH_RE = /^audit\/[A-Za-z0-9._-]+\.json$/;
 // schema number to V1 instead of the LATEST fields, which would make a schema:5 record validate
 // against the wrong (v1) field list entirely. schema===5 must resolve to V5, never V1.
 function runCanonicalFieldsFor(schema) {
+  if (schema === 8) return RUN_CANONICAL_FIELDS_V8;
   if (schema === 7) return RUN_CANONICAL_FIELDS_V7;
   if (schema === 6) return RUN_CANONICAL_FIELDS_V6;
   if (schema === 5) return RUN_CANONICAL_FIELDS_V5;
@@ -705,6 +728,50 @@ function validateTokens(tokens, errors) {
   }
   for (const key of ['input', 'output', 'cache_read', 'cache_creation']) {
     validateNullableMetric(tokens[key], `tokens.${key}`, errors);
+  }
+}
+
+/** Schema v8's neutral scorer verdict (Section 9.5) -- exact closed key set, closed enums for
+ * task_outcome_reason/provider_evidence_kind/provider_evidence_status, boolean-or-null for
+ * task_outcome_matched/product_e2e_success, plain boolean for answer_protocol_matched, and
+ * cross-field coherence between task_outcome_matched and task_outcome_reason (never "matched"/
+ * "mismatched" paired with the wrong boolean-or-null counterpart). Called only once `run.
+ * outcome_assessment` is already confirmed to be a non-null, non-array object by the caller. */
+function validateOutcomeAssessment(obj, errors) {
+  const allowedKeys = new Set(OUTCOME_ASSESSMENT_KEYS);
+  const actualKeys = Object.keys(obj);
+  if (actualKeys.some((k) => !allowedKeys.has(k)) || actualKeys.length !== allowedKeys.size) {
+    errors.push({ field: 'outcome_assessment', message: `must have exactly the keys ${OUTCOME_ASSESSMENT_KEYS.join('/')}, got ${JSON.stringify(actualKeys)}` });
+  }
+  if (obj.schema !== OUTCOME_ASSESSMENT_SCHEMA) {
+    errors.push({ field: 'outcome_assessment.schema', message: `must be exactly ${OUTCOME_ASSESSMENT_SCHEMA}` });
+  }
+  if (obj.task_outcome_matched !== null && typeof obj.task_outcome_matched !== 'boolean') {
+    errors.push({ field: 'outcome_assessment.task_outcome_matched', message: 'must be a boolean or null' });
+  }
+  if (!TASK_OUTCOME_REASON_VALUES.includes(obj.task_outcome_reason)) {
+    errors.push({ field: 'outcome_assessment.task_outcome_reason', message: `must be one of ${TASK_OUTCOME_REASON_VALUES.join('|')}` });
+  }
+  if (typeof obj.answer_protocol_matched !== 'boolean') {
+    errors.push({ field: 'outcome_assessment.answer_protocol_matched', message: 'must be a boolean' });
+  }
+  if (!PROVIDER_EVIDENCE_KIND_VALUES.includes(obj.provider_evidence_kind)) {
+    errors.push({ field: 'outcome_assessment.provider_evidence_kind', message: `must be one of ${PROVIDER_EVIDENCE_KIND_VALUES.join('|')}` });
+  }
+  if (!PROVIDER_EVIDENCE_STATUS_VALUES.includes(obj.provider_evidence_status)) {
+    errors.push({ field: 'outcome_assessment.provider_evidence_status', message: `must be one of ${PROVIDER_EVIDENCE_STATUS_VALUES.join('|')}` });
+  }
+  if (obj.product_e2e_success !== null && typeof obj.product_e2e_success !== 'boolean') {
+    errors.push({ field: 'outcome_assessment.product_e2e_success', message: 'must be a boolean or null' });
+  }
+  if (obj.task_outcome_matched === true && obj.task_outcome_reason !== 'matched') {
+    errors.push({ field: 'outcome_assessment.task_outcome_reason', message: 'must be "matched" when task_outcome_matched is true' });
+  }
+  if (obj.task_outcome_matched === false && obj.task_outcome_reason !== 'mismatched') {
+    errors.push({ field: 'outcome_assessment.task_outcome_reason', message: 'must be "mismatched" when task_outcome_matched is false' });
+  }
+  if (obj.task_outcome_matched === null && (obj.task_outcome_reason === 'matched' || obj.task_outcome_reason === 'mismatched')) {
+    errors.push({ field: 'outcome_assessment.task_outcome_reason', message: 'must not be "matched"/"mismatched" when task_outcome_matched is null' });
   }
 }
 
@@ -912,9 +979,16 @@ export function validateRun(run) {
         // which run schema produced it -- the whole point of requiredRunSchemaFor's own dedicated
         // check on the sidecar side. Deliberately never a single LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA
         // selector here (that would exclude v3/v4 the moment LATEST advances past them).
+        // Evidence1 success-recovery PR B: schema 8 is its OWN, exact branch -- [V10] only, never
+        // folded into the wide v6/v7 range above. Unlike v6/v7 (which had to stay compatible with
+        // whichever sidecar version a given record's schema had already been paired with over
+        // time), schema 8 and sidecar v10 are introduced together, so there is no historical range
+        // to preserve -- an exact 1:1 pairing is both simpler and correct.
         const compatibleSidecarSchemas = run.schema === 5
           ? [ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2]
-          : [ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V6, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V7, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9];
+          : run.schema === 8
+            ? [ACCEPTED_AUDIT_SIDECAR_SCHEMA_V10]
+            : [ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V6, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V7, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9];
         if (!compatibleSidecarSchemas.includes(audit.schema)) {
           errors.push({ field: 'accepted_audit.schema', message: `must be one of ${compatibleSidecarSchemas.join('|')} for a schema:${run.schema} record (got ${JSON.stringify(audit.schema)})` });
         }
@@ -996,6 +1070,25 @@ export function validateRun(run) {
     }
   } else if ('product_access_mode' in run && run.product_access_mode != null) {
     errors.push({ field: 'product_access_mode', message: `must be absent or null for schema ${run.schema} -- product_access_mode was introduced in schema v7` });
+  }
+
+  // Schema v8 (Evidence1 success-recovery PR B, Section 9.4.1): outcome_assessment is required
+  // (non-null, closed object) for a schema:8+ run_kind:scenario record, null for every other
+  // run_kind (mirrors grading_checks' identical run_kind-conditional pattern above). Forbidden
+  // below v8 via a dedicated error, mirroring product_access_mode's identical schema-introduction
+  // pattern immediately above.
+  if (run.schema >= 8) {
+    if (run.run_kind === 'scenario') {
+      if (run.outcome_assessment == null || typeof run.outcome_assessment !== 'object' || Array.isArray(run.outcome_assessment)) {
+        errors.push({ field: 'outcome_assessment', message: 'required (non-null object) for a schema:8+ run_kind:scenario record' });
+      } else {
+        validateOutcomeAssessment(run.outcome_assessment, errors);
+      }
+    } else if (run.outcome_assessment != null) {
+      errors.push({ field: 'outcome_assessment', message: `must be null for run_kind "${run.run_kind}" -- outcome_assessment only applies to scenario records` });
+    }
+  } else if ('outcome_assessment' in run && run.outcome_assessment != null) {
+    errors.push({ field: 'outcome_assessment', message: `must be absent or null for schema ${run.schema} -- outcome_assessment was introduced in schema v8` });
   }
 
   for (const f of NULLABLE_METRIC_FIELDS) if (f in run) validateNullableMetric(run[f], f, errors);

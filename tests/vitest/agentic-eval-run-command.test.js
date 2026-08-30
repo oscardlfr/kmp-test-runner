@@ -761,15 +761,16 @@ describe('cli.mjs run -- real subprocess against fake claude (no live API cost)'
       expect(record.test_invocations_total.value).toBe(1);
       expect(record.retries.value).toBe(0);
       expect((record.errors ?? []).some((e) => e.code === 'junit_evidence_capture_incomplete')).toBe(false);
-      // The record points at a schema-3 sidecar (this CLI always builds schema:6 records now, and
-      // a schema:6 record requires exactly a v3 sidecar), matching what was actually written.
-      expect(record.accepted_audit.schema).toBe(3);
+      // The record points at a schema-10 sidecar (this CLI always builds schema:8 records now --
+      // Evidence1 success-recovery PR B -- and a schema:8 record always requires exactly a v10
+      // sidecar, in either policy mode), matching what was actually written.
+      expect(record.accepted_audit.schema).toBe(10);
     }
 
     // The audit sidecar records the attempt honestly: present, error result, no policy decision
     // (none was ever due), and counted as a pre-dispatch block rather than a missing decision.
     const sidecar = readAcceptedAuditSidecar(records[0].run_id);
-    expect(sidecar.schema).toBe(3);
+    expect(sidecar.schema).toBe(10);
     expect(sidecar.summary.pre_dispatch_blocked_total).toBe(1);
     expect(sidecar.summary.policy_decisions_missing).toBe(0);
     expect(sidecar.summary.shell_commands_total).toBe(2);
