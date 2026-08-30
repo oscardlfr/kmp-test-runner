@@ -118,6 +118,19 @@ Before any future Stage L launch, verify that its operational launcher explicitl
 registered canary design and enforces the one-session authorization, progress, and custody
 contract. This document does not claim that an eight-session launcher satisfies that contract.
 
+The currently installed Stage L path still has these concrete dependencies:
+
+- `evidence1-stageb-live-launch.ps1` fixes the eight-cell design, the historical scenario, and
+  the eight-cell readiness fingerprint. Changing the registry alone does not change them.
+- `evidence1-hyperv-start-authorized-live.ps1` and the placement script require the eight-session
+  authorization and do not propagate a canary arm.
+- The live handoff does not yet consume the V2/V3 reports. A future canary handoff must bind
+  those passing reports to the same anchors and attestation, and retain prior-run custody.
+
+Do not edit those launch contracts incidentally while validating Stage V. Their implementation
+and regression tests must be reviewed before Stage L, with one-session authorization and no
+fallback to the full matrix. Remote authentication must then be refreshed under its own gate.
+
 ## Prevention
 
 Before accepting any future runbook as executable, map every step to a versioned command,
