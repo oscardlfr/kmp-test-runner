@@ -33,6 +33,29 @@ If a task must be installed at a new location, use the existing
 through a renamed allowlisted script or a generic privileged command. The non-elevated client
 must use the allowed root in the installed task, not assume its current working directory.
 
+The new validation module has an explicit LF rule in `.gitattributes`: its byte hash must
+remain identical across host and guest checkouts with different `core.autocrlf` settings.
+
+## Client Invocation
+
+Resolve `$opsRoot` from the installed task's `AllowedRoot`, and set `$commit`/`$tree` to the
+reviewed squash anchors. Use the existing client once per stage; inspect its terminal report
+and stop on failure before issuing the next command. This example is for V2:
+
+```powershell
+$client = Join-Path $opsRoot 'evidence1-host-elevated-runner-client.ps1'
+$arguments = @('-TargetCommit', $commit, '-TargetTree', $tree)
+& $client -AllowedRoot $opsRoot `
+  -ScriptPath (Join-Path $opsRoot 'evidence1-hyperv-verify-wet-gate-v2-direct.ps1') `
+  -ScriptArguments $arguments -TimeoutMinutes 15
+if ($LASTEXITCODE -ne 0) { throw 'HARD STOP: V2 failed; inspect its safe terminal report.' }
+```
+
+V3 uses the same arguments with `evidence1-hyperv-verify-canary-dryrun-v3-direct.ps1`, only
+after V2 passes. For each V1 entrypoint, add `'-SourceRepoDir', $sourceRepo` to the arguments,
+where `$sourceRepo` is the clean reviewed checkout, and use `-TimeoutMinutes 30`.
+Neither validation entrypoint has an override to retry a consumed attempt.
+
 ## V1: Deploy and Refresh Readiness
 
 Invoke `evidence1-hyperv-update-harness-from-bundle.ps1`, then

@@ -167,3 +167,7 @@ tests/vitest/check-executable-fixtures.test.js text eol=lf
 # Local Docker CI entrypoints execute under Linux even from Windows worktrees.
 tools/local-ci/**/*.sh text eol=lf
 tests/vitest/local-ci.test.js text eol=lf
+
+# The Stage V module is byte-hash bound between the elevated host and the guest.
+# Preserve identical checked-out bytes even when their Git autocrlf settings differ.
+docs/audits/evidence1-validation-ops.psm1 text eol=lf

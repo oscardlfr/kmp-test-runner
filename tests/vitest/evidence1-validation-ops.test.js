@@ -10,6 +10,16 @@ import { computeExecutionProfileSha256 } from '../../tools/agentic-eval/registri
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const modulePath = resolve(root, 'docs/audits/evidence1-validation-ops.psm1');
+it('preserves the validation module byte identity through Windows Git checkout filters', () => {
+  const object = 'HEAD:docs/audits/evidence1-validation-ops.psm1';
+  const blob = spawnSync('git', ['cat-file', 'blob', object], { cwd: root, windowsHide: true });
+  const checkout = spawnSync('git', ['-c', 'core.autocrlf=true', 'cat-file', '--filters', object], {
+    cwd: root, windowsHide: true,
+  });
+  expect(blob.status, blob.stderr?.toString()).toBe(0);
+  expect(checkout.status, checkout.stderr?.toString()).toBe(0);
+  expect(checkout.stdout.equals(blob.stdout)).toBe(true);
+});
 const quote = value => `'${value.replaceAll("'", "''")}'`;
 const json = value => `ConvertFrom-E1Json ${quote(JSON.stringify(value))}`;
 function ps(body, shell = 'pwsh') {
