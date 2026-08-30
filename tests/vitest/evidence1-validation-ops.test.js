@@ -435,6 +435,7 @@ describe.skipIf(!hasPowerShell)('Evidence1 validation operations functional cont
       const result = ps(`$m=Get-Module evidence1-validation-ops
         & $m {
           param($dir)
+          $env:USERPROFILE=$dir
           $script:java=Join-Path $dir 'java.exe'; [IO.File]::WriteAllText($script:java,'synthetic executable')
           function Get-E1Java21 { return @{home=$dir;executable=$script:java} }
           $oldHome=$env:JAVA_HOME; $oldPath=$env:PATH; $script:verified=$false
@@ -458,6 +459,7 @@ describe.skipIf(!hasPowerShell)('Evidence1 validation operations functional cont
       expect(ps(`$m=Get-Module evidence1-validation-ops
         & $m {
           param($dir)
+          $env:USERPROFILE=$dir
           $script:java=Join-Path $dir 'java.exe'; [IO.File]::WriteAllText($script:java,'synthetic executable')
           function Get-E1Java21 { return @{home=$dir;executable=$script:java} }
           function Invoke-E1OwnedProcess {
