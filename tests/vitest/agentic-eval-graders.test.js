@@ -149,6 +149,7 @@ function baseObservation(overrides = {}) {
 function buildConditionResult(steps, finalAnswerText, {
   terminated = false, terminationReason = null, dropFinalResultEvent = false,
   ambiguousJunitEvidence = false, captureIncomplete = false, unreliable = false,
+  condition = 'current-skill',
 } = {}) {
   const toolAttempts = [];
   const decisionByAttempt = new Map();
@@ -188,7 +189,7 @@ function buildConditionResult(steps, finalAnswerText, {
     ? []
     : strictIncomplete;
   return {
-    condition: 'current-skill',
+    condition,
     observation: baseObservation({
       process: { exitCode: terminated ? null : 0, terminated, terminationReason, spawnHrtimeNs: 0n, endedHrtimeNs: BigInt(eventIndex + 1) },
       terminal: hasFinalResult
@@ -5801,7 +5802,7 @@ describe('gradeScenarioCondition -- outcome_assessment (neutral scorer, Stage B1
   );
 
   it('[case 1] baseline: correct claim, zero product tool use -> task true, Product E2E null', () => {
-    const cr = buildConditionResult([], SCENARIO_5_CORRECT_ANSWER);
+    const cr = buildConditionResult([], SCENARIO_5_CORRECT_ANSWER, { condition: 'no-skill' });
     const grade = gradeScenarioCondition(cr, SCENARIO_5);
     expect(grade.outcomeAssessment.task_outcome_matched).toBe(true);
     expect(grade.outcomeAssessment.task_outcome_reason).toBe('matched');
@@ -5809,14 +5810,14 @@ describe('gradeScenarioCondition -- outcome_assessment (neutral scorer, Stage B1
   });
 
   it('[case 2] baseline: incorrect claim, zero product tool use -> task false', () => {
-    const cr = buildConditionResult([], WRONG_CLAIM_TEXT);
+    const cr = buildConditionResult([], WRONG_CLAIM_TEXT, { condition: 'no-skill' });
     const grade = gradeScenarioCondition(cr, SCENARIO_5);
     expect(grade.outcomeAssessment.task_outcome_matched).toBe(false);
     expect(grade.outcomeAssessment.task_outcome_reason).toBe('mismatched');
   });
 
   it('[case 3] baseline: no KMP_EVAL_RESULT block at all -> task null, reason claim-missing, protocol false', () => {
-    const cr = buildConditionResult([], NO_BLOCK_TEXT);
+    const cr = buildConditionResult([], NO_BLOCK_TEXT, { condition: 'no-skill' });
     const grade = gradeScenarioCondition(cr, SCENARIO_5);
     expect(grade.outcomeAssessment.task_outcome_matched).toBeNull();
     expect(grade.outcomeAssessment.task_outcome_reason).toBe('claim-missing');
@@ -5824,7 +5825,7 @@ describe('gradeScenarioCondition -- outcome_assessment (neutral scorer, Stage B1
   });
 
   it('[case 4] baseline: malformed JSON inside the KMP_EVAL_RESULT block -> task null, reason claim-malformed', () => {
-    const cr = buildConditionResult([], MALFORMED_BLOCK_TEXT);
+    const cr = buildConditionResult([], MALFORMED_BLOCK_TEXT, { condition: 'no-skill' });
     const grade = gradeScenarioCondition(cr, SCENARIO_5);
     expect(grade.outcomeAssessment.task_outcome_matched).toBeNull();
     expect(grade.outcomeAssessment.task_outcome_reason).toBe('claim-malformed');
@@ -5883,7 +5884,7 @@ describe('gradeScenarioCondition -- outcome_assessment (neutral scorer, Stage B1
   });
 
   it('[case 9] correct claim with zero evidence -> task true, but evidence is claim-only/unavailable', () => {
-    const cr = buildConditionResult([], SCENARIO_5_CORRECT_ANSWER);
+    const cr = buildConditionResult([], SCENARIO_5_CORRECT_ANSWER, { condition: 'no-skill' });
     const grade = gradeScenarioCondition(cr, SCENARIO_5);
     expect(grade.outcomeAssessment.task_outcome_matched).toBe(true);
     expect(grade.outcomeAssessment.provider_evidence_kind).toBe('claim-only');
@@ -5931,10 +5932,29 @@ describe('gradeScenarioCondition -- outcome_assessment (neutral scorer, Stage B1
   });
 
   it('[case 12] legacy success is false for a FreeBaseline-shaped run the neutral scorer credits as correct -- success is never a fair cross-arm headline', () => {
-    const cr = buildConditionResult([], SCENARIO_5_CORRECT_ANSWER);
+    const cr = buildConditionResult([], SCENARIO_5_CORRECT_ANSWER, { condition: 'no-skill' });
     const grade = gradeScenarioCondition(cr, SCENARIO_5);
     expect(grade.success).toBe(false);
     expect(grade.outcomeAssessment.task_outcome_matched).toBe(true);
     expect(grade.outcomeAssessment.product_e2e_success).toBeNull();
+  });
+
+  // Review-round finding: cases 1-4/9/12 above assert product_e2e_success:null for a
+  // "Baseline-shaped" run, but null is only the CORRECT verdict because those runs are no-skill --
+  // it must NOT be the verdict merely because zero evidence exists. This cross-check isolates the
+  // one variable that actually decides null-vs-false: the SAME zero-evidence, no-block observation
+  // (NO_BLOCK_TEXT, empty steps) graded twice, differing ONLY in `condition`. A discriminator that
+  // used evidence absence alone (rather than condition) would pass every case above but fail here.
+  it('[cross-check] product_e2e_success discriminates by condition, not by evidence absence alone -- identical zero-evidence observation, no-skill -> null, current-skill -> false', () => {
+    const noSkillGrade = gradeScenarioCondition(
+      buildConditionResult([], NO_BLOCK_TEXT, { condition: 'no-skill' }),
+      SCENARIO_5,
+    );
+    const currentSkillGrade = gradeScenarioCondition(
+      buildConditionResult([], NO_BLOCK_TEXT, { condition: 'current-skill' }),
+      SCENARIO_5,
+    );
+    expect(noSkillGrade.outcomeAssessment.product_e2e_success).toBeNull();
+    expect(currentSkillGrade.outcomeAssessment.product_e2e_success).toBe(false);
   });
 });
