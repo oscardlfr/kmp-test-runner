@@ -61,6 +61,12 @@ It does not use a possibly stale global product installation, run Claude, or rep
 Gradle can write build outputs and the product can write reports inside the guest. This is a
 real wet gate, not a read-only or dry-run operation.
 
+The validator scopes `GRADLE_OPTS=-Dorg.gradle.daemon=false` to its product invocation and
+restores the previous value afterward. This prevents a pre-existing reusable Gradle daemon
+from doing the build outside the invocation's owned process tree. A disposable single-use
+Gradle JVM remains subject to that tree's timeout. It does not stop unrelated Gradle daemons.
+See [Gradle's daemon documentation](https://docs.gradle.org/current/userguide/gradle_daemon.html#sec:disabling_the_daemon).
+
 | Field | Required value |
 |---|---|
 | `tool` | `kmp-test` |
