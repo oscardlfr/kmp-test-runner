@@ -3352,14 +3352,19 @@ describe('rejection diagnostics schema 13 (Evidence1 success-recovery PR B, Sect
     expect(Object.keys(committed.cells[0].outcome_observability_summary.warning_code_counts).sort()).toEqual(COVERAGE_GATE_WARNING_BUCKET_FIELDS.slice().sort());
   });
 
-  // Requirement 8 (review-round finding): inject a REAL sentinel into the input terminal
-  // evidence's own free-text-shaped field and prove the summary ACTIVELY discards it -- checking
-  // only a default, coincidentally-clean fixture does not prove discarding happened.
-  it('outcome_observability_summary discards sentinel diagnostic prose and a sentinel run id present in the real input', () => {
-    const sentinelTerminal = terminalEvidence({ coverage_gate_diagnostic: 'sentinel-free-text-diagnostic-detail-should-never-leak' });
+  // Requirement 8 (review-round finding, corrected): coverage_gate_diagnostic is ITSELF a closed
+  // enum (kept at its valid default, 'missing-threshold-gate') -- a free-text sentinel placed
+  // there would be rejected by the builder before outcome_observability_summary is ever
+  // assembled, proving nothing about privacy. final_answer_block.detail is the genuinely
+  // free-text field (see terminalEvidence()'s own default value/comment above); the real sentinel
+  // belongs there.
+  it('outcome_observability_summary discards sentinel final-answer prose and a sentinel run id present in the real input', () => {
+    const sentinelTerminal = terminalEvidence({
+      final_answer_block: { ...terminalEvidence().final_answer_block, detail: 'sentinel-free-text-final-answer-detail-should-never-leak' },
+    });
     const { committed } = buildSchema13([schema8NotApplicableRecord({ run_id: 'sentinel-run-id-secret-99' })], sentinelTerminal);
     const json = JSON.stringify(committed.cells[0].outcome_observability_summary);
-    expect(json).not.toMatch(/sentinel-free-text-diagnostic-detail-should-never-leak|sentinel-run-id-secret-99/i);
+    expect(json).not.toMatch(/sentinel-free-text-final-answer-detail-should-never-leak|sentinel-run-id-secret-99/i);
   });
 
   // Requirement 9: counts negativos o floats se rechazan.

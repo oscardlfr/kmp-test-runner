@@ -101,9 +101,15 @@ describe('validateOutcomeObservabilitySummary -- the single shared validator bot
     ['coverage_report_status', COVERAGE_REPORT_STATUS_VALUES],
   ];
   for (const [field, values] of ENUM_FIELDS) {
-    it.each(values)(`${field} accepts the allowed value %j`, (value) => {
-      const errors = validateOutcomeObservabilitySummary(wellFormedSummary({ [field]: value }), 'x');
-      expect(errors.some((e) => e.field === `x.${field}`)).toBe(false);
+    // A single test with an internal loop, not it.each(values) -- values is undefined until this
+    // module actually exports it, and it.each(undefined) aborts the whole FILE's collection
+    // ("Tests: no tests"), which is not an isolated, traceable RED assertion (review-round
+    // finding) -- a for-of over undefined throws INSIDE this one test body instead.
+    it(`${field} accepts every allowed value`, () => {
+      for (const value of values) {
+        const errors = validateOutcomeObservabilitySummary(wellFormedSummary({ [field]: value }), 'x');
+        expect(errors.some((e) => e.field === `x.${field}`)).toBe(false);
+      }
     });
     it(`${field} rejects an unrecognized value`, () => {
       const errors = validateOutcomeObservabilitySummary(wellFormedSummary({ [field]: 'totally-not-a-real-value' }), 'x');

@@ -1924,16 +1924,23 @@ describe('accepted sidecar schema 10 (Evidence1 success-recovery PR B, Section 9
     expect(validateAcceptedRunAuditSidecar(sidecar).errors.some((e) => e.field.includes('outcome_observability_summary'))).toBe(true);
   });
 
-  // Requirement 8 (review-round finding): inject REAL sentinels into the INPUT (a command
-  // carrying a distinctive module name, a distinctive path, the conditionResult's own tool-use
-  // id, a distinctive timestamp-shaped string) and prove the summary ACTIVELY discards them --
-  // checking only a default, coincidentally-clean fixture does not prove discarding happened.
-  it('outcome_observability_summary discards a sentinel module name, path, tool-use id, and timestamp present in the real input', () => {
+  // Requirement 8 (review-round finding, corrected): this file's own terminalEvidence() fixture
+  // has NO final_answer_block.detail field at all -- unlike rejection-diagnostics.mjs's version,
+  // accepted-run-audit.mjs's final_answer_block is already fully structural (found/parsed/
+  // matches_observed/comparison_status/mismatch_fields, no raw text), confirmed by reading the
+  // fixture above. The genuinely free-text surface for THIS file is the raw Bash tool-result
+  // content itself -- exactly the kind of prose/timestamp content buildAcceptedRunAuditSidecar's
+  // whole job is to classify into structure and never echo raw. Sentinels: a distinctive module
+  // name + path in the command, the conditionResult's own tool-use id, and a distinctive
+  // timestamp + prose string in the tool RESULT content.
+  it('outcome_observability_summary discards a sentinel module name, path, tool-use id, timestamp, and prose present in the real input', () => {
+    const SENTINEL_TIMESTAMP = '2027-01-15T03:22:47.123Z';
+    const SENTINEL_PROSE = 'sentinel-free-text-prose-detail-should-never-leak';
     const sentinelConditionResult = conditionResultFrom(
       [
         initEventStub(),
         bashToolUseEvent('sentinel-tool-use-id-99', 'kmp-test parallel --module-filter sentinel-secret-module-77 --project-root /home/sentinel/secret-path --json'),
-        toolResultEvent('sentinel-tool-use-id-99'),
+        toolResultEvent('sentinel-tool-use-id-99', { content: `Ran at ${SENTINEL_TIMESTAMP} -- ${SENTINEL_PROSE}` }),
         resultEventStub(),
       ],
       { decisionByAttempt: new Map([['sentinel-tool-use-id-99', 'allow']]) },
@@ -1943,7 +1950,7 @@ describe('accepted sidecar schema 10 (Evidence1 success-recovery PR B, Section 9
     });
     const sidecar = buildFor(schema8PolicyRequiredRecord(), sentinelTerminal, sentinelConditionResult);
     const json = JSON.stringify(sidecar.outcome_observability_summary);
-    expect(json).not.toMatch(/sentinel-secret-module-77|sentinel-tool-use-id-99|\/home\/sentinel\/secret-path|--module-filter|--project-root/i);
+    expect(json).not.toMatch(/sentinel-secret-module-77|sentinel-tool-use-id-99|\/home\/sentinel\/secret-path|--module-filter|--project-root|2027-01-15T03:22:47|sentinel-free-text-prose-detail-should-never-leak/i);
   });
 
   // Requirement 10 (P2 review-round finding): buildAcceptedRunAuditSidecar's own
