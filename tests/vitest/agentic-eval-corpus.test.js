@@ -339,6 +339,21 @@ describe('corpus/scenarios/', () => {
       expect(prompt).not.toMatch(/\b23\b/);
     });
 
+    // Review-round finding (P1): the coverage BUDGET (15 lines) is a TASK requirement the agent
+    // must evaluate against -- unlike the real missed-line COUNT (23, the ground-truth answer),
+    // which must never leak. Omitting the budget entirely (vaguifying it to "a reasonable coverage
+    // budget") leaves FreeBaseline with no way to determine coverage_threshold_exceeded vs
+    // tests_executed at all, since it has no other source for the number -- a partially-guessable
+    // task, not a fair one. Mirrors the historical scenario's own identical "no more than 15 lines
+    // uncovered" framing: naming the budget was never the leak; naming the FLAG
+    // (--min-missed-lines) or the ANSWER (23) is.
+    it('prompt states the real coverage budget (15) as a natural-language task requirement, never via the --min-missed-lines flag name', () => {
+      const { prompt, expected } = loadV2Scenario();
+      expect(expected.kmp_test.coverage.min_missed_lines).toBe(15);
+      expect(prompt).toMatch(/\b15\b/);
+      expect(prompt).not.toMatch(/--min-missed-lines|min-missed-lines/);
+    });
+
     it("prompt does not place the scenario's own correct outcome_kind as the first filled-in example", () => {
       const { prompt, expected } = loadV2Scenario();
       const firstOutcomeMentioned = OUTCOME_KIND_VALUES_CANONICAL
