@@ -30,6 +30,10 @@ import {
 import { cmdAnalyze } from '../../tools/agentic-eval/cli.mjs';
 import { ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1 } from '../../tools/agentic-eval/accepted-run-audit.mjs';
 import { GRADING_CHECK_NAMES } from '../../tools/agentic-eval/graders.mjs';
+import {
+  COVERAGE_TARGET_STATUS_VALUES, COVERAGE_REPORT_STATUS_VALUES,
+  COVERAGE_GATE_WARNING_BUCKET_FIELDS, EXECUTION_MODE_VALUES,
+} from '../../tools/agentic-eval/coverage-gate-observability.mjs';
 
 const VALID_SCOPE_ID = '11111111-2222-4333-8444-555555555555';
 // Resolved from THIS FILE's own location (never process.cwd(), which depends on where the test
@@ -144,7 +148,7 @@ function bashEntry(useIdx, { kind = 'other-bash', resultIdx = useIdx + 1, decisi
  * ordinal/phase and recomputes `summary` from the entries themselves, exactly mirroring
  * buildAcceptedRunAuditSidecar's own formulas, so every fixture independently satisfies
  * validateAcceptedRunAuditSidecar's cross-checks rather than merely analysis.mjs's own reading. */
-function sidecarFor(record, { entries = [], firstUsefulSignalEvent = null, terminalAuthoritativeEvent, terminalEvidence } = {}) {
+function sidecarFor(record, { entries = [], firstUsefulSignalEvent = null, terminalAuthoritativeEvent, terminalEvidence, outcomeObservabilitySummary } = {}) {
   const sorted = [...entries].sort((a, b) => a.tool_use_event_index - b.tool_use_event_index);
   const boundaryIndex = firstUsefulSignalEvent?.index ?? null;
   const toolCalls = sorted.map((tc, ordinal) => ({ ordinal, ...tc, phase: phaseFor(tc, boundaryIndex) }));
@@ -157,6 +161,7 @@ function sidecarFor(record, { entries = [], firstUsefulSignalEvent = null, termi
     first_useful_signal_event: firstUsefulSignalEvent,
     terminal_authoritative_event: terminalAuthoritativeEvent !== undefined ? terminalAuthoritativeEvent : firstUsefulSignalEvent,
     ...(terminalEvidence !== undefined ? { terminal_evidence: terminalEvidence } : {}),
+    ...(outcomeObservabilitySummary !== undefined ? { outcome_observability_summary: outcomeObservabilitySummary } : {}),
     tool_calls: toolCalls,
     summary: {
       tool_calls_total: toolCalls.length,
@@ -2056,5 +2061,238 @@ describe('buildSummary -- task_outcome_available_ms_distribution (analysis schem
     const { groups } = buildSummary(pairs);
     expect(groups.length).toBe(1);
     expect(groups[0].task_outcome_available_ms_distribution).toEqual({ '1000': 1, '5000': 1, null: 1 });
+  });
+});
+
+// Evidence1 success-recovery PR B, Section 9.14 (remaining analytics beyond task_outcome_*, which
+// Stage B3's own review round already covered): evidence kind/status distribution, Product E2E
+// rate SOLO EN PRODUCT, duration/first-signal/tool-calls/timeout passthroughs, coverage
+// target/report status + warning/execution-mode counts (Section 9.9's shared summary, read from
+// the accepted-run-audit sidecar), and a semantic result_fingerprint. No committed RED existed for
+// these beyond the runbook's own prose spec, so this file is both the RED and (immediately after)
+// the GREEN for this remaining slice.
+describe('analyzeRunRecord -- Section 9.14 remaining per-run analytics (analysis schema 7)', () => {
+  const REAL_OUTCOME_ASSESSMENT = Object.freeze({
+    schema: 1, task_outcome_matched: true, task_outcome_reason: 'matched',
+    answer_protocol_matched: true, provider_evidence_kind: 'kmp-test-envelope',
+    provider_evidence_status: 'matched', product_e2e_success: true,
+  });
+
+  it('duration/first-useful-signal/tool-calls/timeout are plain passthroughs of the record\'s own already-validated fields', () => {
+    const record = scenarioRecord({
+      schema: 8, outcome_assessment: REAL_OUTCOME_ASSESSMENT,
+      condition: 'no-skill', skill_invoked: { value: false, reason: null }, skill_invocation_event: null,
+      wall_clock_ms: 42000,
+      first_useful_signal_ms: { value: 1234, reason: null },
+      tool_calls_total: { value: 3, reason: null },
+      terminated: true, termination_reason: 'timeout',
+    });
+    const { ok, entry } = analyzeRunRecord(record, sidecarFor(record, { entries: [] }));
+    expect(ok).toBe(true);
+    expect(entry.wall_clock_ms).toBe(42000);
+    expect(entry.first_useful_signal_ms).toBe(1234);
+    expect(entry.tool_calls_total).toBe(3);
+    expect(entry.terminated).toBe(true);
+    expect(entry.termination_reason).toBe('timeout');
+  });
+
+  it('first_useful_signal_ms is null when the record\'s own metric has no value, never coerced to 0', () => {
+    const record = scenarioRecord({
+      schema: 8, outcome_assessment: REAL_OUTCOME_ASSESSMENT,
+      condition: 'no-skill', skill_invoked: { value: false, reason: null }, skill_invocation_event: null,
+    });
+    const { entry } = analyzeRunRecord(record, sidecarFor(record, { entries: [] }));
+    expect(entry.first_useful_signal_ms).toBeNull();
+  });
+
+  it('coverage_target_status/coverage_report_status/warning_code_counts/execution_mode_counts read the sidecar\'s own outcome_observability_summary (schema 10) when present', () => {
+    const record = scenarioRecord({
+      schema: 8, outcome_assessment: REAL_OUTCOME_ASSESSMENT,
+      condition: 'no-skill', skill_invoked: { value: false, reason: null }, skill_invocation_event: null,
+    });
+    const warningCounts = Object.fromEntries(COVERAGE_GATE_WARNING_BUCKET_FIELDS.map((f, i) => [f, i === 0 ? 2 : 0]));
+    const executionCounts = Object.fromEntries(EXECUTION_MODE_VALUES.map((f, i) => [f, i === 0 ? 1 : 0]));
+    const sidecar = sidecarFor(record, {
+      entries: [],
+      outcomeObservabilitySummary: {
+        schema: 1, flavor_relation: 'not-applicable', test_type_relation: 'not-applicable',
+        coverage_target_status: 'with-data', coverage_report_status: 'success',
+        warning_code_counts: warningCounts, module_failed_setup_count: null,
+        execution_mode_counts: executionCounts,
+      },
+    });
+    const { entry } = analyzeRunRecord(record, sidecar);
+    expect(entry.coverage_target_status).toBe('with-data');
+    expect(entry.coverage_report_status).toBe('success');
+    expect(entry.warning_code_counts).toEqual(warningCounts);
+    expect(entry.execution_mode_counts).toEqual(executionCounts);
+  });
+
+  it('coverage_target_status/coverage_report_status/warning_code_counts/execution_mode_counts fall back to the honest not-recorded/all-zero shape when the sidecar carries no outcome_observability_summary at all (every schema <10 sidecar)', () => {
+    const record = scenarioRecord({
+      schema: 5, condition: 'no-skill', skill_invoked: { value: false, reason: null }, skill_invocation_event: null,
+    });
+    const { entry } = analyzeRunRecord(record, sidecarFor(record, { entries: [] }));
+    expect(entry.coverage_target_status).toBe('not-recorded');
+    expect(entry.coverage_report_status).toBe('not-recorded');
+    expect(entry.warning_code_counts).toEqual(Object.fromEntries(COVERAGE_GATE_WARNING_BUCKET_FIELDS.map((f) => [f, 0])));
+    expect(entry.execution_mode_counts).toEqual(Object.fromEntries(EXECUTION_MODE_VALUES.map((f) => [f, 0])));
+  });
+
+  it('result_fingerprint excludes paths/duration/run_id/timestamps, and includes normalized module-match/outcome/test-counts/coverage-counts/error-codes', () => {
+    const record = scenarioRecord({
+      schema: 8, outcome_assessment: REAL_OUTCOME_ASSESSMENT,
+      condition: 'no-skill', skill_invoked: { value: false, reason: null }, skill_invocation_event: null,
+      errors: [{ code: 'module_failed', message: 'irrelevant free text, never in the fingerprint' }, { code: 'no_test_modules', message: 'x' }],
+    });
+    const sidecar = sidecarFor(record, {
+      entries: [bashEntry(1, { kind: 'kmp-test', operation: 'parallel' })],
+      firstUsefulSignalEvent: { type: 'user.tool_result', index: 1 },
+      terminalEvidence: {
+        present: true, provider: 'kmp-test', tool_result_event_index: 1,
+        evidence_well_formed: true, target_matches_expected: true, outcome_matches_expected: true,
+        malformed: false, parallel_evidence_invalid: false, changed_evidence_invalid: false,
+        observed_result: {
+          outcome_kind: 'tests_executed', module_matches_expected: true,
+          total: 4, passed: 4, failed: 0, missed_lines: null, threshold: null, modules_contributing: null,
+        },
+        final_answer_block: { found: true, parsed: true, ambiguous: false, matches_observed: true },
+        coverage_gate_diagnostic: 'not-applicable',
+      },
+    });
+    const { entry } = analyzeRunRecord(record, sidecar);
+    expect(entry.result_fingerprint).toEqual({
+      module_matches_expected: true, outcome_kind: 'tests_executed',
+      total: 4, passed: 4, failed: 0, missed_lines: null, threshold: null, modules_contributing: null,
+      error_codes: ['module_failed', 'no_test_modules'],
+    });
+    const json = JSON.stringify(entry.result_fingerprint);
+    expect(json).not.toMatch(/2026-|kampkit-current-skill|run_id|tools\/runs|wall_clock/i);
+  });
+
+  it('result_fingerprint reports every observed_result field as null (never fabricated) when no terminal evidence exists', () => {
+    const record = scenarioRecord({
+      schema: 5, errors: [], condition: 'no-skill', skill_invoked: { value: false, reason: null }, skill_invocation_event: null,
+    });
+    const { entry } = analyzeRunRecord(record, sidecarFor(record, { entries: [] }));
+    expect(entry.result_fingerprint).toEqual({
+      module_matches_expected: null, outcome_kind: null,
+      total: null, passed: null, failed: null, missed_lines: null, threshold: null, modules_contributing: null,
+      error_codes: [],
+    });
+  });
+
+  it('result_fingerprint error_codes is closed, sorted, and deduplicated', () => {
+    const record = scenarioRecord({
+      schema: 5, errors: [{ code: 'gradle_timeout' }, { code: 'configuration' }, { code: 'gradle_timeout' }],
+      condition: 'no-skill', skill_invoked: { value: false, reason: null }, skill_invocation_event: null,
+    });
+    const { entry } = analyzeRunRecord(record, sidecarFor(record, { entries: [] }));
+    expect(entry.result_fingerprint.error_codes).toEqual(['configuration', 'gradle_timeout']);
+  });
+});
+
+describe('buildSummary -- Section 9.14 remaining group-level analytics (analysis schema 7)', () => {
+  function pair(recordOverrides, entryOverrides) {
+    const record = scenarioRecord(recordOverrides);
+    const entry = {
+      run_id: record.run_id, scenario_id: record.scenario_id, condition: record.condition,
+      activation_expected: true, target_skill_invoked: true, target_skill_invocation_ordinal: 0,
+      target_skill_attempt_ordinal: 1, pre_skill_tool_calls: 0, pre_skill_policy_denials: 0,
+      post_skill_tool_calls_total: 0, post_skill_policy_denials_total: 0,
+      post_skill_tool_calls_through_signal: null, post_skill_policy_denials_through_signal: null,
+      post_signal_tool_calls: null, first_useful_signal_present: false,
+      terminal_authoritative_evidence_present: true, terminal_authoritative_evidence_well_formed: true,
+      expected_outcome_matched: true, final_answer_consistent: true, success: true,
+      failure_class: 'success',
+      product_access_mode: 'product-assisted',
+      product_usage_mode: 'product-cli',
+      product_cli_command_count: 1,
+      direct_build_tool_command_count: 0,
+      other_bash_command_count: 0,
+      product_cli_used: true,
+      task_outcome_matched: true,
+      answer_protocol_matched: true,
+      task_outcome_available_ms: 1000,
+      programmatic_evidence_available: true,
+      canonical_final_answer_available: true,
+      canonical_output_available: true,
+      evidence_quality: 'product-canonical',
+      coverage_gate_diagnostic: 'not-recorded',
+      programmatic_product_outcome_matched: true,
+      final_answer_protocol_only_failure: false,
+      provider_evidence_kind: 'kmp-test-envelope', provider_evidence_status: 'matched', product_e2e_success: true,
+      coverage_target_status: 'with-data', coverage_report_status: 'success',
+      warning_code_counts: Object.fromEntries(COVERAGE_GATE_WARNING_BUCKET_FIELDS.map((f) => [f, 0])),
+      execution_mode_counts: Object.fromEntries(EXECUTION_MODE_VALUES.map((f) => [f, 0])),
+      result_fingerprint: { module_matches_expected: true, outcome_kind: 'tests_executed', total: 4, passed: 4, failed: 0, missed_lines: null, threshold: null, modules_contributing: null, error_codes: [] },
+      ...entryOverrides,
+    };
+    return { record, entry };
+  }
+
+  it('provider_evidence_kind_distribution / provider_evidence_status_distribution report every entry, including the claim-only/unavailable FreeBaseline shape', () => {
+    const pairs = [
+      pair({ run_id: 'r1' }, { provider_evidence_kind: 'kmp-test-envelope', provider_evidence_status: 'matched' }),
+      pair({ run_id: 'r2' }, { provider_evidence_kind: 'claim-only', provider_evidence_status: 'unavailable' }),
+    ];
+    const { groups } = buildSummary(pairs);
+    expect(groups[0].provider_evidence_kind_distribution).toEqual({ 'kmp-test-envelope': 1, 'claim-only': 1 });
+    expect(groups[0].provider_evidence_status_distribution).toEqual({ matched: 1, unavailable: 1 });
+  });
+
+  it('product_e2e_success_rate excludes entries whose metric is null (non-Product), never diluting the denominator with an inapplicable entry', () => {
+    const pairs = [
+      pair({ run_id: 'r1' }, { product_e2e_success: true }),
+      pair({ run_id: 'r2' }, { product_e2e_success: false }),
+      pair({ run_id: 'r3' }, { product_e2e_success: null }),
+    ];
+    const { groups } = buildSummary(pairs);
+    expect(groups[0].product_e2e_success_count).toBe(1);
+    expect(groups[0].product_e2e_success_applicable_count).toBe(2);
+    expect(groups[0].product_e2e_success_rate).toBe(0.5);
+  });
+
+  it('wall_clock_ms_distribution / first_useful_signal_ms_distribution / tool_calls_total_distribution / termination_reason_distribution are reported', () => {
+    const pairs = [
+      pair({ run_id: 'r1' }, { wall_clock_ms: 1000, first_useful_signal_ms: 500, tool_calls_total: 2, terminated: false, termination_reason: null }),
+      pair({ run_id: 'r2' }, { wall_clock_ms: 2000, first_useful_signal_ms: null, tool_calls_total: 4, terminated: true, termination_reason: 'timeout' }),
+    ];
+    const { groups } = buildSummary(pairs);
+    expect(groups[0].wall_clock_ms_distribution).toEqual({ '1000': 1, '2000': 1 });
+    expect(groups[0].first_useful_signal_ms_distribution).toEqual({ '500': 1, null: 1 });
+    expect(groups[0].tool_calls_total_distribution).toEqual({ '2': 1, '4': 1 });
+    expect(groups[0].termination_reason_distribution).toEqual({ null: 1, timeout: 1 });
+  });
+
+  it('coverage_target_status_distribution / coverage_report_status_distribution / warning_code_counts / execution_mode_counts are reported group-wide, the latter two SUMMED across entries (mirrors product_cli_recognized_operation_distribution\'s own sum-across-entries pattern)', () => {
+    const warnA = { ...Object.fromEntries(COVERAGE_GATE_WARNING_BUCKET_FIELDS.map((f) => [f, 0])), coverage_xml_disabled: 1 };
+    const warnB = { ...Object.fromEntries(COVERAGE_GATE_WARNING_BUCKET_FIELDS.map((f) => [f, 0])), coverage_xml_disabled: 2 };
+    const execA = { ...Object.fromEntries(EXECUTION_MODE_VALUES.map((f) => [f, 0])), fresh: 1 };
+    const execB = { ...Object.fromEntries(EXECUTION_MODE_VALUES.map((f) => [f, 0])), fresh: 1 };
+    const pairs = [
+      pair({ run_id: 'r1' }, { coverage_target_status: 'with-data', coverage_report_status: 'success', warning_code_counts: warnA, execution_mode_counts: execA }),
+      pair({ run_id: 'r2' }, { coverage_target_status: 'no-xml', coverage_report_status: 'not-attempted', warning_code_counts: warnB, execution_mode_counts: execB }),
+    ];
+    const { groups } = buildSummary(pairs);
+    expect(groups[0].coverage_target_status_distribution).toEqual({ 'with-data': 1, 'no-xml': 1 });
+    expect(groups[0].coverage_report_status_distribution).toEqual({ success: 1, 'not-attempted': 1 });
+    expect(groups[0].warning_code_counts.coverage_xml_disabled).toBe(3);
+    expect(groups[0].execution_mode_counts.fresh).toBe(2);
+  });
+
+  it('result_fingerprint_distinct_count measures Product output determinism -- 1 when every entry in the group agrees, >1 when they genuinely differ', () => {
+    const sameFingerprint = { module_matches_expected: true, outcome_kind: 'tests_executed', total: 4, passed: 4, failed: 0, missed_lines: null, threshold: null, modules_contributing: null, error_codes: [] };
+    const deterministicPairs = [
+      pair({ run_id: 'r1' }, { result_fingerprint: sameFingerprint }),
+      pair({ run_id: 'r2' }, { result_fingerprint: { ...sameFingerprint } }),
+    ];
+    expect(buildSummary(deterministicPairs).groups[0].result_fingerprint_distinct_count).toBe(1);
+
+    const nonDeterministicPairs = [
+      pair({ run_id: 'r1' }, { result_fingerprint: sameFingerprint }),
+      pair({ run_id: 'r2' }, { result_fingerprint: { ...sameFingerprint, failed: 1, passed: 3 } }),
+    ];
+    expect(buildSummary(nonDeterministicPairs).groups[0].result_fingerprint_distinct_count).toBe(2);
   });
 });
