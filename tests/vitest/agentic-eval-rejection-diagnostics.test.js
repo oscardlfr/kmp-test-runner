@@ -3232,3 +3232,127 @@ describe('readRejectionStderrFile -- always derives its own filename internally,
     });
   });
 });
+
+// Evidence1 success-recovery PR B, Stage B2 (docs/audits/agentic-eval-evidence1-success-recovery-
+// v1-runbook.md, Section 9.11): rejection diagnostics schema 13 -- the batch schema for ANY
+// rejection containing a cell whose own run schema is 8+, checked BEFORE the policy_mode dispatch
+// (Section 9.4.5), mirroring exactly how accepted-run-audit sidecar schema 10 is checked before
+// its own policy_mode dispatch. outcome_observability_summary uses the identical field names and
+// Section 9.9 enums as the accepted-sidecar counterpart (requirement 7).
+describe('rejection diagnostics schema 13 (Evidence1 success-recovery PR B, Section 9.4.5/9.9) -- any batch containing a run-schema-8+ cell', () => {
+  function schema8NotApplicableRecord(overrides = {}) {
+    return unrestrictedRecord({ schema: 8, ...overrides });
+  }
+  function schema8RequiredRecord(overrides = {}) {
+    return record({ schema: 8, ...overrides });
+  }
+  function buildSchema13(records, terminal = terminalEvidence()) {
+    return buildDiag({
+      runKind: 'calibration',
+      records,
+      failedChecksByRunId: Object.fromEntries(records.map((r) => [r.run_id, ['authoritative_outcome_matches_expected']])),
+      terminalEvidenceByRunId: Object.fromEntries(records.map((r) => [r.run_id, terminal])),
+    });
+  }
+
+  it('routes to schema 13 for a lone schema-8+ cell, regardless of policy_mode', () => {
+    expect(buildSchema13([schema8NotApplicableRecord()]).committed.schema).toBe(13);
+    expect(buildSchema13([schema8RequiredRecord({ run_id: 'r-required' })]).committed.schema).toBe(13);
+  });
+
+  it('routes a MIXED batch to schema 13 when only ONE cell is schema 8+', () => {
+    const mixed = [unrestrictedRecord({ run_id: 'r-old' }), schema8NotApplicableRecord({ run_id: 'r-new' })];
+    expect(buildSchema13(mixed).committed.schema).toBe(13);
+  });
+
+  it('a batch with NO schema-8+ cell keeps using v3/v12 exactly as before -- schema 13 is additive, never the default', () => {
+    expect(buildSchema13([record()]).committed.schema).not.toBe(13);
+    expect(buildSchema13([unrestrictedRecord()]).committed.schema).not.toBe(13);
+  });
+
+  it('every schema-13 cell carries its own outcome_observability_summary object, in both policy modes', () => {
+    for (const rec of [schema8NotApplicableRecord(), schema8RequiredRecord()]) {
+      const { committed } = buildSchema13([rec]);
+      expect(committed.cells[0].outcome_observability_summary).toBeTruthy();
+      expect(committed.cells[0].outcome_observability_summary.schema).toBe(1);
+    }
+  });
+
+  // Requirement 5: rejection schema 13 proyecta lo disponible y usa not-recorded/null de forma
+  // canonica. Requirement 7: accepted y rejected usan los mismos enums (Section 9.9).
+  it.each([
+    ['flavor_relation', ['absent', 'explicit-match', 'explicit-mismatch', 'unexpected', 'not-applicable', 'not-recorded']],
+    ['test_type_relation', ['absent', 'match', 'mismatch', 'not-applicable', 'not-recorded']],
+    ['coverage_target_status', ['with-data', 'no-xml', 'parse-error', 'unavailable', 'not-applicable', 'not-recorded']],
+    ['coverage_report_status', ['not-attempted', 'success', 'failed', 'unavailable', 'not-recorded']],
+  ])('%s falls back to one of Section 9.9\'s closed enum values when no source data exists', (field, allowed) => {
+    const { committed } = buildSchema13([schema8NotApplicableRecord()], null);
+    expect(allowed).toContain(committed.cells[0].outcome_observability_summary[field]);
+  });
+
+  it('module_failed_setup_count is a non-negative integer or null when no source data exists', () => {
+    const { committed } = buildSchema13([schema8NotApplicableRecord()], null);
+    const value = committed.cells[0].outcome_observability_summary.module_failed_setup_count;
+    expect(value === null || (Number.isInteger(value) && value >= 0)).toBe(true);
+  });
+
+  it('warning_code_counts is a closed map of exactly the approved coverage warning codes to non-negative integers', () => {
+    const { committed } = buildSchema13([schema8NotApplicableRecord()], null);
+    const counts = committed.cells[0].outcome_observability_summary.warning_code_counts;
+    const approved = [
+      'no_coverage_data', 'coverage_xml_disabled', 'coverage_xml_oversized', 'coverage_parse_failed',
+      'coverage_aggregation_drift', 'coverage_report_write_failed', 'coverage_report_dispatch_failed',
+      'coverage_aggregation_failed', 'coverage_aggregation_skipped',
+    ];
+    expect(Object.keys(counts).sort()).toEqual(approved.sort());
+  });
+
+  // Requirement 8: privacy tripwire rejects command/path/id/time/prose.
+  it('outcome_observability_summary never leaks a raw command, path, run id, or timestamp', () => {
+    const { committed } = buildSchema13([schema8NotApplicableRecord()]);
+    const json = JSON.stringify(committed.cells[0].outcome_observability_summary);
+    expect(json).not.toMatch(/kmp-test|gradlew|\.\/|C:\\|\/home\/|2026-\d\d-\d\d/i);
+    expect(json).not.toContain(schema8NotApplicableRecord().run_id);
+  });
+
+  // Requirement 9: counts negativos o floats se rechazan.
+  it.each([-1, 1.5, '2', true])('validateRejectionRow rejects a module_failed_setup_count of %j', (bad) => {
+    const { committed } = buildSchema13([schema8NotApplicableRecord()], null);
+    committed.cells[0].outcome_observability_summary.module_failed_setup_count = bad;
+    expect(validateRejectionRow(committed).errors.some((e) => e.field.includes('module_failed_setup_count'))).toBe(true);
+  });
+
+  it.each([-1, 1.5, '2', true])('validateRejectionRow rejects a warning_code_counts entry of %j', (bad) => {
+    const { committed } = buildSchema13([schema8NotApplicableRecord()], null);
+    committed.cells[0].outcome_observability_summary.warning_code_counts.coverage_xml_disabled = bad;
+    expect(validateRejectionRow(committed).errors.some((e) => e.field.includes('warning_code_counts'))).toBe(true);
+  });
+
+  it('validateRejectionRow rejects an unrecognized key inside outcome_observability_summary', () => {
+    const { committed } = buildSchema13([schema8NotApplicableRecord()], null);
+    committed.cells[0].outcome_observability_summary.raw_command = 'kmp-test parallel --module-filter secret';
+    expect(validateRejectionRow(committed).errors.some((e) => e.field.includes('outcome_observability_summary'))).toBe(true);
+  });
+
+  // Requirement 6: schemas historicos siguen validando sin los campos -- mirrors the schema-12
+  // precedent's own "keeps v11 historical rows valid" test one version further.
+  it('keeps v12 historical rows valid without the schema-13 field, but rejects schema-13 omissions', () => {
+    const { committed } = buildSchema13([schema8NotApplicableRecord()]);
+    const v12 = JSON.parse(JSON.stringify(committed));
+    v12.schema = 12;
+    delete v12.cells[0].outcome_observability_summary;
+    expect(validateRejectionRow(v12).errors).toEqual([]);
+
+    const missing = JSON.parse(JSON.stringify(committed));
+    delete missing.cells[0].outcome_observability_summary;
+    expect(validateRejectionRow(missing).errors.some((e) => e.field === 'cells[0].outcome_observability_summary')).toBe(true);
+  });
+
+  // Requirement 10: builder no llama parsers de transcript -- mirrors the exact static-source-guard
+  // precedent already established for buildRejectionDiagnostics above (schema-12 describe block).
+  it('outcome_observability_summary is assembled from already-computed structured data -- never a parser, transcript, or raw artifact reader', () => {
+    const source = readFileSync(path.join(REPO_ROOT, 'tools', 'agentic-eval', 'rejection-diagnostics.mjs'), 'utf8');
+    const builder = source.slice(source.indexOf('export function buildRejectionDiagnostics'), source.indexOf('export function writeRejectionRawTranscripts'));
+    expect(builder).not.toMatch(/parse(?:Stream|Transcript)|readFileSync\(/i);
+  });
+});
