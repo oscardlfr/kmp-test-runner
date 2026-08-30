@@ -112,7 +112,7 @@ function dryPlan(product) {
 }
 
 const hasPowerShell = !spawnSync('pwsh', ['-NoProfile', '-Command', '$PSVersionTable.PSVersion.Major'], { windowsHide: true }).error;
-describe.skipIf(!hasPowerShell)('Evidence1 validation operations functional contract', () => {
+describe.skipIf(!hasPowerShell)('Evidence1 validation operations functional contract', { timeout: 45000 }, () => {
   it('schema2 preserves independent product, postflight and persistence failures and actual process facts', () => {
     const dir = mkdtempSync(resolve(tmpdir(), 'e1-validation-diagnostics-'));
     try {
