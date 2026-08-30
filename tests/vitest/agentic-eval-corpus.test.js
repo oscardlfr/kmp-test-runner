@@ -5,12 +5,14 @@
 // contract lives in tests/vitest/agentic-eval-graders.test.js.
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateTriggerQueries, validateScenario } from '../../tools/agentic-eval/schemas.mjs';
 import { loadScenarioFile } from '../../tools/agentic-eval/cli.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const CORPUS_DIR = path.resolve(__dirname, '..', '..', 'tools', 'agentic-eval', 'corpus');
 const SCENARIOS_DIR = path.join(CORPUS_DIR, 'scenarios');
 const BANNED_TERMS_RE = /\bkmp-test\b|kmp-test-runner|bin[\\/]kmp-test\.js/i;
@@ -73,9 +75,14 @@ describe('trigger-queries.json', () => {
 describe('corpus/scenarios/', () => {
   const scenarioFiles = readdirSync(SCENARIOS_DIR).filter((f) => f.endsWith('.json'));
 
-  it('contains exactly the 6 expected scenario files (corpus complete)', () => {
+  // Evidence1 success-recovery PR B, Stage B3 (Section 9.12): coverage-threshold-failure-v2.json
+  // is created only in Stage B4, after this RED confirms today's absence. Updated in place
+  // (rather than left at 6) because 7 IS the correct post-B4 count -- this line itself flips from
+  // failing (6 exist today) to passing once Stage B4 lands, exactly like every other RED case here.
+  it('contains exactly the 7 expected scenario files (corpus complete, Stage B4 adds v2)', () => {
     expect(scenarioFiles.sort()).toEqual([
       'changed-module-verification.json',
+      'coverage-threshold-failure-v2.json',
       'coverage-threshold-failure.json',
       'deterministic-unit-test-failure.json',
       'kampkit-android-host-test-discovery.json',
@@ -88,14 +95,15 @@ describe('corpus/scenarios/', () => {
   // (tools/agentic-eval/corpus/scenarios/changed-module-verification.json, SKILL.md Decision
   // protocol Step 1) was directly informed by this scenario's own failure, so it can no longer be
   // honestly held-out. 3/3 was the corpus's original, now-historical balance -- see BACKLOG.md.
-  it('tags partition exactly 4 train / 2 held-out across the completed corpus', () => {
+  // v2 (Stage B4) adds a 5th train-tagged scenario.
+  it('tags partition exactly 5 train / 2 held-out across the completed corpus (Stage B4 adds v2, tagged train)', () => {
     const tagCounts = { train: 0, 'held-out': 0 };
     for (const file of scenarioFiles) {
       const { scenario, parseError } = loadScenarioFile(SCENARIOS_DIR, file);
       if (parseError) throw new Error(`${file}: ${parseError}`);
       for (const tag of scenario.tags ?? []) tagCounts[tag] = (tagCounts[tag] ?? 0) + 1;
     }
-    expect(tagCounts).toEqual({ train: 4, 'held-out': 2 });
+    expect(tagCounts).toEqual({ train: 5, 'held-out': 2 });
   });
 
   // Reuses cli.mjs's own loadScenarioFile (never throws on malformed JSON) rather than a
@@ -271,5 +279,127 @@ describe('corpus/scenarios/', () => {
   it('does not reveal the module, the file, or the "changed" subcommand in its prompt', () => {
     const scenario = loadChangedModuleVerificationScenario();
     expect(scenario.prompt).not.toMatch(/:core:common|Result\.kt|kmp-test changed|\bchanged\b/i);
+  });
+
+  // Evidence1 success-recovery PR B, Stage B3 (docs/audits/agentic-eval-evidence1-success-recovery-
+  // v1-runbook.md, Section 9.12): coverage-threshold-failure-v2.json, the neutral scenario Stage B4
+  // creates only after this whole describe block confirms genuine RED (the file does not exist
+  // yet). Requirement 8: coverage-threshold-failure.json (the historical scenario) itself is NEVER
+  // edited by this PR -- its git blob identity is pinned here to the exact value confirmed unchanged
+  // since PR_A_SHA (548a0c14dcb0f29618b1827cb2c6a3c881f55d92), computed via `git hash-object --path`
+  // against the real committed file, not assumed.
+  describe('coverage-threshold-failure-v2.json (Evidence1 success-recovery PR B, Section 9.8/9.12)', () => {
+    const SOURCE_SHA = '7d45eae4f8720a0c77f507712ba2437ff974b6ed';
+    const OUTCOME_KIND_VALUES_CANONICAL = ['tests_executed', 'no_applicable_tests', 'tests_failed', 'coverage_threshold_exceeded'];
+
+    function loadV2Scenario() {
+      const { scenario, parseError } = loadScenarioFile(SCENARIOS_DIR, 'coverage-threshold-failure-v2.json');
+      if (parseError) throw new Error(`coverage-threshold-failure-v2.json: ${parseError}`);
+      return scenario;
+    }
+
+    // Requirement 8: scenario historico conserva blob identity -- proves THIS file (v2's own test
+    // suite) never mutated the historical scenario while designing v2 alongside it. Shells out to
+    // the REAL `git hash-object --path` (never a hand-reimplemented sha1-of-"blob N\0"+content in
+    // JS) -- this repo's own CRLF-normalization history means a naive raw-byte hash can silently
+    // mismatch git's own gitattributes-aware normalization on Windows.
+    it('the historical coverage-threshold-failure.json keeps its exact, unchanged git blob identity', () => {
+      const relativePath = 'tools/agentic-eval/corpus/scenarios/coverage-threshold-failure.json';
+      const blobSha = execFileSync('git', ['hash-object', '--path', relativePath, relativePath], { cwd: REPO_ROOT, encoding: 'utf8' }).trim();
+      expect(blobSha).toBe('e06cf1b4a8c4486e9adaf6ede3f7aee0093f1937');
+    });
+
+    // Requirement 9: expected shape valida (also proves the file exists and parses at all).
+    it('validateScenario reports zero errors for coverage-threshold-failure-v2.json', () => {
+      const { errors } = validateScenario(loadV2Scenario());
+      expect(errors).toEqual([]);
+    });
+
+    // Requirement 1: id y filename coinciden.
+    it('id matches its own filename exactly', () => {
+      expect(loadV2Scenario().id).toBe('coverage-threshold-failure-v2');
+    });
+
+    // Requirement 2: source SHA exacto (same pin as the historical scenario -- Stage B0 ran
+    // against this exact commit).
+    it('pins the exact same source commit Stage B0 verified ground truth against', () => {
+      expect(loadV2Scenario().project_commit).toBe(SOURCE_SHA);
+    });
+
+    // Requirement 3: tag train presente.
+    it('is tagged train', () => {
+      expect(loadV2Scenario().tags).toContain('train');
+    });
+
+    // Requirement 4: prompt no contiene producto, modulo, missed lines ni outcome rellenado.
+    it('prompt never mentions the product name, the real module, or the real missed-line count', () => {
+      const { prompt } = loadV2Scenario();
+      expect(prompt).not.toMatch(/kmp-test/i);
+      expect(prompt).not.toMatch(/:core:domain/);
+      expect(prompt).not.toMatch(/\b23\b/);
+    });
+
+    it("prompt does not place the scenario's own correct outcome_kind as the first filled-in example", () => {
+      const { prompt, expected } = loadV2Scenario();
+      const firstOutcomeMentioned = OUTCOME_KIND_VALUES_CANONICAL
+        .map((kind) => ({ kind, index: prompt.indexOf(kind) }))
+        .filter((entry) => entry.index !== -1)
+        .sort((a, b) => a.index - b.index)[0];
+      expect(firstOutcomeMentioned).toBeTruthy();
+      expect(firstOutcomeMentioned.kind).not.toBe(expected.outcome_kind);
+    });
+
+    // Requirement 5: enum de outcomes completo y neutral.
+    it('lists all 4 outcome_kind values in the prompt, in the canonical schemas.mjs order', () => {
+      const { prompt } = loadV2Scenario();
+      const indices = OUTCOME_KIND_VALUES_CANONICAL.map((kind) => prompt.indexOf(kind));
+      expect(indices.every((i) => i !== -1)).toBe(true);
+      expect(indices).toEqual([...indices].sort((a, b) => a - b));
+    });
+
+    // Requirement 6: scope de Product y Baseline representa cuatro tests (Stage B0 ground truth:
+    // 4 individual tests, module-wide across both build flavors).
+    it('both providers\' expected scope represents the same Stage-B0-verified 4 tests', () => {
+      const { expected } = loadV2Scenario();
+      expect(expected.kmp_test.tests.individual_total).toBe(4);
+      expect(expected.gradle.tests.total).toBe(4);
+    });
+
+    // Requirement 7: tasks baseline coinciden con B0 y no incluyen tasks ajenas -- exactly the 4
+    // tasks Stage B0 itself identified (2 unit-test tasks + 2 coverage-report tasks), nothing else.
+    it('allowed Gradle tasks are exactly Stage B0\'s own verified task set -- both flavors\' test and coverage-report tasks, nothing foreign', () => {
+      const { policy } = loadV2Scenario();
+      expect(policy.allowed_gradle_tasks.slice().sort()).toEqual([
+        ':core:domain:createDemoDebugUnitTestCoverageReport',
+        ':core:domain:createProdDebugUnitTestCoverageReport',
+        ':core:domain:testDemoDebugUnitTest',
+        ':core:domain:testProdDebugUnitTest',
+      ].sort());
+    });
+
+    it('Product policy keeps its strict, unchanged kmp-test subcommand contract (doctor/describe/parallel)', () => {
+      const { policy } = loadV2Scenario();
+      expect(policy.allowed_kmptest_subcommands).toEqual(['doctor', 'describe', 'parallel']);
+    });
+
+    // Requirement 10: Product y FreeBaseline usan el mismo prompt comun -- structurally guaranteed
+    // by a single `prompt` field with no provider-conditional branching text.
+    it('has exactly one shared prompt, with no provider-specific branching instructions', () => {
+      const { prompt } = loadV2Scenario();
+      expect(typeof prompt).toBe('string');
+      expect(prompt.length).toBeGreaterThan(0);
+      expect(prompt).not.toMatch(/\(Product only\)|\(FreeBaseline only\)|if you have access to kmp-test|if you don't have access to kmp-test/i);
+    });
+
+    it('requires the same KMP_EVAL_RESULT final-block protocol the historical scenario already uses', () => {
+      const { prompt } = loadV2Scenario();
+      expect(prompt).toMatch(/KMP_EVAL_RESULT\b/);
+      expect(prompt).toMatch(/KMP_EVAL_RESULT_END\b/);
+    });
+
+    it("does not reveal the module or the numeric budget flag in its prompt (mirrors the historical scenario's own prompt-privacy test)", () => {
+      const { prompt } = loadV2Scenario();
+      expect(prompt).not.toMatch(/--min-missed-lines|min-missed-lines/);
+    });
   });
 });
