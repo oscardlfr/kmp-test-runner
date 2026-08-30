@@ -1898,6 +1898,14 @@ describe('analyzeRunRecord -- task_outcome_available_ms (analysis schema 7, Stag
     answer_protocol_matched: true, provider_evidence_kind: 'claim-only',
     provider_evidence_status: 'unavailable', product_e2e_success: null,
   });
+  // Review-round finding (P1): the "Product correct" case below must use a genuinely
+  // Product-shaped assessment -- kmp-test-envelope/matched/E2E-true -- never the claim-only/
+  // unavailable/null baseline shape reused by mistake for both cases.
+  const REAL_OUTCOME_ASSESSMENT_PRODUCT_MATCHED = Object.freeze({
+    schema: 1, task_outcome_matched: true, task_outcome_reason: 'matched',
+    answer_protocol_matched: true, provider_evidence_kind: 'kmp-test-envelope',
+    provider_evidence_status: 'matched', product_e2e_success: true,
+  });
 
   it('FreeBaseline correct: outcome available at the record\'s own end-to-end wall_clock_ms, evidence signal stays null', () => {
     const record = scenarioRecord({
@@ -1911,13 +1919,14 @@ describe('analyzeRunRecord -- task_outcome_available_ms (analysis schema 7, Stag
     expect(entry.task_outcome_available_ms).toBe(record.wall_clock_ms);
   });
 
-  it('Product correct: outcome available at wall_clock_ms, and the evidence signal (when present) is earlier-or-equal, never later', () => {
+  it('Product correct: outcome available at wall_clock_ms, and the evidence signal (when present) is earlier-or-equal, never later; success:true does not fuse the two metrics together', () => {
     // schema:8 (>=6) makes targetSkillInvokedView read skill_observation.activation.status, never
     // the legacy skill_invoked.value -- a schema:8, current-skill fixture needs the real Section-F
     // groups to be internally coherent (mirrors scenarioRecord6's own shape, describe-scoped
     // elsewhere in this file and not reachable from here).
     const record = scenarioRecord({
-      schema: 8, outcome_assessment: REAL_OUTCOME_ASSESSMENT_MATCHED,
+      schema: 8, outcome_assessment: REAL_OUTCOME_ASSESSMENT_PRODUCT_MATCHED,
+      success: { value: true, reason: null }, expected_outcome_matched: { value: true, reason: null },
       first_useful_signal_ms: { value: 12345, reason: null },
       first_useful_signal_event: { type: 'user.tool_result', index: 1 },
       agent_runtime: {
@@ -1950,8 +1959,13 @@ describe('analyzeRunRecord -- task_outcome_available_ms (analysis schema 7, Stag
     const sidecar = sidecarFor(record, { entries: [targetSkillEntry(0), bashEntry(1, { kind: 'kmp-test', operation: 'parallel' })], firstUsefulSignalEvent: { type: 'user.tool_result', index: 1 } });
     const { ok, entry } = analyzeRunRecord(record, sidecar);
     expect(ok).toBe(true);
+    expect(entry.success).toBe(true);
     expect(entry.task_outcome_available_ms).toBe(record.wall_clock_ms);
     expect(record.first_useful_signal_ms.value).toBeLessThanOrEqual(entry.task_outcome_available_ms);
+    // success:true must not fuse the two metrics into one -- they stay their own independently-
+    // computed values (wall_clock_ms vs. the real evidence timestamp), never silently forced equal
+    // just because the strict Product grader also happened to pass.
+    expect(entry.task_outcome_available_ms).not.toBe(record.first_useful_signal_ms.value);
   });
 
   it('incorrect, absent, or unevaluable claim: task_outcome_available_ms is null', () => {
@@ -1985,5 +1999,55 @@ describe('analyzeRunRecord -- task_outcome_available_ms (analysis schema 7, Stag
     expect(ok).toBe(true);
     expect(entry.success).toBe(false);
     expect(entry.task_outcome_available_ms).toBe(record.wall_clock_ms);
+  });
+});
+
+// Review-round finding (P2): task_outcome_available_ms was only required on per_run entries; the
+// runbook also requires it preserved per cell/arm in the GROUP summary. One RED case, following
+// buildSummary's own describe block above and buildDistribution's exact closed-map pattern
+// (analysis.mjs's own buildDistribution: string-keyed counts, the literal key "null" for a null
+// value -- never a real JS null as a key, which JSON can't roundtrip anyway).
+describe('buildSummary -- task_outcome_available_ms_distribution (analysis schema 7, Stage B3 review-round finding)', () => {
+  function pair(recordOverrides, entryOverrides) {
+    const record = scenarioRecord(recordOverrides);
+    const entry = {
+      run_id: record.run_id, scenario_id: record.scenario_id, condition: record.condition,
+      activation_expected: true, target_skill_invoked: true, target_skill_invocation_ordinal: 0,
+      target_skill_attempt_ordinal: 1, pre_skill_tool_calls: 0, pre_skill_policy_denials: 0,
+      post_skill_tool_calls_total: 0, post_skill_policy_denials_total: 0,
+      post_skill_tool_calls_through_signal: null, post_skill_policy_denials_through_signal: null,
+      post_signal_tool_calls: null, first_useful_signal_present: false,
+      terminal_authoritative_evidence_present: true, terminal_authoritative_evidence_well_formed: true,
+      expected_outcome_matched: true, final_answer_consistent: true, success: true,
+      failure_class: 'success',
+      product_access_mode: 'product-assisted',
+      product_usage_mode: 'product-cli',
+      product_cli_command_count: 1,
+      direct_build_tool_command_count: 0,
+      other_bash_command_count: 0,
+      product_cli_used: true,
+      task_outcome_matched: true,
+      answer_protocol_matched: true,
+      programmatic_evidence_available: true,
+      canonical_final_answer_available: true,
+      canonical_output_available: true,
+      evidence_quality: 'product-canonical',
+      coverage_gate_diagnostic: 'not-recorded',
+      programmatic_product_outcome_matched: true,
+      final_answer_protocol_only_failure: false,
+      ...entryOverrides,
+    };
+    return { record, entry };
+  }
+
+  it('reports a closed frequency map keyed by string milliseconds, with the literal key "null" for a not-available run', () => {
+    const pairs = [
+      pair({ run_id: 'r1' }, { task_outcome_available_ms: 1000 }),
+      pair({ run_id: 'r2' }, { task_outcome_available_ms: 5000 }),
+      pair({ run_id: 'r3' }, { task_outcome_available_ms: null }),
+    ];
+    const { groups } = buildSummary(pairs);
+    expect(groups.length).toBe(1);
+    expect(groups[0].task_outcome_available_ms_distribution).toEqual({ '1000': 1, '5000': 1, null: 1 });
   });
 });
