@@ -367,14 +367,34 @@ describe('corpus/scenarios/', () => {
 
     // Requirement 7: tasks baseline coinciden con B0 y no incluyen tasks ajenas -- exactly the 4
     // tasks Stage B0 itself identified (2 unit-test tasks + 2 coverage-report tasks), nothing else.
-    it('allowed Gradle tasks are exactly Stage B0\'s own verified task set -- both flavors\' test and coverage-report tasks, nothing foreign', () => {
+    // Review-round finding (P1): a 2-separate-flavor-task design cannot actually reach 4 verified
+    // tests -- graders.mjs evaluates ONE Bash attempt against ONE evidence_task; nothing aggregates
+    // across attempts. The real, stable, single-invocation path is the umbrella `test` task:
+    // lib/parsers/junit-xml.js's forEachJunitXml has a DOCUMENTED, existing branch (taskShort ===
+    // 'test') that walks every sibling `*UnitTest` result directory and sums them. Empirically
+    // verified (not just read) via a disposable script against synthetic 2-flavor XML fixtures
+    // mirroring Stage B0's exact shape: `:core:domain:test` -> 4, `:core:domain:testDemoDebugUnitTest`
+    // alone -> 2. junit-xml.js/junit-evidence.mjs are outside PR B's allowlist (lib/** and an
+    // unlisted tools/agentic-eval/ file respectively) so this mechanism cannot be re-proven as a
+    // new committed unit test here without exceeding scope -- this comment plus the report to the
+    // user is the traceable record of that verification. Coverage-report tasks stay listed
+    // separately: there is no analogous harness-level independent verification for Gradle-produced
+    // coverage XML (confirmed absent by grep across graders.mjs/junit-evidence.mjs), so FreeBaseline
+    // may inspect them itself, but its own coverage claim is graded as self-reported evidence, not
+    // independently confirmed -- see the paired graders.mjs test coverage for this asymmetry.
+    it('allowed Gradle tasks are exactly Stage B0\'s own verified task set -- the umbrella test task (real, single-invocation, 4-test aggregation) plus both flavors\' coverage-report tasks, nothing foreign', () => {
       const { policy } = loadV2Scenario();
       expect(policy.allowed_gradle_tasks.slice().sort()).toEqual([
         ':core:domain:createDemoDebugUnitTestCoverageReport',
         ':core:domain:createProdDebugUnitTestCoverageReport',
-        ':core:domain:testDemoDebugUnitTest',
-        ':core:domain:testProdDebugUnitTest',
+        ':core:domain:test',
       ].sort());
+    });
+
+    it('the Gradle evidence_task is the umbrella test task -- the one real, single-invocation path Stage B0 + the umbrella-aggregation mechanism jointly verified reaches all 4 tests', () => {
+      const { expected } = loadV2Scenario();
+      expect(expected.gradle.evidence_task).toBe(':core:domain:test');
+      expect(expected.gradle.allowed_invocations).toContain(':core:domain:test');
     });
 
     it('Product policy keeps its strict, unchanged kmp-test subcommand contract (doctor/describe/parallel)', () => {
