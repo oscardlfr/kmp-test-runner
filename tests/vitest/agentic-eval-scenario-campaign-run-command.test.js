@@ -287,6 +287,33 @@ const CAMPAIGN_FLAGS = (attestationPath) => ['--campaign-design', DESIGN_ID, '--
 const FREE_BASELINE_CAMPAIGN_FLAGS = (attestationPath) => ['--campaign-design', FREE_BASELINE_DESIGN_ID, '--isolation-attestation-file', attestationPath];
 
 describe('1. cli.mjs run --campaign-design -- dry-run plan preview', () => {
+  it.each([
+    ['claude-product-canary-v1', 'A', 'current-skill', 'product-assisted'],
+    ['claude-free-baseline-canary-v1', 'B', 'no-skill', 'free-baseline-no-product'],
+  ])('prints the registered single-cell %s through the real CLI entry point', async (designId, label, condition, mode) => {
+    const attestationPath = writeValidAttestation();
+    const result = await runCli([
+      'run', '--scenario', 'coverage-threshold-failure-v2', '--source-repo-dir', '/definitely/does/not/exist',
+      '--seed', '7', '--campaign-design', designId, '--isolation-attestation-file', attestationPath, '--dry-run',
+    ], {
+      ...fakeClaudeEnv('run-scenario-success'),
+      KMP_EVAL_SCENARIOS_DIR: path.join(REPO_ROOT, 'tools', 'agentic-eval', 'corpus', 'scenarios'),
+    });
+    expect(result.status, result.stderr || result.stdout).toBe(0);
+    expect(result.parsed).toMatchObject({
+      dry_run: true, campaign_design_id: designId, scenario_id: 'coverage-threshold-failure-v2',
+      repeats: 1, planned_sessions: 1,
+    });
+    expect(result.parsed.plan).toHaveLength(1);
+    expect(result.parsed.plan[0]).toMatchObject({
+      order_index: 0, repetition_index: 0, campaign_cell_label: label, condition,
+      product_access_mode: mode, execution_profile_id: UNRESTRICTED,
+      execution_profile_isolation_attestation_sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(readdirSync(runsRoot)).toEqual([]);
+    expect(readdirSync(isolatedTmp)).toEqual([path.basename(attestationPath)]);
+  });
+
   it('prints 16 planned cells and spawns nothing, even with a nonexistent --source-repo-dir', async () => {
     const attestationPath = writeValidAttestation();
     const result = await runCli(

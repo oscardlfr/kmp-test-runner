@@ -24,6 +24,12 @@ import { isProductAccessMode, isProductAccessModeCompatibleWithSkillCondition } 
  * of any kind here; the campaign's own cell order is fully literal and pre-registered). */
 const SKILL_CONDITION_VALUES = Object.freeze(['current-skill', 'no-skill']);
 
+// Shared by the full control campaign and its one-cell canaries.
+const PRODUCT_CONTROL_CELLS = Object.freeze({
+  A: Object.freeze({ execution_profile_id: 'sandboxed-unrestricted-v1', condition: 'current-skill', product_access_mode: 'product-assisted' }),
+  B: Object.freeze({ execution_profile_id: 'sandboxed-unrestricted-v1', condition: 'no-skill', product_access_mode: 'free-baseline-no-product' }),
+});
+
 /** Closed registry of campaign designs. Each design is a fixed 2-axis (execution profile x skill
  * condition) cell definition set (`cellDefinitions`, keyed by a short label) plus a literal,
  * pre-registered per-repetition dispatch ORDER of those labels (`order`, one array per repetition,
@@ -49,10 +55,7 @@ const CAMPAIGN_DESIGNS = Object.freeze({
   'claude-product-vs-free-baseline-v1': Object.freeze({
     id: 'claude-product-vs-free-baseline-v1',
     repeats: 4,
-    cellDefinitions: Object.freeze({
-      A: Object.freeze({ execution_profile_id: 'sandboxed-unrestricted-v1', condition: 'current-skill', product_access_mode: 'product-assisted' }),
-      B: Object.freeze({ execution_profile_id: 'sandboxed-unrestricted-v1', condition: 'no-skill', product_access_mode: 'free-baseline-no-product' }),
-    }),
+    cellDefinitions: PRODUCT_CONTROL_CELLS,
     order: Object.freeze([
       Object.freeze(['A', 'B']),
       Object.freeze(['B', 'A']),
@@ -60,12 +63,26 @@ const CAMPAIGN_DESIGNS = Object.freeze({
       Object.freeze(['A', 'B']),
     ]),
   }),
+  'claude-product-canary-v1': Object.freeze({
+    id: 'claude-product-canary-v1',
+    scenario_id: 'coverage-threshold-failure-v2',
+    repeats: 1,
+    cellDefinitions: Object.freeze({ A: PRODUCT_CONTROL_CELLS.A }),
+    order: Object.freeze([Object.freeze(['A'])]),
+  }),
+  'claude-free-baseline-canary-v1': Object.freeze({
+    id: 'claude-free-baseline-canary-v1',
+    scenario_id: 'coverage-threshold-failure-v2',
+    repeats: 1,
+    cellDefinitions: Object.freeze({ B: PRODUCT_CONTROL_CELLS.B }),
+    order: Object.freeze([Object.freeze(['B'])]),
+  }),
 });
 
 /** Resolves a campaign design by id. Never throws -- `{ok:true, design}` or `{ok:false, reason}`,
  * mirroring registries.mjs's resolveSelection/resolveIsolationAttestationOrFail's own shape. */
 export function resolveScenarioCampaignDesign(designId) {
-  const design = typeof designId === 'string' && designId.length > 0 ? CAMPAIGN_DESIGNS[designId] : undefined;
+  const design = typeof designId === 'string' && Object.hasOwn(CAMPAIGN_DESIGNS, designId) ? CAMPAIGN_DESIGNS[designId] : undefined;
   if (design == null) {
     const known = Object.keys(CAMPAIGN_DESIGNS).join(', ');
     return { ok: false, reason: `unknown campaign design id ${JSON.stringify(designId)} (known: ${known})` };
