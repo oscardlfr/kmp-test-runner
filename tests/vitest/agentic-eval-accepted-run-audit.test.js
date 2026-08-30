@@ -1745,3 +1745,141 @@ describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / cross
     expect(sidecar).not.toHaveProperty('isolation_attestation_sha256');
   });
 });
+
+// Evidence1 success-recovery PR B, Stage B2 (docs/audits/agentic-eval-evidence1-success-recovery-
+// v1-runbook.md, Section 9.11): accepted sidecar schema 10 -- requirement 4 (schema 10 projects
+// the new common observability summary for BOTH policy modes) and requirement 7 (accepted and
+// rejected diagnostics share the same closed enums, Section 9.9). Deliberately contrasts with the
+// v3 test just above: unlike v3 (policy-required, fields absent entirely), schema 10 is
+// self-describing in BOTH policy modes -- a new, intentional design for a brand-new schema, never
+// a retroactive change to v3's own frozen shape.
+describe('accepted sidecar schema 10 (Evidence1 success-recovery PR B, Section 9.4.3/9.9) -- any policy_mode, run schema 8+', () => {
+  const FAKE_ATTESTATION_SHA256_V10 = 'f'.repeat(64);
+
+  function schema8PolicyRequiredRecord(overrides = {}) {
+    return v6Record({ schema: 8, ...overrides });
+  }
+  function schema8NotApplicableRecord(overrides = {}) {
+    return v6Record({
+      schema: 8,
+      execution_profile: {
+        ...v6Record().execution_profile,
+        id: 'sandboxed-unrestricted-v1', policy_mode: 'not_applicable',
+        isolation_attestation_sha256: FAKE_ATTESTATION_SHA256_V10,
+      },
+      hook_call_count: null, hook_deny_count: null,
+      policy_allowed_gradle_tasks: null, policy_allowed_kmptest_subcommands: null,
+      ...overrides,
+    });
+  }
+  function minimalConditionResult() {
+    return conditionResultFrom(
+      [initEventStub(), bashToolUseEvent('t1', 'kmp-test doctor --json'), toolResultEvent('t1'), resultEventStub()],
+      { decisionByAttempt: new Map([['t1', 'allow']]) },
+    );
+  }
+  function buildFor(record, terminal = terminalEvidence()) {
+    return buildAcceptedRunAuditSidecar({
+      record, conditionResult: minimalConditionResult(), terminalAuthoritativeEventIndex: null,
+      terminalEvidence: terminal, targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME,
+    });
+  }
+
+  it('expectedAcceptedAuditSchemaFor resolves schema:8 to 10 for BOTH policy_mode values, checked before the policy_mode dispatch', () => {
+    expect(expectedAcceptedAuditSchemaFor(schema8PolicyRequiredRecord())).toBe(10);
+    expect(expectedAcceptedAuditSchemaFor(schema8NotApplicableRecord())).toBe(10);
+  });
+
+  it('never uses LATEST as a selector -- a schema:8 record resolves to exactly 10 regardless of LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA\'s own value', () => {
+    expect(expectedAcceptedAuditSchemaFor(schema8PolicyRequiredRecord())).toBe(10);
+  });
+
+  it('builds schema 10 for a policy-required schema:8 record WITH execution_profile_id/policy_mode/isolation_attestation_sha256 present -- unlike v3, schema 10 is self-describing regardless of policy mode', () => {
+    const sidecar = buildFor(schema8PolicyRequiredRecord());
+    expect(sidecar.schema).toBe(10);
+    expect(sidecar.execution_profile_id).toBe('strict-policy-v1');
+    expect(sidecar.policy_mode).toBe('required');
+    expect(sidecar.isolation_attestation_sha256).toBeNull();
+  });
+
+  it('builds schema 10 for a not_applicable schema:8 record with a real isolation_attestation_sha256', () => {
+    const sidecar = buildFor(schema8NotApplicableRecord());
+    expect(sidecar.schema).toBe(10);
+    expect(sidecar.execution_profile_id).toBe('sandboxed-unrestricted-v1');
+    expect(sidecar.policy_mode).toBe('not_applicable');
+    expect(sidecar.isolation_attestation_sha256).toBe(FAKE_ATTESTATION_SHA256_V10);
+  });
+
+  it('every schema:10 sidecar carries its own outcome_observability_summary object, in both policy modes', () => {
+    for (const record of [schema8PolicyRequiredRecord(), schema8NotApplicableRecord()]) {
+      const sidecar = buildFor(record);
+      expect(sidecar.outcome_observability_summary).toBeTruthy();
+      expect(sidecar.outcome_observability_summary.schema).toBe(1);
+    }
+  });
+
+  // Requirement 7: accepted and rejected use the same enums (Section 9.9's closed vocabularies).
+  it.each([
+    ['flavor_relation', ['absent', 'explicit-match', 'explicit-mismatch', 'unexpected', 'not-applicable', 'not-recorded']],
+    ['test_type_relation', ['absent', 'match', 'mismatch', 'not-applicable', 'not-recorded']],
+    ['coverage_target_status', ['with-data', 'no-xml', 'parse-error', 'unavailable', 'not-applicable', 'not-recorded']],
+    ['coverage_report_status', ['not-attempted', 'success', 'failed', 'unavailable', 'not-recorded']],
+  ])('%s falls back to one of Section 9.9\'s closed enum values when no source data exists to compute it', (field, allowed) => {
+    const sidecar = buildFor(schema8PolicyRequiredRecord(), null);
+    expect(allowed).toContain(sidecar.outcome_observability_summary[field]);
+  });
+
+  it('execution_mode_counts falls back to a closed map keyed by Section 9.9\'s enum, all zero, when no source data exists', () => {
+    const sidecar = buildFor(schema8PolicyRequiredRecord(), null);
+    expect(sidecar.outcome_observability_summary.execution_mode_counts).toEqual({
+      fresh: 0, 'from-cache': 0, 'up-to-date': 0, 'no-evidence': 0, 'not-recorded': 0,
+    });
+  });
+
+  it('warning_code_counts is a closed map of exactly the approved coverage warning codes to non-negative integers', () => {
+    const sidecar = buildFor(schema8PolicyRequiredRecord(), null);
+    const counts = sidecar.outcome_observability_summary.warning_code_counts;
+    const approved = [
+      'no_coverage_data', 'coverage_xml_disabled', 'coverage_xml_oversized', 'coverage_parse_failed',
+      'coverage_aggregation_drift', 'coverage_report_write_failed', 'coverage_report_dispatch_failed',
+      'coverage_aggregation_failed', 'coverage_aggregation_skipped',
+    ];
+    expect(Object.keys(counts).sort()).toEqual(approved.sort());
+    for (const v of Object.values(counts)) {
+      expect(Number.isInteger(v)).toBe(true);
+      expect(v).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it('module_failed_setup_count is a non-negative integer or null when no source data exists', () => {
+    const sidecar = buildFor(schema8PolicyRequiredRecord(), null);
+    const value = sidecar.outcome_observability_summary.module_failed_setup_count;
+    expect(value === null || (Number.isInteger(value) && value >= 0)).toBe(true);
+  });
+
+  // Requirement 8: privacy tripwire rejects command/path/id/time/prose.
+  it('outcome_observability_summary never leaks a raw command, path, tool-use id, or timestamp', () => {
+    const sidecar = buildFor(schema8PolicyRequiredRecord());
+    const json = JSON.stringify(sidecar.outcome_observability_summary);
+    expect(json).not.toMatch(/kmp-test doctor|gradlew|\.\/|C:\\|\/home\/|2026-\d\d-\d\d|"t1"/i);
+  });
+
+  // Requirement 9: counts negativos o floats se rechazan.
+  it.each([-1, 1.5, '2', true])('validateAcceptedRunAuditSidecar rejects a module_failed_setup_count of %j', (bad) => {
+    const sidecar = buildFor(schema8PolicyRequiredRecord(), null);
+    sidecar.outcome_observability_summary.module_failed_setup_count = bad;
+    expect(validateAcceptedRunAuditSidecar(sidecar).errors.some((e) => e.field.includes('module_failed_setup_count'))).toBe(true);
+  });
+
+  it.each([-1, 1.5, '2', true])('validateAcceptedRunAuditSidecar rejects a warning_code_counts entry of %j', (bad) => {
+    const sidecar = buildFor(schema8PolicyRequiredRecord(), null);
+    sidecar.outcome_observability_summary.warning_code_counts.coverage_xml_disabled = bad;
+    expect(validateAcceptedRunAuditSidecar(sidecar).errors.some((e) => e.field.includes('warning_code_counts'))).toBe(true);
+  });
+
+  it('validateAcceptedRunAuditSidecar rejects an unrecognized key inside outcome_observability_summary', () => {
+    const sidecar = buildFor(schema8PolicyRequiredRecord(), null);
+    sidecar.outcome_observability_summary.raw_command = 'kmp-test parallel --module-filter secret';
+    expect(validateAcceptedRunAuditSidecar(sidecar).errors.some((e) => e.field.includes('outcome_observability_summary'))).toBe(true);
+  });
+});
