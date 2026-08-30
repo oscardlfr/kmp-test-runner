@@ -34,7 +34,7 @@ import { canonicalJsonSha256 } from './canonical-json.mjs';
 import {
   COVERAGE_GATE_ERROR_BUCKET_FIELDS,
   validateOutcomeObservabilitySummary,
-  emptyOutcomeObservabilitySummary,
+  buildOutcomeObservabilitySummary,
 } from './coverage-gate-observability.mjs';
 
 /**
@@ -493,60 +493,10 @@ function materializeTerminalEvidenceForSidecar(terminalEvidence, toolCalls, side
   };
 }
 
-// Section 9.9: coverage_target_status derived from terminalEvidence's own existing, already-closed
-// coverage_gate_diagnostic -- never a new independently-invented signal. Exhaustive over every
-// TERMINAL_COVERAGE_GATE_DIAGNOSTIC_VALUES member so a future new diagnostic value fails loud
-// (falls through to the honest 'not-recorded' default below) rather than silently mis-bucketing.
-const COVERAGE_TARGET_STATUS_BY_DIAGNOSTIC = Object.freeze({
-  'not-applicable': 'not-applicable',
-  'coverage-disabled': 'no-xml',
-  'coverage-evidence-malformed': 'parse-error',
-  matched: 'with-data',
-  'threshold-mismatch': 'with-data',
-  'coverage-outcome-mismatch': 'with-data',
-  'observed-clean-tests': 'with-data',
-  'no-terminal-evidence': 'unavailable',
-  'non-kmp-test-terminal': 'unavailable',
-  'missing-threshold-gate': 'unavailable',
-  'coverage-only-not-terminal': 'unavailable',
-});
-
-function anyCoverageReportErrorBucketHit(coverageGateAttempts) {
-  if (!Array.isArray(coverageGateAttempts)) return false;
-  return coverageGateAttempts.some((a) => {
-    const buckets = a?.error_code_buckets;
-    return buckets != null && (buckets.coverage_report_write_failed > 0 || buckets.coverage_report_dispatch_failed > 0);
-  });
-}
-
-/**
- * Builds the Section 9.9 outcome_observability_summary from already-computed structured data ONLY
- * (never parses a transcript or reads a file -- mirrors the identical static-source-guard
- * convention already established for buildRejectionDiagnostics; see this file's own test asserting
- * the builder body contains no parser/readFileSync call). The harness does not currently capture
- * any flavor/test-type/warning-code/module-setup-failure/execution-mode signal anywhere upstream
- * of this function, so those 5 fields honestly fall back to emptyOutcomeObservabilitySummary's own
- * not-recorded/all-zero/null defaults -- Section 9.9 explicitly says the summary is projected
- * "cuando los datos existan" (when the data exists), never fabricated when it does not.
- * coverage_target_status/coverage_report_status are the two fields this harness CAN genuinely
- * derive today, both grounded directly in terminalEvidence's own existing
- * coverage_gate_diagnostic / coverage_gate_attempts[].error_code_buckets fields.
- */
-function buildOutcomeObservabilitySummary(terminalEvidence) {
-  const summary = emptyOutcomeObservabilitySummary();
-  const diagnostic = terminalEvidence?.coverage_gate_diagnostic;
-  if (Object.prototype.hasOwnProperty.call(COVERAGE_TARGET_STATUS_BY_DIAGNOSTIC, diagnostic)) {
-    summary.coverage_target_status = COVERAGE_TARGET_STATUS_BY_DIAGNOSTIC[diagnostic];
-  }
-  if (anyCoverageReportErrorBucketHit(terminalEvidence?.coverage_gate_attempts)) {
-    summary.coverage_report_status = 'failed';
-  } else if (summary.coverage_target_status === 'with-data') {
-    summary.coverage_report_status = 'success';
-  } else if (summary.coverage_target_status === 'not-applicable') {
-    summary.coverage_report_status = 'not-attempted';
-  }
-  return summary;
-}
+// buildOutcomeObservabilitySummary lives in coverage-gate-observability.mjs (Section 9.9's own
+// shared module) -- rejection-diagnostics.mjs's schema 13 needs the IDENTICAL derivation for its
+// own per-cell outcome_observability_summary, and a third, independent copy here would reintroduce
+// exactly the drift risk the shared module already exists to prevent.
 
 /**
  * Builds the structural audit sidecar for one accepted scenario run record. Pure -- never touches

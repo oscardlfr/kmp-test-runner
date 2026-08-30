@@ -888,7 +888,18 @@ describe('finalizeAndWriteRecords / finalizeAndWriteMatrixRecords -- a rejected 
       cellOrdinal,
     };
   }
-  const MINIMAL_GRADE_RESULT = { expectedOutcomeMatched: false, success: false, checks: [], firstUsefulSignalEventIndex: null, testInvocationsTotal: 0, retries: 0 };
+  // Evidence1 success-recovery PR B (schema v8): buildRunRecord now also reads
+  // gradeResult.outcomeAssessment for a run_kind:scenario record -- a real, well-formed stub,
+  // consistent with this fixture's own expectedOutcomeMatched:false/success:false defaults.
+  const MINIMAL_GRADE_RESULT = {
+    expectedOutcomeMatched: false, success: false, checks: [], firstUsefulSignalEventIndex: null,
+    testInvocationsTotal: 0, retries: 0,
+    outcomeAssessment: {
+      schema: 1, task_outcome_matched: null, task_outcome_reason: 'ground-truth-unavailable',
+      answer_protocol_matched: false, provider_evidence_kind: 'none', provider_evidence_status: 'unavailable',
+      product_e2e_success: null,
+    },
+  };
   function commonFields(runKind) {
     return {
       runKind, scenarioId: 'test-stderr-producer', daemonPolicy: 'disabled-via-gradle-user-home-properties',

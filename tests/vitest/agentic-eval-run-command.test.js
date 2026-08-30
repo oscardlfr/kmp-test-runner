@@ -1268,7 +1268,12 @@ describe('fail-fast (preserve rejected matrix forensics) -- scenario matrix stop
     expect(rejectionId).not.toBeNull();
 
     const committed = readCommittedRejectionDiagnostic(rejectionId);
-    expect(committed.schema).toBe(3);
+    // Evidence1 success-recovery PR B: this CLI now always builds schema:8 run records, and a
+    // rejection batch with any such cell always routes to rejection-diagnostics schema 13 instead
+    // of 3 -- v13 conserves v3's own policy-required shape (checked here) via conditional
+    // validation and adds 2 new common per-cell fields (outcome_assessment/
+    // outcome_observability_summary) on top.
+    expect(committed.schema).toBe(13);
     expect(committed.run_kind).toBe('scenario');
     expect(committed.matrix_complete).toBe(false);
     expect(committed.planned_cell_count).toBe(4);

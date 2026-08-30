@@ -34,7 +34,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveBash } from '../../tools/agentic-eval/resolve-bash.mjs';
 import { validateAcceptedRunAuditSidecar, crossValidateAcceptedRunAuditAgainstRecord } from '../../tools/agentic-eval/accepted-run-audit.mjs';
-import { validateRejectionRow, REJECTION_DIAGNOSTICS_SCHEMA_V12 } from '../../tools/agentic-eval/rejection-diagnostics.mjs';
+import { validateRejectionRow, REJECTION_DIAGNOSTICS_SCHEMA_V13 } from '../../tools/agentic-eval/rejection-diagnostics.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -428,8 +428,11 @@ describe('5. run -- a genuinely missing tool_result fails the WHOLE matrix close
   // privacy-safe per-cell observability for run-record error codes, correlation counts, and
   // pre-inference summaries with closed cause/runtime codes, exact timing/usage/token/tool-count
   // metrics, closed grading summaries, and terminal-evidence summaries. v2/v3/v4/v5/v6/v7/v8/v9/v10 stay frozen. This test now proves the FULL, correct, end-to-end
-  // rejection shape.
-  it('zero records written for ANY cell, fail-fast reported via the normal RUN FAILED path, a sanitized schema-11 rejection diagnostic written, no accepted-run-audit sidecar anywhere', async () => {
+  // rejection shape. Evidence1 success-recovery PR B: this CLI now always builds schema:8 run
+  // records (LATEST_RUN_SCHEMA), and a rejection batch with ANY such cell always routes to
+  // rejection-diagnostics schema 13 instead -- v13 conserves v12's own not_applicable shape
+  // (checked here) via conditional validation and adds 2 new common per-cell fields on top.
+  it('zero records written for ANY cell, fail-fast reported via the normal RUN FAILED path, a sanitized schema-13 rejection diagnostic written, no accepted-run-audit sidecar anywhere', async () => {
     const attestationPath = writeValidAttestation();
     const result = await runCli(
       runArgs(['--seed', '1', '--repeats', '1', ...UNRESTRICTED_EXECUTION_PROFILE_FLAGS(attestationPath)]),
@@ -446,7 +449,7 @@ describe('5. run -- a genuinely missing tool_result fails the WHOLE matrix close
     expect(existsSync(path.join(evidenceDirFor('scenario'), 'audit'))).toBe(false);
 
     const committed = readCommittedRejectionDiagnostic();
-    expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V12);
+    expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V13);
     expect(committed.execution_profile_id).toBe('sandboxed-unrestricted-v1');
     expect(committed.policy_mode).toBe('not_applicable');
     expect(committed.isolation_attestation_sha256).toMatch(/^[0-9a-f]{64}$/);
@@ -507,7 +510,7 @@ describe('6. run -- auth failure and a malformed stream still follow their curre
   // comment for the full root-cause trace) -- a malformed-transcript rejection is ALSO a genuine
   // fail-fast/hard-gate rejection, so it exercises the identical schema-11 path with a different
   // specific reason (cleanTranscriptOk:false here, toolResultsCompleteOk:false there).
-  it('a harness-integrity failure (malformed transcript) blocks the WHOLE matrix, identically under sandboxed-unrestricted-v1, with a sanitized schema-11 rejection diagnostic written', async () => {
+  it('a harness-integrity failure (malformed transcript) blocks the WHOLE matrix, identically under sandboxed-unrestricted-v1, with a sanitized schema-13 rejection diagnostic written', async () => {
     const attestationPath = writeValidAttestation();
     const result = await runCli(
       runArgs(['--seed', '1', '--repeats', '1', ...UNRESTRICTED_EXECUTION_PROFILE_FLAGS(attestationPath)]),
@@ -522,7 +525,7 @@ describe('6. run -- auth failure and a malformed stream still follow their curre
     expect(listEvidenceFiles('scenario')).toEqual([]);
 
     const committed = readCommittedRejectionDiagnostic();
-    expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V12);
+    expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V13);
     expect(committed.policy_mode).toBe('not_applicable');
     expect(committed.policy_sha256).toBeNull();
     expect(committed.cells[0].pre_inference_failure.signature_matched).toBe(false);
