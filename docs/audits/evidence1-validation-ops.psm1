@@ -11,7 +11,8 @@ $script:E1FailureCodes = @(
     'repo_commit','repo_tree','repo_root','repo_dirty','repo_overlap','validation_overlap','operation_invalid',
     'records_changed','evidence_changed','result_shape','report_path','identity_invalid','credential_path','credential_shape',
     'host_privilege','vm_not_running','transport_timeout','transport_shape','transport_failed','readiness_changed',
-    'module_hash_mismatch','module_target_mismatch','report_write_failed','profile_registry'
+    'module_hash_mismatch','module_target_mismatch','report_write_failed','profile_registry',
+    'source_artifacts','source_artifact_limit','source_tracked_changed','source_index_changed','java_toolchain'
 )
 
 function Get-E1FailureCode($Failure, [string]$Fallback = 'preflight_failed') {
@@ -61,7 +62,7 @@ function Resolve-E1Path([string]$Path, [string]$Root = 'C:\kmp-eval') {
     $full = $normalized
     $prefix = $Root.Replace('/', '\').TrimEnd('\') + '\'
     if (-not $full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'path_outside_root' }
-    $current = if ($env:OS -eq 'Windows_NT') { $full } else { $null }
+    $current = if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) { $full } else { $null }
     while ($current) {
         if (Test-Path -LiteralPath $current) {
             $item = Get-Item -LiteralPath $current -Force
@@ -336,11 +337,53 @@ function Invoke-E1OwnedProcess([string]$Executable, [string[]]$Arguments, [strin
 
 function New-E1Result([string]$Operation, [string]$TargetCommit, [string]$TargetTree) {
     return [ordered]@{
-        schema = 1; operation = $Operation; state = 'failed'; failure_code = 'preflight_failed'; stage = 'preflight'
+        schema = 2; operation = $Operation; state = 'failed'; failure_code = 'preflight_failed'; stage = 'preflight'
         target_commit = $TargetCommit; target_tree = $TargetTree; source_commit = $script:E1SourceCommit
         agent_calls = 0; live_records_created = $null; product_invocations = 0; dry_plan_invocations = 0
         product_report_build_writes_expected = ($Operation -eq 'wet-v2')
         checks = [ordered]@{}; hashes = [ordered]@{}
+        failures = [ordered]@{ primary = $null; postflight = $null; persistence = $null; transport = $null }
+        processes = [ordered]@{ product = $null; product_dry_plan = $null; free_baseline_dry_plan = $null }
+    }
+}
+
+function Set-E1Failure($Result, [string]$Phase, [string]$Code) {
+    if (-not (Test-E1Exact (Get-E1Field $Result 'schema') 2) -or
+        $Phase -cnotin @('primary','postflight','persistence','transport') -or
+        $Code -cnotin $script:E1FailureCodes -or $Code -cin @('none','postflight_pending')) { throw 'result_shape' }
+    if ($null -eq $Result.failures[$Phase]) { $Result.failures[$Phase] = $Code }
+    $Result.state = 'failed'
+    $Result.failure_code = $Code
+}
+
+function Get-E1ObjectKeys($Value) {
+    if ($Value -is [Collections.IDictionary]) { return @($Value.Keys) }
+    if ($Value -is [pscustomobject]) { return @($Value.PSObject.Properties | ForEach-Object { $_.Name }) }
+    throw 'result_shape'
+}
+
+function Assert-E1Keys($Value, [string[]]$Expected) {
+    $keys = @(Get-E1ObjectKeys $Value)
+    if ($keys.Count -ne $Expected.Count -or @($keys | Where-Object { $_ -cnotin $Expected }).Count) { throw 'result_shape' }
+}
+
+function ConvertTo-E1ProcessObservation($Value) {
+    Assert-E1Keys $Value @('exit_code','wall_seconds','timed_out','cleanup_ok')
+    $exit = Get-E1Field $Value 'exit_code'
+    $wall = Get-E1Field $Value 'wall_seconds'
+    if (($exit -isnot [int] -and $exit -isnot [long]) -or $exit -lt [int]::MinValue -or $exit -gt [int]::MaxValue) { throw 'result_shape' }
+    if (($wall -isnot [double] -and $wall -isnot [decimal] -and $wall -isnot [int] -and $wall -isnot [long]) -or
+        [double]::IsNaN($wall) -or [double]::IsInfinity($wall) -or $wall -lt 0 -or $wall -gt 86400) { throw 'result_shape' }
+    $timedOut = Get-E1Field $Value 'timed_out'; $cleanup = Get-E1Field $Value 'cleanup_ok'
+    if ($timedOut -isnot [bool] -or $cleanup -isnot [bool]) { throw 'result_shape' }
+    return [ordered]@{ exit_code = $exit; wall_seconds = $wall; timed_out = $timedOut; cleanup_ok = $cleanup }
+}
+
+function Set-E1ProcessObservation($Result, [string]$Slot, $Process) {
+    if ($Slot -cnotin @('product','product_dry_plan','free_baseline_dry_plan')) { throw 'result_shape' }
+    $Result.processes[$Slot] = ConvertTo-E1ProcessObservation @{
+        exit_code = $Process.ExitCode; wall_seconds = $Process.WallSeconds
+        timed_out = $Process.TimedOut; cleanup_ok = $Process.CleanupOk
     }
 }
 
@@ -350,6 +393,11 @@ function Write-E1Record([IO.FileStream]$Stream, $Record) {
     $Stream.SetLength(0)
     $Stream.Write($bytes, 0, $bytes.Length)
     $Stream.Flush($true)
+}
+
+function Write-E1ProgressRecord([IO.FileStream]$Stream, $Record) {
+    try { Write-E1Record $Stream $Record }
+    catch { Set-E1Failure $Record 'persistence' 'terminal_write_failed'; throw 'terminal_write_failed' }
 }
 
 function Invoke-E1WetAttempt {
@@ -364,11 +412,11 @@ function Invoke-E1WetAttempt {
         $marker = [IO.File]::Open((Join-Path $Directory "wet-v2-$TargetCommit.json"), [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
         $result.state = 'started'
         $result.failure_code = 'interrupted'
-        Write-E1Record $marker $result
+        Write-E1ProgressRecord $marker $result
         $stdout = Join-Path $Directory "wet-v2-$TargetCommit.stdout.json"
         $stderr = Join-Path $Directory "wet-v2-$TargetCommit.stderr.txt"
         $result.product_invocations = 1
-        Write-E1Record $marker $result
+        Write-E1ProgressRecord $marker $result
         $result.failure_code = 'product_failed'
         # The client JVM system property overrides gradle.properties without a --stop/--fresh-daemon.
         # Any disposable single-use JVM remains a descendant in this invocation's Windows job.
@@ -379,6 +427,7 @@ function Invoke-E1WetAttempt {
             $result.checks.gradle_daemon_disabled = $true
             $process = Invoke-E1OwnedProcess $Node @($EntryPoint, 'parallel', '--json', '--project-root', '.', '--module-filter', ':core:domain', '--min-missed-lines', '15') $SourceDir $stdout $stderr 300
         } finally { $env:GRADLE_OPTS = $previousGradleOpts }
+        Set-E1ProcessObservation $result 'product' $process
         $result.checks.owned_tree_stopped = Test-E1Exact $process.CleanupOk $true
         $result.checks.not_timed_out = Test-E1Exact $process.TimedOut $false
         $result.failure_code = if ($process.TimedOut) { 'product_timeout' } else { 'product_contract' }
@@ -395,14 +444,15 @@ function Invoke-E1WetAttempt {
         } else { $result.checks.valid_json = $false }
         if (-not ($result.checks.Values -contains $false)) { $result.state = 'validated'; $result.failure_code = 'postflight_pending' }
     } catch {
-        $result.failure_code = Get-E1FailureCode $_ $result.failure_code
-        $result.state = 'failed'
+        if ($null -eq $result.failures.persistence) { Set-E1Failure $result 'primary' (Get-E1FailureCode $_ $result.failure_code) }
     } finally {
-        if ($result.state -ne 'validated') { $result.state = 'failed' }
+        if ($result.state -ne 'validated' -and $null -eq $result.failures.persistence) { Set-E1Failure $result 'primary' $result.failure_code }
         if ($marker) {
             $state = $result.state
             if ($state -eq 'validated') { $result.state = 'started' }
-            try { Write-E1Record $marker $result } finally { $result.state = $state; $marker.Dispose() }
+            try { Write-E1Record $marker $result; $result.state = $state }
+            catch { Set-E1Failure $result 'persistence' 'terminal_write_failed' }
+            finally { $marker.Dispose() }
         }
     }
     return $result
@@ -469,13 +519,13 @@ function Invoke-E1DryAttempt {
         $result.failure_code = 'attempt_exists'
         $marker = [IO.File]::Open((Join-Path $Directory "dry-v3-$TargetCommit.json"), [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
         $result.state = 'started'; $result.failure_code = 'interrupted'
-        Write-E1Record $marker $result
+        Write-E1ProgressRecord $marker $result
         foreach ($arm in @('product', 'free-baseline')) {
             $design = "claude-$arm-canary-v1"
             $stdout = Join-Path $Directory "dry-v3-$TargetCommit-$arm.stdout.json"
             $stderr = Join-Path $Directory "dry-v3-$TargetCommit-$arm.stderr.txt"
             $result.dry_plan_invocations++
-            Write-E1Record $marker $result
+            Write-E1ProgressRecord $marker $result
             $result.failure_code = 'dry_plan_failed'
             $process = Invoke-E1OwnedProcess $Node @(
                 (Join-Path $HarnessDir 'tools\agentic-eval\cli.mjs'), 'run', '--scenario', 'coverage-threshold-failure-v2',
@@ -483,6 +533,7 @@ function Invoke-E1DryAttempt {
                 '--isolation-attestation-file', $AttestationFile, '--seed', '20260821', '--max-budget-usd', '2', '--dry-run'
             ) $HarnessDir $stdout $stderr 60
             $prefix = $arm.Replace('-', '_')
+            Set-E1ProcessObservation $result "${prefix}_dry_plan" $process
             $result.checks["${prefix}_process"] = (Test-E1Exact $process.ExitCode 0) -and (Test-E1Exact $process.TimedOut $false) -and (Test-E1Exact $process.CleanupOk $true)
             if (-not $result.checks["${prefix}_process"]) { throw 'dry_plan_failed' }
             $result.checks["${prefix}_stderr_empty"] = (Get-Item -LiteralPath $stderr).Length -eq 0
@@ -493,12 +544,16 @@ function Invoke-E1DryAttempt {
             if ($result.checks.Values -contains $false) { throw 'dry_plan_contract' }
         }
         $result.state = 'validated'; $result.failure_code = 'postflight_pending'
-    } catch { $result.failure_code = Get-E1FailureCode $_ $result.failure_code; $result.state = 'failed' }
+    } catch {
+        if ($null -eq $result.failures.persistence) { Set-E1Failure $result 'primary' (Get-E1FailureCode $_ $result.failure_code) }
+    }
     finally {
         if ($marker) {
             $state = $result.state
             if ($state -eq 'validated') { $result.state = 'started' }
-            try { Write-E1Record $marker $result } finally { $result.state = $state; $marker.Dispose() }
+            try { Write-E1Record $marker $result; $result.state = $state }
+            catch { Set-E1Failure $result 'persistence' 'terminal_write_failed' }
+            finally { $marker.Dispose() }
         }
     }
     return $result
@@ -547,13 +602,183 @@ function Invoke-E1Git([string]$Root, [string[]]$Arguments, [string]$Directory) {
     return [IO.File]::ReadAllText($stdout).Trim()
 }
 
-function Assert-E1Repo([string]$Root, [string]$Commit, [string]$Tree, [string]$Directory) {
+function Assert-E1RepoIdentity([string]$Root, [string]$Commit, [string]$Tree, [string]$Directory) {
     if ((Invoke-E1Git $Root @('rev-parse','HEAD') $Directory) -cne $Commit) { throw 'repo_commit' }
     $actualTree = Invoke-E1Git $Root @('rev-parse','HEAD^{tree}') $Directory
     if ($actualTree -cnotmatch '^[a-f0-9]{40}$' -or ($Tree -and $actualTree -cne $Tree)) { throw 'repo_tree' }
     if ((Resolve-E1Path (Invoke-E1Git $Root @('rev-parse','--show-toplevel') $Directory)) -ine $Root) { throw 'repo_root' }
+    return $actualTree
+}
+
+function Assert-E1Repo([string]$Root, [string]$Commit, [string]$Tree, [string]$Directory) {
+    $actualTree = Assert-E1RepoIdentity $Root $Commit $Tree $Directory
     if ((Invoke-E1Git $Root @('status','--porcelain=v1','--untracked-files=all') $Directory)) { throw 'repo_dirty' }
     return $actualTree
+}
+
+function Get-E1ArtifactKind([string]$RelativePath) {
+    # Exact producers: project-model.js/cache.js and coverage-orchestrator.js.
+    # V2 has no instrumented/benchmark flags, so their logs are not authorized.
+    if ($RelativePath -cmatch '^\.kmp-test-runner/cache/model-[a-f0-9]{40}\.json$') { return 'model' }
+    if ($RelativePath -cmatch '^\.kmp-test-runner/cache/tasks-[a-f0-9]{40}\.txt$') { return 'tasks' }
+    if ($RelativePath -ceq '.kmp-test-runner/reports/coverage/latest.md') { return 'latest' }
+    if ($RelativePath -cmatch '^\.kmp-test-runner/reports/coverage/[0-9]{8}-[0-9]{6}-[0-9]{6}\.md$') { return 'report' }
+    throw 'source_artifacts'
+}
+
+function Get-E1SourceFileHash([string]$Path, [long]$MaxBytes) {
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try {
+        if ($stream.Length -gt $MaxBytes) { throw 'source_artifact_limit' }
+        return -join ($hasher.ComputeHash($stream) | ForEach-Object { $_.ToString('x2') })
+    } finally { $hasher.Dispose(); $stream.Dispose() }
+}
+
+function Get-E1RuntimeArtifacts([string]$Root) {
+    $artifacts = @{}; $directories = @(); $bytes = 0L; $entries = 0
+    $runtime = Join-Path $Root '.kmp-test-runner'
+    if (Test-Path -LiteralPath $runtime) {
+        $null = Resolve-E1Path $runtime
+        if (-not (Get-Item -LiteralPath $runtime -Force).PSIsContainer) { throw 'source_artifacts' }
+        $directories += '.kmp-test-runner'
+        $pending = [Collections.Generic.Queue[string]]::new(); $pending.Enqueue($runtime)
+        while ($pending.Count) {
+            foreach ($entry in (Get-ChildItem -LiteralPath $pending.Dequeue() -Force)) {
+                if (++$entries -gt 128) { throw 'source_artifact_limit' }
+                $null = Resolve-E1Path $entry.FullName
+                $relative = $entry.FullName.Substring($Root.Length + 1).Replace('\','/')
+                if ($entry.PSIsContainer) {
+                    if ($relative -cnotin @('.kmp-test-runner/cache','.kmp-test-runner/reports','.kmp-test-runner/reports/coverage')) { throw 'source_artifacts' }
+                    $directories += $relative
+                    $pending.Enqueue($entry.FullName)
+                } else {
+                    $kind = Get-E1ArtifactKind $relative
+                    # probeGradleTasksCached persists spawnGradle's 64 MiB stdout
+                    # budget. Keep room for that cache plus the model and reports.
+                    $limit = if ($kind -ceq 'tasks') { 67108864L } else { 8388608L }
+                    $bytes += $entry.Length
+                    if ($entry.Length -gt $limit -or $bytes -gt 134217728) { throw 'source_artifact_limit' }
+                    # Fingerprint bytes only; never parse or emit cache/report contents.
+                    $artifacts[$relative] = @{
+                        kind = $kind; length = $entry.Length; modified = $entry.LastWriteTimeUtc.Ticks
+                        sha256 = Get-E1SourceFileHash $entry.FullName $limit
+                    }
+                }
+            }
+        }
+    }
+    return @{ files = $artifacts; directories_sha256 = (Get-E1Sha256 ([Text.Encoding]::UTF8.GetBytes((($directories | Sort-Object -CaseSensitive) -join "`n")))) }
+}
+
+function Get-E1SourceSnapshot([string]$Root, [string]$Commit, [string]$Tree, [string]$Directory) {
+    $Root = Resolve-E1Path $Root
+    $actualTree = Assert-E1RepoIdentity $Root $Commit $Tree $Directory
+    # Do not repair flags or trust status when index flags can conceal edits.
+    $flags = Invoke-E1Git $Root @('ls-files','-v','-z') $Directory
+    foreach ($entry in $flags.Split([char]0)) {
+        if ($entry -and $entry -cnotmatch '^H ') { throw 'repo_dirty' }
+    }
+    $runtime = Get-E1RuntimeArtifacts $Root
+    $artifacts = $runtime.files
+    $status = Invoke-E1Git $Root @('status','--porcelain=v1','-z','--untracked-files=all') $Directory
+    foreach ($entry in $status.Split([char]0)) {
+        if (-not $entry) { continue }
+        if (-not $entry.StartsWith('?? ', [StringComparison]::Ordinal)) { throw 'repo_dirty' }
+        $relative = $entry.Substring(3)
+        $null = Get-E1ArtifactKind $relative
+        if (-not $artifacts.ContainsKey($relative)) { throw 'source_artifacts' }
+    }
+    # Hash actual tracked bytes as well as index entries: assume-unchanged/skip-worktree
+    # must not hide a source edit behind an otherwise clean git status.
+    $index = Invoke-E1Git $Root @('ls-files','--stage','-z') $Directory
+    $rows = @(); $bytes = 0L
+    foreach ($entry in $index.Split([char]0)) {
+        if (-not $entry) { continue }
+        if ($entry -cnotmatch '^([0-9]{6}) ([a-f0-9]{40}) 0\t(.+)$') { throw 'repo_dirty' }
+        $relative = $Matches[3]
+        $path = Resolve-E1Path (Join-Path $Root $relative)
+        $item = Get-Item -LiteralPath $path -Force
+        $bytes += $item.Length
+        if ($item.PSIsContainer -or $rows.Count -ge 20000 -or $bytes -gt 536870912) { throw 'source_artifact_limit' }
+        $rows += $relative + '|' + (Get-E1SourceFileHash $path 536870912)
+    }
+    return @{
+        tree = $actualTree; artifacts = $artifacts
+        artifact_directories_sha256 = $runtime.directories_sha256
+        index_sha256 = Get-E1Sha256 ([Text.Encoding]::UTF8.GetBytes($index))
+        tracked_sha256 = Get-E1Sha256 ([Text.Encoding]::UTF8.GetBytes(($rows -join "`n")))
+    }
+}
+
+function Assert-E1SourcePostflight([string]$Root, [string]$Commit, [string]$Tree, [string]$Directory, $Before, [string]$Operation = 'wet-v2') {
+    if ($Operation -cnotin @('wet-v2','dry-v3')) { throw 'operation_invalid' }
+    $after = Get-E1SourceSnapshot $Root $Commit $Tree $Directory
+    if ($Before.index_sha256 -cne $after.index_sha256) { throw 'source_index_changed' }
+    if ($Before.tracked_sha256 -cne $after.tracked_sha256) { throw 'source_tracked_changed' }
+    if ($Operation -ceq 'dry-v3' -and $Before.artifact_directories_sha256 -cne $after.artifact_directories_sha256) { throw 'source_artifacts' }
+    foreach ($path in $Before.artifacts.Keys) {
+        if (-not $after.artifacts.ContainsKey($path)) { throw 'source_artifacts' }
+    }
+    # All model/probe consumers share one deterministic key over the unchanged
+    # source inputs (project/cache.js computeCacheKey excludes build/.gradle).
+    # This is a distinct-key bound, not a bound on calls or writes to that key.
+    $changed = @{ model = 0; tasks = 0; report = 0; latest = 0 }
+    foreach ($path in $after.artifacts.Keys) {
+        $value = $after.artifacts[$path]; $previous = $Before.artifacts[$path]
+        if ($null -eq $previous -or $value.length -ne $previous.length -or $value.modified -ne $previous.modified -or $value.sha256 -cne $previous.sha256) {
+            if ($Operation -ceq 'dry-v3') { throw 'source_artifacts' }
+            if ($null -ne $previous -and $value.kind -ceq 'report') { throw 'source_artifacts' }
+            if (++$changed[$value.kind] -gt 1) { throw 'source_artifact_limit' }
+        }
+    }
+}
+
+function Assert-E1ToolPath([string]$Path) {
+    $current = $Path
+    while ($current) {
+        if (Test-Path -LiteralPath $current) {
+            $item = Get-Item -LiteralPath $current -Force
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                (Get-E1Field $item 'LinkType') -eq 'HardLink') { throw 'java_toolchain' }
+        }
+        $current = [IO.Path]::GetDirectoryName($current)
+    }
+}
+
+function Get-E1Java21 {
+    $root = 'C:\Program Files\Eclipse Adoptium'
+    Assert-E1ToolPath $root
+    if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw 'java_toolchain' }
+    $jdk = Get-ChildItem -LiteralPath $root -Directory | Where-Object Name -like 'jdk-21*' |
+        Sort-Object Name -Descending | Select-Object -First 1
+    if (-not $jdk) { throw 'java_toolchain' }
+    $java = Join-Path $jdk.FullName 'bin\java.exe'
+    Assert-E1ToolPath $java
+    if (-not (Test-Path -LiteralPath $java -PathType Leaf)) { throw 'java_toolchain' }
+    return @{ home = $jdk.FullName; executable = $java }
+}
+
+function Invoke-E1Java21Environment([string]$Directory, [scriptblock]$Action) {
+    $oldHome = $env:JAVA_HOME; $oldPath = $env:PATH
+    try {
+        $java = Get-E1Java21
+        $env:JAVA_HOME = $java.home
+        $paths = @((Join-Path $java.home 'bin'), 'C:\Windows\System32', 'C:\Program Files\Git\cmd',
+            'C:\Program Files\Git\bin', 'C:\Program Files\nodejs', (Join-Path $env:USERPROFILE 'AppData\Roaming\npm'), $oldPath)
+        $env:PATH = ($paths | Where-Object { $_ }) -join ';'
+        $id = [guid]::NewGuid().ToString('N')
+        $stdout = Join-Path $Directory "$id.java.stdout.txt"; $stderr = Join-Path $Directory "$id.java.stderr.txt"
+        $process = Invoke-E1OwnedProcess $java.executable @('-version') $Directory $stdout $stderr 15
+        if ($process.ExitCode -ne 0 -or $process.TimedOut -or -not $process.CleanupOk) { throw 'java_toolchain' }
+        $text = ''
+        foreach ($path in @($stdout, $stderr)) {
+            if ((Get-Item -LiteralPath $path).Length -gt 8192) { throw 'java_toolchain' }
+            $text += [Text.UTF8Encoding]::new($false, $true).GetString([IO.File]::ReadAllBytes($path)) + "`n"
+        }
+        if ($text -cnotmatch '(?m)^(?:openjdk|java) version "21(?:\.[0-9]+){0,3}(?:[-+][A-Za-z0-9.-]+)?"') { throw 'java_toolchain' }
+        & $Action $java
+    } finally { $env:JAVA_HOME = $oldHome; $env:PATH = $oldPath }
 }
 
 function Get-E1RecordsSnapshot([string]$HarnessDir) {
@@ -592,14 +817,13 @@ function Complete-E1Attempt($Result, [string]$Directory, [scriptblock]$Postfligh
         $Result.checks.postflight = $true
         if ($Result.state -ceq 'validated') { $Result.state = 'passed'; $Result.failure_code = 'none'; $Result.stage = 'complete' }
     } catch {
-        if ($Result.state -ceq 'validated') { $Result.failure_code = Get-E1FailureCode $_ 'postflight_failed' }
-        $Result.state = 'failed'
+        Set-E1Failure $Result 'postflight' (Get-E1FailureCode $_ 'postflight_failed')
     } finally {
         $stream = $null
         try {
             $stream = [IO.File]::Open((Join-Path $Directory "$($Result.operation)-$($Result.target_commit).json"), [IO.FileMode]::Open, [IO.FileAccess]::Write, [IO.FileShare]::Read)
             Write-E1Record $stream $Result
-        } catch { $Result.state = 'failed'; $Result.failure_code = 'terminal_write_failed' }
+        } catch { Set-E1Failure $Result 'persistence' 'terminal_write_failed' }
         finally { if ($stream) { $stream.Dispose() } }
     }
     return $Result
@@ -607,7 +831,7 @@ function Complete-E1Attempt($Result, [string]$Directory, [scriptblock]$Postfligh
 
 function Invoke-E1GuestValidation($Config, $Readiness, [string]$ReadinessHash, [string]$ModuleHash) {
     $result = New-E1Result $Config.Operation $Config.TargetCommit $Config.TargetTree
-    $mutex = $null; $locked = $false
+    $mutex = $null; $locked = $false; $previousEnvironment = $null
     try {
         $result.stage = 'guest_identity'
         $identity = Get-CimInstance -ClassName Win32_ComputerSystem
@@ -637,11 +861,14 @@ function Invoke-E1GuestValidation($Config, $Readiness, [string]$ReadinessHash, [
         $result.failure_code = 'preflight_failed'
         New-Item -ItemType Directory -Path $directory -Force | Out-Null
         $null = Resolve-E1Path $directory
+        $previousEnvironment = @{}
+        foreach ($name in @('TEMP','TMP','GIT_OPTIONAL_LOCKS')) { $previousEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
         $env:TEMP = $directory; $env:TMP = $directory
         $env:GIT_OPTIONAL_LOCKS = '0'
         $result.stage = 'guest_repositories'
         $null = Assert-E1Repo $harness $Config.TargetCommit $Config.TargetTree $directory
-        $sourceTree = Assert-E1Repo $source $script:E1SourceCommit '' $directory
+        $sourceSnapshot = Get-E1SourceSnapshot $source $script:E1SourceCommit '' $directory
+        $sourceTree = $sourceSnapshot.tree
         $entryPoint = Resolve-E1Path (Join-Path $harness 'bin\kmp-test.js')
         $targetModule = Resolve-E1Path (Join-Path $harness 'docs\audits\evidence1-validation-ops.psm1')
         if ((Get-FileHash -LiteralPath $targetModule -Algorithm SHA256).Hash.ToLowerInvariant() -cne $ModuleHash) { throw 'module_target_mismatch' }
@@ -662,7 +889,14 @@ function Invoke-E1GuestValidation($Config, $Readiness, [string]$ReadinessHash, [
         $null = Assert-E1Evidence $Readiness $ledger.value $attestation.value $Config.VMName $Config.TargetCommit $Config.TargetTree $attestationPath
         $node = 'C:\Program Files\nodejs\node.exe'
         if ($Config.Operation -ceq 'wet-v2') {
-            $result = Invoke-E1WetAttempt $directory $Config.TargetCommit $Config.TargetTree $node $entryPoint $source $hashes
+            $result.stage = 'guest_toolchain'
+            $result = Invoke-E1Java21Environment $directory {
+                param($java)
+                $null = Assert-E1Evidence $Readiness $ledger.value $attestation.value $Config.VMName $Config.TargetCommit $Config.TargetTree $attestationPath
+                $wet = Invoke-E1WetAttempt $directory $Config.TargetCommit $Config.TargetTree $node $entryPoint $source $hashes
+                $wet.checks.java21_verified = $true
+                return $wet
+            }
         } elseif ($Config.Operation -ceq 'dry-v3') {
             $result = Invoke-E1DryAttempt $directory $Config.TargetCommit $Config.TargetTree $node $harness $source $attestationPath $hashes
         } else { throw 'operation_invalid' }
@@ -675,7 +909,8 @@ function Invoke-E1GuestValidation($Config, $Readiness, [string]$ReadinessHash, [
                 $after = Get-E1RecordsSnapshot $harness
                 Set-E1RecordsCheck $record $before $after
                 $null = Assert-E1Repo $harness $Config.TargetCommit $Config.TargetTree $directory
-                $null = Assert-E1Repo $source $script:E1SourceCommit $sourceTree $directory
+                $null = Assert-E1SourcePostflight $source $script:E1SourceCommit $sourceTree $directory $sourceSnapshot -Operation $Config.Operation
+                $record.checks.source_integrity = $true
                 if ((Read-E1Json $ledgerPath).sha256 -cne $ledger.sha256 -or (Read-E1Json $attestationPath 16384).sha256 -cne $attestation.sha256) { throw 'evidence_changed' }
                 $null = Assert-E1Evidence $Readiness $ledger.value $attestation.value $Config.VMName $Config.TargetCommit $Config.TargetTree $attestationPath
                 Assert-E1NoGuestLive $source
@@ -683,9 +918,11 @@ function Invoke-E1GuestValidation($Config, $Readiness, [string]$ReadinessHash, [
         }
     } catch {
         $fallback = if ($result.state -in @('passed','validated')) { 'postflight_failed' } else { $result.failure_code }
-        $result.failure_code = Get-E1FailureCode $_ $fallback
-        $result.state = 'failed'
+        Set-E1Failure $result 'primary' (Get-E1FailureCode $_ $fallback)
     } finally {
+        if ($null -ne $previousEnvironment) {
+            foreach ($name in $previousEnvironment.Keys) { [Environment]::SetEnvironmentVariable($name, $previousEnvironment[$name], 'Process') }
+        }
         if ($locked) { $mutex.ReleaseMutex() }
         if ($mutex) { $mutex.Dispose() }
     }
@@ -693,20 +930,41 @@ function Invoke-E1GuestValidation($Config, $Readiness, [string]$ReadinessHash, [
 }
 
 function ConvertTo-E1SafeResult($Raw, [string]$Operation, [string]$TargetCommit, [string]$TargetTree) {
-    Assert-E1Fields $Raw @{ schema = 1; operation = $Operation; target_commit = $TargetCommit; target_tree = $TargetTree; source_commit = $script:E1SourceCommit; agent_calls = 0 }
+    if ($Operation -cnotin @('wet-v2','dry-v3')) { throw 'result_shape' }
+    $schema = Get-E1Field $Raw 'schema'
+    if (-not (Test-E1Exact $schema 1) -and -not (Test-E1Exact $schema 2)) { throw 'result_shape' }
+    Assert-E1Fields $Raw @{ operation = $Operation; target_commit = $TargetCommit; target_tree = $TargetTree; source_commit = $script:E1SourceCommit; agent_calls = 0 }
     $safe = New-E1Result $Operation $TargetCommit $TargetTree
-    $rawKeys = if ($Raw -is [Collections.IDictionary]) { @($Raw.Keys) } else {
-        @($Raw.PSObject.Properties.Name | Where-Object { $_ -cnotin @('PSComputerName','RunspaceId','PSShowComputerName') })
-    }
+    $safe.schema = $schema
+    if ($schema -eq 1) { $safe.Remove('failures'); $safe.Remove('processes') }
+    $rawKeys = @(Get-E1ObjectKeys $Raw | Where-Object { $_ -cnotin @('PSComputerName','RunspaceId','PSShowComputerName') })
     if ($rawKeys.Count -ne $safe.Keys.Count -or @($rawKeys | Where-Object { $_ -cnotin $safe.Keys }).Count) { throw 'result_shape' }
     Assert-E1Fields $Raw @{ product_report_build_writes_expected = ($Operation -ceq 'wet-v2') }
     $state = Get-E1Field $Raw 'state'
     $code = Get-E1Field $Raw 'failure_code'
-    if ($state -cnotin @('passed','failed') -or $code -cnotin $script:E1FailureCodes) { throw 'result_shape' }
+    if ($state -isnot [string] -or $code -isnot [string] -or
+        $state -cnotin @('passed','failed') -or $code -cnotin $script:E1FailureCodes) { throw 'result_shape' }
     $safe.state = $state; $safe.failure_code = $code
     $stage = Get-E1Field $Raw 'stage'
-    if ($stage -cnotin @('preflight','guest_identity','guest_paths','guest_evidence','guest_overlap','guest_repositories','product','dry_plan','postflight','complete')) { throw 'result_shape' }
+    if ($stage -isnot [string] -or $stage -cnotin @('preflight','guest_identity','guest_paths','guest_evidence','guest_overlap','guest_repositories','guest_toolchain','product','dry_plan','postflight','complete')) { throw 'result_shape' }
     $safe.stage = $stage
+    if ($schema -eq 2) {
+        $failures = Get-E1Field $Raw 'failures'
+        Assert-E1Keys $failures @($safe.failures.Keys)
+        foreach ($phase in @($safe.failures.Keys)) {
+            $failure = Get-E1Field $failures $phase
+            if ($null -ne $failure -and ($failure -isnot [string] -or $failure -cnotin $script:E1FailureCodes -or $failure -cin @('none','postflight_pending'))) { throw 'result_shape' }
+            $safe.failures[$phase] = $failure
+        }
+        $processes = Get-E1Field $Raw 'processes'
+        Assert-E1Keys $processes @($safe.processes.Keys)
+        foreach ($slot in @($safe.processes.Keys)) {
+            $observation = Get-E1Field $processes $slot
+            if ($null -ne $observation) { $safe.processes[$slot] = ConvertTo-E1ProcessObservation $observation }
+        }
+        if (($Operation -ceq 'wet-v2' -and ($safe.processes.product_dry_plan -or $safe.processes.free_baseline_dry_plan)) -or
+            ($Operation -ceq 'dry-v3' -and $safe.processes.product)) { throw 'result_shape' }
+    }
     foreach ($key in @('product_invocations','dry_plan_invocations','live_records_created')) {
         $count = Get-E1Field $Raw $key
         if ($key -eq 'live_records_created' -and $null -eq $count -and $state -ceq 'failed') { continue }
@@ -714,8 +972,13 @@ function ConvertTo-E1SafeResult($Raw, [string]$Operation, [string]$TargetCommit,
         $safe[$key] = $count
     }
     if ($safe.product_invocations -gt 1 -or $safe.dry_plan_invocations -gt 2) { throw 'result_shape' }
+    if ($schema -eq 2 -and (($safe.processes.product -and $safe.product_invocations -ne 1) -or
+        ($safe.processes.product_dry_plan -and $safe.dry_plan_invocations -lt 1) -or
+        ($safe.processes.free_baseline_dry_plan -and $safe.dry_plan_invocations -ne 2))) { throw 'result_shape' }
     $requiredChecks = @('guest_identity','preflight','postflight','module_target')
     if ($Operation -ceq 'wet-v2') { $requiredChecks += @('gradle_daemon_disabled','owned_tree_stopped','not_timed_out') + @((Get-E1WetChecks $null 0 0).Keys) }
+    if ($schema -eq 2) { $requiredChecks += 'source_integrity' }
+    if ($schema -eq 2 -and $Operation -ceq 'wet-v2') { $requiredChecks += 'java21_verified' }
     foreach ($arm in @('product','free_baseline')) {
         if ($Operation -ceq 'dry-v3') {
             $requiredChecks += "${arm}_process", "${arm}_stderr_empty"
@@ -724,7 +987,7 @@ function ConvertTo-E1SafeResult($Raw, [string]$Operation, [string]$TargetCommit,
     }
     $allowedChecks = $requiredChecks + @('valid_json')
     $checks = Get-E1Field $Raw 'checks'
-    $names = if ($checks -is [Collections.IDictionary]) { @($checks.Keys) } else { @($checks.PSObject.Properties.Name) }
+    $names = @(Get-E1ObjectKeys $checks)
     foreach ($key in $names) {
         $value = Get-E1Field $checks $key
         if ($key -cnotin $allowedChecks -or $value -isnot [bool]) { throw 'result_shape' }
@@ -735,13 +998,23 @@ function ConvertTo-E1SafeResult($Raw, [string]$Operation, [string]$TargetCommit,
         'records_metadata_before_sha256','records_metadata_after_sha256','execution_profile_sha256','execution_profile_registry_sha256')
     if ($Operation -ceq 'dry-v3') { $allowedHashes += 'free_baseline_stdout_sha256' }
     $hashes = Get-E1Field $Raw 'hashes'
-    $names = if ($hashes -is [Collections.IDictionary]) { @($hashes.Keys) } else { @($hashes.PSObject.Properties.Name) }
+    $names = @(Get-E1ObjectKeys $hashes)
     foreach ($key in $names) {
         $value = Get-E1Field $hashes $key
         if ($key -cnotin $allowedHashes -or $value -isnot [string] -or $value -cnotmatch '^[a-f0-9]{64}$') { throw 'result_shape' }
         $safe.hashes[$key] = $value
     }
     if ($state -ceq 'passed') {
+        if ($schema -eq 2) {
+            if (@($safe.failures.Values | Where-Object { $null -ne $_ }).Count) { throw 'result_shape' }
+            $slots = if ($Operation -ceq 'wet-v2') { @('product') } else { @('product_dry_plan','free_baseline_dry_plan') }
+            foreach ($slot in $slots) {
+                $p = $safe.processes[$slot]
+                $expectedExit = if ($slot -ceq 'product') { 1 } else { 0 }
+                $budget = if ($slot -ceq 'product') { 300 } else { 60 }
+                if ($null -eq $p -or $p.exit_code -ne $expectedExit -or $p.timed_out -or -not $p.cleanup_ok -or $p.wall_seconds -gt $budget) { throw 'result_shape' }
+            }
+        }
         if ($code -cne 'none' -or $stage -cne 'complete' -or -not (Test-E1Exact $safe.live_records_created 0) -or $safe.checks.Values -contains $false) { throw 'result_shape' }
         foreach ($key in $requiredChecks) {
             if (-not (Test-E1Exact (Get-E1Field $safe.checks $key) $true)) { throw 'result_shape' }
@@ -774,7 +1047,7 @@ function Invoke-E1ValidationDirect {
         [string]$HarnessDir, [string]$NowInAndroidDir, [string]$AttestationFile, [string]$ReportPath)
     $result = New-E1Result $Operation '' ''
     $result.target_commit = $null; $result.target_tree = $null
-    $session = $null; $job = $null; $report = $null
+    $session = $null; $job = $null; $report = $null; $transportStarted = $false
     try {
         $result.stage = 'host_parameters'
         if ($Operation -cnotin @('wet-v2','dry-v3')) { throw 'operation_invalid' }
@@ -828,6 +1101,7 @@ function Invoke-E1ValidationDirect {
         $result.hashes.validation_module_sha256 = $moduleHash
         $result.failure_code = 'transport_failed'
         $result.stage = 'transport'
+        $transportStarted = $true
         $session = New-PSSession -VMName $VMName -Credential $credential -ErrorAction Stop -WarningAction SilentlyContinue
         $job = Invoke-Command -Session $session -AsJob -ScriptBlock (Get-E1ReceiverScript) `
             -ArgumentList ([Text.Encoding]::UTF8.GetString($moduleBytes)), $config, $readiness.value, $readiness.sha256, $moduleHash
@@ -835,12 +1109,13 @@ function Invoke-E1ValidationDirect {
         if (-not $complete) { throw 'transport_timeout' }
         $raw = @(Receive-Job -Job $job -ErrorAction Stop 3>$null 4>$null 5>$null 6>$null)
         if ($raw.Count -ne 1) { throw 'transport_shape' }
+        if (-not (Test-E1Exact (Get-E1Field $raw[0] 'schema') 2)) { throw 'result_shape' }
         $result = ConvertTo-E1SafeResult $raw[0] $Operation $TargetCommit $TargetTree
         if ((Read-E1Json $readinessPath).sha256 -cne $readiness.sha256) { throw 'readiness_changed' }
     } catch {
         $fallback = if ($result.state -eq 'passed') { 'postflight_failed' } else { $result.failure_code }
-        $result.failure_code = Get-E1FailureCode $_ $fallback
-        $result.state = 'failed'
+        $phase = if ($transportStarted) { 'transport' } else { 'primary' }
+        Set-E1Failure $result $phase (Get-E1FailureCode $_ $fallback)
     } finally {
         if ($job) { Stop-Job -Job $job -ErrorAction SilentlyContinue 2>$null; Remove-Job -Job $job -Force -ErrorAction SilentlyContinue 2>$null }
         if ($session) { Remove-PSSession -Session $session -ErrorAction SilentlyContinue 2>$null }
@@ -849,7 +1124,7 @@ function Invoke-E1ValidationDirect {
                 $null = Resolve-E1Path $report
                 New-Item -ItemType Directory -Path (Split-Path -Parent $report) -Force | Out-Null
                 [IO.File]::WriteAllText($report, ($result | ConvertTo-Json -Depth 12 -Compress), [Text.UTF8Encoding]::new($false))
-            } catch { $result.state = 'failed'; $result.failure_code = 'report_write_failed' }
+            } catch { Set-E1Failure $result 'persistence' 'report_write_failed' }
         }
     }
     return $result
