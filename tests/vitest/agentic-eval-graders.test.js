@@ -674,6 +674,23 @@ describe('gradeScenarioCondition -- scenario 1 (:shared, tests_executed) happy p
     expect(grade.success).toBe(true);
   });
 
+  // Evidence1 success-recovery PR B: terminalEvidence.parallel_evidence_invalid/
+  // changed_evidence_invalid are kmp-test-envelope-only concepts (evaluateGradleAttempt's own
+  // return shape never sets them at all) -- terminalEvidenceDiagnostic must still surface real
+  // booleans for a Gradle-provider terminal (accepted-run-audit.mjs's schema 10 sidecar validates
+  // these two fields as required booleans whenever present:true, regardless of provider).
+  it('a Gradle-provider terminal reports parallel_evidence_invalid/changed_evidence_invalid as real booleans (false), never undefined', () => {
+    const cr = buildConditionResult(
+      [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT, evidence: okJunit(24, 24, 0) }],
+      SCENARIO_1_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_1);
+    expect(grade.terminalEvidence.present).toBe(true);
+    expect(grade.terminalEvidence.provider).toBe('gradle');
+    expect(grade.terminalEvidence.parallel_evidence_invalid).toBe(false);
+    expect(grade.terminalEvidence.changed_evidence_invalid).toBe(false);
+  });
+
   it('a doctor call before the real parallel call is auxiliary -- never counted as a competing/ambiguous envelope', () => {
     const cr = buildConditionResult(
       [

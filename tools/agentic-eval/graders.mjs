@@ -2295,8 +2295,14 @@ function terminalEvidenceDiagnostic(terminal, evidenceWellFormed, scenario, fina
     target_matches_expected: terminal.targetMatches,
     outcome_matches_expected: terminal.outcomeMatches,
     malformed: terminal.malformed,
-    parallel_evidence_invalid: terminal.parallelEvidenceInvalid,
-    changed_evidence_invalid: terminal.changedEvidenceInvalid,
+    // === true, not a bare read: parallelEvidenceInvalid/changedEvidenceInvalid are kmp-test-
+    // envelope-only concepts -- evaluateGradleAttempt's own return shape never sets either key, so
+    // a Gradle-provider terminal must coerce that absence to the honest "not invalid" (false)
+    // rather than leak `undefined` into a field the accepted-run-audit sidecar validates as a
+    // required boolean whenever present:true (mirrors the identical `=== true` idiom this file
+    // already uses for parallelEvidenceMalformed/changedEvidenceMalformed, below).
+    parallel_evidence_invalid: terminal.parallelEvidenceInvalid === true,
+    changed_evidence_invalid: terminal.changedEvidenceInvalid === true,
     observed_result: observedSummary,
     final_answer_block: finalAnswer.diagnostic,
     coverage_gate_diagnostic,
