@@ -216,9 +216,13 @@ prints the resolved value so operator authorization can bind to the actual runti
 
 run --campaign-design <id> expands one scenario into a closed, pre-registered multi-profile
 campaign plan in one invocation. Supported ids: claude-2x2-williams-v1 (policy profile x skill
-condition, 16 sessions) and claude-product-vs-free-baseline-v1 (product-assisted vs true
-free-baseline/no-product, 8 sessions). Mutually exclusive with --execution-profile/--repeats (the
-design resolves its own profiles and fixes its own repeat count). Requires
+condition, 16 sessions), claude-product-vs-free-baseline-v1 (product-assisted vs true
+free-baseline/no-product, 8 sessions), claude-product-canary-v1 and claude-free-baseline-canary-v1
+(one session each, only --scenario coverage-threshold-failure-v2). Use --dry-run to inspect a
+canary without runtime execution; registration does not authorize live use. Future live canaries
+use the existing campaign gates and require separate explicit authorization and ops-wrapper
+adaptation (the live wrapper currently requires matrix8). Mutually exclusive with
+--execution-profile/--repeats (the design resolves its own profiles and fixes its own repeat count). Requires
 --isolation-attestation-file <path> whenever the design includes sandboxed-unrestricted-v1 cells;
 see tools/agentic-eval/scenario-campaign-plan.mjs and README.md's "Multi-profile campaigns"
 section.
@@ -3752,6 +3756,10 @@ async function cmdRunCampaign(args, campaignDesignId) {
   const designResolved = resolveScenarioCampaignDesign(campaignDesignId);
   if (!designResolved.ok) {
     console.error(designResolved.reason);
+    return 1;
+  }
+  if (designResolved.design.scenario_id != null && scenarioId !== designResolved.design.scenario_id) {
+    console.error(`campaign design ${JSON.stringify(campaignDesignId)} requires --scenario ${designResolved.design.scenario_id}`);
     return 1;
   }
   const executionProfileIds = loadRegistries().executionProfiles.filter((p) => p.enabled === true).map((p) => p.id);

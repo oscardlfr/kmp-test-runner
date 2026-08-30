@@ -7,7 +7,8 @@ turning the host into a general-purpose elevated shell. It does not authorize li
 
 - The VM is still the isolation boundary for Evidence1 live execution.
 - The host scripts update the harness, verify launch evidence, perform one controlled live handoff,
-  read privacy-safe progress, or copy finalized operational artifacts.
+  validate the deterministic product wet gate and one-cell dry-run plans, read privacy-safe
+  progress, or copy finalized operational artifacts.
 - Raw transcript files and per-cell stderr transcript artifacts are never read by these scripts.
 - Do not run another live campaign from this PR. Live execution still requires the separate literal
   authorization phrase after readiness has passed.
@@ -35,6 +36,20 @@ runner itself.
 The runner does not expose a generic VM stop command or the low-level autorun placement script.
 The only allowlisted launch mutation is `evidence1-hyperv-start-authorized-live.ps1`, which owns the
 whole transition and delegates internally to the placement script after every gate has passed.
+
+## Post-Merge Validation Before Live
+
+Follow [Evidence1 Post-Merge Validation](evidence1-post-merge-validation.md) for the Stage V
+sequence and deployment custody. The explicit validation allowlist additions are:
+
+- `evidence1-hyperv-verify-wet-gate-v2-direct.ps1`: one real product/Gradle invocation in the
+  guest, with the exact coverage budget contract and a 300-second cap. It never runs Claude.
+- `evidence1-hyperv-verify-canary-dryrun-v3-direct.ps1`: separate registered Product and
+  FreeBaseline plans, one session each, without spawning agents or writing live records.
+
+Readiness's eight-cell dry-run does not replace these stages. Updating the guest harness also
+does not update the host task's allowlist: deploy the reviewed operational checkout to the
+actual task action path while the task and queue are idle. Keep the trusted directory unchanged.
 
 ## Standard Retake Flow
 

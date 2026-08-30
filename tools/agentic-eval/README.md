@@ -1928,7 +1928,8 @@ planning/execution machinery `scenario-campaign-plan.mjs` (a pure, dependency-fr
 `--execution-profile` matrix (`run --execution-profile <id>` keeps working completely unchanged;
 see "Isolation" above for the profile registry itself).
 
-Two campaign designs are currently supported. `claude-2x2-williams-v1` is the original genuine
+Two full campaign designs and two one-cell canary designs are currently supported.
+`claude-2x2-williams-v1` is the original genuine
 2×2 (execution profile × skill condition) design, 4 repetitions, 16 sessions total, expanded via
 a literal, pre-registered 4×4 Williams-style counterbalanced order — never shuffled, never
 dependent on `--seed` (the flag is still required and recorded on every resulting record, for
@@ -2018,6 +2019,66 @@ and product-specific `KMP_EVAL_*`/`KMP_TEST_*` environment variables. It exits n
 counts/statuses only, never raw paths or environment values. This gate proves the baseline
 workspace/process surface is not product-visible; it does **not** prove the model lacks latent
 knowledge of `kmp-test-runner`.
+
+### Single-cell canary planning
+
+Evidence 1 canaries use the same registered campaign builder and `run --campaign-design`
+route as the full product-versus-free-baseline campaign. Each design constructs exactly one
+cell; it does not construct eight sessions and trim the printed output. Both are restricted
+to the existing `coverage-threshold-failure-v2` scenario, with no scenario or pin changes.
+
+| Arm | `--campaign-design` | Cell | Skill condition | Product access |
+| --- | --- | --- | --- | --- |
+| Product | `claude-product-canary-v1` | A | `current-skill` | `product-assisted` |
+| FreeBaseline | `claude-free-baseline-canary-v1` | B | `no-skill` | `free-baseline-no-product` |
+
+Run each preview separately:
+
+```bash
+rtk node tools/agentic-eval/cli.mjs run \
+  --campaign-design claude-product-canary-v1 \
+  --scenario coverage-threshold-failure-v2 \
+  --source-repo-dir <local-clone> --seed 7 \
+  --isolation-attestation-file <path> --dry-run
+
+rtk node tools/agentic-eval/cli.mjs run \
+  --campaign-design claude-free-baseline-canary-v1 \
+  --scenario coverage-threshold-failure-v2 \
+  --source-repo-dir <local-clone> --seed 7 \
+  --isolation-attestation-file <path> --dry-run
+```
+
+Each successful invocation exits 0 and prints the existing campaign JSON shape with
+`dry_run: true`, `planned_sessions: 1`, `repeats: 1`, the selected `campaign_design_id`, and
+a single entry in `plan`. That cell has `order_index: 0`, `repetition_index: 0`, the table's
+label/condition/access mode, and `execution_profile_id: "sandboxed-unrestricted-v1"`.
+Its profile hash, `external-sandbox` isolation kind, `restricted` network mode,
+`not_applicable` policy mode, and validated attestation hash use the same resolution as the
+full campaign. The attestation must bind to the current harness commit and platform, with a
+campaign-only workspace and no ambient secrets or normal maintainer home mounted.
+
+`--seed`, `--source-repo-dir`, and `--isolation-attestation-file` remain required. Existing
+runtime/model, budget, private-pattern, and measurement-scope options retain their normal
+validation. `--repeats` (even `1`) and `--execution-profile` are rejected with campaign designs.
+There is no `--arm` or `--canary-arm` alias: select exactly one registered design ID. Unknown
+designs, other scenarios, duplicate flags, missing values, and ambiguous boolean values fail
+closed before a plan is printed.
+
+The preview writes no run records, journal, evidence, or raw transcripts and launches no runtime,
+Claude, or Gradle process. It may run read-only git commands to validate provenance and a supplied
+measurement scope. As with a full campaign dry-run, it does not materialize or verify the source
+clone, run product-access preflight, or prove technical containment. In particular, FreeBaseline's
+planned `free-baseline-no-product` mode is not an observed clean-workspace result.
+
+**Future L1/L2 limitation:** these are real registered one-cell campaigns, so separately authorized
+future execution can reuse the existing matrix runner, source checks, isolation validation,
+product-access preflight, integrity checks, and evidence handling. There is no alternate live
+entry point or bypass flag. Registration and a successful preview do not authorize a live session.
+The ops live wrapper still hardcodes the eight-cell `matrix8` campaign and needs a separate,
+reviewed adaptation before it can safely dispatch either canary. This patch does not claim live
+readiness or execute L1/L2. A single canary is not a balanced comparison: the unchanged benchmark
+eligibility rule excludes it, and its result must not be represented as a completed eight-cell
+campaign or pooled into that campaign.
 
 Execution acquires one independent shared-resource bundle (shim/skill-snapshot/Gradle-home/
 settings/env) **per distinct execution profile** the plan uses, never one bundle reused across
