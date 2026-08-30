@@ -34,7 +34,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveBash } from '../../tools/agentic-eval/resolve-bash.mjs';
 import { validateAcceptedRunAuditSidecar, crossValidateAcceptedRunAuditAgainstRecord } from '../../tools/agentic-eval/accepted-run-audit.mjs';
-import { validateRejectionRow, REJECTION_DIAGNOSTICS_SCHEMA_V12 } from '../../tools/agentic-eval/rejection-diagnostics.mjs';
+import { validateRejectionRow, REJECTION_DIAGNOSTICS_SCHEMA_V13 } from '../../tools/agentic-eval/rejection-diagnostics.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -303,7 +303,7 @@ describe('2. run --dry-run -- sandboxed-unrestricted-v1, with a synthetic isolat
 });
 
 describe('3+4. run -- sandboxed-unrestricted-v1, current-skill AND no-skill, full acceptance', () => {
-  it('repeats=2: writes 4 schema-v6 records with a v9 accepted-run-audit sidecar each, honest null policy fields, and real no-policy dispatch accounting', async () => {
+  it('repeats=2: writes 4 schema-v8 records with a v10 accepted-run-audit sidecar each, honest null policy fields, and real no-policy dispatch accounting', async () => {
     const attestationPath = writeValidAttestation();
     const result = await runCli(
       runArgs(['--seed', '13', '--repeats', '2', ...UNRESTRICTED_EXECUTION_PROFILE_FLAGS(attestationPath)]),
@@ -358,10 +358,10 @@ describe('3+4. run -- sandboxed-unrestricted-v1, current-skill AND no-skill, ful
       expect(record.success.value).toBe(true);
       expect(record.benchmark_eligible).toBe(true);
 
-    // schema v6 run record with accepted-run-audit sidecar v9 -- never v3, the moment
-      // policy_mode:"not_applicable" is what actually produced this record. v8 is the
-      // privacy-safe terminal coverage/final-answer observability extension; the record schema stays v6.
-    expect(record.accepted_audit.schema).toBe(9);
+    // schema v8 run record with accepted-run-audit sidecar v10 (Evidence1 success-recovery PR B) --
+      // v10 is the first sidecar version self-describing in BOTH policy modes, so a schema:8
+      // record always resolves to it regardless of policy_mode:"not_applicable" vs "required".
+    expect(record.accepted_audit.schema).toBe(10);
     }
 
     // The sidecar written to disk, read back and independently validated/cross-validated --
@@ -370,7 +370,7 @@ describe('3+4. run -- sandboxed-unrestricted-v1, current-skill AND no-skill, ful
     // path, not just their own dedicated unit tests.
     for (const record of records) {
       const sidecar = readAcceptedAuditSidecar(record.run_id);
-      expect(sidecar.schema).toBe(9);
+      expect(sidecar.schema).toBe(10);
       expect(sidecar.execution_profile_id).toBe('sandboxed-unrestricted-v1');
       expect(sidecar.policy_mode).toBe('not_applicable');
       expect(sidecar.isolation_attestation_sha256).toBe(record.execution_profile.isolation_attestation_sha256);
@@ -428,8 +428,11 @@ describe('5. run -- a genuinely missing tool_result fails the WHOLE matrix close
   // privacy-safe per-cell observability for run-record error codes, correlation counts, and
   // pre-inference summaries with closed cause/runtime codes, exact timing/usage/token/tool-count
   // metrics, closed grading summaries, and terminal-evidence summaries. v2/v3/v4/v5/v6/v7/v8/v9/v10 stay frozen. This test now proves the FULL, correct, end-to-end
-  // rejection shape.
-  it('zero records written for ANY cell, fail-fast reported via the normal RUN FAILED path, a sanitized schema-11 rejection diagnostic written, no accepted-run-audit sidecar anywhere', async () => {
+  // rejection shape. Evidence1 success-recovery PR B: this CLI now always builds schema:8 run
+  // records (LATEST_RUN_SCHEMA), and a rejection batch with ANY such cell always routes to
+  // rejection-diagnostics schema 13 instead -- v13 conserves v12's own not_applicable shape
+  // (checked here) via conditional validation and adds 2 new common per-cell fields on top.
+  it('zero records written for ANY cell, fail-fast reported via the normal RUN FAILED path, a sanitized schema-13 rejection diagnostic written, no accepted-run-audit sidecar anywhere', async () => {
     const attestationPath = writeValidAttestation();
     const result = await runCli(
       runArgs(['--seed', '1', '--repeats', '1', ...UNRESTRICTED_EXECUTION_PROFILE_FLAGS(attestationPath)]),
@@ -446,7 +449,7 @@ describe('5. run -- a genuinely missing tool_result fails the WHOLE matrix close
     expect(existsSync(path.join(evidenceDirFor('scenario'), 'audit'))).toBe(false);
 
     const committed = readCommittedRejectionDiagnostic();
-    expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V12);
+    expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V13);
     expect(committed.execution_profile_id).toBe('sandboxed-unrestricted-v1');
     expect(committed.policy_mode).toBe('not_applicable');
     expect(committed.isolation_attestation_sha256).toMatch(/^[0-9a-f]{64}$/);
@@ -507,7 +510,7 @@ describe('6. run -- auth failure and a malformed stream still follow their curre
   // comment for the full root-cause trace) -- a malformed-transcript rejection is ALSO a genuine
   // fail-fast/hard-gate rejection, so it exercises the identical schema-11 path with a different
   // specific reason (cleanTranscriptOk:false here, toolResultsCompleteOk:false there).
-  it('a harness-integrity failure (malformed transcript) blocks the WHOLE matrix, identically under sandboxed-unrestricted-v1, with a sanitized schema-11 rejection diagnostic written', async () => {
+  it('a harness-integrity failure (malformed transcript) blocks the WHOLE matrix, identically under sandboxed-unrestricted-v1, with a sanitized schema-13 rejection diagnostic written', async () => {
     const attestationPath = writeValidAttestation();
     const result = await runCli(
       runArgs(['--seed', '1', '--repeats', '1', ...UNRESTRICTED_EXECUTION_PROFILE_FLAGS(attestationPath)]),
@@ -522,7 +525,7 @@ describe('6. run -- auth failure and a malformed stream still follow their curre
     expect(listEvidenceFiles('scenario')).toEqual([]);
 
     const committed = readCommittedRejectionDiagnostic();
-    expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V12);
+    expect(committed.schema).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V13);
     expect(committed.policy_mode).toBe('not_applicable');
     expect(committed.policy_sha256).toBeNull();
     expect(committed.cells[0].pre_inference_failure.signature_matched).toBe(false);
@@ -592,7 +595,7 @@ describe('7. calibrate and smoke -- sandboxed-unrestricted-v1 traverses the fake
 });
 
 describe('8. run -- strict (default) fake E2E, run through this file\'s own harness, stays exactly as before', () => {
-  it('repeats=2 under strict-policy-v1 keeps the pre-existing real-value policy shape and a v3 sidecar', async () => {
+  it('repeats=2 under strict-policy-v1 keeps the pre-existing real-value policy shape and a v10 sidecar', async () => {
     const result = await runCli(runArgs(['--seed', '13', '--repeats', '2']), fakeClaudeEnv('run-scenario-success'), 60000);
     expect(result.status).toBe(0);
     const { records } = result.parsed;
@@ -609,13 +612,19 @@ describe('8. run -- strict (default) fake E2E, run through this file\'s own harn
       expect(record.hook_deny_count).toBe(0);
       expect(record.policy_denials_before_first_signal.value).not.toBeNull();
       expect(record.policy_denials_after_first_signal.value).not.toBeNull();
-      expect(record.accepted_audit.schema).toBe(3);
+      // Evidence1 success-recovery PR B: this CLI now always builds schema:8 records, and a
+      // schema:8 record always resolves to accepted-run-audit sidecar v10 (Section 9.4 rule 3),
+      // regardless of policy mode -- never v3, which was exclusive to schema:6 records.
+      expect(record.accepted_audit.schema).toBe(10);
     }
     const sidecar = readAcceptedAuditSidecar(records[0].run_id);
-    expect(sidecar.schema).toBe(3);
-    expect('execution_profile_id' in sidecar).toBe(false);
-    expect('policy_mode' in sidecar).toBe(false);
-    expect('isolation_attestation_sha256' in sidecar).toBe(false);
+    expect(sidecar.schema).toBe(10);
+    // v10 is self-describing in BOTH policy modes -- unlike v3, which omitted
+    // execution_profile_id/policy_mode/isolation_attestation_sha256 entirely for a
+    // policy-required record.
+    expect(sidecar.execution_profile_id).toBe('strict-policy-v1');
+    expect(sidecar.policy_mode).toBe('required');
+    expect(sidecar.isolation_attestation_sha256).toBeNull();
     expect(validateAcceptedRunAuditSidecar(sidecar).errors).toEqual([]);
   }, 60000);
 });

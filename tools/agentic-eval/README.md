@@ -482,23 +482,43 @@ matrix is rejected anyway.
   **not** independently prove the original raw transcript's own content, which was never committed
   in the first place and is not recoverable from the sidecar.
 
-  **Schema versions, and the construction-time vs at-rest evidentiary boundary.** Nine versions
+  **Schema versions, and the construction-time vs at-rest evidentiary boundary.** Ten versions
   coexist: **v1** (frozen — the 92 historical committed sidecars), **v2** (frozen — the 64 committed
   sidecars written since, adding per-call `dispatch_status` and `summary.pre_dispatch_blocked_total`;
   both v1 and v2 still require literally `run_schema: 5`), **v3** (schema-v6 policy-required
   records and later runtime-neutral policy-required records), **v4** and **v5** (frozen legacy
   schema-v6 no-policy sidecars), **v6** (runtime-neutral no-policy sidecars, v5 plus
   terminal evidence), **v7** (frozen no-policy coverage-gate diagnostic sidecars), **v8**
-  (frozen coverage-outcome observability), and **v9** (current runtime-neutral no-policy sidecars,
-  v8 plus privacy-safe error-contract counts).
+  (frozen coverage-outcome observability), **v9** (frozen runtime-neutral no-policy sidecars,
+  v8 plus privacy-safe error-contract counts), and **v10** (current — Evidence1 success-recovery PR
+  B, the first version self-describing in BOTH policy modes; see below).
   Validation dispatches on the sidecar's own real version and fails closed on anything outside
-  `{1, 2, 3, 4, 5, 6, 7, 8, 9}`; a record's
+  `{1, 2, ..., 10}`; a record's
   `accepted_audit.schema` must equal the schema of the sidecar it points at, checked during
-  cross-validation. A schema-v5 run record accepts only sidecar schema 1 or 2; a schema-v6-or-later
-  policy-required record produces sidecar schema 3; a schema-v6-or-later no-policy record now
-  produces sidecar schema 9 while schemas 4 through 8 remain accepted for already-written legacy
-  artifacts. That
+  cross-validation. A schema-v5 run record accepts only sidecar schema 1 or 2; a schema-v6/v7
+  record produces sidecar schema 3 (policy-required) or schema 9 (no-policy); a **schema-v8+**
+  record always produces sidecar schema **10**, checked BEFORE the policy_mode dispatch and
+  regardless of it — unlike every version below it, each exclusive to exactly one policy mode. That
   equality was implicit while only one version existed and is now asserted per the compatible pair.
+
+  **v10 (Evidence1 success-recovery PR B).** Preserves, via conditional validation, whichever of
+  v3's (policy-required) or v9's (no-policy) own field set already applied — `execution_profile_id`/
+  `policy_mode`/`isolation_attestation_sha256`/`terminal_evidence` are now unconditionally present
+  regardless of policy mode (`isolation_attestation_sha256` is `null` under `policy_mode:"required"`,
+  a real hash under `"not_applicable"`) — and adds exactly two new, always-present fields: the
+  record's own `outcome_assessment` (Section 9.5's neutral scorer result, a verbatim passthrough —
+  already closed-vocabulary by its own schema design, so no second validation copy is needed) and
+  `outcome_observability_summary` (`{schema, flavor_relation, test_type_relation,
+  coverage_target_status, coverage_report_status, warning_code_counts, module_failed_setup_count,
+  execution_mode_counts}` — the identical shape rejection-diagnostics schema 13 projects per cell,
+  both built and validated from the ONE shared module, `coverage-gate-observability.mjs`, so the two
+  consumers can never independently drift on vocabulary). `coverage_target_status`/
+  `coverage_report_status` are derived from the sidecar's own existing `terminal_evidence.
+  coverage_gate_diagnostic` / `coverage_gate_attempts[].error_code_buckets`; `flavor_relation`/
+  `test_type_relation`/`warning_code_counts`/`module_failed_setup_count`/`execution_mode_counts`
+  honestly report their own closed "not-recorded"/all-zero/null defaults today — no upstream signal
+  exists yet for those five, and Section 9.9 explicitly requires this summary only "when the data
+  exists," never a fabricated value when it does not.
 
   **v8/v9 coverage-outcome observability.** v8 and v9 are restricted to runtime-neutral no-policy scenario
   records (`run_schema >= 6`, `policy_mode:"not_applicable"`). It preserves v6 semantics and adds
@@ -852,14 +872,14 @@ tiers, which stay exactly as narrow as before.
   depth, confirmed empirically with `git check-ignore -v`) — no new `.gitignore` entry was needed
   for either. Only tier 1 (the top-level `<rejection_id>.json`) is genuinely tracked; the whole
   directory is **not** uniformly gitignored, unlike an earlier version of this note claimed.
-- **Shape — schema is a genuine DISPATCH (`SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]`),
+- **Shape — schema is a genuine DISPATCH (`SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]`),
   not a plain constant bump**: two real diagnostic files from the 2026-08 canary rejection itself
   are `schema:2` and are preserved, hashed, declared incident evidence outside this repo — a plain
   bump would make `validateRejectionRow()` call that very evidence "invalid." `validateRejectionRow()`
   still validates a `schema:2` row against its original, frozen shape (no
   `unexpected_tool_uses_count`/`matrix_complete`/etc. — and a v2 row may not even carry those keys,
-  closed-key-set); `buildRejectionDiagnostics()` only ever *constructs* schema 3 or schema 12,
-  never schema 2/4/5/6/7/8/9, and never via a bare
+  closed-key-set); `buildRejectionDiagnostics()` only ever *constructs* schema 3, 12, or (Evidence1
+  success-recovery PR B) 13, never schema 2/4/5/6/7/8/9/10/11, and never via a bare
   `schema === LATEST_REJECTION_DIAGNOSTICS_SCHEMA` selector (see the schema-4 paragraph below for
   why). A
   `schema:3` row is `{schema, rejection_id, timestamp, run_kind, run_ids, model_requested,
@@ -953,10 +973,29 @@ tiers, which stay exactly as narrow as before.
   never a parallel caller-supplied parameter) — a batch that disagrees on any of the 3 (or mixes
   `schema<6` and `schema>=6` records, or policy-required and `not_applicable` records) fails closed
   with a specific reason, since one harness invocation always resolves exactly one execution
-  profile for its whole batch. Schema 10 otherwise inherits schema 3's entire
+  profile for its whole batch. Schema 12 otherwise inherits schema 3's entire
   `matrix_complete`/`planned_cell_count`/`executed_cell_count`/`raw_transcripts_persisted`/
   per-cell `unexpected_tool_uses_count` contract unchanged — fail-fast partial-matrix support is
   orthogonal to `policy_mode`. Schemas 2 and 3 are both frozen going forward exactly as they were.
+
+  **Schema 13 (Evidence1 success-recovery PR B, Section 9.4 rule 5).** Routed whenever **any**
+  record in the batch has its own run `schema >= 8` — checked independently of, and combined with,
+  the `policy_mode` dispatch above (a mixed `schema<8`/`schema>=8` batch still routes to 13, as
+  long as every record already agreed on `policy_mode`). Unlike every schema below it, 13 is not a
+  single frozen field list: it conserves, via conditional validation, whichever of schema 3
+  (policy-required) or schema 12 (`not_applicable`) shape already applied to the batch — exactly as
+  those two always did independently — and adds exactly two new, unconditional per-cell fields on
+  top, in *either* flavor: `outcome_assessment` (that cell's own record `outcome_assessment`
+  object, verbatim — `null` for a non-scenario run_kind, the real closed object for `scenario`) and
+  `outcome_observability_summary` (the identical shared shape accepted-run-audit sidecar schema 10
+  projects — see "v10" above — built from that cell's own terminal evidence via the one shared
+  derivation, `coverage-gate-observability.mjs`'s `buildOutcomeObservabilitySummary`). A schema:13
+  row is self-identifying by whether it carries `policy_mode` at all — the same closed key schemas
+  4–12 already gate on — rather than by a fixed, schema-number-only field list. `run_kind:
+  'calibration'`/`'smoke'` batches (which never grade against an expected/observed envelope) still
+  route to 13 once schema>=8, but their `outcome_observability_summary` honestly degrades to the
+  shared module's own all-not-recorded fallback when no `terminalEvidenceByRunId` map exists at all
+  for that call site — never a fabricated concept for a run_kind it does not structurally apply to.
 - **Privacy — `project_url`**: present in the **local-only** tier (top-level, batch-wide,
   alongside `project_alias`/`project_commit` in spirit) but deliberately **absent** from the
   committed tier — unlike `project_alias`/`project_commit`, which identify a project/revision
@@ -1357,6 +1396,24 @@ model attention. For a no-skill condition, `snapshot_*` are `null` with
 `absent_reason: 'condition-no-skill'` (the skill was never made available at all); the prompt
 fields are still populated (a prompt is always sent, regardless of condition).
 
+**v8** (Evidence1 success-recovery PR B) is additive on top of v6's runtime-neutral groups (v7,
+an earlier PR, is not re-documented here). It adds `outcome_assessment` on **every** run_kind —
+a closed object for `run_kind:'scenario'`
+(`{schema, task_outcome_matched, task_outcome_reason, answer_protocol_matched,
+provider_evidence_kind, provider_evidence_status, product_e2e_success}`, computed additively by
+`graders.mjs`'s `buildOutcomeAssessment`, never aliasing the legacy `expected_outcome_matched`/
+`success` fields it sits alongside), `null` for every other run_kind. Closed enums:
+`task_outcome_reason` (`matched`/`mismatched`/`claim-missing`/`claim-malformed`/
+`ground-truth-unavailable`), `provider_evidence_kind` (`kmp-test-envelope`/`gradle-junit`/
+`gradle-coverage`/`mixed-standard-tools`/`claim-only`/`none`), `provider_evidence_status`
+(`matched`/`mismatched`/`partial`/`unavailable`). The point: FreeBaseline and Product are graded
+by the SAME neutral criterion — did the final claim match ground truth, derived structurally from
+whichever evidence actually exists (a kmp-test envelope, standard Gradle/JUnit output, or neither)
+— never assuming a kmp-test envelope is the only valid evidence shape. `success`/
+`expected_outcome_matched` remain exactly the strict, Product-only, non-comparable legacy gate
+they always were; `task_outcome_matched`/`product_e2e_success` are the fair, neutral, cross-arm
+measurements.
+
 **Runtime/model/execution-profile selection** (`--runtime <id>`, `--execution-profile <id>` — new
 flags on `calibrate`/`smoke`/`run` only, alongside the existing `--model <id>`) resolves against
 three closed JSON registries (`runtimes/registry.json`, `models/registry.json`,
@@ -1728,13 +1785,48 @@ with a runtime whose activation is not simply boolean. Group summaries additiona
 `usage_cached_input_distribution`, `usage_cache_write_distribution`, `usage_output_distribution`,
 `usage_reasoning_output_distribution` — deliberately no summed total field anywhere: runtime-
 native token counts are never rankable as if they shared a tokenizer or hidden prompt, so a single
-combined number would misleadingly imply they are. `ANALYSIS_SCHEMA` is **6** for the current
-shape; bucketing/grouping is unchanged (still `HARD_PARTITION_FIELDS`, which itself gained the 3
-new structural keys — see "Fairness Contract" above, which `analyze` shares verbatim via
-`run-record-view.mjs`'s `withPartitionView()`). Historical sidecars that predate v8 report
-coverage-attempt and final-answer comparison fields as `not-recorded`, `null`, `[]`, or `0`
+combined number would misleadingly imply they are. `ANALYSIS_SCHEMA` was **6** through the shape
+described in this paragraph; bucketing/grouping is unchanged (still `HARD_PARTITION_FIELDS`, which
+itself gained the 3 new structural keys — see "Fairness Contract" above, which `analyze` shares
+verbatim via `run-record-view.mjs`'s `withPartitionView()`). Historical sidecars that predate v8
+report coverage-attempt and final-answer comparison fields as `not-recorded`, `null`, `[]`, or `0`
 according to the field's closed shape; analysis never reinterprets legacy artifacts by replaying
 raw evidence.
+
+**Analysis schema v7 (Evidence1 success-recovery PR B, `ANALYSIS_SCHEMA` is now 7).** For a
+run-record `schema>=8`, `task_outcome_matched`/`answer_protocol_matched` now read the record's own
+neutral `outcome_assessment` object (see "v8" above) instead of the legacy
+`expected_outcome_matched`/`final_answer_consistent` alias — a deliberate naming COLLISION resolved
+by schema dispatch: `schema<8` records keep the exact legacy alias, byte-for-byte unchanged, since
+`outcome_assessment` does not exist on them at all. Adds `task_outcome_available_ms` — a TIME,
+never an event index (`first_useful_signal_event`'s own contract is specifically tied to a real
+`user.tool_result` event a claim-only FreeBaseline run never produces, and Product's evidence can
+become available before the final claim, so the two are never fused) — read from the record's own
+`wall_clock_ms`, gated only on `task_outcome_matched === true`; group summaries add the matching
+`task_outcome_available_ms_distribution`. Also surfaces, per run: `provider_evidence_kind`/
+`provider_evidence_status`/`product_e2e_success` (verbatim from `outcome_assessment`);
+`wall_clock_ms`/`first_useful_signal_ms`/`tool_calls_total`/`terminated`/`termination_reason`
+(plain passthroughs of fields every schema this module reads already carries); `coverage_target_
+status`/`coverage_report_status`/`warning_code_counts`/`execution_mode_counts` (Section 9.9's
+shared summary, read from the accepted-run-audit sidecar's own `outcome_observability_summary`
+when present — a `schema<10` sidecar falls back to the shared module's own honest
+`emptyOutcomeObservabilitySummary()` shape); and `result_fingerprint`, a semantic determinism
+fingerprint built from the sidecar's own already privacy-safe `observed_result` projection plus a
+closed, sorted, deduplicated error-code set (mirrors `rejection-diagnostics.mjs`'s own
+`record_error_codes` derivation) — excludes paths/duration/run_id/timestamps by construction, so it
+measures whether repeated Product runs of the SAME scenario agree semantically without comparing
+volatile bytes. Group summaries add the matching `provider_evidence_kind`/`provider_evidence_
+status` distributions; `product_e2e_success_count`/`_applicable_count`/`_rate` (null-excluded from
+both the numerator and the denominator — the neutral scorer already nulls this field for every
+non-Product entry, so this restricts the rate to Product without a second, independent
+`product_access_mode` re-derivation); `wall_clock_ms`/`first_useful_signal_ms`/`tool_calls_total`/
+`termination_reason` distributions; `coverage_target_status`/`coverage_report_status`
+distributions plus `warning_code_counts`/`execution_mode_counts` SUMMED across entries (reuses the
+existing `sumCountMaps` helper, mirroring `product_cli_recognized_operation_distribution`'s own
+pattern); and `result_fingerprint_distinct_count` — the count of distinct fingerprints observed in
+the group (1 means every run agreed; more than 1 means a genuine, structural disagreement was
+observed). Never a single composite score anywhere in this module — every dimension stays its own
+separately-reported field.
 
 **Causality boundary.** These reports intentionally stop at structural facts. A
 `coverage_gate_contract_failures:["threshold"]` value means the observed coverage-gate threshold

@@ -25,6 +25,7 @@ import {
   REJECTION_DIAGNOSTICS_SCHEMA_V10,
   REJECTION_DIAGNOSTICS_SCHEMA_V11,
   REJECTION_DIAGNOSTICS_SCHEMA_V12,
+  REJECTION_DIAGNOSTICS_SCHEMA_V13,
   buildRejectionDiagnostics,
   validateRejectionRow,
   validateRejectionLocalRow,
@@ -39,6 +40,15 @@ import {
 } from '../../tools/agentic-eval/rejection-diagnostics.mjs';
 import { findLeaks, PUBLIC_SHAPE_RULES, redactAndVerify } from '../../tools/agentic-eval/privacy.mjs';
 import { GRADING_CHECK_NAMES } from '../../tools/agentic-eval/graders.mjs';
+// Evidence1 success-recovery PR B, Stage B2 (review-round finding): the single authorized module
+// for Section 9.9's closed enums and shared validator -- imported here verbatim, never
+// re-declared, so this file's own enum expectations can never silently drift from
+// accepted-run-audit.mjs's identical import of the same symbols.
+import {
+  FLAVOR_RELATION_VALUES, TEST_TYPE_RELATION_VALUES, COVERAGE_TARGET_STATUS_VALUES,
+  COVERAGE_REPORT_STATUS_VALUES, EXECUTION_MODE_VALUES, COVERAGE_GATE_WARNING_BUCKET_FIELDS,
+  validateOutcomeObservabilitySummary,
+} from '../../tools/agentic-eval/coverage-gate-observability.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -327,7 +337,7 @@ function coverageGateAttempt(overrides = {}) {
 // declared incident evidence that must keep validating, and v2/v3 stay frozen forever (their own
 // field sets, and policy_sha256's own real-hex64 requirement, never change again). The builder
 // picks v3 or v12 per batch (see buildRejectionDiagnostics' own dispatch) -- never emits v2/v4/v5/v6/v7/v8/v9/v10/v11.
-it('LATEST_REJECTION_DIAGNOSTICS_SCHEMA is 12, and the validator still supports 2 through 12', () => {
+it('LATEST_REJECTION_DIAGNOSTICS_SCHEMA is 13, and the validator still supports 2 through 13', () => {
   expect(REJECTION_DIAGNOSTICS_SCHEMA_V2).toBe(2);
   expect(REJECTION_DIAGNOSTICS_SCHEMA_V3).toBe(3);
   expect(REJECTION_DIAGNOSTICS_SCHEMA_V4).toBe(4);
@@ -339,8 +349,9 @@ it('LATEST_REJECTION_DIAGNOSTICS_SCHEMA is 12, and the validator still supports 
   expect(REJECTION_DIAGNOSTICS_SCHEMA_V10).toBe(10);
   expect(REJECTION_DIAGNOSTICS_SCHEMA_V11).toBe(11);
   expect(REJECTION_DIAGNOSTICS_SCHEMA_V12).toBe(12);
-  expect(LATEST_REJECTION_DIAGNOSTICS_SCHEMA).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V12);
-  expect(SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS).toEqual([REJECTION_DIAGNOSTICS_SCHEMA_V2, REJECTION_DIAGNOSTICS_SCHEMA_V3, REJECTION_DIAGNOSTICS_SCHEMA_V4, REJECTION_DIAGNOSTICS_SCHEMA_V5, REJECTION_DIAGNOSTICS_SCHEMA_V6, REJECTION_DIAGNOSTICS_SCHEMA_V7, REJECTION_DIAGNOSTICS_SCHEMA_V8, REJECTION_DIAGNOSTICS_SCHEMA_V9, REJECTION_DIAGNOSTICS_SCHEMA_V10, REJECTION_DIAGNOSTICS_SCHEMA_V11, REJECTION_DIAGNOSTICS_SCHEMA_V12]);
+  expect(REJECTION_DIAGNOSTICS_SCHEMA_V13).toBe(13);
+  expect(LATEST_REJECTION_DIAGNOSTICS_SCHEMA).toBe(REJECTION_DIAGNOSTICS_SCHEMA_V13);
+  expect(SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS).toEqual([REJECTION_DIAGNOSTICS_SCHEMA_V2, REJECTION_DIAGNOSTICS_SCHEMA_V3, REJECTION_DIAGNOSTICS_SCHEMA_V4, REJECTION_DIAGNOSTICS_SCHEMA_V5, REJECTION_DIAGNOSTICS_SCHEMA_V6, REJECTION_DIAGNOSTICS_SCHEMA_V7, REJECTION_DIAGNOSTICS_SCHEMA_V8, REJECTION_DIAGNOSTICS_SCHEMA_V9, REJECTION_DIAGNOSTICS_SCHEMA_V10, REJECTION_DIAGNOSTICS_SCHEMA_V11, REJECTION_DIAGNOSTICS_SCHEMA_V12, REJECTION_DIAGNOSTICS_SCHEMA_V13]);
 });
 
 describe('buildRejectionDiagnostics -- pure construction', () => {
@@ -3230,5 +3241,173 @@ describe('readRejectionStderrFile -- always derives its own filename internally,
     isolatedRunsRoot((runsRoot) => {
       expect(() => readRejectionStderrFile('not-a-uuid', 0, 'r1', { runsRootOverride: runsRoot })).toThrow(/full UUID string/);
     });
+  });
+});
+
+// Evidence1 success-recovery PR B, Stage B2 (docs/audits/agentic-eval-evidence1-success-recovery-
+// v1-runbook.md, Section 9.11): rejection diagnostics schema 13 -- the batch schema for ANY
+// rejection containing a cell whose own run schema is 8+, checked BEFORE the policy_mode dispatch
+// (Section 9.4.5), mirroring exactly how accepted-run-audit sidecar schema 10 is checked before
+// its own policy_mode dispatch. outcome_observability_summary uses the identical field names and
+// Section 9.9 enums as the accepted-sidecar counterpart (requirement 7) -- imported from the
+// single authorized module, coverage-gate-observability.mjs.
+//
+// Review-round finding: record()'s default run_kind is 'calibration' -- schemas.mjs's own schema-8
+// contract requires outcome_assessment:null explicitly (present, not merely omitted) there;
+// scenarioRecord() needs the real, non-null object instead. A fixture validateRun would itself
+// reject proves nothing about the real pipeline's behavior.
+describe('rejection diagnostics schema 13 (Evidence1 success-recovery PR B, Section 9.4.5/9.9) -- any batch containing a run-schema-8+ cell', () => {
+  const REAL_OUTCOME_ASSESSMENT = Object.freeze({
+    schema: 1, task_outcome_matched: true, task_outcome_reason: 'matched',
+    answer_protocol_matched: true, provider_evidence_kind: 'kmp-test-envelope',
+    provider_evidence_status: 'matched', product_e2e_success: true,
+  });
+
+  function schema8NotApplicableRecord(overrides = {}) {
+    return unrestrictedRecord({ schema: 8, outcome_assessment: null, ...overrides });
+  }
+  function schema8RequiredRecord(overrides = {}) {
+    return record({ schema: 8, outcome_assessment: null, ...overrides });
+  }
+  function schema8ScenarioRecord(overrides = {}) {
+    return scenarioRecord({ schema: 8, outcome_assessment: REAL_OUTCOME_ASSESSMENT, ...overrides });
+  }
+  function buildSchema13(records, terminal = terminalEvidence()) {
+    return buildDiag({
+      runKind: records[0].run_kind ?? 'calibration',
+      records,
+      failedChecksByRunId: Object.fromEntries(records.map((r) => [r.run_id, ['authoritative_outcome_matches_expected']])),
+      terminalEvidenceByRunId: Object.fromEntries(records.map((r) => [r.run_id, terminal])),
+    });
+  }
+
+  it('routes to schema 13 for a lone schema-8+ cell, regardless of policy_mode', () => {
+    expect(buildSchema13([schema8NotApplicableRecord()]).committed.schema).toBe(13);
+    expect(buildSchema13([schema8RequiredRecord({ run_id: 'r-required' })]).committed.schema).toBe(13);
+  });
+
+  it('routes a MIXED batch to schema 13 when only ONE cell is schema 8+', () => {
+    const mixed = [unrestrictedRecord({ run_id: 'r-old' }), schema8NotApplicableRecord({ run_id: 'r-new' })];
+    expect(buildSchema13(mixed).committed.schema).toBe(13);
+  });
+
+  it('a batch with NO schema-8+ cell keeps using v3/v12 exactly as before -- schema 13 is additive, never the default', () => {
+    expect(buildSchema13([record()]).committed.schema).not.toBe(13);
+    expect(buildSchema13([unrestrictedRecord()]).committed.schema).not.toBe(13);
+  });
+
+  // Requirement 4/5 (review-round finding): schema 13 projects each cell's OWN outcome_assessment
+  // verbatim, both the null (non-scenario) case and the real (scenario) case.
+  it('preserves each cell\'s own outcome_assessment verbatim -- null for calibration, the real object for scenario', () => {
+    const { committed: calibrationCommitted } = buildSchema13([schema8RequiredRecord()]);
+    expect(calibrationCommitted.cells[0].outcome_assessment).toBeNull();
+
+    const { committed: scenarioCommitted } = buildSchema13([schema8ScenarioRecord()]);
+    expect(scenarioCommitted.cells[0].outcome_assessment).toEqual(REAL_OUTCOME_ASSESSMENT);
+  });
+
+  it('every schema-13 cell carries its own outcome_observability_summary object, in both policy modes', () => {
+    for (const rec of [schema8NotApplicableRecord(), schema8RequiredRecord()]) {
+      const { committed } = buildSchema13([rec]);
+      expect(committed.cells[0].outcome_observability_summary).toBeTruthy();
+      expect(committed.cells[0].outcome_observability_summary.schema).toBe(1);
+      expect(validateOutcomeObservabilitySummary(committed.cells[0].outcome_observability_summary, 'x')).toEqual([]);
+    }
+  });
+
+  // Requirement 2/7 (review-round finding): every allowed enum value is genuinely ACCEPTED by
+  // THIS file's real validator, and one unrecognized value is genuinely REJECTED -- both checked
+  // against the same shared module accepted-run-audit.mjs's own tests import.
+  const ENUM_FIELDS_RD = [
+    ['flavor_relation', FLAVOR_RELATION_VALUES],
+    ['test_type_relation', TEST_TYPE_RELATION_VALUES],
+    ['coverage_target_status', COVERAGE_TARGET_STATUS_VALUES],
+    ['coverage_report_status', COVERAGE_REPORT_STATUS_VALUES],
+  ];
+  for (const [field, values] of ENUM_FIELDS_RD) {
+    // A single test with an internal loop, not it.each(values) -- see the identical rationale in
+    // agentic-eval-accepted-run-audit.test.js: values is undefined until coverage-gate-
+    // observability.mjs actually exports it, and it.each(undefined) would crash this whole FILE
+    // at collection time, taking every one of this file's 263+ pre-existing tests down with it.
+    it(`${field} accepts every allowed value once forced into the built cell`, () => {
+      for (const value of values) {
+        const { committed } = buildSchema13([schema8NotApplicableRecord()], null);
+        committed.cells[0].outcome_observability_summary[field] = value;
+        expect(validateRejectionRow(committed).errors.some((e) => e.field.endsWith(field))).toBe(false);
+      }
+    });
+    it(`validateRejectionRow rejects an unrecognized ${field}`, () => {
+      const { committed } = buildSchema13([schema8NotApplicableRecord()], null);
+      committed.cells[0].outcome_observability_summary[field] = 'totally-not-a-real-value';
+      expect(validateRejectionRow(committed).errors.some((e) => e.field.endsWith(field))).toBe(true);
+    });
+  }
+
+  it('module_failed_setup_count is a non-negative integer or null when no source data exists', () => {
+    const { committed } = buildSchema13([schema8NotApplicableRecord()], null);
+    const value = committed.cells[0].outcome_observability_summary.module_failed_setup_count;
+    expect(value === null || (Number.isInteger(value) && value >= 0)).toBe(true);
+  });
+
+  it('warning_code_counts is a closed map of exactly the approved coverage warning codes to non-negative integers', () => {
+    const { committed } = buildSchema13([schema8NotApplicableRecord()], null);
+    expect(Object.keys(committed.cells[0].outcome_observability_summary.warning_code_counts).sort()).toEqual(COVERAGE_GATE_WARNING_BUCKET_FIELDS.slice().sort());
+  });
+
+  // Requirement 8 (review-round finding, corrected): coverage_gate_diagnostic is ITSELF a closed
+  // enum (kept at its valid default, 'missing-threshold-gate') -- a free-text sentinel placed
+  // there would be rejected by the builder before outcome_observability_summary is ever
+  // assembled, proving nothing about privacy. final_answer_block.detail is the genuinely
+  // free-text field (see terminalEvidence()'s own default value/comment above); the real sentinel
+  // belongs there.
+  it('outcome_observability_summary discards sentinel final-answer prose and a sentinel run id present in the real input', () => {
+    const sentinelTerminal = terminalEvidence({
+      final_answer_block: { ...terminalEvidence().final_answer_block, detail: 'sentinel-free-text-final-answer-detail-should-never-leak' },
+    });
+    const { committed } = buildSchema13([schema8NotApplicableRecord({ run_id: 'sentinel-run-id-secret-99' })], sentinelTerminal);
+    const json = JSON.stringify(committed.cells[0].outcome_observability_summary);
+    expect(json).not.toMatch(/sentinel-free-text-final-answer-detail-should-never-leak|sentinel-run-id-secret-99/i);
+  });
+
+  // Requirement 9: counts negativos o floats se rechazan.
+  it.each([-1, 1.5, '2', true])('validateRejectionRow rejects a module_failed_setup_count of %j', (bad) => {
+    const { committed } = buildSchema13([schema8NotApplicableRecord()], null);
+    committed.cells[0].outcome_observability_summary.module_failed_setup_count = bad;
+    expect(validateRejectionRow(committed).errors.some((e) => e.field.includes('module_failed_setup_count'))).toBe(true);
+  });
+
+  it.each([-1, 1.5, '2', true])('validateRejectionRow rejects a warning_code_counts entry of %j', (bad) => {
+    const { committed } = buildSchema13([schema8NotApplicableRecord()], null);
+    committed.cells[0].outcome_observability_summary.warning_code_counts.coverage_xml_disabled = bad;
+    expect(validateRejectionRow(committed).errors.some((e) => e.field.includes('warning_code_counts'))).toBe(true);
+  });
+
+  it('validateRejectionRow rejects an unrecognized key inside outcome_observability_summary', () => {
+    const { committed } = buildSchema13([schema8NotApplicableRecord()], null);
+    committed.cells[0].outcome_observability_summary.raw_command = 'kmp-test parallel --module-filter secret';
+    expect(validateRejectionRow(committed).errors.some((e) => e.field.includes('outcome_observability_summary'))).toBe(true);
+  });
+
+  // Requirement 6: schemas historicos siguen validando sin los campos -- mirrors the schema-12
+  // precedent's own "keeps v11 historical rows valid" test one version further.
+  it('keeps v12 historical rows valid without the schema-13 field, but rejects schema-13 omissions', () => {
+    const { committed } = buildSchema13([schema8NotApplicableRecord()]);
+    const v12 = JSON.parse(JSON.stringify(committed));
+    v12.schema = 12;
+    delete v12.cells[0].outcome_observability_summary;
+    delete v12.cells[0].outcome_assessment;
+    expect(validateRejectionRow(v12).errors).toEqual([]);
+
+    const missing = JSON.parse(JSON.stringify(committed));
+    delete missing.cells[0].outcome_observability_summary;
+    expect(validateRejectionRow(missing).errors.some((e) => e.field === 'cells[0].outcome_observability_summary')).toBe(true);
+  });
+
+  // Requirement 10: builder no llama parsers de transcript -- mirrors the exact static-source-guard
+  // precedent already established for buildRejectionDiagnostics above (schema-12 describe block).
+  it('outcome_observability_summary is assembled from already-computed structured data -- never a parser, transcript, or raw artifact reader', () => {
+    const source = readFileSync(path.join(REPO_ROOT, 'tools', 'agentic-eval', 'rejection-diagnostics.mjs'), 'utf8');
+    const builder = source.slice(source.indexOf('export function buildRejectionDiagnostics'), source.indexOf('export function writeRejectionRawTranscripts'));
+    expect(builder).not.toMatch(/parse(?:Stream|Transcript)|readFileSync\(/i);
   });
 });

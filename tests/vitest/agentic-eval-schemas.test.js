@@ -1033,9 +1033,13 @@ describe('schema v1/v2/v3/v4/v5 dispatch (decision 6, extended for v3 -- foreign
 // legacy fields -- these four groups are the sole canonical source for runtime/profile/skill/
 // usage identity going forward.
 describe('schema v6/v7 (agentic-eval-runtime-neutral-records-v1 + product-access mode) -- agent_runtime/execution_profile/skill_observation/usage/product_access_mode', () => {
-  it('SUPPORTED_RUN_SCHEMAS accepts 1 through 7; LATEST_RUN_SCHEMA is 7', () => {
-    expect(SUPPORTED_RUN_SCHEMAS).toEqual([1, 2, 3, 4, 5, 6, 7]);
-    expect(LATEST_RUN_SCHEMA).toBe(7);
+  // Evidence1 success-recovery PR B adds schema 8 -- SUPPORTED_RUN_SCHEMAS/LATEST_RUN_SCHEMA are a
+  // single CURRENT array/value, never a frozen historical snapshot (mirrors the identical
+  // maintenance pattern this exact assertion already went through at v6 -> v7); see the dedicated
+  // "schema v8" describe block below for schema 8's own full contract.
+  it('SUPPORTED_RUN_SCHEMAS accepts 1 through 8; LATEST_RUN_SCHEMA is 8', () => {
+    expect(SUPPORTED_RUN_SCHEMAS).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(LATEST_RUN_SCHEMA).toBe(8);
   });
 
   const VALID_SCOPE_ID_V6 = '22222222-3333-4444-8555-666666666666';
@@ -1879,6 +1883,191 @@ describe('schema v6/v7 (agentic-eval-runtime-neutral-records-v1 + product-access
       });
       expect(validateRun(run).errors.some((e) => e.field === 'accepted_audit.schema')).toBe(true);
     });
+  });
+});
+
+// Evidence1 success-recovery PR B, Stage B2 (docs/audits/agentic-eval-evidence1-success-recovery-
+// v1-runbook.md, Section 9.11): schema 8 -- the new, additive outcome_assessment object. v8Base/
+// v8ScenarioBase intentionally duplicate v6Base/v7Base/v6ScenarioBase's exact shape (this file's
+// own "schema v6/v7" describe block above, now closed) rather than reaching into that describe's
+// private closure -- a deliberate, explicitly-labeled copy of a small, stable shape, not an
+// independent invention.
+describe('schema v8 (Evidence1 success-recovery PR B, Section 9.4/9.5) -- outcome_assessment', () => {
+  const NO_SKILL_SKILL_OBSERVATION_V8 = Object.freeze({
+    delivery_mode: 'none',
+    availability: { status: 'observed-absent', evidence_kind: 'runtime-catalog' },
+    activation: { status: 'not-observed', evidence_kind: 'runtime-explicit-event' },
+    source_sha: null,
+    treatment_size: {
+      snapshot_sha256: null, snapshot_bytes: null, snapshot_file_count: null,
+      prompt_sha256: 'd'.repeat(64), prompt_bytes: 55,
+      absent_reason: 'condition-no-skill',
+    },
+  });
+  const NO_SKILL_USAGE_V8 = Object.freeze({
+    source: 'runtime-reported',
+    input: 2, cached_input: 0, cache_write: 0, output: 4, reasoning_output: null,
+    attributable_to_skill_load: {
+      status: 'not-recorded',
+      dimensions: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null },
+      unit: null,
+      reason: 'condition-no-skill',
+    },
+  });
+
+  function v6BaseV8(overrides = {}) {
+    return {
+      ...v5Base(overrides),
+      schema: 6,
+      agent_runtime: {
+        runtime_id: 'claude-code', cli_version: '1.2.3-fake',
+        model_requested: 'claude-sonnet-5', model_resolved: 'claude-sonnet-5',
+        model_vendor_expected: 'anthropic', model_vendor_observed: null,
+      },
+      execution_profile: {
+        id: 'strict-policy-v1', sha256: STRICT_POLICY_V1_SHA256,
+        isolation_kind: 'runtime-policy-hooks', isolation_attestation_sha256: null,
+        isolation_attestation_required: false, network_mode: 'runtime-default',
+        policy_mode: 'required', required_capabilities: ['softPermissionDenial'],
+      },
+      skill_observation: NO_SKILL_SKILL_OBSERVATION_V8,
+      usage: NO_SKILL_USAGE_V8,
+      ...overrides,
+    };
+  }
+  function v7BaseV8(overrides = {}) {
+    return { ...v6BaseV8(overrides), schema: 7, product_access_mode: 'product-visible-no-skill', ...overrides };
+  }
+  function v8Base(overrides = {}) {
+    return { ...v7BaseV8(overrides), schema: 8, outcome_assessment: null, ...overrides };
+  }
+  function v8ScenarioBase(overrides = {}) {
+    return v8Base({
+      run_kind: 'scenario', benchmark_eligible: true, scenario_id: 'coverage-threshold-failure',
+      grading_checks: { value: GRADING_CHECK_NAMES.map((name) => ({ name, passed: true, detail: 'ok', evidence_event_indices: [] })), reason: null },
+      repetition_index: 0, run_id: 'scenario-no-skill-abcd1234',
+      accepted_audit: { schema: 10, relative_path: 'audit/scenario-no-skill-abcd1234.json', sha256: 'a'.repeat(64) },
+      outcome_assessment: {
+        schema: 1, task_outcome_matched: true, task_outcome_reason: 'matched',
+        answer_protocol_matched: true, provider_evidence_kind: 'claim-only',
+        provider_evidence_status: 'unavailable', product_e2e_success: null,
+      },
+      ...overrides,
+    });
+  }
+
+  it('SUPPORTED_RUN_SCHEMAS accepts 1 through 8; LATEST_RUN_SCHEMA is 8', () => {
+    expect(SUPPORTED_RUN_SCHEMAS).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(LATEST_RUN_SCHEMA).toBe(8);
+  });
+
+  it('a fully well-formed schema:8 calibration record requires outcome_assessment:null and validates cleanly', () => {
+    expect(validateRun(v8Base())).toEqual({ errors: [], warnings: [] });
+  });
+
+  it('a fully well-formed schema:8 scenario record requires and validates a real outcome_assessment object', () => {
+    expect(validateRun(v8ScenarioBase())).toEqual({ errors: [], warnings: [] });
+  });
+
+  // Requirement 1 (Section 9.11): run schema 8 exige exactamente outcome_assessment.
+  it('schema:8 scenario record REJECTS a null outcome_assessment', () => {
+    const run = v8ScenarioBase({ outcome_assessment: null });
+    expect(validateRun(run).errors.some((e) => e.field === 'outcome_assessment')).toBe(true);
+  });
+
+  it('schema:8 scenario record REJECTS a missing outcome_assessment key entirely', () => {
+    const { outcome_assessment: _omit, ...run } = v8ScenarioBase();
+    expect(validateRun(run).errors.some((e) => e.field === 'outcome_assessment')).toBe(true);
+  });
+
+  it('schema:8 non-scenario record (calibration) REJECTS a non-null outcome_assessment', () => {
+    const run = v8Base({ outcome_assessment: v8ScenarioBase().outcome_assessment });
+    expect(validateRun(run).errors.some((e) => e.field === 'outcome_assessment')).toBe(true);
+  });
+
+  // Requirement 2: keys extra y enums desconocidos se rechazan.
+  it('REQUIRES exactly the outcome_assessment key set -- no more, no fewer', () => {
+    const base = v8ScenarioBase().outcome_assessment;
+    const { task_outcome_reason: _omit, ...missingShape } = base;
+    const missingKey = v8ScenarioBase({ outcome_assessment: missingShape });
+    expect(validateRun(missingKey).errors.some((e) => e.field.startsWith('outcome_assessment'))).toBe(true);
+
+    const extraKey = v8ScenarioBase({ outcome_assessment: { ...base, extra: 'nope' } });
+    expect(validateRun(extraKey).errors.some((e) => e.field.startsWith('outcome_assessment'))).toBe(true);
+  });
+
+  it.each(['whatever', 'not-a-real-reason', 1, true])('REJECTS an unrecognized task_outcome_reason (%j)', (bad) => {
+    const run = v8ScenarioBase({ outcome_assessment: { ...v8ScenarioBase().outcome_assessment, task_outcome_reason: bad } });
+    expect(validateRun(run).errors.some((e) => e.field === 'outcome_assessment.task_outcome_reason')).toBe(true);
+  });
+
+  it.each(['whatever', 'not-a-real-kind', 1, true])('REJECTS an unrecognized provider_evidence_kind (%j)', (bad) => {
+    const run = v8ScenarioBase({ outcome_assessment: { ...v8ScenarioBase().outcome_assessment, provider_evidence_kind: bad } });
+    expect(validateRun(run).errors.some((e) => e.field === 'outcome_assessment.provider_evidence_kind')).toBe(true);
+  });
+
+  it.each(['whatever', 'not-a-real-status', 1, true])('REJECTS an unrecognized provider_evidence_status (%j)', (bad) => {
+    const run = v8ScenarioBase({ outcome_assessment: { ...v8ScenarioBase().outcome_assessment, provider_evidence_status: bad } });
+    expect(validateRun(run).errors.some((e) => e.field === 'outcome_assessment.provider_evidence_status')).toBe(true);
+  });
+
+  it.each([1, 0, 'true', 'false'])('REJECTS a non-boolean answer_protocol_matched (%j)', (bad) => {
+    const run = v8ScenarioBase({ outcome_assessment: { ...v8ScenarioBase().outcome_assessment, answer_protocol_matched: bad } });
+    expect(validateRun(run).errors.some((e) => e.field === 'outcome_assessment.answer_protocol_matched')).toBe(true);
+  });
+
+  it.each(['true', 1, 0])('REJECTS a task_outcome_matched that is neither boolean nor null (%j)', (bad) => {
+    const run = v8ScenarioBase({ outcome_assessment: { ...v8ScenarioBase().outcome_assessment, task_outcome_matched: bad } });
+    expect(validateRun(run).errors.some((e) => e.field === 'outcome_assessment.task_outcome_matched')).toBe(true);
+  });
+
+  it.each(['true', 1, 0])('REJECTS a product_e2e_success that is neither boolean nor null (%j)', (bad) => {
+    const run = v8ScenarioBase({ outcome_assessment: { ...v8ScenarioBase().outcome_assessment, product_e2e_success: bad } });
+    expect(validateRun(run).errors.some((e) => e.field === 'outcome_assessment.product_e2e_success')).toBe(true);
+  });
+
+  it('REJECTS task_outcome_matched:true paired with a non-"matched" reason', () => {
+    const run = v8ScenarioBase({ outcome_assessment: { ...v8ScenarioBase().outcome_assessment, task_outcome_matched: true, task_outcome_reason: 'mismatched' } });
+    expect(validateRun(run).errors.some((e) => e.field.startsWith('outcome_assessment'))).toBe(true);
+  });
+
+  it('REJECTS task_outcome_matched:null paired with reason "matched" or "mismatched"', () => {
+    const runMatched = v8ScenarioBase({ outcome_assessment: { ...v8ScenarioBase().outcome_assessment, task_outcome_matched: null, task_outcome_reason: 'matched' } });
+    expect(validateRun(runMatched).errors.some((e) => e.field.startsWith('outcome_assessment'))).toBe(true);
+    const runMismatched = v8ScenarioBase({ outcome_assessment: { ...v8ScenarioBase().outcome_assessment, task_outcome_matched: null, task_outcome_reason: 'mismatched' } });
+    expect(validateRun(runMismatched).errors.some((e) => e.field.startsWith('outcome_assessment'))).toBe(true);
+  });
+
+  // Requirement 3: schemas 1..7 no aceptan silenciosamente el campo nuevo.
+  it.each([1, 2, 3, 4, 5, 6, 7])('schema:%i REJECTS a present, non-null outcome_assessment -- introduced in schema v8', (schema) => {
+    const run = { ...v7BaseV8({ schema }), outcome_assessment: v8ScenarioBase().outcome_assessment };
+    const { errors, warnings } = validateRun(run);
+    expect(errors.some((e) => e.field === 'outcome_assessment')).toBe(true);
+    expect(warnings.some((w) => w.field === 'outcome_assessment')).toBe(true);
+  });
+
+  // Requirement 6: schemas historicos siguen validando sin los campos.
+  it('a fully well-formed schema:7 record (no outcome_assessment key at all) still validates cleanly, unaffected by v8', () => {
+    expect(validateRun(v7BaseV8())).toEqual({ errors: [], warnings: [] });
+  });
+
+  // accepted_audit compatibility for schema 8: exactly sidecar schema 10 (Section 9.4.3), never
+  // the v3/v6-v9 range a schema:5/6/7 record accepts.
+  describe('accepted_audit -- v8 requires sidecar schema 10 exactly (never v1-v9)', () => {
+    it('ACCEPTS sidecar schema 10 for a schema:8 scenario record', () => {
+      const run = v8ScenarioBase({ accepted_audit: { schema: 10, relative_path: 'audit/scenario-no-skill-abcd1234.json', sha256: 'a'.repeat(64) } });
+      expect(validateRun(run).errors.some((e) => e.field === 'accepted_audit.schema')).toBe(false);
+    });
+
+    it.each([1, 2, 3, 4, 5, 6, 7, 8, 9])('REJECTS sidecar schema %i for a schema:8 scenario record (v8 requires v10 exactly)', (schema) => {
+      const run = v8ScenarioBase({ accepted_audit: { schema, relative_path: 'audit/scenario-no-skill-abcd1234.json', sha256: 'a'.repeat(64) } });
+      expect(validateRun(run).errors.some((e) => e.field === 'accepted_audit.schema')).toBe(true);
+    });
+  });
+
+  it('never selects a historical accepted_audit shape via schema === LATEST_RUN_SCHEMA -- the run-record field-list dispatcher uses explicit literal numbers only', () => {
+    const source = readFileSync(path.join(REPO_ROOT, 'tools', 'agentic-eval', 'schemas.mjs'), 'utf8');
+    expect(source).not.toMatch(/schema\s*===\s*LATEST_RUN_SCHEMA/);
   });
 });
 

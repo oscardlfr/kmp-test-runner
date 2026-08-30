@@ -888,7 +888,18 @@ describe('finalizeAndWriteRecords / finalizeAndWriteMatrixRecords -- a rejected 
       cellOrdinal,
     };
   }
-  const MINIMAL_GRADE_RESULT = { expectedOutcomeMatched: false, success: false, checks: [], firstUsefulSignalEventIndex: null, testInvocationsTotal: 0, retries: 0 };
+  // Evidence1 success-recovery PR B (schema v8): buildRunRecord now also reads
+  // gradeResult.outcomeAssessment for a run_kind:scenario record -- a real, well-formed stub,
+  // consistent with this fixture's own expectedOutcomeMatched:false/success:false defaults.
+  const MINIMAL_GRADE_RESULT = {
+    expectedOutcomeMatched: false, success: false, checks: [], firstUsefulSignalEventIndex: null,
+    testInvocationsTotal: 0, retries: 0,
+    outcomeAssessment: {
+      schema: 1, task_outcome_matched: null, task_outcome_reason: 'ground-truth-unavailable',
+      answer_protocol_matched: false, provider_evidence_kind: 'none', provider_evidence_status: 'unavailable',
+      product_e2e_success: null,
+    },
+  };
   function commonFields(runKind) {
     return {
       runKind, scenarioId: 'test-stderr-producer', daemonPolicy: 'disabled-via-gradle-user-home-properties',
@@ -2560,6 +2571,13 @@ describe('finalizeAndWriteMatrixRecords -- gate rejection precedence over sideca
       grading_checks: { value: null, reason: 'not graded in this synthetic fixture' },
       success: { value: null, reason: null },
       expected_outcome_matched: { value: null, reason: null },
+      // Evidence1 success-recovery PR B (schema v8): required (non-null) for every
+      // run_kind:scenario record -- this fixture predates that requirement.
+      outcome_assessment: {
+        schema: 1, task_outcome_matched: null, task_outcome_reason: 'ground-truth-unavailable',
+        answer_protocol_matched: false, provider_evidence_kind: 'none', provider_evidence_status: 'unavailable',
+        product_e2e_success: null,
+      },
       foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
       ambient_skill_profile: { count: 0, scope_id: '00000000-0000-4000-8000-000000000000', fingerprint_hmac: '0'.repeat(64) },
       // Only actually needed by buildRejectionDiagnostics's own (narrower) rejection-record schema
@@ -2677,6 +2695,13 @@ describe('finalizeAndWriteMatrixRecords -- gate rejection precedence over sideca
         expectedOutcomeMatched: false, success: false, firstUsefulSignalEventIndex: null,
         testInvocationsTotal: 0, retries: 0, harnessEvidenceAmbiguous: false,
         checks: GRADING_CHECK_NAMES.map((name) => ({ name, passed: true, detail: 'synthetic', evidence_event_indices: [] })),
+        // Required for a schema:8 run_kind:scenario record -- this fixture predates that
+        // requirement; value is arbitrary (this test only exercises gate-vs-sidecar precedence).
+        outcomeAssessment: {
+          schema: 1, task_outcome_matched: null, task_outcome_reason: 'ground-truth-unavailable',
+          answer_protocol_matched: false, provider_evidence_kind: 'none', provider_evidence_status: 'unavailable',
+          product_e2e_success: null,
+        },
       },
       ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
       ...TEST_RUN_RECORD_V6_INPUTS,
@@ -2775,6 +2800,14 @@ describe('finalizeAndWriteMatrixRecords -- a provenance-bound field redacted by 
       expectedOutcomeMatched: false, success: false, firstUsefulSignalEventIndex: null,
       testInvocationsTotal: 0, retries: 0, harnessEvidenceAmbiguous: false,
       checks: REQUIRED_GRADING_CHECK_NAMES.map((name) => ({ name, passed: true, detail: 'synthetic', evidence_event_indices: [] })),
+      // Evidence1 success-recovery PR B (schema v8): buildRunRecord now also reads
+      // gradeResult.outcomeAssessment -- a real, well-formed stub, consistent with this
+      // fixture's own expectedOutcomeMatched:false/success:false defaults.
+      outcomeAssessment: {
+        schema: 1, task_outcome_matched: null, task_outcome_reason: 'ground-truth-unavailable',
+        answer_protocol_matched: false, provider_evidence_kind: 'none', provider_evidence_status: 'unavailable',
+        product_e2e_success: null,
+      },
       ...overrides,
     };
   }
@@ -2810,10 +2843,25 @@ describe('finalizeAndWriteMatrixRecords -- a provenance-bound field redacted by 
       ];
       const conditionResults = [fakeConditionResultLocal(), { ...fakeConditionResultLocal(), cellOrdinal: 1 }];
       const acceptingGate = () => ({ ok: true, reason: null, cellResults: [], ambientProfileMatrixOk: true });
+      // Evidence1 success-recovery PR B (schema v10): a schema:8 record's sidecar always requires a
+      // real terminal_evidence object (self-describing in both policy modes) -- this fixture's own
+      // record produced no terminal signal at all, so the honest "absent" shape is the correct one.
+      const absentTerminalEvidence = {
+        present: false, provider: null, tool_result_event_index: null,
+        evidence_well_formed: false, target_matches_expected: null, outcome_matches_expected: null,
+        malformed: null, parallel_evidence_invalid: null, changed_evidence_invalid: null,
+        observed_result: null,
+        final_answer_block: {
+          found: false, parsed: false, ambiguous: false, matches_observed: false,
+          comparison_status: 'no-final-text', declared_outcome_kind: null, observed_outcome_kind: null,
+          missing_fields: [], mismatch_fields: [], unexpected_key_count: 0,
+        },
+        coverage_gate_diagnostic: 'no-terminal-evidence', coverage_gate_attempts: [],
+      };
       const buildSidecarsFn = async (recs, condResults) => {
         const texts = [];
         for (const [i, record] of recs.entries()) {
-          const built = buildAcceptedRunAuditSidecar({ record, conditionResult: condResults[i], terminalAuthoritativeEventIndex: null });
+          const built = buildAcceptedRunAuditSidecar({ record, conditionResult: condResults[i], terminalAuthoritativeEventIndex: null, terminalEvidence: absentTerminalEvidence });
           const finalized = finalizeAcceptedRunAuditSidecar(built, { privatePatternsFile: null });
           if (!finalized.ok) return { ok: false, reason: finalized.reason };
           record.accepted_audit = { schema: built.schema, relative_path: acceptedAuditRelativePathFor(record.run_id), sha256: finalized.sha256 };
@@ -2969,6 +3017,13 @@ describe('finalizeAndWriteMatrixRecords -- a localIntegrityByRunId mismatch on a
       accepted_audit: null, errors: [],
       grading_checks: { value: null, reason: 'not graded in this synthetic fixture' },
       success: { value: null, reason: null }, expected_outcome_matched: { value: null, reason: null },
+      // Evidence1 success-recovery PR B (schema v8): required (non-null) for every
+      // run_kind:scenario record -- this fixture predates that requirement.
+      outcome_assessment: {
+        schema: 1, task_outcome_matched: null, task_outcome_reason: 'ground-truth-unavailable',
+        answer_protocol_matched: false, provider_evidence_kind: 'none', provider_evidence_status: 'unavailable',
+        product_e2e_success: null,
+      },
       foreign_skill_summary: { rejected: 0, confirmed: 0, incomplete: 0 },
       ambient_skill_profile: { count: 0, scope_id: '00000000-0000-4000-8000-000000000000', fingerprint_hmac: '0'.repeat(64) },
       model_requested: 'fake-model', repo_commit: 'c'.repeat(40), scenario_id: 'test-local-integrity-guard',
@@ -3089,10 +3144,21 @@ describe('cmdAggregate -- schema-v6 scenario records require a verifiable on-dis
       policySha256: computePolicySha256(), ...TEST_RUN_RECORD_V6_INPUTS, seed: 1, orderIndex: 0, repetitionIndex: 0,
       projectAlias: 'test-aggregate-project', projectCommit: 'd'.repeat(40), projectUrl: 'https://example.invalid/test-aggregate-project',
       ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
-      gradeResult: { expectedOutcomeMatched: true, success: true, checks: GRADING_CHECK_NAMES.map((name) => ({ name, passed: true, detail: 'ok', evidence_event_indices: [] })), firstUsefulSignalEventIndex: null, testInvocationsTotal: 1, retries: 0 },
+      gradeResult: {
+        expectedOutcomeMatched: true, success: true, checks: GRADING_CHECK_NAMES.map((name) => ({ name, passed: true, detail: 'ok', evidence_event_indices: [] })), firstUsefulSignalEventIndex: null, testInvocationsTotal: 1, retries: 0,
+        // Evidence1 success-recovery PR B: buildRunRecord now also reads gradeResult.
+        // outcomeAssessment (schema v8) -- a real, well-formed stub, consistent with this
+        // fixture's own expectedOutcomeMatched:true/success:true.
+        outcomeAssessment: {
+          schema: 1, task_outcome_matched: true, task_outcome_reason: 'matched',
+          answer_protocol_matched: true, provider_evidence_kind: 'kmp-test-envelope',
+          provider_evidence_status: 'matched', product_e2e_success: true,
+        },
+      },
     });
     record.benchmark_eligible = true;
-    record.accepted_audit = { schema: 3, relative_path: `audit/${record.run_id}.json`, sha256: '0'.repeat(64), ...auditOverrides };
+    // schema v8 (LATEST_RUN_SCHEMA) requires exactly sidecar schema 10 -- was 3 pre-PR-B.
+    record.accepted_audit = { schema: 10, relative_path: `audit/${record.run_id}.json`, sha256: '0'.repeat(64), ...auditOverrides };
     return record;
   }
 

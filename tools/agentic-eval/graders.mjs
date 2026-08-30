@@ -2295,8 +2295,14 @@ function terminalEvidenceDiagnostic(terminal, evidenceWellFormed, scenario, fina
     target_matches_expected: terminal.targetMatches,
     outcome_matches_expected: terminal.outcomeMatches,
     malformed: terminal.malformed,
-    parallel_evidence_invalid: terminal.parallelEvidenceInvalid,
-    changed_evidence_invalid: terminal.changedEvidenceInvalid,
+    // === true, not a bare read: parallelEvidenceInvalid/changedEvidenceInvalid are kmp-test-
+    // envelope-only concepts -- evaluateGradleAttempt's own return shape never sets either key, so
+    // a Gradle-provider terminal must coerce that absence to the honest "not invalid" (false)
+    // rather than leak `undefined` into a field the accepted-run-audit sidecar validates as a
+    // required boolean whenever present:true (mirrors the identical `=== true` idiom this file
+    // already uses for parallelEvidenceMalformed/changedEvidenceMalformed, below).
+    parallel_evidence_invalid: terminal.parallelEvidenceInvalid === true,
+    changed_evidence_invalid: terminal.changedEvidenceInvalid === true,
     observed_result: observedSummary,
     final_answer_block: finalAnswer.diagnostic,
     coverage_gate_diagnostic,
@@ -2309,6 +2315,172 @@ function terminalEvidenceDiagnostic(terminal, evidenceWellFormed, scenario, fina
 // tool_use_id. Its per-command classification rules (which Gradle/kmp-test-parallel calls count as
 // potential producers) are preserved, relocated into command-classify.mjs's
 // isRelevantGradleInvocation/isRelevantKmpTestParallel.
+
+// ---------------------------------------------------------------------------------------------
+// Neutral outcome_assessment scorer (Evidence1 success-recovery PR B, Section 9.5/9.6/9.7) --
+// computed ADDITIONALLY to the strict, evidence-gated Product checks above (Section 9.6: never
+// changes expectedOutcomeMatched/success/checks' own meaning), never folded into
+// isTerminalEligibleAttempt. task_outcome_matched compares the agent's own final claim DIRECTLY
+// against scenario.expected -- never against `terminal`/observedResult, which are themselves
+// ALREADY a comparison against scenario.expected (reusing them would make this an alias of
+// expectedOutcomeMatched, exactly what Section 9.5's closing rule forbids).
+// provider_evidence_kind/status describe evidence QUALITY, entirely independent of what the final
+// claim says (Section 9.7) -- computed from the SAME `terminal` attempt Product's own strict
+// checks already selected, never a second, independently-selected "terminal" concept.
+// ---------------------------------------------------------------------------------------------
+
+const OUTCOME_ASSESSMENT_SCHEMA = 1;
+
+/** Reconstructs scenario.expected in the SAME flat shape observedResult/
+ * compareKmpEvalResultBlockToObserved already use, so that existing block-vs-shape comparator can
+ * be reused verbatim for the ground-truth comparison below -- never a second, independently
+ * -maintained comparison. `total` is always the module-wide `individual_total` (the only count
+ * both providers, and the agent's own final block, consistently mean by "total" -- see every
+ * SCENARIO fixture in agentic-eval-graders.test.js). For `tests_failed`, the individual
+ * passed/failed split is only well-defined when `expected.gradle.tests` already represents the
+ * SAME full individual scope (its own `total` equals `individual_total`) -- `kmp_test.tests` is
+ * TASK-level (a single task is failed/passed, never how many of several individual tests within it
+ * failed), so it cannot answer this alone. When Gradle's own scope is narrower (a known,
+ * pre-existing, out-of-scope-to-fix limitation of a historical single-flavor scenario),
+ * passed/failed for that pair are left `null` -- module/outcome_kind/total stay fully verifiable
+ * regardless. */
+function groundTruthAsObservedResult(scenario) {
+  const expected = scenario?.expected;
+  if (expected == null || typeof expected.module !== 'string' || typeof expected.outcome_kind !== 'string') return null;
+  const individualTotal = Number.isInteger(expected.kmp_test?.tests?.individual_total) ? expected.kmp_test.tests.individual_total : null;
+  const base = {
+    module: normalizeModuleName(expected.module),
+    outcome_kind: expected.outcome_kind,
+    module_matches_expected: true,
+    missed_lines: Number.isInteger(expected.kmp_test?.coverage?.missed_lines) ? expected.kmp_test.coverage.missed_lines : null,
+    threshold: Number.isInteger(expected.kmp_test?.coverage?.min_missed_lines) ? expected.kmp_test.coverage.min_missed_lines : null,
+    modules_contributing: Array.isArray(expected.kmp_test?.coverage?.with_data) ? expected.kmp_test.coverage.with_data.length : null,
+  };
+  if (expected.outcome_kind === 'no_applicable_tests') {
+    return { ...base, total: null, passed: null, failed: null };
+  }
+  if (expected.outcome_kind === 'tests_executed' || expected.outcome_kind === 'coverage_threshold_exceeded') {
+    return { ...base, total: individualTotal, passed: individualTotal, failed: individualTotal == null ? null : 0 };
+  }
+  if (expected.outcome_kind === 'tests_failed') {
+    const gradleTests = expected.gradle?.tests;
+    if (gradleTests != null && gradleTests.total === individualTotal) {
+      return { ...base, total: individualTotal, passed: gradleTests.passed, failed: gradleTests.failed };
+    }
+    return { ...base, total: individualTotal, passed: null, failed: null };
+  }
+  return { ...base, total: individualTotal, passed: null, failed: null };
+}
+
+/** Whether a parsed KMP_EVAL_RESULT block is internally well-formed FOR WHATEVER outcome_kind IT
+ * ITSELF declares -- deliberately never checked against scenario.expected's own outcome_kind
+ * (Section 9.5: protocol correctness must never depend on whether the claim happens to be right --
+ * a wrong-but-well-formatted answer still has answer_protocol_matched:true). Mirrors
+ * compareKmpEvalResultBlockToObserved's own key-set/field-shape rules exactly, applied to the
+ * block's own self-consistency instead of a comparison target. */
+function isAnswerProtocolWellFormed(block) {
+  if (block == null || typeof block !== 'object' || Array.isArray(block)) return false;
+  const declaredKind = normalizeDeclaredOutcomeKind(block);
+  if (declaredKind == null || declaredKind === 'unrecognized') return false;
+  if (typeof block.module !== 'string' || block.module.length === 0) return false;
+  const requiredFields = declaredKind === 'coverage_threshold_exceeded' ? KMP_EVAL_RESULT_COVERAGE_THRESHOLD_KEYS
+    : declaredKind === 'no_applicable_tests' ? KMP_EVAL_RESULT_NO_APPLICABLE_KEYS
+      : KMP_EVAL_RESULT_TESTS_EXECUTED_KEYS;
+  const allowedFields = declaredKind === 'no_applicable_tests'
+    ? new Set([...requiredFields, ...KMP_EVAL_RESULT_NO_APPLICABLE_OPTIONAL_COUNT_KEYS])
+    : requiredFields;
+  const keys = Object.keys(block);
+  if (!keys.every((k) => allowedFields.has(k))) return false;
+  if (![...requiredFields].every((k) => keys.includes(k))) return false;
+  for (const field of ['total', 'passed', 'failed', 'missed_lines', 'threshold', 'modules_contributing']) {
+    if (requiredFields.has(field) && !Number.isInteger(block[field])) return false;
+  }
+  if (declaredKind === 'no_applicable_tests') {
+    const presentCountKeys = KMP_EVAL_RESULT_NO_APPLICABLE_OPTIONAL_COUNT_KEYS.filter((k) => keys.includes(k));
+    if (presentCountKeys.length > 0) {
+      if (presentCountKeys.length !== KMP_EVAL_RESULT_NO_APPLICABLE_OPTIONAL_COUNT_KEYS.length) return false;
+      if (presentCountKeys.some((k) => block[k] !== 0)) return false;
+    }
+  }
+  return true;
+}
+
+/** task_outcome_matched/task_outcome_reason/answer_protocol_matched (Section 9.5). */
+function computeTaskOutcome(finalText, scenario) {
+  const block = extractKmpEvalResultBlock(finalText);
+  if (!block.found) {
+    return { matched: null, reason: 'claim-missing', protocolMatched: false };
+  }
+  if (block.ambiguous || block.parsed == null || !isAnswerProtocolWellFormed(block.parsed)) {
+    return { matched: null, reason: 'claim-malformed', protocolMatched: false };
+  }
+  const groundTruth = groundTruthAsObservedResult(scenario);
+  if (groundTruth == null) {
+    return { matched: null, reason: 'ground-truth-unavailable', protocolMatched: true };
+  }
+  const matches = compareKmpEvalResultBlockToObserved(block.parsed, groundTruth).matches_observed;
+  return { matched: matches, reason: matches ? 'matched' : 'mismatched', protocolMatched: true };
+}
+
+/** provider_evidence_kind/provider_evidence_status (Section 9.7). `hasFinalBlock` only matters
+ * when `terminal` itself is `null` (deciding between claim-only and none); real terminal evidence
+ * is classified purely from its own quality regardless of whether a final block exists. */
+function computeProviderEvidence(terminal, hasFinalBlock) {
+  if (terminal == null) {
+    return hasFinalBlock
+      ? { kind: 'claim-only', status: 'unavailable' }
+      : { kind: 'none', status: 'unavailable' };
+  }
+  if (terminal.provider === 'kmp_test') {
+    if (!terminal.hasEvidence || terminal.malformed) {
+      return hasFinalBlock ? { kind: 'claim-only', status: 'unavailable' } : { kind: 'none', status: 'unavailable' };
+    }
+    // 9.7 rule 2: structured but not canonicalizable -> partial, never a canonical/matched label.
+    const incoherent = terminal.parallelEvidenceInvalid || terminal.changedEvidenceInvalid
+      || terminal.observedResultCanonicalizationStatus !== 'canonical';
+    if (incoherent) return { kind: 'kmp-test-envelope', status: 'partial' };
+    return { kind: 'kmp-test-envelope', status: (terminal.targetMatches && terminal.outcomeMatches) ? 'matched' : 'mismatched' };
+  }
+  if (terminal.provider === 'gradle') {
+    if (!terminal.hasEvidence || terminal.malformed) {
+      return hasFinalBlock ? { kind: 'claim-only', status: 'unavailable' } : { kind: 'none', status: 'unavailable' };
+    }
+    // 9.7 rule 3: Gradle+JUnit correlated proves tests, never coverage by itself -- 'gradle-coverage'/
+    // 'mixed-standard-tools' stay reserved for a future independent coverage-XML-reading mechanism
+    // that does not exist anywhere in this codebase today (verified by direct grep, not assumed).
+    if (terminal.observedResult == null) return { kind: 'gradle-junit', status: 'partial' };
+    return { kind: 'gradle-junit', status: (terminal.targetMatches && terminal.outcomeMatches) ? 'matched' : 'mismatched' };
+  }
+  return hasFinalBlock ? { kind: 'claim-only', status: 'unavailable' } : { kind: 'none', status: 'unavailable' };
+}
+
+/** product_e2e_success (Section 9.5): Product-only -- `null` for any condition other than
+ * 'current-skill' (FreeBaseline/candidate-skill never get E2E credit, regardless of how correct or
+ * well-evidenced their own run was); for 'current-skill', a real boolean requiring ALL THREE of
+ * task match, Product evidence matched, and protocol matched. */
+function computeProductE2eSuccess(condition, taskOutcome, providerEvidence) {
+  if (condition !== 'current-skill') return null;
+  return taskOutcome.matched === true
+    && providerEvidence.kind === 'kmp-test-envelope' && providerEvidence.status === 'matched'
+    && taskOutcome.protocolMatched === true;
+}
+
+/** Assembles the complete, closed outcome_assessment object (Section 9.5) for a scenario
+ * condition. Additive only: never mutates or re-derives any of the legacy checks/
+ * expectedOutcomeMatched/success computed above. */
+function buildOutcomeAssessment(finalText, scenario, terminal, condition) {
+  const taskOutcome = computeTaskOutcome(finalText, scenario);
+  const providerEvidence = computeProviderEvidence(terminal, taskOutcome.reason !== 'claim-missing');
+  return {
+    schema: OUTCOME_ASSESSMENT_SCHEMA,
+    task_outcome_matched: taskOutcome.matched,
+    task_outcome_reason: taskOutcome.reason,
+    answer_protocol_matched: taskOutcome.protocolMatched,
+    provider_evidence_kind: providerEvidence.kind,
+    provider_evidence_status: providerEvidence.status,
+    product_e2e_success: computeProductE2eSuccess(condition, taskOutcome, providerEvidence),
+  };
+}
 
 // ---------------------------------------------------------------------------------------------
 // Main entry point
@@ -2579,5 +2751,9 @@ export function gradeScenarioCondition(conditionResult, scenario) {
     // junit-evidence.mjs's countEvidenceTaskJunit/attributeCondition.
     gradleJunitEvidenceUnreliable,
     terminalEvidence: terminalEvidenceDiagnostic(terminal, evidenceWellFormed, scenario, finalAnswer, coverageGateContext, coverageGateAttempts),
+    // outcomeAssessment (Evidence1 success-recovery PR B, additive): the neutral scorer's own
+    // closed object (Section 9.5), computed entirely independently of expectedOutcomeMatched/
+    // success/checks above -- see this file's own "Neutral outcome_assessment scorer" section.
+    outcomeAssessment: buildOutcomeAssessment(observation.terminal.finalText, scenario, terminal, conditionResult.condition),
   };
 }

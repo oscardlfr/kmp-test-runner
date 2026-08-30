@@ -49,6 +49,7 @@ import {
   PRODUCT_ACCESS_MODE_VALUES,
   PRODUCT_USAGE_MODE_VALUES,
 } from './product-access.mjs';
+import { emptyOutcomeObservabilitySummary } from './coverage-gate-observability.mjs';
 
 // v1 -> v2 (Section F, agentic-eval-runtime-neutral-records-v1): per-run entries and group
 // summaries both gained agent_runtime/execution_profile/skill_observation/usage reporting fields,
@@ -78,7 +79,21 @@ import {
 // v5 -> v6 (coverage outcome observability): per-run entries and group summaries now expose v8
 // accepted-run-audit's privacy-safe final-answer comparison status and coverage-gate attempt
 // canonicalization/contract summaries. Historical sidecars report `not-recorded` / empty arrays.
-export const ANALYSIS_SCHEMA = 6;
+//
+// v6 -> v7 (Evidence1 success-recovery PR B, Section 9.14): for a schema>=8 record,
+// task_outcome_matched/answer_protocol_matched now read the record's own neutral
+// outcome_assessment object (Section 9.5) instead of the legacy expected_outcome_matched/
+// final_answer_consistent alias -- schema<8 records keep the exact legacy alias, byte-for-byte
+// unchanged. Adds task_outcome_available_ms (a TIME, never an event index -- see its own
+// derivation's doc comment), provider_evidence_kind/provider_evidence_status/product_e2e_success
+// (verbatim from outcome_assessment), duration/first-useful-signal/tool-calls/timeout passthroughs,
+// coverage_target_status/coverage_report_status/warning_code_counts/execution_mode_counts (Section
+// 9.9's shared observability summary, read from the accepted-run-audit sidecar), and
+// result_fingerprint (a semantic determinism fingerprint excluding paths/duration/run_id/
+// timestamps). `success` stays exactly as before -- the strict, Product-only, non-comparable legacy
+// gate; task_outcome_matched/product_e2e_success are the fair, neutral, cross-arm measurements.
+// Never a single composite score -- every dimension stays separately reported.
+export const ANALYSIS_SCHEMA = 7;
 
 /** Closed vocabulary for `failure_class` -- exactly one per run, resolved by classifyFailure's own
  * documented precedence. `success` is not a "failure" in the literal sense; it is included so every
@@ -210,6 +225,42 @@ function coverageGateContractFailures(attempts) {
 
 function stringArrayOrEmpty(value) {
   return Array.isArray(value) ? value.filter((item) => typeof item === 'string') : [];
+}
+
+/** Section 9.9's shared outcome_observability_summary object, read verbatim off the sidecar (only
+ * present from schema 10 onward) -- the SAME honest all-not-recorded/all-zero fallback
+ * coverage-gate-observability.mjs's own emptyOutcomeObservabilitySummary() already defines for
+ * every older sidecar, never a second, independently-maintained default shape. */
+function outcomeObservabilitySummaryView(sidecar) {
+  const summary = sidecar?.outcome_observability_summary;
+  if (summary != null && typeof summary === 'object' && !Array.isArray(summary)) return summary;
+  return emptyOutcomeObservabilitySummary();
+}
+
+/**
+ * Section 9.14: "un fingerprint semantico de resultado que excluya paths, duration, run id y
+ * timestamps, pero incluya modulo esperado normalizado, outcome, test counts, coverage counts y
+ * error codes" -- measures Product output determinism across repeated runs of the SAME scenario
+ * without comparing volatile bytes. Deliberately reuses the sidecar's own already-privacy-safe
+ * `observed_result` projection (never the real module name -- `module_matches_expected` is the
+ * "normalized expected module" this fingerprint can safely carry) and the same closed
+ * error-code-set derivation rejection-diagnostics.mjs's own `record_error_codes` already uses
+ * (sorted, deduplicated, never a raw message). Every field is null, never fabricated, when no
+ * terminal evidence exists at all.
+ */
+function buildResultFingerprint(sidecar, errors) {
+  const observed = sidecar?.terminal_evidence?.observed_result ?? null;
+  return {
+    module_matches_expected: typeof observed?.module_matches_expected === 'boolean' ? observed.module_matches_expected : null,
+    outcome_kind: typeof observed?.outcome_kind === 'string' ? observed.outcome_kind : null,
+    total: Number.isInteger(observed?.total) ? observed.total : null,
+    passed: Number.isInteger(observed?.passed) ? observed.passed : null,
+    failed: Number.isInteger(observed?.failed) ? observed.failed : null,
+    missed_lines: Number.isInteger(observed?.missed_lines) ? observed.missed_lines : null,
+    threshold: Number.isInteger(observed?.threshold) ? observed.threshold : null,
+    modules_contributing: Number.isInteger(observed?.modules_contributing) ? observed.modules_contributing : null,
+    error_codes: [...new Set((errors ?? []).map((e) => e?.code).filter((code) => typeof code === 'string' && code.length > 0))].sort(),
+  };
 }
 
 function evidenceQualityFor({
@@ -408,8 +459,35 @@ export function analyzeRunRecord(record, sidecar) {
   const coverage_gate_contract_failures = coverageGateContractFailures(coverageGateAttempts);
   const final_answer_comparison_status = finalAnswerBlock.comparison_status;
   const final_answer_mismatch_fields = finalAnswerBlock.mismatch_fields;
-  const task_outcome_matched = expected_outcome_matched;
-  const answer_protocol_matched = final_answer_consistent;
+  // Evidence1 success-recovery PR B (Section 9.14): a schema>=8 record carries its own neutral
+  // outcome_assessment (Section 9.5) -- the fair, cross-arm measurement -- so task_outcome_matched/
+  // answer_protocol_matched read it directly instead of the legacy Product-evidence-driven alias.
+  // schema<8 records (outcome_assessment does not exist on them at all) keep the exact legacy
+  // alias, byte-for-byte unchanged -- this is a naming COLLISION deliberately resolved by schema
+  // dispatch, never a redefinition of what these two field NAMES have always meant historically.
+  const isNeutralOutcomeRecord = record.schema >= 8;
+  const outcomeAssessment = isNeutralOutcomeRecord ? (record.outcome_assessment ?? null) : null;
+  const task_outcome_matched = isNeutralOutcomeRecord ? (outcomeAssessment?.task_outcome_matched ?? null) : expected_outcome_matched;
+  const answer_protocol_matched = isNeutralOutcomeRecord ? (outcomeAssessment?.answer_protocol_matched ?? null) : final_answer_consistent;
+  // task_outcome_available_ms (Stage B3 review-round correction): a TIME, never an event index --
+  // first_useful_signal_event's own contract is specifically correlated to a real user.tool_result
+  // event (cli.mjs/accepted-run-audit.mjs); a claim-only FreeBaseline run has no such event at all,
+  // and Product's evidence can genuinely become available BEFORE the final claim, so the two are
+  // never required to coincide. Read directly from the record's own existing wall_clock_ms (the
+  // real end-to-end duration every schema already carries -- no new run-record field needed), gated
+  // ONLY on task_outcome_matched === true -- never on success/evidence signal, which stay their own
+  // independently-computed metrics (see this field's own dedicated test file section for the full
+  // non-fusion rationale).
+  const task_outcome_available_ms = task_outcome_matched === true ? record.wall_clock_ms : null;
+  const provider_evidence_kind = outcomeAssessment?.provider_evidence_kind ?? null;
+  const provider_evidence_status = outcomeAssessment?.provider_evidence_status ?? null;
+  const product_e2e_success = outcomeAssessment?.product_e2e_success ?? null;
+  // Section 9.14: duration/first-useful-signal/tool-calls/timeout -- plain passthroughs of fields
+  // every schema this module ever reads already carries. wall_clock_ms is a real number, never a
+  // {value,reason} metric (unlike first_useful_signal_ms/tool_calls_total); the latter two read
+  // their own `.value`, mirroring post_signal_tool_calls's identical pattern above.
+  const outcomeObservabilitySummary = outcomeObservabilitySummaryView(sidecar);
+  const result_fingerprint = buildResultFingerprint(sidecar, record.errors);
   const programmatic_evidence_available = terminal_authoritative_evidence_present === true
     && terminal_authoritative_evidence_well_formed === true;
   const canonical_final_answer_available = finalAnswerBlock.found === true
@@ -468,6 +546,20 @@ export function analyzeRunRecord(record, sidecar) {
       final_answer_consistent,
       task_outcome_matched,
       answer_protocol_matched,
+      task_outcome_available_ms,
+      provider_evidence_kind,
+      provider_evidence_status,
+      product_e2e_success,
+      wall_clock_ms: record.wall_clock_ms,
+      first_useful_signal_ms: record.first_useful_signal_ms?.value ?? null,
+      tool_calls_total: record.tool_calls_total?.value ?? null,
+      terminated: record.terminated,
+      termination_reason: record.termination_reason,
+      coverage_target_status: outcomeObservabilitySummary.coverage_target_status,
+      coverage_report_status: outcomeObservabilitySummary.coverage_report_status,
+      warning_code_counts: outcomeObservabilitySummary.warning_code_counts,
+      execution_mode_counts: outcomeObservabilitySummary.execution_mode_counts,
+      result_fingerprint,
       programmatic_evidence_available,
       canonical_final_answer_available,
       canonical_output_available,
@@ -611,6 +703,13 @@ function buildGroupSummary(groupKey, entries, record) {
   const outcomeMatchedCount = entries.filter((e) => e.expected_outcome_matched === true).length;
   const taskOutcomeMatchedCount = entries.filter((e) => e.task_outcome_matched === true).length;
   const answerProtocolMatchedCount = entries.filter((e) => e.answer_protocol_matched === true).length;
+  // Section 9.14: "Product E2E rate solo en Product" -- product_e2e_success is already null for
+  // every non-Product entry by the neutral scorer's own construction (Section 9.5), so excluding
+  // null from both the numerator and denominator IS restricting to Product, mirroring this same
+  // file's own observableEntries null-exclusion pattern above rather than re-deriving "is this a
+  // Product entry" a second, independent way from product_access_mode.
+  const productE2eApplicableEntries = entries.filter((e) => typeof e.product_e2e_success === 'boolean');
+  const productE2eSuccessCount = productE2eApplicableEntries.filter((e) => e.product_e2e_success === true).length;
   const programmaticEvidenceAvailableCount = entries.filter((e) => e.programmatic_evidence_available === true).length;
   const canonicalFinalAnswerAvailableCount = entries.filter((e) => e.canonical_final_answer_available === true).length;
   const canonicalOutputAvailableCount = entries.filter((e) => e.canonical_output_available === true).length;
@@ -666,6 +765,34 @@ function buildGroupSummary(groupKey, entries, record) {
     expected_outcome_matched_rate: rate(outcomeMatchedCount, total),
     task_outcome_matched_count: taskOutcomeMatchedCount,
     task_outcome_matched_rate: rate(taskOutcomeMatchedCount, total),
+    task_outcome_available_ms_distribution: buildDistribution(entries.map((e) => e.task_outcome_available_ms)),
+    provider_evidence_kind_distribution: buildDistribution(entries.map((e) => e.provider_evidence_kind)),
+    provider_evidence_status_distribution: buildDistribution(entries.map((e) => e.provider_evidence_status)),
+    product_e2e_success_count: productE2eSuccessCount,
+    product_e2e_success_applicable_count: productE2eApplicableEntries.length,
+    product_e2e_success_rate: rate(productE2eSuccessCount, productE2eApplicableEntries.length),
+    // Section 9.14: duration/first-useful-signal/tool-calls/timeout, reported as distributions --
+    // never a single mean/summed number, matching this whole function's own "no composite score"
+    // discipline for every other numeric dimension above.
+    wall_clock_ms_distribution: buildDistribution(entries.map((e) => e.wall_clock_ms)),
+    first_useful_signal_ms_distribution: buildDistribution(entries.map((e) => e.first_useful_signal_ms)),
+    tool_calls_total_distribution: buildDistribution(entries.map((e) => e.tool_calls_total)),
+    termination_reason_distribution: buildDistribution(entries.map((e) => e.termination_reason)),
+    // coverage_target_status/coverage_report_status (Section 9.9, via the accepted-run-audit
+    // sidecar): distributions, like every other closed-vocabulary axis above.
+    // warning_code_counts/execution_mode_counts: SUMMED across entries, mirroring
+    // product_cli_recognized_operation_distribution's own identical sum-across-entries pattern --
+    // each entry's own map is already a complete, closed count map, never a per-entry distribution.
+    coverage_target_status_distribution: buildDistribution(entries.map((e) => e.coverage_target_status)),
+    coverage_report_status_distribution: buildDistribution(entries.map((e) => e.coverage_report_status)),
+    warning_code_counts: sumCountMaps(entries, 'warning_code_counts'),
+    execution_mode_counts: sumCountMaps(entries, 'execution_mode_counts'),
+    // result_fingerprint_distinct_count (Section 9.14): "Sirve para medir determinismo del output
+    // Product sin comparar bytes volatiles" -- 1 means every entry in this group (same scenario_id
+    // + condition + every other hard-partition field) produced an IDENTICAL semantic result; >1
+    // means a genuine, structural disagreement was observed. Never a single composite score on its
+    // own -- reported alongside every other separate dimension above, never replacing them.
+    result_fingerprint_distinct_count: new Set(entries.map((e) => JSON.stringify(e.result_fingerprint))).size,
     answer_protocol_matched_count: answerProtocolMatchedCount,
     answer_protocol_matched_rate: rate(answerProtocolMatchedCount, total),
     programmatic_evidence_available_count: programmaticEvidenceAvailableCount,

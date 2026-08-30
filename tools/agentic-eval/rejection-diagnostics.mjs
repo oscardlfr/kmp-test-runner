@@ -60,6 +60,7 @@ import { assertCleanOrThrowObject, redactAndVerify } from './privacy.mjs';
 import { RUN_KIND_VALUES, CONDITION_VALUES, PLATFORM_VALUES, PRIVACY_STATUS_VALUES } from './schemas.mjs';
 import { validateCorrelationObservability } from './correlation-observability.mjs';
 import { GRADING_CHECK_NAMES } from './graders.mjs';
+import { buildOutcomeObservabilitySummary, validateOutcomeObservabilitySummary } from './coverage-gate-observability.mjs';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -123,8 +124,21 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // runtime_error_code: a closed enum derived only from structured terminal fields
 // (is_error/subtype/usage/tool-count), never from raw stderr/stdout, prompts, responses, paths,
 // commands, account identity, or the terminal result text.
-// schema 12: the current emitted no-policy shape. It keeps schema 11 and adds the closed
+// schema 12: the historical emitted no-policy shape. It keeps schema 11 and adds the closed
 // coverage_gate_attempt_summary projection built from existing terminal evidence only.
+//
+// schema 13 (Evidence1 success-recovery PR B, Section 9.4 rule 5): the current shape, routed
+// whenever ANY record in the batch has run schema >= 8 -- checked BEFORE, and independently of, the
+// policy_mode dispatch above (mirrors accepted-run-audit.mjs's own schema-10 precedent exactly).
+// Unlike every schema below it, schema 13 is NOT itself a single frozen field list: it conserves,
+// via conditional validation, whichever of v3 (policy-required) or v12 (not_applicable) shape
+// already applied to this batch -- exactly as v3/v12 always did independently -- and adds exactly
+// two new, UNCONDITIONAL per-cell fields on top, in EITHER flavor: outcome_assessment (verbatim
+// passthrough of that cell's own record.outcome_assessment) and outcome_observability_summary
+// (Section 9.9's shared, privacy-safe summary, built from that cell's own terminal evidence via the
+// single shared coverage-gate-observability.mjs derivation). A schema:13 row is therefore
+// self-identifying by whether it carries `policy_mode` at all -- the same closed key v4-v12 already
+// gate on -- never a fixed, schema-number-only field list the way v2-v12 each are.
 export const REJECTION_DIAGNOSTICS_SCHEMA_V2 = 2;
 export const REJECTION_DIAGNOSTICS_SCHEMA_V3 = 3;
 export const REJECTION_DIAGNOSTICS_SCHEMA_V4 = 4;
@@ -136,8 +150,9 @@ export const REJECTION_DIAGNOSTICS_SCHEMA_V9 = 9;
 export const REJECTION_DIAGNOSTICS_SCHEMA_V10 = 10;
 export const REJECTION_DIAGNOSTICS_SCHEMA_V11 = 11;
 export const REJECTION_DIAGNOSTICS_SCHEMA_V12 = 12;
-export const SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS = [REJECTION_DIAGNOSTICS_SCHEMA_V2, REJECTION_DIAGNOSTICS_SCHEMA_V3, REJECTION_DIAGNOSTICS_SCHEMA_V4, REJECTION_DIAGNOSTICS_SCHEMA_V5, REJECTION_DIAGNOSTICS_SCHEMA_V6, REJECTION_DIAGNOSTICS_SCHEMA_V7, REJECTION_DIAGNOSTICS_SCHEMA_V8, REJECTION_DIAGNOSTICS_SCHEMA_V9, REJECTION_DIAGNOSTICS_SCHEMA_V10, REJECTION_DIAGNOSTICS_SCHEMA_V11, REJECTION_DIAGNOSTICS_SCHEMA_V12];
-export const LATEST_REJECTION_DIAGNOSTICS_SCHEMA = REJECTION_DIAGNOSTICS_SCHEMA_V12;
+export const REJECTION_DIAGNOSTICS_SCHEMA_V13 = 13;
+export const SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS = [REJECTION_DIAGNOSTICS_SCHEMA_V2, REJECTION_DIAGNOSTICS_SCHEMA_V3, REJECTION_DIAGNOSTICS_SCHEMA_V4, REJECTION_DIAGNOSTICS_SCHEMA_V5, REJECTION_DIAGNOSTICS_SCHEMA_V6, REJECTION_DIAGNOSTICS_SCHEMA_V7, REJECTION_DIAGNOSTICS_SCHEMA_V8, REJECTION_DIAGNOSTICS_SCHEMA_V9, REJECTION_DIAGNOSTICS_SCHEMA_V10, REJECTION_DIAGNOSTICS_SCHEMA_V11, REJECTION_DIAGNOSTICS_SCHEMA_V12, REJECTION_DIAGNOSTICS_SCHEMA_V13];
+export const LATEST_REJECTION_DIAGNOSTICS_SCHEMA = REJECTION_DIAGNOSTICS_SCHEMA_V13;
 
 // Mirrors registries.mjs's own ID_RE exactly (a small, local copy -- not imported, matching this
 // module's and isolation-attestation.mjs's own established convention of keeping such small
@@ -251,13 +266,22 @@ const CELL_CANONICAL_FIELDS_V7 = [...CELL_CANONICAL_FIELDS_V6, 'cell_metrics'];
 const CELL_CANONICAL_FIELDS_V8 = [...CELL_CANONICAL_FIELDS_V7, 'grading_summary'];
 const CELL_CANONICAL_FIELDS_V10 = [...CELL_CANONICAL_FIELDS_V8, 'terminal_evidence_summary'];
 const CELL_CANONICAL_FIELDS_V12 = [...CELL_CANONICAL_FIELDS_V10, 'coverage_gate_attempt_summary'];
+// Schema 13's own 2 new common per-cell fields (Section 9.9), layered onto WHICHEVER of v3/v12's
+// cell shape already applied -- never a single fixed list (see this module's own header comment on
+// REJECTION_DIAGNOSTICS_SCHEMA_V13 for the full rationale).
+const CELL_OUTCOME_FIELDS = ['outcome_assessment', 'outcome_observability_summary'];
+const CELL_CANONICAL_FIELDS_V13_REQUIRED = [...CELL_CANONICAL_FIELDS_V3, ...CELL_OUTCOME_FIELDS];
+const CELL_CANONICAL_FIELDS_V13_NOT_APPLICABLE = [...CELL_CANONICAL_FIELDS_V12, ...CELL_OUTCOME_FIELDS];
 
 // Explicit if-chain, never a ternary/fallthrough -- mirrors schemas.mjs's runCanonicalFieldsFor
 // rationale: a naive fallthrough would silently validate an unrecognized future schema against the
 // WRONG (older) field list. v4 reuses the IDENTICAL per-cell shape as v3 (schema 4's own 3 new
 // fields are all batch-wide, never per-cell) -- never REJECTION_DIAGNOSTICS_SCHEMA_V4 falling
-// through to the v2 cell shape by accident.
-function cellCanonicalFieldsFor(schema) {
+// through to the v2 cell shape by accident. `isV13NotApplicable` is required (never optional) for
+// schema 13 -- every caller of this function must already know which of the two v13 flavors it is
+// checking, exactly like validateRejectionRow computes it once and threads it through.
+function cellCanonicalFieldsFor(schema, isV13NotApplicable) {
+  if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V13) return isV13NotApplicable ? CELL_CANONICAL_FIELDS_V13_NOT_APPLICABLE : CELL_CANONICAL_FIELDS_V13_REQUIRED;
   if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V12) return CELL_CANONICAL_FIELDS_V12;
   if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V11) return CELL_CANONICAL_FIELDS_V10;
   if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V10) return CELL_CANONICAL_FIELDS_V10;
@@ -308,7 +332,11 @@ const REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V4 = [
 ];
 const REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V5 = [...REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V4];
 
-function rejectionCanonicalFieldsFor(schema) {
+// Schema 13's own top-level shape needs NO new field at all (its 2 new fields are exclusively
+// per-cell -- see CELL_OUTCOME_FIELDS above): it is exactly whichever of v3/v12's own top-level
+// field list already applied to this batch.
+function rejectionCanonicalFieldsFor(schema, isV13NotApplicable) {
+  if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V13) return isV13NotApplicable ? REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V5 : REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V3;
   if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V12) return REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V5;
   if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V11) return REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V5;
   if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V10) return REJECTION_DIAGNOSTICS_CANONICAL_FIELDS_V5;
@@ -1281,7 +1309,7 @@ function validateAmbientProfileMatrixOk(row) {
   const errors = [];
   if (RUN_KIND_VALUES.includes(row.run_kind)) {
     if (row.run_kind === 'scenario') {
-      if ((row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V3 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V4 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V5 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V6 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V7 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V8 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V9 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V10 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V11 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V12) && row.matrix_complete === false) {
+      if ((row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V3 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V4 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V5 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V6 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V7 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V8 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V9 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V10 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V11 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V12 || row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V13) && row.matrix_complete === false) {
         if (row.ambient_profile_matrix_ok !== null) {
           errors.push({ field: 'ambient_profile_matrix_ok', message: `must be null when matrix_complete is false -- a matrix that fail-fast stopped before finishing never actually evaluated a real cross-cell consensus` });
         }
@@ -1363,10 +1391,18 @@ export function validateRejectionRow(row) {
   const isV10 = row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V10;
   const isV11 = row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V11;
   const isV12 = row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V12;
-  const isV5OrLater = isV5 || isV6 || isV7 || isV8 || isV9 || isV10 || isV11 || isV12;
-  const isV3OrLater = isV3 || isV4 || isV5 || isV6 || isV7 || isV8 || isV9 || isV10 || isV11 || isV12;
-  const isNotApplicableSchema = isV4 || isV5 || isV6 || isV7 || isV8 || isV9 || isV10 || isV11 || isV12;
-  const allowedKeys = new Set(rejectionCanonicalFieldsFor(row.schema));
+  const isV13 = row.schema === REJECTION_DIAGNOSTICS_SCHEMA_V13;
+  // Schema 13 (Section 9.4 rule 5) is the first version whose own top-level/per-cell shape still
+  // varies by policy_mode, exactly like v3-vs-v12 always did -- the routing axis (any cell run
+  // schema >= 8) is orthogonal to the policy_mode axis. A v13 row is therefore self-identifying by
+  // whether it carries `policy_mode` at all (the same closed key v4-v12 already gate on) --
+  // structural, computed exactly once here, and threaded through every dispatch below rather than
+  // re-inspected independently at each call site.
+  const isV13NotApplicable = isV13 && Object.prototype.hasOwnProperty.call(row, 'policy_mode');
+  const isV5OrLater = isV5 || isV6 || isV7 || isV8 || isV9 || isV10 || isV11 || isV12 || isV13NotApplicable;
+  const isV3OrLater = isV3 || isV4 || isV5 || isV6 || isV7 || isV8 || isV9 || isV10 || isV11 || isV12 || isV13;
+  const isNotApplicableSchema = isV4 || isV5 || isV6 || isV7 || isV8 || isV9 || isV10 || isV11 || isV12 || isV13NotApplicable;
+  const allowedKeys = new Set(rejectionCanonicalFieldsFor(row.schema, isV13NotApplicable));
   for (const k of Object.keys(row)) if (!allowedKeys.has(k)) errors.push({ field: k, message: 'unrecognized field' });
   for (const k of allowedKeys) if (!(k in row)) errors.push({ field: k, message: 'missing required field' });
 
@@ -1451,7 +1487,7 @@ export function validateRejectionRow(row) {
   if (!Array.isArray(row.cells) || row.cells.length === 0) {
     errors.push({ field: 'cells', message: 'must be a non-empty array' });
   } else {
-    const cellAllowedKeys = new Set(cellCanonicalFieldsFor(row.schema));
+    const cellAllowedKeys = new Set(cellCanonicalFieldsFor(row.schema, isV13NotApplicable));
     const seenRunIds = new Set();
     // round-6 audit finding ("rechazo sin causa"): a rejection diagnostic whose cells[] ALL carry
     // failed_checks:[] represents a rejection with no recorded cause anywhere in the record -- the
@@ -1573,20 +1609,34 @@ export function validateRejectionRow(row) {
           }
         }
       }
-      if (isV6 || isV7 || isV8 || isV9 || isV10 || isV11 || isV12) {
-        errors.push(...validatePreInferenceFailureSummary(cell.pre_inference_failure, `cells[${i}].pre_inference_failure`, cell.failed_checks, (isV11 || isV12) ? [3] : (isV9 || isV10) ? [2] : [1]));
+      if (isV6 || isV7 || isV8 || isV9 || isV10 || isV11 || isV12 || isV13NotApplicable) {
+        errors.push(...validatePreInferenceFailureSummary(cell.pre_inference_failure, `cells[${i}].pre_inference_failure`, cell.failed_checks, (isV11 || isV12 || isV13NotApplicable) ? [3] : (isV9 || isV10) ? [2] : [1]));
       }
-      if (isV7 || isV8 || isV9 || isV10 || isV11 || isV12) {
+      if (isV7 || isV8 || isV9 || isV10 || isV11 || isV12 || isV13NotApplicable) {
         errors.push(...validateCellMetrics(cell.cell_metrics, `cells[${i}].cell_metrics`));
       }
-      if (isV8 || isV9 || isV10 || isV11 || isV12) {
+      if (isV8 || isV9 || isV10 || isV11 || isV12 || isV13NotApplicable) {
         errors.push(...validateGradingSummary(cell.grading_summary, `cells[${i}].grading_summary`));
       }
-      if (isV10 || isV11 || isV12) {
+      if (isV10 || isV11 || isV12 || isV13NotApplicable) {
         errors.push(...validateTerminalEvidenceSummary(cell.terminal_evidence_summary, `cells[${i}].terminal_evidence_summary`));
       }
-      if (isV12) {
+      if (isV12 || isV13NotApplicable) {
         errors.push(...validateCoverageGateAttemptSummary(cell.coverage_gate_attempt_summary, `cells[${i}].coverage_gate_attempt_summary`));
+      }
+      // Evidence1 success-recovery PR B, Section 9.4 rule 5/9.5/9.9: schema 13's own 2 new common
+      // per-cell fields -- UNCONDITIONAL on policy mode, unlike every other per-cell block above.
+      // outcome_assessment is a verbatim passthrough of an already-closed-vocabulary,
+      // already-validated (at the run-record level) object -- re-validating its own internal enums
+      // here would require importing schemas.mjs, which this module does not (and must not, to
+      // avoid a circular dependency -- see accepted-run-audit.mjs's identical, already-reviewed
+      // rationale for its own outcome_assessment check). A basic null-or-object shape gate is
+      // proportionate; outcome_observability_summary reuses the one shared validator.
+      if (isV13) {
+        if (cell.outcome_assessment !== null && (typeof cell.outcome_assessment !== 'object' || Array.isArray(cell.outcome_assessment))) {
+          errors.push({ field: `cells[${i}].outcome_assessment`, message: 'must be null or an object' });
+        }
+        errors.push(...validateOutcomeObservabilitySummary(cell.outcome_observability_summary, `cells[${i}].outcome_observability_summary`));
       }
     }
     if (!anyCellHasFailedCheck) {
@@ -1637,9 +1687,11 @@ export function validateRejectionRow(row) {
  * (evaluateNamedChecks' failedChecks/failedChecksA/failedChecksB, scenarioHardGate's cellResults,
  * cell-integrity.mjs's unexpectedToolUsesCount/unexpectedTools) -- see cli.mjs's own call sites for
  * how each run_kind maps its own shape into the uniform inputs here. Constructs schema
- * REJECTION_DIAGNOSTICS_SCHEMA_V12 when every record in the batch is schema>=6 with
- * execution_profile.policy_mode==="not_applicable" (see the dispatch this function runs, right
- * after the existing BATCH_WIDE_FIELDS agreement check, for the exact rule -- NEVER
+ * REJECTION_DIAGNOSTICS_SCHEMA_V13 (Evidence1 success-recovery PR B) when ANY record in the batch
+ * has its own run schema >= 8 -- checked independently of, and combined with, the policy_mode
+ * dispatch below -- REJECTION_DIAGNOSTICS_SCHEMA_V12 when every record in the batch is schema>=6
+ * (but <8) with execution_profile.policy_mode==="not_applicable" (see the dispatch this function
+ * runs, right after the existing BATCH_WIDE_FIELDS agreement check, for the exact rule -- NEVER
  * LATEST_REJECTION_DIAGNOSTICS_SCHEMA used as that selector), REJECTION_DIAGNOSTICS_SCHEMA_V3
  * otherwise (every policy-required or pre-schema-6 batch, unchanged from before) -- see
  * validateRejectionRow for why older schemas are still ACCEPTED (never built) by this module.
@@ -1769,9 +1821,21 @@ export function buildRejectionDiagnostics({
     throw new Error(`buildRejectionDiagnostics: records disagree on execution_profile.policy_mode (${JSON.stringify([...policyModes])}) -- one harness invocation always resolves exactly one execution profile for its whole batch`);
   }
   const buildingNotApplicable = [...policyModes][0] === 'not_applicable';
-  const schema = buildingNotApplicable ? REJECTION_DIAGNOSTICS_SCHEMA_V12 : REJECTION_DIAGNOSTICS_SCHEMA_V3;
+  // Evidence1 success-recovery PR B, Section 9.4 rule 5: routed to schema 13 whenever ANY record in
+  // the batch has run schema >= 8 -- checked independently of, and combined with, buildingNotApplicable
+  // (never LATEST_REJECTION_DIAGNOSTICS_SCHEMA as the selector). A mixed schema<8/schema>=8 batch
+  // still routes to 13 as long as every record already agreed on policy_mode above.
+  const hasSchema8PlusCell = records.some((r) => Number.isInteger(r.schema) && r.schema >= 8);
+  const schema = hasSchema8PlusCell
+    ? REJECTION_DIAGNOSTICS_SCHEMA_V13
+    : (buildingNotApplicable ? REJECTION_DIAGNOSTICS_SCHEMA_V12 : REJECTION_DIAGNOSTICS_SCHEMA_V3);
+  // v12's own rich not_applicable-only per-cell surface is required whenever the batch IS
+  // not_applicable and is being built at v12 or v13's own not_applicable flavor -- never for v13's
+  // policy-required flavor, which keeps v3's lean per-cell shape exactly (Section 9.4 rule 5: "v13
+  // conserva mediante validacion condicional los campos ... de v3/v12").
+  const buildingRichNotApplicableCells = buildingNotApplicable && (schema === REJECTION_DIAGNOSTICS_SCHEMA_V12 || schema === REJECTION_DIAGNOSTICS_SCHEMA_V13);
   let coverageGateAttemptSummaryByRunId = null;
-  if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V12) {
+  if (buildingRichNotApplicableCells) {
     requireExactRunIdKeys(correlationObservabilityByRunId, 'correlationObservabilityByRunId');
     requireExactRunIdKeys(preInferenceFailureByRunId, 'preInferenceFailureByRunId');
     requireExactRunIdKeys(cellMetricsByRunId, 'cellMetricsByRunId');
@@ -1809,6 +1873,28 @@ export function buildRejectionDiagnostics({
         throw new Error(`buildRejectionDiagnostics: terminalEvidenceByRunId['${runId}'] must summarize to a valid coverage-gate-attempt-summary schema v1 object (${JSON.stringify(errors)})`);
       }
       coverageGateAttemptSummaryByRunId[runId] = summary;
+    }
+  }
+
+  // Section 9.9: schema 13's own 2 new common per-cell fields -- UNCONDITIONAL on policy mode,
+  // built from terminalEvidenceByRunId alone (never requires correlation/pre-inference/cell-metrics
+  // data the way buildingRichNotApplicableCells above does), via the single shared derivation
+  // coverage-gate-observability.mjs also gives accepted-run-audit.mjs's own schema 10.
+  // terminalEvidenceByRunId stays its own default null for run_kind:calibration/smoke -- neither
+  // ever grades against an expected/observed envelope, so the concept is structurally inapplicable,
+  // never merely omitted. Exact-set is still enforced when the caller DOES supply a map (the
+  // scenario/matrix path always does); every cell's summary otherwise degrades to
+  // buildOutcomeObservabilitySummary(null)'s own honest all-not-recorded shape -- Section 9.9's own
+  // "cuando los datos existan" contract, never a caller-side requirement to fabricate a concept
+  // that does not exist for this run_kind.
+  let outcomeObservabilitySummaryByRunId = null;
+  if (schema === REJECTION_DIAGNOSTICS_SCHEMA_V13) {
+    if (terminalEvidenceByRunId != null) {
+      requireExactRunIdKeys(terminalEvidenceByRunId, 'terminalEvidenceByRunId');
+    }
+    outcomeObservabilitySummaryByRunId = {};
+    for (const r of records) {
+      outcomeObservabilitySummaryByRunId[r.run_id] = buildOutcomeObservabilitySummary(terminalEvidenceByRunId?.[r.run_id] ?? null);
     }
   }
 
@@ -1868,7 +1954,7 @@ export function buildRejectionDiagnostics({
     foreign_skill_summary: r.foreign_skill_summary,
     ambient_skill_profile: r.ambient_skill_profile,
     unexpected_tool_uses_count: unexpectedToolUsesCountByRunId[r.run_id],
-    ...(schema === REJECTION_DIAGNOSTICS_SCHEMA_V12 ? {
+    ...(buildingRichNotApplicableCells ? {
       record_error_codes: [...new Set((r.errors ?? []).map((e) => e?.code).filter((code) => typeof code === 'string' && code.length > 0))].sort(),
       correlation_observability: JSON.parse(JSON.stringify(correlationObservabilityByRunId[r.run_id])),
       pre_inference_failure: JSON.parse(JSON.stringify(preInferenceFailureByRunId[r.run_id])),
@@ -1876,6 +1962,13 @@ export function buildRejectionDiagnostics({
       grading_summary: buildGradingSummary(r),
       terminal_evidence_summary: buildTerminalEvidenceSummary(terminalEvidenceByRunId[r.run_id]),
       coverage_gate_attempt_summary: JSON.parse(JSON.stringify(coverageGateAttemptSummaryByRunId[r.run_id])),
+    } : {}),
+    // Section 9.5/9.9: schema 13's own 2 new common per-cell fields -- UNCONDITIONAL on policy
+    // mode. outcome_assessment is a verbatim passthrough (never re-derived) of that cell's own
+    // already-validated record field.
+    ...(schema === REJECTION_DIAGNOSTICS_SCHEMA_V13 ? {
+      outcome_assessment: r.outcome_assessment,
+      outcome_observability_summary: outcomeObservabilitySummaryByRunId[r.run_id],
     } : {}),
   }));
 
