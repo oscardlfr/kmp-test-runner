@@ -82,8 +82,9 @@ const envelope = {
 };
 const registry = JSON.parse(readFileSync(resolve(root, 'tools/agentic-eval/execution-profiles/registry.json'), 'utf8'));
 const profileHash = computeExecutionProfileSha256(registry.execution_profiles.find(profile => profile.id === 'sandboxed-unrestricted-v1'));
-function sourceFixture(extra = {}) {
-  const dir = mkdtempSync('C:/kmp-eval/scratch/e1-contract-source-');
+function sourceFixture(extra = {}, parent = 'C:/kmp-eval/scratch') {
+  mkdirSync(parent, { recursive: true });
+  const dir = mkdtempSync(resolve(parent, 'e1-contract-source-'));
   const repo = resolve(dir, 'repo');
   const scratch = resolve(dir, 'ops');
   mkdirSync(repo); mkdirSync(scratch);
@@ -100,6 +101,16 @@ function sourceFixture(extra = {}) {
   git('add', '.'); git('commit', '-qm', 'fixture');
   return { dir, repo, scratch, git, commit: git('rev-parse', 'HEAD'), tree: git('rev-parse', 'HEAD^{tree}') };
 }
+it('initializes its source fixture without a pre-existing scratch directory', () => {
+  const dir = mkdtempSync(resolve(tmpdir(), 'e1-source-fixture-bootstrap-'));
+  try {
+    const parent = resolve(dir, 'missing', 'scratch');
+    const fixture = sourceFixture({}, parent);
+    expect(resolve(fixture.dir, '..')).toBe(parent);
+    expect(fixture.git('status', '--porcelain=v1')).toBe('');
+    expect(fixture.commit).toMatch(/^[a-f0-9]{40}$/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
 function dryPlan(product) {
   return { dry_run: true, scenario_id: 'coverage-threshold-failure-v2', repeats: 1, seed: 20260821,
     campaign_design_id: product ? 'claude-product-canary-v1' : 'claude-free-baseline-canary-v1',
