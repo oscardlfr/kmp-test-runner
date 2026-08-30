@@ -134,6 +134,37 @@ preflight checks, not a successful benchmark result or successful runtime authen
 
 ## Handoff and Failure Rules
 
+### Read an Existing Failed Wet Gate
+
+Use `evidence1-hyperv-read-wet-forensics-direct.ps1` through the same elevated client. Its only
+arguments are the original `TargetCommit`, original `TargetTree`, and `ExpectedReportSha256`
+(the SHA-256 of the existing host `HYPERV-VERIFY-WET-GATE-V2-DIRECT.json`). Verify that hash
+before submitting the request. This is an explicit read operation, not a retry switch.
+
+```powershell
+$arguments = @('-TargetCommit', $originalCommit, '-TargetTree', $originalTree,
+  '-ExpectedReportSha256', $originalReportHash)
+& $client -AllowedRoot $opsRoot `
+  -ScriptPath (Join-Path $opsRoot 'evidence1-hyperv-read-wet-forensics-direct.ps1') `
+  -ScriptArguments $arguments -TimeoutMinutes 5
+```
+
+Update only the idle, clean HOST operational checkout to the reviewed reader version. Do NOT
+deploy a new harness to the guest, refresh readiness, modify source, remove markers or repin
+the historical attempt to read it. Historical freshness is not execution authorization.
+The reader verifies VM identity, the terminal marker's anchors and the captured stdout hash;
+reads only those two fixed wet artifacts; and returns numeric facts and closed error/reason
+counts. It never reads model artifacts or stderr, starts product/Gradle/Claude, or writes guest
+files. Local outputs are new `FORENSIC-<id>.json` files under the dedicated
+`hyperv-read-wet-forensics-direct` scratch directory. Originals are never overwritten.
+
+The summary distinguishes missing, null, invalid and recorded values. Unrecognized codes map
+to `unknown`; arbitrary error messages/commands/paths are not copied. A schema 1 historical
+process exit, duration or secondary postflight exception remains `not-recorded`, since it
+cannot be recovered from boolean checks. Newer records may carry those facts independently.
+The `module_target` check in historical validation reports binds the PowerShell module file,
+not the coverage target; the latter is checked by `with_data`.
+
 Record V1, V2, and V3 independently as `passed`, `failed`, or `not run`, with the matching
 commit/tree and report hashes. Never call Stage V complete because readiness alone passed.
 

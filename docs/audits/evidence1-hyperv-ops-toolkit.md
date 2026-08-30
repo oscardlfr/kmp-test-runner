@@ -46,6 +46,9 @@ sequence and deployment custody. The explicit validation allowlist additions are
   guest, with the exact coverage budget contract and a 300-second cap. It never runs Claude.
 - `evidence1-hyperv-verify-canary-dryrun-v3-direct.ps1`: separate registered Product and
   FreeBaseline plans, one session each, without spawning agents or writing live records.
+- `evidence1-hyperv-read-wet-forensics-direct.ps1`: read-only, hash-bound projection of an
+  existing wet-gate marker and product JSON. No guest deployment, readiness refresh, retry,
+  stderr or agent-artifact access. See the validation companion for original-subject anchors.
 
 Readiness's eight-cell dry-run does not replace these stages. Updating the guest harness also
 does not update the host task's allowlist: deploy the reviewed operational checkout to the

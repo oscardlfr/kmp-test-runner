@@ -18,7 +18,8 @@ $AllowedScripts = @(
   'evidence1-hyperv-verify-guest-claude-auth-direct.ps1',
   'evidence1-hyperv-update-harness-from-bundle.ps1',
   'evidence1-hyperv-verify-wet-gate-v2-direct.ps1',
-  'evidence1-hyperv-verify-canary-dryrun-v3-direct.ps1'
+  'evidence1-hyperv-verify-canary-dryrun-v3-direct.ps1',
+  'evidence1-hyperv-read-wet-forensics-direct.ps1'
 )
 
 function Resolve-FullPath([string]$Path) {
