@@ -1880,3 +1880,110 @@ describe('buildSummary -- group-level agent_runtime/execution_profile/skill_obse
     expect(group.usage_reasoning_output_distribution).toEqual({ null: 2 });
   });
 });
+
+// Evidence1 success-recovery PR B, Stage B3 review-round correction (analysis schema 7,
+// task_outcome_available_ms): the reviewer's own correction to an earlier, wrongly-modeled
+// attempt at a graders.mjs-level "neutral event index" -- first_useful_signal_event's contract is
+// specifically correlated to a real user.tool_result event (cli.mjs/accepted-run-audit.mjs); a
+// claim-only FreeBaseline run has no such event at all, and Product's evidence can genuinely
+// become available BEFORE the final claim, so the two are never required to coincide. Instead:
+// task_outcome_available_ms is a TIME (never an event index), read directly from the record's own
+// existing wall_clock_ms (the real end-to-end duration every schema already carries -- no new
+// run-record field needed), gated ONLY on outcome_assessment.task_outcome_matched === true. schema
+// 8 is required for outcome_assessment to exist at all; a schema<8 record (or a schema:8 record
+// whose claim did not match, was absent, or was unevaluable) always reports null here.
+describe('analyzeRunRecord -- task_outcome_available_ms (analysis schema 7, Stage B3 review-round correction)', () => {
+  const REAL_OUTCOME_ASSESSMENT_MATCHED = Object.freeze({
+    schema: 1, task_outcome_matched: true, task_outcome_reason: 'matched',
+    answer_protocol_matched: true, provider_evidence_kind: 'claim-only',
+    provider_evidence_status: 'unavailable', product_e2e_success: null,
+  });
+
+  it('FreeBaseline correct: outcome available at the record\'s own end-to-end wall_clock_ms, evidence signal stays null', () => {
+    const record = scenarioRecord({
+      schema: 8, condition: 'no-skill', outcome_assessment: REAL_OUTCOME_ASSESSMENT_MATCHED,
+      skill_invoked: { value: false, reason: null }, skill_invocation_event: null,
+    });
+    const sidecar = sidecarFor(record, { entries: [] });
+    const { ok, entry } = analyzeRunRecord(record, sidecar);
+    expect(ok).toBe(true);
+    expect(record.first_useful_signal_ms.value).toBeNull();
+    expect(entry.task_outcome_available_ms).toBe(record.wall_clock_ms);
+  });
+
+  it('Product correct: outcome available at wall_clock_ms, and the evidence signal (when present) is earlier-or-equal, never later', () => {
+    // schema:8 (>=6) makes targetSkillInvokedView read skill_observation.activation.status, never
+    // the legacy skill_invoked.value -- a schema:8, current-skill fixture needs the real Section-F
+    // groups to be internally coherent (mirrors scenarioRecord6's own shape, describe-scoped
+    // elsewhere in this file and not reachable from here).
+    const record = scenarioRecord({
+      schema: 8, outcome_assessment: REAL_OUTCOME_ASSESSMENT_MATCHED,
+      first_useful_signal_ms: { value: 12345, reason: null },
+      first_useful_signal_event: { type: 'user.tool_result', index: 1 },
+      agent_runtime: {
+        runtime_id: 'claude-code', cli_version: '2.1.218', model_requested: 'claude-sonnet-5',
+        model_resolved: 'claude-sonnet-5', model_vendor_expected: 'anthropic', model_vendor_observed: null,
+      },
+      execution_profile: {
+        id: 'strict-policy-v1', sha256: 'd'.repeat(64), isolation_kind: 'runtime-policy-hooks',
+        isolation_attestation_sha256: null, network_mode: 'runtime-default',
+      },
+      skill_observation: {
+        delivery_mode: 'runtime-extension',
+        availability: { status: 'observed-present', evidence_kind: 'runtime-catalog' },
+        activation: { status: 'confirmed', evidence_kind: 'runtime-explicit-event' },
+        source_sha: '9e47a9d132f5b9ea6ac5bc50a66c844458fd363e',
+        treatment_size: {
+          snapshot_sha256: 'c'.repeat(64), snapshot_bytes: 234997, snapshot_file_count: 28,
+          prompt_sha256: 'e'.repeat(64), prompt_bytes: 55, absent_reason: null,
+        },
+      },
+      usage: {
+        source: 'runtime-reported', input: 16, cached_input: 151916, cache_write: 7026, output: 1835, reasoning_output: null,
+        attributable_to_skill_load: {
+          status: 'not-recorded',
+          dimensions: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null },
+          unit: null, reason: 'runtime-does-not-report-skill-attribution',
+        },
+      },
+    });
+    const sidecar = sidecarFor(record, { entries: [targetSkillEntry(0), bashEntry(1, { kind: 'kmp-test', operation: 'parallel' })], firstUsefulSignalEvent: { type: 'user.tool_result', index: 1 } });
+    const { ok, entry } = analyzeRunRecord(record, sidecar);
+    expect(ok).toBe(true);
+    expect(entry.task_outcome_available_ms).toBe(record.wall_clock_ms);
+    expect(record.first_useful_signal_ms.value).toBeLessThanOrEqual(entry.task_outcome_available_ms);
+  });
+
+  it('incorrect, absent, or unevaluable claim: task_outcome_available_ms is null', () => {
+    const mismatched = scenarioRecord({
+      schema: 8,
+      outcome_assessment: { ...REAL_OUTCOME_ASSESSMENT_MATCHED, task_outcome_matched: false, task_outcome_reason: 'mismatched' },
+    });
+    const { entry: mismatchedEntry } = analyzeRunRecord(mismatched, sidecarFor(mismatched, { entries: [] }));
+    expect(mismatchedEntry.task_outcome_available_ms).toBeNull();
+
+    const notEvaluable = scenarioRecord({
+      schema: 8,
+      outcome_assessment: { ...REAL_OUTCOME_ASSESSMENT_MATCHED, task_outcome_matched: null, task_outcome_reason: 'claim-missing' },
+    });
+    const { entry: notEvaluableEntry } = analyzeRunRecord(notEvaluable, sidecarFor(notEvaluable, { entries: [] }));
+    expect(notEvaluableEntry.task_outcome_available_ms).toBeNull();
+
+    // schema<8 never has outcome_assessment at all -- must also report null, never throw.
+    const legacy = scenarioRecord({ schema: 5 });
+    const { entry: legacyEntry } = analyzeRunRecord(legacy, sidecarFor(legacy, { entries: [] }));
+    expect(legacyEntry.task_outcome_available_ms).toBeNull();
+  });
+
+  it('success:false does not suppress a correct neutral outcome -- FreeBaseline can never satisfy the strict Product success gate, but task_outcome_available_ms must not be gated on it', () => {
+    const record = scenarioRecord({
+      schema: 8, condition: 'no-skill', outcome_assessment: REAL_OUTCOME_ASSESSMENT_MATCHED,
+      success: { value: false, reason: null },
+      skill_invoked: { value: false, reason: null }, skill_invocation_event: null,
+    });
+    const { ok, entry } = analyzeRunRecord(record, sidecarFor(record, { entries: [] }));
+    expect(ok).toBe(true);
+    expect(entry.success).toBe(false);
+    expect(entry.task_outcome_available_ms).toBe(record.wall_clock_ms);
+  });
+});

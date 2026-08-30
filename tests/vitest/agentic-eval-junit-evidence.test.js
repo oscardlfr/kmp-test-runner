@@ -83,6 +83,34 @@ describe('countEvidenceTaskJunit -- absent XML vs. real XML reporting zero, kept
     const result = countEvidenceTaskJunit(workDir, ':shared:testAndroidHostTest');
     expect(result).toEqual({ status: 'ok', junit: { total: 2, passed: 1, failed: 1 } });
   });
+
+  // Evidence1 success-recovery PR B, Stage B3 review-round finding (P2): closes the umbrella-task
+  // integration gap between this file's own countEvidenceTaskJunit coverage above and
+  // junit-xml.test.js's own forEachJunitXml sibling-directory-walk coverage -- neither file
+  // previously combined both pieces into one proof that the REAL evidence-reading entry point
+  // this PR's scenario v2 design actually depends on (a single Bash call to the umbrella
+  // `:core:domain:test` task) genuinely aggregates both build flavors' unit-test results.
+  // Directly grounds the Stage B0/B3 4-test baseline: mirrors Stage B0's own verified shape
+  // (2 real tests in testDemoDebugUnitTest, 2 in testProdDebugUnitTest, both build flavors of
+  // NowInAndroid's :core:domain module) rather than the generic :shared/:app fixtures used
+  // elsewhere in this file.
+  it("aggregates a flavored module's umbrella `test` task across BOTH its testDemoDebugUnitTest and testProdDebugUnitTest sibling directories -- the real, single-invocation path Stage B0's 4-test baseline depends on", () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-junit-evidence-'));
+    writeXml(workDir, 'core/domain', 'testDemoDebugUnitTest', 'DemoTest', [
+      '<testsuite name="DemoTest" tests="2">',
+      '  <testcase name="t1" classname="DemoTest" time="0.1"/>',
+      '  <testcase name="t2" classname="DemoTest" time="0.1"/>',
+      '</testsuite>',
+    ].join('\n'));
+    writeXml(workDir, 'core/domain', 'testProdDebugUnitTest', 'ProdTest', [
+      '<testsuite name="ProdTest" tests="2">',
+      '  <testcase name="t1" classname="ProdTest" time="0.1"/>',
+      '  <testcase name="t2" classname="ProdTest" time="0.1"/>',
+      '</testsuite>',
+    ].join('\n'));
+    const result = countEvidenceTaskJunit(workDir, ':core:domain:test');
+    expect(result).toEqual({ status: 'ok', junit: { total: 4, passed: 4, failed: 0 } });
+  });
 });
 
 describe('countEvidenceTaskJunit -- skip/anomaly detection (never a false pass/fail count)', () => {
