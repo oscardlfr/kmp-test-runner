@@ -11,7 +11,8 @@ $script:E1FailureCodes = @(
     'repo_commit','repo_tree','repo_root','repo_dirty','repo_overlap','validation_overlap','operation_invalid',
     'records_changed','evidence_changed','result_shape','report_path','identity_invalid','credential_path','credential_shape',
     'host_privilege','vm_not_running','transport_timeout','transport_shape','transport_failed','readiness_changed',
-    'module_hash_mismatch','module_target_mismatch','report_write_failed','profile_registry'
+    'module_hash_mismatch','module_target_mismatch','report_write_failed','profile_registry',
+    'source_artifacts','source_artifact_limit','source_tracked_changed','source_index_changed','java_toolchain'
 )
 
 function Get-E1FailureCode($Failure, [string]$Fallback = 'preflight_failed') {
@@ -61,7 +62,7 @@ function Resolve-E1Path([string]$Path, [string]$Root = 'C:\kmp-eval') {
     $full = $normalized
     $prefix = $Root.Replace('/', '\').TrimEnd('\') + '\'
     if (-not $full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'path_outside_root' }
-    $current = if ($env:OS -eq 'Windows_NT') { $full } else { $null }
+    $current = if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) { $full } else { $null }
     while ($current) {
         if (Test-Path -LiteralPath $current) {
             $item = Get-Item -LiteralPath $current -Force
@@ -347,7 +348,8 @@ function New-E1Result([string]$Operation, [string]$TargetCommit, [string]$Target
 }
 
 function Set-E1Failure($Result, [string]$Phase, [string]$Code) {
-    if ($Phase -cnotin @('primary','postflight','persistence','transport') -or
+    if (-not (Test-E1Exact (Get-E1Field $Result 'schema') 2) -or
+        $Phase -cnotin @('primary','postflight','persistence','transport') -or
         $Code -cnotin $script:E1FailureCodes -or $Code -cin @('none','postflight_pending')) { throw 'result_shape' }
     if ($null -eq $Result.failures[$Phase]) { $Result.failures[$Phase] = $Code }
     $Result.state = 'failed'
@@ -600,13 +602,183 @@ function Invoke-E1Git([string]$Root, [string[]]$Arguments, [string]$Directory) {
     return [IO.File]::ReadAllText($stdout).Trim()
 }
 
-function Assert-E1Repo([string]$Root, [string]$Commit, [string]$Tree, [string]$Directory) {
+function Assert-E1RepoIdentity([string]$Root, [string]$Commit, [string]$Tree, [string]$Directory) {
     if ((Invoke-E1Git $Root @('rev-parse','HEAD') $Directory) -cne $Commit) { throw 'repo_commit' }
     $actualTree = Invoke-E1Git $Root @('rev-parse','HEAD^{tree}') $Directory
     if ($actualTree -cnotmatch '^[a-f0-9]{40}$' -or ($Tree -and $actualTree -cne $Tree)) { throw 'repo_tree' }
     if ((Resolve-E1Path (Invoke-E1Git $Root @('rev-parse','--show-toplevel') $Directory)) -ine $Root) { throw 'repo_root' }
+    return $actualTree
+}
+
+function Assert-E1Repo([string]$Root, [string]$Commit, [string]$Tree, [string]$Directory) {
+    $actualTree = Assert-E1RepoIdentity $Root $Commit $Tree $Directory
     if ((Invoke-E1Git $Root @('status','--porcelain=v1','--untracked-files=all') $Directory)) { throw 'repo_dirty' }
     return $actualTree
+}
+
+function Get-E1ArtifactKind([string]$RelativePath) {
+    # Exact producers: project-model.js/cache.js and coverage-orchestrator.js.
+    # V2 has no instrumented/benchmark flags, so their logs are not authorized.
+    if ($RelativePath -cmatch '^\.kmp-test-runner/cache/model-[a-f0-9]{40}\.json$') { return 'model' }
+    if ($RelativePath -cmatch '^\.kmp-test-runner/cache/tasks-[a-f0-9]{40}\.txt$') { return 'tasks' }
+    if ($RelativePath -ceq '.kmp-test-runner/reports/coverage/latest.md') { return 'latest' }
+    if ($RelativePath -cmatch '^\.kmp-test-runner/reports/coverage/[0-9]{8}-[0-9]{6}-[0-9]{6}\.md$') { return 'report' }
+    throw 'source_artifacts'
+}
+
+function Get-E1SourceFileHash([string]$Path, [long]$MaxBytes) {
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try {
+        if ($stream.Length -gt $MaxBytes) { throw 'source_artifact_limit' }
+        return -join ($hasher.ComputeHash($stream) | ForEach-Object { $_.ToString('x2') })
+    } finally { $hasher.Dispose(); $stream.Dispose() }
+}
+
+function Get-E1RuntimeArtifacts([string]$Root) {
+    $artifacts = @{}; $directories = @(); $bytes = 0L; $entries = 0
+    $runtime = Join-Path $Root '.kmp-test-runner'
+    if (Test-Path -LiteralPath $runtime) {
+        $null = Resolve-E1Path $runtime
+        if (-not (Get-Item -LiteralPath $runtime -Force).PSIsContainer) { throw 'source_artifacts' }
+        $directories += '.kmp-test-runner'
+        $pending = [Collections.Generic.Queue[string]]::new(); $pending.Enqueue($runtime)
+        while ($pending.Count) {
+            foreach ($entry in (Get-ChildItem -LiteralPath $pending.Dequeue() -Force)) {
+                if (++$entries -gt 128) { throw 'source_artifact_limit' }
+                $null = Resolve-E1Path $entry.FullName
+                $relative = $entry.FullName.Substring($Root.Length + 1).Replace('\','/')
+                if ($entry.PSIsContainer) {
+                    if ($relative -cnotin @('.kmp-test-runner/cache','.kmp-test-runner/reports','.kmp-test-runner/reports/coverage')) { throw 'source_artifacts' }
+                    $directories += $relative
+                    $pending.Enqueue($entry.FullName)
+                } else {
+                    $kind = Get-E1ArtifactKind $relative
+                    # probeGradleTasksCached persists spawnGradle's 64 MiB stdout
+                    # budget. Keep room for that cache plus the model and reports.
+                    $limit = if ($kind -ceq 'tasks') { 67108864L } else { 8388608L }
+                    $bytes += $entry.Length
+                    if ($entry.Length -gt $limit -or $bytes -gt 134217728) { throw 'source_artifact_limit' }
+                    # Fingerprint bytes only; never parse or emit cache/report contents.
+                    $artifacts[$relative] = @{
+                        kind = $kind; length = $entry.Length; modified = $entry.LastWriteTimeUtc.Ticks
+                        sha256 = Get-E1SourceFileHash $entry.FullName $limit
+                    }
+                }
+            }
+        }
+    }
+    return @{ files = $artifacts; directories_sha256 = (Get-E1Sha256 ([Text.Encoding]::UTF8.GetBytes((($directories | Sort-Object -CaseSensitive) -join "`n")))) }
+}
+
+function Get-E1SourceSnapshot([string]$Root, [string]$Commit, [string]$Tree, [string]$Directory) {
+    $Root = Resolve-E1Path $Root
+    $actualTree = Assert-E1RepoIdentity $Root $Commit $Tree $Directory
+    # Do not repair flags or trust status when index flags can conceal edits.
+    $flags = Invoke-E1Git $Root @('ls-files','-v','-z') $Directory
+    foreach ($entry in $flags.Split([char]0)) {
+        if ($entry -and $entry -cnotmatch '^H ') { throw 'repo_dirty' }
+    }
+    $runtime = Get-E1RuntimeArtifacts $Root
+    $artifacts = $runtime.files
+    $status = Invoke-E1Git $Root @('status','--porcelain=v1','-z','--untracked-files=all') $Directory
+    foreach ($entry in $status.Split([char]0)) {
+        if (-not $entry) { continue }
+        if (-not $entry.StartsWith('?? ', [StringComparison]::Ordinal)) { throw 'repo_dirty' }
+        $relative = $entry.Substring(3)
+        $null = Get-E1ArtifactKind $relative
+        if (-not $artifacts.ContainsKey($relative)) { throw 'source_artifacts' }
+    }
+    # Hash actual tracked bytes as well as index entries: assume-unchanged/skip-worktree
+    # must not hide a source edit behind an otherwise clean git status.
+    $index = Invoke-E1Git $Root @('ls-files','--stage','-z') $Directory
+    $rows = @(); $bytes = 0L
+    foreach ($entry in $index.Split([char]0)) {
+        if (-not $entry) { continue }
+        if ($entry -cnotmatch '^([0-9]{6}) ([a-f0-9]{40}) 0\t(.+)$') { throw 'repo_dirty' }
+        $relative = $Matches[3]
+        $path = Resolve-E1Path (Join-Path $Root $relative)
+        $item = Get-Item -LiteralPath $path -Force
+        $bytes += $item.Length
+        if ($item.PSIsContainer -or $rows.Count -ge 20000 -or $bytes -gt 536870912) { throw 'source_artifact_limit' }
+        $rows += $relative + '|' + (Get-E1SourceFileHash $path 536870912)
+    }
+    return @{
+        tree = $actualTree; artifacts = $artifacts
+        artifact_directories_sha256 = $runtime.directories_sha256
+        index_sha256 = Get-E1Sha256 ([Text.Encoding]::UTF8.GetBytes($index))
+        tracked_sha256 = Get-E1Sha256 ([Text.Encoding]::UTF8.GetBytes(($rows -join "`n")))
+    }
+}
+
+function Assert-E1SourcePostflight([string]$Root, [string]$Commit, [string]$Tree, [string]$Directory, $Before, [string]$Operation = 'wet-v2') {
+    if ($Operation -cnotin @('wet-v2','dry-v3')) { throw 'operation_invalid' }
+    $after = Get-E1SourceSnapshot $Root $Commit $Tree $Directory
+    if ($Before.index_sha256 -cne $after.index_sha256) { throw 'source_index_changed' }
+    if ($Before.tracked_sha256 -cne $after.tracked_sha256) { throw 'source_tracked_changed' }
+    if ($Operation -ceq 'dry-v3' -and $Before.artifact_directories_sha256 -cne $after.artifact_directories_sha256) { throw 'source_artifacts' }
+    foreach ($path in $Before.artifacts.Keys) {
+        if (-not $after.artifacts.ContainsKey($path)) { throw 'source_artifacts' }
+    }
+    # All model/probe consumers share one deterministic key over the unchanged
+    # source inputs (project/cache.js computeCacheKey excludes build/.gradle).
+    # This is a distinct-key bound, not a bound on calls or writes to that key.
+    $changed = @{ model = 0; tasks = 0; report = 0; latest = 0 }
+    foreach ($path in $after.artifacts.Keys) {
+        $value = $after.artifacts[$path]; $previous = $Before.artifacts[$path]
+        if ($null -eq $previous -or $value.length -ne $previous.length -or $value.modified -ne $previous.modified -or $value.sha256 -cne $previous.sha256) {
+            if ($Operation -ceq 'dry-v3') { throw 'source_artifacts' }
+            if ($null -ne $previous -and $value.kind -ceq 'report') { throw 'source_artifacts' }
+            if (++$changed[$value.kind] -gt 1) { throw 'source_artifact_limit' }
+        }
+    }
+}
+
+function Assert-E1ToolPath([string]$Path) {
+    $current = $Path
+    while ($current) {
+        if (Test-Path -LiteralPath $current) {
+            $item = Get-Item -LiteralPath $current -Force
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                (Get-E1Field $item 'LinkType') -eq 'HardLink') { throw 'java_toolchain' }
+        }
+        $current = [IO.Path]::GetDirectoryName($current)
+    }
+}
+
+function Get-E1Java21 {
+    $root = 'C:\Program Files\Eclipse Adoptium'
+    Assert-E1ToolPath $root
+    if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw 'java_toolchain' }
+    $jdk = Get-ChildItem -LiteralPath $root -Directory | Where-Object Name -like 'jdk-21*' |
+        Sort-Object Name -Descending | Select-Object -First 1
+    if (-not $jdk) { throw 'java_toolchain' }
+    $java = Join-Path $jdk.FullName 'bin\java.exe'
+    Assert-E1ToolPath $java
+    if (-not (Test-Path -LiteralPath $java -PathType Leaf)) { throw 'java_toolchain' }
+    return @{ home = $jdk.FullName; executable = $java }
+}
+
+function Invoke-E1Java21Environment([string]$Directory, [scriptblock]$Action) {
+    $oldHome = $env:JAVA_HOME; $oldPath = $env:PATH
+    try {
+        $java = Get-E1Java21
+        $env:JAVA_HOME = $java.home
+        $paths = @((Join-Path $java.home 'bin'), 'C:\Windows\System32', 'C:\Program Files\Git\cmd',
+            'C:\Program Files\Git\bin', 'C:\Program Files\nodejs', (Join-Path $env:USERPROFILE 'AppData\Roaming\npm'), $oldPath)
+        $env:PATH = ($paths | Where-Object { $_ }) -join ';'
+        $id = [guid]::NewGuid().ToString('N')
+        $stdout = Join-Path $Directory "$id.java.stdout.txt"; $stderr = Join-Path $Directory "$id.java.stderr.txt"
+        $process = Invoke-E1OwnedProcess $java.executable @('-version') $Directory $stdout $stderr 15
+        if ($process.ExitCode -ne 0 -or $process.TimedOut -or -not $process.CleanupOk) { throw 'java_toolchain' }
+        $text = ''
+        foreach ($path in @($stdout, $stderr)) {
+            if ((Get-Item -LiteralPath $path).Length -gt 8192) { throw 'java_toolchain' }
+            $text += [Text.UTF8Encoding]::new($false, $true).GetString([IO.File]::ReadAllBytes($path)) + "`n"
+        }
+        if ($text -cnotmatch '(?m)^(?:openjdk|java) version "21(?:\.[0-9]+){0,3}(?:[-+][A-Za-z0-9.-]+)?"') { throw 'java_toolchain' }
+        & $Action $java
+    } finally { $env:JAVA_HOME = $oldHome; $env:PATH = $oldPath }
 }
 
 function Get-E1RecordsSnapshot([string]$HarnessDir) {
@@ -659,7 +831,7 @@ function Complete-E1Attempt($Result, [string]$Directory, [scriptblock]$Postfligh
 
 function Invoke-E1GuestValidation($Config, $Readiness, [string]$ReadinessHash, [string]$ModuleHash) {
     $result = New-E1Result $Config.Operation $Config.TargetCommit $Config.TargetTree
-    $mutex = $null; $locked = $false
+    $mutex = $null; $locked = $false; $previousEnvironment = $null
     try {
         $result.stage = 'guest_identity'
         $identity = Get-CimInstance -ClassName Win32_ComputerSystem
@@ -689,11 +861,14 @@ function Invoke-E1GuestValidation($Config, $Readiness, [string]$ReadinessHash, [
         $result.failure_code = 'preflight_failed'
         New-Item -ItemType Directory -Path $directory -Force | Out-Null
         $null = Resolve-E1Path $directory
+        $previousEnvironment = @{}
+        foreach ($name in @('TEMP','TMP','GIT_OPTIONAL_LOCKS')) { $previousEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
         $env:TEMP = $directory; $env:TMP = $directory
         $env:GIT_OPTIONAL_LOCKS = '0'
         $result.stage = 'guest_repositories'
         $null = Assert-E1Repo $harness $Config.TargetCommit $Config.TargetTree $directory
-        $sourceTree = Assert-E1Repo $source $script:E1SourceCommit '' $directory
+        $sourceSnapshot = Get-E1SourceSnapshot $source $script:E1SourceCommit '' $directory
+        $sourceTree = $sourceSnapshot.tree
         $entryPoint = Resolve-E1Path (Join-Path $harness 'bin\kmp-test.js')
         $targetModule = Resolve-E1Path (Join-Path $harness 'docs\audits\evidence1-validation-ops.psm1')
         if ((Get-FileHash -LiteralPath $targetModule -Algorithm SHA256).Hash.ToLowerInvariant() -cne $ModuleHash) { throw 'module_target_mismatch' }
@@ -714,7 +889,14 @@ function Invoke-E1GuestValidation($Config, $Readiness, [string]$ReadinessHash, [
         $null = Assert-E1Evidence $Readiness $ledger.value $attestation.value $Config.VMName $Config.TargetCommit $Config.TargetTree $attestationPath
         $node = 'C:\Program Files\nodejs\node.exe'
         if ($Config.Operation -ceq 'wet-v2') {
-            $result = Invoke-E1WetAttempt $directory $Config.TargetCommit $Config.TargetTree $node $entryPoint $source $hashes
+            $result.stage = 'guest_toolchain'
+            $result = Invoke-E1Java21Environment $directory {
+                param($java)
+                $null = Assert-E1Evidence $Readiness $ledger.value $attestation.value $Config.VMName $Config.TargetCommit $Config.TargetTree $attestationPath
+                $wet = Invoke-E1WetAttempt $directory $Config.TargetCommit $Config.TargetTree $node $entryPoint $source $hashes
+                $wet.checks.java21_verified = $true
+                return $wet
+            }
         } elseif ($Config.Operation -ceq 'dry-v3') {
             $result = Invoke-E1DryAttempt $directory $Config.TargetCommit $Config.TargetTree $node $harness $source $attestationPath $hashes
         } else { throw 'operation_invalid' }
@@ -727,7 +909,8 @@ function Invoke-E1GuestValidation($Config, $Readiness, [string]$ReadinessHash, [
                 $after = Get-E1RecordsSnapshot $harness
                 Set-E1RecordsCheck $record $before $after
                 $null = Assert-E1Repo $harness $Config.TargetCommit $Config.TargetTree $directory
-                $null = Assert-E1Repo $source $script:E1SourceCommit $sourceTree $directory
+                $null = Assert-E1SourcePostflight $source $script:E1SourceCommit $sourceTree $directory $sourceSnapshot -Operation $Config.Operation
+                $record.checks.source_integrity = $true
                 if ((Read-E1Json $ledgerPath).sha256 -cne $ledger.sha256 -or (Read-E1Json $attestationPath 16384).sha256 -cne $attestation.sha256) { throw 'evidence_changed' }
                 $null = Assert-E1Evidence $Readiness $ledger.value $attestation.value $Config.VMName $Config.TargetCommit $Config.TargetTree $attestationPath
                 Assert-E1NoGuestLive $source
@@ -737,6 +920,9 @@ function Invoke-E1GuestValidation($Config, $Readiness, [string]$ReadinessHash, [
         $fallback = if ($result.state -in @('passed','validated')) { 'postflight_failed' } else { $result.failure_code }
         Set-E1Failure $result 'primary' (Get-E1FailureCode $_ $fallback)
     } finally {
+        if ($null -ne $previousEnvironment) {
+            foreach ($name in $previousEnvironment.Keys) { [Environment]::SetEnvironmentVariable($name, $previousEnvironment[$name], 'Process') }
+        }
         if ($locked) { $mutex.ReleaseMutex() }
         if ($mutex) { $mutex.Dispose() }
     }
@@ -756,10 +942,11 @@ function ConvertTo-E1SafeResult($Raw, [string]$Operation, [string]$TargetCommit,
     Assert-E1Fields $Raw @{ product_report_build_writes_expected = ($Operation -ceq 'wet-v2') }
     $state = Get-E1Field $Raw 'state'
     $code = Get-E1Field $Raw 'failure_code'
-    if ($state -cnotin @('passed','failed') -or $code -cnotin $script:E1FailureCodes) { throw 'result_shape' }
+    if ($state -isnot [string] -or $code -isnot [string] -or
+        $state -cnotin @('passed','failed') -or $code -cnotin $script:E1FailureCodes) { throw 'result_shape' }
     $safe.state = $state; $safe.failure_code = $code
     $stage = Get-E1Field $Raw 'stage'
-    if ($stage -cnotin @('preflight','guest_identity','guest_paths','guest_evidence','guest_overlap','guest_repositories','product','dry_plan','postflight','complete')) { throw 'result_shape' }
+    if ($stage -isnot [string] -or $stage -cnotin @('preflight','guest_identity','guest_paths','guest_evidence','guest_overlap','guest_repositories','guest_toolchain','product','dry_plan','postflight','complete')) { throw 'result_shape' }
     $safe.stage = $stage
     if ($schema -eq 2) {
         $failures = Get-E1Field $Raw 'failures'
@@ -790,6 +977,8 @@ function ConvertTo-E1SafeResult($Raw, [string]$Operation, [string]$TargetCommit,
         ($safe.processes.free_baseline_dry_plan -and $safe.dry_plan_invocations -ne 2))) { throw 'result_shape' }
     $requiredChecks = @('guest_identity','preflight','postflight','module_target')
     if ($Operation -ceq 'wet-v2') { $requiredChecks += @('gradle_daemon_disabled','owned_tree_stopped','not_timed_out') + @((Get-E1WetChecks $null 0 0).Keys) }
+    if ($schema -eq 2) { $requiredChecks += 'source_integrity' }
+    if ($schema -eq 2 -and $Operation -ceq 'wet-v2') { $requiredChecks += 'java21_verified' }
     foreach ($arm in @('product','free_baseline')) {
         if ($Operation -ceq 'dry-v3') {
             $requiredChecks += "${arm}_process", "${arm}_stderr_empty"
@@ -920,6 +1109,7 @@ function Invoke-E1ValidationDirect {
         if (-not $complete) { throw 'transport_timeout' }
         $raw = @(Receive-Job -Job $job -ErrorAction Stop 3>$null 4>$null 5>$null 6>$null)
         if ($raw.Count -ne 1) { throw 'transport_shape' }
+        if (-not (Test-E1Exact (Get-E1Field $raw[0] 'schema') 2)) { throw 'result_shape' }
         $result = ConvertTo-E1SafeResult $raw[0] $Operation $TargetCommit $TargetTree
         if ((Read-E1Json $readinessPath).sha256 -cne $readiness.sha256) { throw 'readiness_changed' }
     } catch {

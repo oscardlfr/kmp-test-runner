@@ -26,6 +26,10 @@ function ps(body, shell = 'pwsh') {
   const script = `$ErrorActionPreference = 'Stop'\n$ProgressPreference = 'SilentlyContinue'\nImport-Module ${quote(modulePath)} -Force -DisableNameChecking\n${body}`;
   const result = spawnSync(shell, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
     encoding: 'utf8', timeout: 40_000, windowsHide: true,
+    // Isolate only this PS5.1 child from a host application's bundled PS7 modules.
+    env: shell === 'powershell.exe'
+      ? { ...process.env, PSModulePath: resolve(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/Modules') }
+      : process.env,
   });
   expect(result.status, result.stderr || result.error?.message).toBe(0);
   expect(result.stderr).toBe('');
@@ -78,6 +82,24 @@ const envelope = {
 };
 const registry = JSON.parse(readFileSync(resolve(root, 'tools/agentic-eval/execution-profiles/registry.json'), 'utf8'));
 const profileHash = computeExecutionProfileSha256(registry.execution_profiles.find(profile => profile.id === 'sandboxed-unrestricted-v1'));
+function sourceFixture(extra = {}) {
+  const dir = mkdtempSync('C:/kmp-eval/scratch/e1-contract-source-');
+  const repo = resolve(dir, 'repo');
+  const scratch = resolve(dir, 'ops');
+  mkdirSync(repo); mkdirSync(scratch);
+  const git = (...args) => {
+    const result = spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8', windowsHide: true });
+    expect(result.status, result.stderr).toBe(0);
+    return result.stdout.trim();
+  };
+  git('init', '-q'); git('config', 'user.email', 'fixture@example.invalid'); git('config', 'user.name', 'Fixture');
+  git('config', 'core.autocrlf', 'false');
+  for (const [name, text] of Object.entries({ '.gitignore': 'build/\n.gradle/\n', 'source.txt': 'tracked\n', ...extra })) {
+    const file = resolve(repo, name); mkdirSync(resolve(file, '..'), { recursive: true }); writeFileSync(file, text);
+  }
+  git('add', '.'); git('commit', '-qm', 'fixture');
+  return { dir, repo, scratch, git, commit: git('rev-parse', 'HEAD'), tree: git('rev-parse', 'HEAD^{tree}') };
+}
 function dryPlan(product) {
   return { dry_run: true, scenario_id: 'coverage-threshold-failure-v2', repeats: 1, seed: 20260821,
     campaign_design_id: product ? 'claude-product-canary-v1' : 'claude-free-baseline-canary-v1',
@@ -148,6 +170,21 @@ describe.skipIf(!hasPowerShell)('Evidence1 validation operations functional cont
     expect(ps(`ConvertTo-E1SafeResult (${json(historical)}) 'wet-v2' '${commit}' '${tree}' | ConvertTo-Json -Depth 10 -Compress`)).toEqual(historical);
   });
 
+  it('rejects non-string report enums and refuses mutation of historical schema1 diagnostics', () => {
+    expect(ps(`$r=New-E1Result 'wet-v2' '${commit}' '${tree}'; $out=@()
+      foreach($key in @('state','stage','failure_code')) {
+        $old=$r[$key]
+        foreach($bad in @(@($old),1,$false,$null,$old.ToUpperInvariant())) {
+          $r[$key]=$bad
+          try { $null=ConvertTo-E1SafeResult $r 'wet-v2' '${commit}' '${tree}'; $out+=$false } catch { $out+=$true }
+        }
+        $r[$key]=$old
+      }
+      $r.schema=1; $r.Remove('failures'); $r.Remove('processes')
+      try { Set-E1Failure $r 'transport' 'readiness_changed'; $out+=$false } catch { $out+=((Get-E1FailureCode $_) -ceq 'result_shape') }
+      $out | ConvertTo-Json -Compress`)).toEqual(Array(16).fill(true));
+  });
+
   it('records a transport error independently of an already failed product result', () => {
     const result = ps(`$r=New-E1Result 'wet-v2' '${commit}' '${tree}'
       Set-E1Failure $r 'primary' 'product_contract'
@@ -172,6 +209,266 @@ describe.skipIf(!hasPowerShell)('Evidence1 validation operations functional cont
       expect(result.calls).toBe(0);
       expect(result.result.failures).toEqual({ primary: null, postflight: null, persistence: 'terminal_write_failed', transport: null });
       expect(result.result.processes.product).toBeNull();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it.skipIf(process.platform !== 'win32')('permits only bounded generated source artifacts without changing tracked or index content', () => {
+    const f = sourceFixture();
+    try {
+      const result = ps(`$repo=${quote(f.repo)}; $scratch=${quote(f.scratch)}
+        $before=Get-E1SourceSnapshot $repo '${f.commit}' '${f.tree}' $scratch
+        $paths=@('.kmp-test-runner/cache/model-${'a'.repeat(40)}.json','.kmp-test-runner/cache/tasks-${'a'.repeat(40)}.txt',
+          '.kmp-test-runner/reports/coverage/20260830-120000-123456.md','.kmp-test-runner/reports/coverage/latest.md')
+        foreach($path in $paths) { $file=Join-Path $repo $path; $null=New-Item -ItemType Directory -Force (Split-Path -Parent $file); [IO.File]::WriteAllText($file,'synthetic') }
+        $null=Assert-E1SourcePostflight $repo '${f.commit}' '${f.tree}' $scratch $before
+        $diff=(& git -C $repo diff HEAD)
+        @{passed=$true;tracked_unchanged=(-not $diff)} | ConvertTo-Json -Compress`);
+      expect(result).toEqual({ passed: true, tracked_unchanged: true });
+    } finally { rmSync(f.dir, { recursive: true, force: true }); }
+  });
+
+  it.skipIf(process.platform !== 'win32')('rejects unexpected source files, malformed artifact names and excessive generated sets', () => {
+    const f = sourceFixture();
+    try {
+      const result = ps(`$repo=${quote(f.repo)}; $scratch=${quote(f.scratch)}
+        $before=Get-E1SourceSnapshot $repo '${f.commit}' '${f.tree}' $scratch
+        $out=@()
+        foreach($name in @('unexpected.txt','.kmp-test-runner.lock','.kmp-test-runner/config.json',
+          '.kmp-test-runner/cache/model-wrong.json','.kmp-test-runner/cache/model-${'a'.repeat(40)}.json.tmp.12',
+          '.kmp-test-runner/reports/coverage/synthetic.md','.kmp-test-runner/logs/android/anything.log')) {
+          $path=Join-Path $repo $name; $null=New-Item -ItemType Directory -Force (Split-Path -Parent $path); [IO.File]::WriteAllText($path,'synthetic')
+          try { $null=Assert-E1SourcePostflight $repo '${f.commit}' '${f.tree}' $scratch $before; $out+=$false } catch { $out+=$true }
+          Remove-Item -LiteralPath $path
+        }
+        $runtime=[IO.Path]::GetFullPath((Join-Path $repo '.kmp-test-runner'))
+        if(-not $runtime.StartsWith([IO.Path]::GetFullPath($repo) + [IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)) {throw 'fixture_path'}
+        Remove-Item -LiteralPath $runtime -Recurse -Force
+        $cache=Join-Path $runtime 'cache'; $null=New-Item -ItemType Directory -Force $cache
+        foreach($hash in @(('a'*40),('b'*40))) { [IO.File]::WriteAllText((Join-Path $cache "model-$hash.json"),'synthetic') }
+        try { $null=Assert-E1SourcePostflight $repo '${f.commit}' '${f.tree}' $scratch $before; $out+=$false } catch { $out+=$true }
+        $out | ConvertTo-Json -Compress`);
+      expect(result).toEqual(Array(8).fill(true));
+    } finally { rmSync(f.dir, { recursive: true, force: true }); }
+  });
+
+  it.skipIf(process.platform !== 'win32')('accepts V2 artifacts in V3 but forbids any dry-run artifact mutation', () => {
+    const f = sourceFixture();
+    try {
+      const result = ps(`$repo=${quote(f.repo)}; $scratch=${quote(f.scratch)}
+        $cache=Join-Path $repo '.kmp-test-runner/cache'; $null=New-Item -ItemType Directory -Force $cache
+        $path=Join-Path $cache 'model-${'a'.repeat(40)}.json'; [IO.File]::WriteAllText($path,'before')
+        $before=Get-E1SourceSnapshot $repo '${f.commit}' '${f.tree}' $scratch
+        $null=Assert-E1SourcePostflight $repo '${f.commit}' '${f.tree}' $scratch $before -Operation 'dry-v3'
+        $out=@($true)
+        $stamp=(Get-Item -LiteralPath $path).LastWriteTimeUtc
+        [IO.File]::WriteAllText($path,'mutate'); [IO.File]::SetLastWriteTimeUtc($path,$stamp)
+        try { $null=Assert-E1SourcePostflight $repo '${f.commit}' '${f.tree}' $scratch $before -Operation 'dry-v3'; $out+=$false } catch { $out+=((Get-E1FailureCode $_) -ceq 'source_artifacts') }
+        [IO.File]::WriteAllText($path,'before'); [IO.File]::SetLastWriteTimeUtc($path,$stamp)
+        $new=Join-Path $cache 'tasks-${'a'.repeat(40)}.txt'; [IO.File]::WriteAllText($new,'synthetic')
+        try { $null=Assert-E1SourcePostflight $repo '${f.commit}' '${f.tree}' $scratch $before -Operation 'dry-v3'; $out+=$false } catch { $out+=((Get-E1FailureCode $_) -ceq 'source_artifacts') }
+        Remove-Item -LiteralPath $new
+        $null=New-Item -ItemType Directory -Force (Join-Path $repo '.kmp-test-runner/reports')
+        try { $null=Assert-E1SourcePostflight $repo '${f.commit}' '${f.tree}' $scratch $before -Operation 'dry-v3'; $out+=$false } catch { $out+=((Get-E1FailureCode $_) -ceq 'source_artifacts') }
+        Remove-Item -LiteralPath (Join-Path $repo '.kmp-test-runner/reports')
+        Remove-Item -LiteralPath $path
+        try { $null=Assert-E1SourcePostflight $repo '${f.commit}' '${f.tree}' $scratch $before -Operation 'dry-v3'; $out+=$false } catch { $out+=((Get-E1FailureCode $_) -ceq 'source_artifacts') }
+        $out | ConvertTo-Json -Compress`);
+      expect(result).toEqual(Array(5).fill(true));
+    } finally { rmSync(f.dir, { recursive: true, force: true }); }
+  });
+
+  it.skipIf(process.platform !== 'win32')('runs guest V3 after V2 artifacts and rechecks evidence after the Java probe before wet dispatch', () => {
+    const f = sourceFixture();
+    try {
+      const result = ps(`$m=Get-Module evidence1-validation-ops
+        & $m {
+          param($repo,$scratch,$sourceCommit)
+          $script:E1SourceCommit=$sourceCommit
+          $cache=Join-Path $repo '.kmp-test-runner/cache'; $null=New-Item -ItemType Directory -Force $cache
+          [IO.File]::WriteAllText((Join-Path $cache 'model-${'a'.repeat(40)}.json'),'synthetic V2 artifact')
+          function Get-CimInstance { @{Manufacturer='Microsoft Corporation';Model='Virtual Machine'} }
+          function Get-ItemPropertyValue { '12345678-1234-1234-1234-123456789abc' }
+          function Assert-E1GuestIdentity { }
+          function Resolve-E1Path($Path,$Root) {
+            if($Path -ceq 'C:\\kmp-eval\\scratch\\evidence1-validation-ops') { return $scratch }
+            return $Path.Replace('/','\\')
+          }
+          function Assert-E1NoGuestLive { }
+          $script:expired=$false
+          function Assert-E1Evidence { if($script:expired) { throw 'attestation_expiry' }; 'f'*64 }
+          function Read-E1Json { @{value=@{id='coverage-threshold-failure-v2';project_commit=$sourceCommit};sha256=('f'*64)} }
+          function Get-E1ProfileHash { 'f'*64 }
+          function Get-FileHash { @{Hash=('f'*64)} }
+          function Assert-E1Repo($Root) { if($Root -ieq $repo.Replace('/','\\')) { throw 'repo_dirty' } }
+          function Get-E1RecordsSnapshot { @{sha256=('f'*64);keys=@()} }
+          function Invoke-E1OwnedProcess { throw 'UNEXPECTED_EXECUTABLE' }
+          function Invoke-E1Git($Root,$Arguments) {
+            $text=& 'C:\\Program Files\\Git\\cmd\\git.exe' --no-optional-locks -C $Root @Arguments
+            if($LASTEXITCODE -ne 0) { throw 'git_failed' }; return ($text -join "\n").Trim()
+          }
+          function Invoke-E1DryAttempt($Directory,$TargetCommit,$TargetTree) {
+            $r=New-E1Result 'dry-v3' $TargetCommit $TargetTree; $r.state='validated'
+            [IO.File]::WriteAllText((Join-Path $Directory "dry-v3-$TargetCommit.json"),'{}')
+            if($script:mutate) { [IO.File]::WriteAllText((Join-Path $cache 'tasks-${'a'.repeat(40)}.txt'),'unexpected dry artifact') }
+            return $r
+          }
+          $c=@{Operation='dry-v3';TargetCommit='${commit}';TargetTree='${tree}';HostComputerName='host';GuestComputerName='guest';VMId='12345678-1234-1234-1234-123456789abc';GuestUser='Evidence1';HarnessDir=(Join-Path $scratch 'harness');NowInAndroidDir=$repo;AttestationFile=(Join-Path $scratch 'attestation.json');VMName='guest'}
+          $out=@(); $script:mutate=$false
+          foreach($mutate in @($false,$true)) {
+            $script:mutate=$mutate
+            $r=Invoke-E1GuestValidation $c $null ('f'*64) ('f'*64)
+            $out+=@{state=$r.state;code=$r.failure_code;postflight=$r.failures.postflight}
+            $marker=Join-Path $scratch 'dry-v3-${commit}.json'
+            if(Test-Path -LiteralPath $marker) { Remove-Item -LiteralPath $marker }
+          }
+          function Get-E1Java21 { @{home=$scratch;executable=(Join-Path $scratch 'java.exe')} }
+          function Invoke-E1OwnedProcess($Exe,$Arguments,$Cwd,$Stdout,$Stderr) {
+            if($Arguments.Count -ne 1 -or $Arguments[0] -cne '-version') {throw 'UNEXPECTED_EXECUTABLE'}
+            [IO.File]::WriteAllText($Stdout,''); [IO.File]::WriteAllText($Stderr,'openjdk version "21.0.8"')
+            $script:expired=$true
+            @{ExitCode=0;TimedOut=$false;CleanupOk=$true;WallSeconds=14}
+          }
+          $script:consumed=0
+          function Invoke-E1WetAttempt {
+            $script:consumed++
+            $r=New-E1Result 'wet-v2' '${commit}' '${tree}'; $r.state='validated'; return $r
+          }
+          $c.Operation='wet-v2'
+          $wet=Invoke-E1GuestValidation $c $null ('f'*64) ('f'*64)
+          @{dry=$out;expired=@{consumed=$script:consumed;code=$wet.failure_code;stage=$wet.stage}} | ConvertTo-Json -Depth 5 -Compress
+        } ${quote(f.repo)} ${quote(f.scratch)} '${f.commit}'`);
+      expect(result).toEqual({
+        dry: [
+          { state: 'passed', code: 'none', postflight: null },
+          { state: 'failed', code: 'source_artifacts', postflight: 'source_artifacts' },
+        ],
+        expired: { consumed: 0, code: 'attestation_expiry', stage: 'guest_toolchain' },
+      });
+    } finally { rmSync(f.dir, { recursive: true, force: true }); }
+  });
+
+  it.skipIf(process.platform !== 'win32')('never exempts tracked artifacts or index changes, including assume-unchanged files', () => {
+    const artifact = `.kmp-test-runner/cache/model-${'a'.repeat(40)}.json`;
+    const f = sourceFixture({ [artifact]: 'tracked runtime file\n' });
+    try {
+      const result = ps(`$repo=${quote(f.repo)}; $scratch=${quote(f.scratch)}
+        $before=Get-E1SourceSnapshot $repo '${f.commit}' '${f.tree}' $scratch
+        & git -C $repo update-index --assume-unchanged -- '${artifact}'
+        [IO.File]::WriteAllText((Join-Path $repo '${artifact}'),'changed')
+        $out=@()
+        try { $null=Assert-E1SourcePostflight $repo '${f.commit}' '${f.tree}' $scratch $before; $out+=$false } catch { $out+=$true }
+        & git -C $repo update-index --no-assume-unchanged -- '${artifact}'
+        & git -C $repo add -- '${artifact}'
+        try { $null=Assert-E1SourcePostflight $repo '${f.commit}' '${f.tree}' $scratch $before; $out+=$false } catch { $out+=$true }
+        $out | ConvertTo-Json -Compress`);
+      expect(result).toEqual([true, true]);
+    } finally { rmSync(f.dir, { recursive: true, force: true }); }
+  });
+
+  it.skipIf(process.platform !== 'win32').each(['assume-unchanged', 'skip-worktree'])('rejects preexisting hidden source edits under %s without altering the index', flag => {
+    const f = sourceFixture();
+    try {
+      f.git('update-index', `--${flag}`, '--', 'source.txt');
+      writeFileSync(resolve(f.repo, 'source.txt'), 'hidden edit');
+      const before = f.git('ls-files', '-v', '--', 'source.txt');
+      expect(ps(`$rejected=try { $null=Get-E1SourceSnapshot ${quote(f.repo)} '${f.commit}' '${f.tree}' ${quote(f.scratch)}; $false }
+        catch { (Get-E1FailureCode $_) -ceq 'repo_dirty' }; $rejected | ConvertTo-Json -Compress`)).toBe(true);
+      expect(f.git('ls-files', '-v', '--', 'source.txt')).toBe(before);
+    } finally { rmSync(f.dir, { recursive: true, force: true }); }
+  });
+
+  it.skipIf(process.platform !== 'win32')('accepts a 9 MiB task cache and enforces the real 64 MiB producer cap', () => {
+    const f = sourceFixture();
+    try {
+      expect(ps(`$repo=${quote(f.repo)}; $scratch=${quote(f.scratch)}
+        $before=Get-E1SourceSnapshot $repo '${f.commit}' '${f.tree}' $scratch
+        $cache=Join-Path $repo '.kmp-test-runner/cache'; $null=New-Item -ItemType Directory -Force $cache
+        $path=Join-Path $cache 'tasks-${'a'.repeat(40)}.txt'
+        $stream=[IO.File]::Create($path); $stream.SetLength(9*1024*1024); $stream.Dispose()
+        $null=Assert-E1SourcePostflight $repo '${f.commit}' '${f.tree}' $scratch $before
+        $stream=[IO.File]::OpenWrite($path); $stream.SetLength(64*1024*1024); $stream.Dispose()
+        $null=Assert-E1SourcePostflight $repo '${f.commit}' '${f.tree}' $scratch $before
+        $stream=[IO.File]::OpenWrite($path); $stream.SetLength(64*1024*1024+1); $stream.Dispose()
+        $bounded=try { $null=Assert-E1SourcePostflight $repo '${f.commit}' '${f.tree}' $scratch $before; $false }
+          catch { (Get-E1FailureCode $_) -ceq 'source_artifact_limit' }
+        $bounded | ConvertTo-Json -Compress`)).toBe(true);
+    } finally { rmSync(f.dir, { recursive: true, force: true }); }
+  });
+
+  it.skipIf(process.platform !== 'win32').each(['pwsh', 'powershell.exe'])('fingerprints actual source and artifact bytes without Get-FileHash autoload in %s', shell => {
+    const f = sourceFixture();
+    try {
+      expect(ps(`$m=Get-Module evidence1-validation-ops
+        & $m {
+          param($repo,$scratch)
+          function Get-FileHash { throw 'AUTOLOAD_COLLISION' }
+          $cache=Join-Path $repo '.kmp-test-runner/cache'; $null=New-Item -ItemType Directory -Force $cache
+          $path=Join-Path $cache 'model-${'a'.repeat(40)}.json'; [IO.File]::WriteAllText($path,'before')
+          $before=Get-E1SourceSnapshot $repo '${f.commit}' '${f.tree}' $scratch
+          $stamp=(Get-Item -LiteralPath $path).LastWriteTimeUtc
+          [IO.File]::WriteAllText($path,'mutate'); [IO.File]::SetLastWriteTimeUtc($path,$stamp)
+          $rejected=try { $null=Assert-E1SourcePostflight $repo '${f.commit}' '${f.tree}' $scratch $before -Operation 'dry-v3'; $false }
+          catch { (Get-E1FailureCode $_) -ceq 'source_artifacts' }
+          $rejected | ConvertTo-Json -Compress
+        } ${quote(f.repo)} ${quote(f.scratch)}`, shell)).toBe(true);
+    } finally { rmSync(f.dir, { recursive: true, force: true }); }
+  });
+
+  it.skipIf(process.platform !== 'win32')('rejects linked runtime artifacts even when ignored by git and OS is absent', () => {
+    const f = sourceFixture({ '.gitignore': '.kmp-test-runner/\n' });
+    try {
+      const result = ps(`$repo=${quote(f.repo)}; $scratch=${quote(f.scratch)}
+        $env:OS=$null
+        $before=Get-E1SourceSnapshot $repo '${f.commit}' '${f.tree}' $scratch
+        $cache=Join-Path $repo '.kmp-test-runner/cache'; $null=New-Item -ItemType Directory -Force $cache
+        $target=Join-Path $scratch 'unrelated'; [IO.File]::WriteAllText($target,'synthetic')
+        $null=New-Item -ItemType HardLink -Path (Join-Path $cache 'model-${'a'.repeat(40)}.json') -Target $target
+        $rejected=try { $null=Assert-E1SourcePostflight $repo '${f.commit}' '${f.tree}' $scratch $before; $false } catch { $true }
+        $rejected | ConvertTo-Json -Compress`);
+      expect(result).toBe(true);
+    } finally { rmSync(f.dir, { recursive: true, force: true }); }
+  });
+
+  it('prepares and verifies JDK21 in the child environment before an attempt, then restores all scoped variables', () => {
+    const dir = mkdtempSync(resolve(tmpdir(), 'e1-contract-java-'));
+    try {
+      const result = ps(`$m=Get-Module evidence1-validation-ops
+        & $m {
+          param($dir)
+          $script:java=Join-Path $dir 'java.exe'; [IO.File]::WriteAllText($script:java,'synthetic executable')
+          function Get-E1Java21 { return @{home=$dir;executable=$script:java} }
+          $oldHome=$env:JAVA_HOME; $oldPath=$env:PATH; $script:verified=$false
+          function Invoke-E1OwnedProcess {
+            param($exe,$arguments,$cwd,$stdout,$stderr,$seconds)
+            if($exe -cne $script:java -or $env:JAVA_HOME -cne $dir -or $arguments.Count -ne 1 -or $arguments[0] -cne '-version') {throw 'wrong_invocation'}
+            [IO.File]::WriteAllText($stdout,''); [IO.File]::WriteAllText($stderr,'openjdk version "21.0.8" 2025-07-15')
+            $script:verified=$true; return @{ExitCode=0;WallSeconds=0.1;TimedOut=$false;CleanupOk=$true}
+          }
+          $seen=Invoke-E1Java21Environment $dir { param($java); @{verified=$script:verified;home=($env:JAVA_HOME -ceq $dir)} }
+          try { Invoke-E1Java21Environment $dir {throw 'synthetic_failure'} } catch { }
+          @{seen=$seen;restored=($env:JAVA_HOME -ceq $oldHome -and $env:PATH -ceq $oldPath)} | ConvertTo-Json -Compress
+        } ${quote(dir)}`);
+      expect(result).toEqual({ seen: { verified: true, home: true }, restored: true });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('rejects missing or wrong Java before invoking the marker-owning action', () => {
+    const dir = mkdtempSync(resolve(tmpdir(), 'e1-contract-java-fail-'));
+    try {
+      expect(ps(`$m=Get-Module evidence1-validation-ops
+        & $m {
+          param($dir)
+          $script:java=Join-Path $dir 'java.exe'; [IO.File]::WriteAllText($script:java,'synthetic executable')
+          function Get-E1Java21 { return @{home=$dir;executable=$script:java} }
+          function Invoke-E1OwnedProcess {
+            param($exe,$arguments,$cwd,$stdout,$stderr,$seconds)
+            [IO.File]::WriteAllText($stdout,''); [IO.File]::WriteAllText($stderr,'openjdk version "17.0.1"')
+            return @{ExitCode=0;WallSeconds=0.1;TimedOut=$false;CleanupOk=$true}
+          }
+          $script:consumed=$false
+          try { Invoke-E1Java21Environment $dir {$script:consumed=$true} } catch { $code=Get-E1FailureCode $_ }
+          @{code=$code;consumed=$script:consumed} | ConvertTo-Json -Compress
+        } ${quote(dir)}`)).toEqual({ code: 'java_toolchain', consumed: false });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
@@ -310,7 +607,7 @@ describe.skipIf(!hasPowerShell)('Evidence1 validation operations functional cont
           $r=Invoke-E1DryAttempt $dir '${commit}' '${tree}' 'synthetic' 'synthetic' 'synthetic' 'synthetic' $hashes
           $pending=Get-Content -LiteralPath (Join-Path $dir 'dry-v3-${commit}.json') -Raw | ConvertFrom-Json
           $r.checks.preflight=$true; $r.checks.guest_identity=$true; $r.checks.module_target=$true
-          $r=Complete-E1Attempt $r $dir { param($record); Set-E1RecordsCheck $record @{keys=@();sha256=('b'*64)} @{keys=@();sha256=('b'*64)} }
+          $r=Complete-E1Attempt $r $dir { param($record); $record.checks.source_integrity=$true; Set-E1RecordsCheck $record @{keys=@();sha256=('b'*64)} @{keys=@();sha256=('b'*64)} }
           $safe=ConvertTo-E1SafeResult $r 'dry-v3' '${commit}' '${tree}'
           $repeat=Invoke-E1DryAttempt $dir '${commit}' '${tree}' 'synthetic' 'synthetic' 'synthetic' 'synthetic' $hashes
           $missing=@()
@@ -415,7 +712,7 @@ describe.skipIf(!hasPowerShell)('Evidence1 validation operations functional cont
       $r.state='passed'; $r.stage='complete'; $r.failure_code='none'; $r.product_invocations=1; $r.live_records_created=0
       Set-E1ProcessObservation $r 'product' @{ExitCode=1;WallSeconds=1;TimedOut=$false;CleanupOk=$true}
       $r.checks=Get-E1WetChecks (${json(envelope)}) 1 1
-      foreach($k in @('guest_identity','preflight','postflight','module_target','gradle_daemon_disabled','owned_tree_stopped','not_timed_out')) { $r.checks[$k]=$true }
+      foreach($k in @('guest_identity','preflight','postflight','module_target','gradle_daemon_disabled','owned_tree_stopped','not_timed_out','java21_verified','source_integrity')) { $r.checks[$k]=$true }
       foreach($k in @('readiness_sha256','ledger_sha256','attestation_sha256','attestation_canonical_sha256','validation_module_sha256','scenario_sha256','product_entry_sha256','product_stdout_sha256','records_metadata_before_sha256','records_metadata_after_sha256','execution_profile_sha256','execution_profile_registry_sha256')) { $r.hashes[$k]='a'*64 }
       $good=ConvertTo-E1SafeResult $r 'wet-v2' '${commit}' '${tree}'
       $out=@($good.state -ceq 'passed')
@@ -437,7 +734,7 @@ describe.skipIf(!hasPowerShell)('Evidence1 validation operations functional cont
       try { $null=ConvertTo-E1SafeResult $r 'wet-v2' '${commit}' '${tree}'; $out+=$false } catch { $out+=$true }
       $codes=@(); foreach($message in @('repo_dirty','SECRET /private/path repo_dirty')) { try { throw $message } catch { $codes += Get-E1FailureCode $_ } }
       @{ checks=$out; codes=$codes } | ConvertTo-Json -Compress`))
-      .toEqual({ checks: Array(42).fill(true), codes: ['repo_dirty', 'preflight_failed'] });
+      .toEqual({ checks: Array(44).fill(true), codes: ['repo_dirty', 'preflight_failed'] });
   });
 
   it('checks the received module bytes before evaluating any code', () => {
