@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -361,7 +362,7 @@ describe.skipIf(!hasPowerShell)('Evidence1 validation operations functional cont
         const name = `evidence1-hyperv-verify-${kind}-direct.ps1`;
         const script = resolve(dir, name);
         const reportRoot = `C:/kmp-eval/scratch/hyperv-verify-${kind}-direct`;
-        const report = resolve(reportRoot, `selftest-${crypto.randomUUID()}.json`);
+        const report = resolve(reportRoot, `selftest-${randomUUID()}.json`);
         try {
           mkdirSync(reportRoot, { recursive: true });
           writeFileSync(report, JSON.stringify({ state: 'passed' }));
