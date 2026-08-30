@@ -84,6 +84,19 @@ It does not use a possibly stale global product installation, run Claude, or rep
 Gradle can write build outputs and the product can write reports inside the guest. This is a
 real wet gate, not a read-only or dry-run operation.
 
+The source postflight distinguishes those writes from source edits. It inventories only the
+product's model/task cache filenames and versioned/latest coverage Markdown reports under
+`.kmp-test-runner`; other untracked files, links, lock/config files and unsupported output
+directories fail closed. Tracked bytes, index entries, commit and tree must remain unchanged.
+No `.gitignore`, Git exclude file or tracked source file is edited to hide generated output.
+V3 accepts the existing allowed inventory from V2 but must leave it unchanged.
+
+V2 prepares `JAVA_HOME` and `PATH` in the effective PowerShell Direct process, selecting the
+installed Adoptium JDK 21 as readiness does. It verifies the selected executable with a bounded
+`java -version` probe before consuming the wet-attempt marker. It rechecks evidence before the
+product starts and restores the previous process environment afterward. An earlier session's
+`java_present` observation alone is not proof of the current process toolchain.
+
 The validator scopes `GRADLE_OPTS=-Dorg.gradle.daemon=false` to its product invocation and
 restores the previous value afterward. This prevents a pre-existing reusable Gradle daemon
 from doing the build outside the invocation's owned process tree. A disposable single-use
@@ -133,6 +146,19 @@ This stage must spawn no agent and write no live run record. A valid plan proves
 preflight checks, not a successful benchmark result or successful runtime authentication.
 
 ## Handoff and Failure Rules
+
+### Preserve Independent Operational Failures
+
+New validation reports use operational schema 2. `failure_code` remains the terminal summary;
+`failures.primary`, `failures.postflight`, `failures.persistence` and `failures.transport`
+independently retain closed error codes. A failed product check must not erase a later custody
+failure, and a write failure must never leave the returned result marked as passed.
+
+`processes.product`, `processes.product_dry_plan` and `processes.free_baseline_dry_plan` retain
+only `exit_code`, `wall_seconds`, `timed_out` and `cleanup_ok` when those observations exist.
+Unavailable observations remain null. These are operational process facts, not product outcomes
+or agent metrics. Schema 1 remains accepted without inventing these new fields or rewriting
+historical files. Safe validation rejects extra keys, free text and coerced numeric/enum values.
 
 ### Read an Existing Failed Wet Gate
 
@@ -186,6 +212,10 @@ The currently installed Stage L path still has these concrete dependencies:
   authorization and do not propagate a canary arm.
 - The live handoff does not yet consume the V2/V3 reports. A future canary handoff must bind
   those passing reports to the same anchors and attestation, and retain prior-run custody.
+- Real CLI execution also checks that its materialization source is clean, unlike a dry-run.
+  The allowed V2 output inventory is not a waiver of that separate live-source hygiene gate.
+  Resolve source custody explicitly in the future Stage L handoff without deleting failed
+  validation evidence or hiding files through ignore rules.
 
 Do not edit those launch contracts incidentally while validating Stage V. Their implementation
 and regression tests must be reviewed before Stage L, with one-session authorization and no

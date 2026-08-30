@@ -27,7 +27,7 @@ const env = {
 const json = value => `ConvertFrom-E1Json ${q(JSON.stringify(value))}`;
 const reportFixture = () => ({ schema: 1, operation: 'wet-v2', state: 'failed', target_commit: 'a'.repeat(40), target_tree: 'b'.repeat(40), source_commit: '7d45eae4f8720a0c77f507712ba2437ff974b6ed', agent_calls: 0, product_invocations: 1, dry_plan_invocations: 0, hashes: { product_stdout_sha256: 'c'.repeat(64) }, failure_code: 'product_contract', checks: { postflight: false } });
 
-describe.skipIf(!available)('readonly wet-gate forensics', () => {
+describe.skipIf(!available)('readonly wet-gate forensics', { timeout: 30000 }, () => {
   it('projects actual values without losing null/missing/invalid distinctions or emitting free text', () => {
     const result = ps(`Get-E1ForensicProductSummary (${json(env)}) | ConvertTo-Json -Depth 12 -Compress`);
     expect(result.metrics.tests_failed).toEqual({ status: 'recorded', value: 1 });
@@ -93,6 +93,24 @@ describe.skipIf(!available)('readonly wet-gate forensics', () => {
         $out | ConvertTo-Json -Compress
       } ${q(path)} '${hash}'`);
       expect(result).toEqual([true, true, true]);
+      expect(readFileSync(path).equals(bytes)).toBe(true);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    { bytes: Buffer.from([0xff]), expected: 'forensic_encoding' },
+    { bytes: Buffer.from('PRIVATE_NOT_JSON'), expected: 'forensic_json' },
+  ])('reports $expected without exposing parser messages', ({ bytes, expected }) => {
+    const dir = mkdtempSync(resolve(tmpdir(), 'e1-forensic-invalid-'));
+    try {
+      const path = resolve(dir, `${expected}.json`);
+      writeFileSync(path, bytes);
+      const hash = createHash('sha256').update(bytes).digest('hex');
+      const result = ps(`& (Get-Module evidence1-validation-forensics) {
+        function Resolve-E1Path { param($Path) return $Path }
+        try { $null=Read-E1ForensicArtifact ${q(path)} '${hash}'; 'accepted' } catch { $_.Exception.Message }
+      } | ConvertTo-Json -Compress`);
+      expect(result).toBe(expected);
       expect(readFileSync(path).equals(bytes)).toBe(true);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });

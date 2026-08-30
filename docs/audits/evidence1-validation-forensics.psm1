@@ -128,7 +128,10 @@ function Read-E1ForensicArtifact([string]$Path, [string]$ExpectedSha, [int]$MaxB
         }
         $hash = Get-E1Sha256 $bytes
         if ($ExpectedSha -and $hash -cne $ExpectedSha) { throw 'forensic_hash' }
-        $value = ConvertFrom-E1Json ([Text.UTF8Encoding]::new($false, $true).GetString($bytes).TrimStart([char]0xfeff))
+        try { $text = [Text.UTF8Encoding]::new($false, $true).GetString($bytes).TrimStart([char]0xfeff) }
+        catch { throw 'forensic_encoding' }
+        try { $value = ConvertFrom-E1Json $text }
+        catch { throw 'forensic_json' }
         return @{ sha256 = $hash; value = $value }
     } finally { $stream.Dispose() }
 }
@@ -231,7 +234,7 @@ function Invoke-E1ForensicRead([string]$TargetCommit, [string]$TargetTree, [stri
         $result.product = $raw.summary
         $result.state='passed'; $result.failure_code='none'
     } catch {
-        $allowed = @('forensic_hash','forensic_size','forensic_subject','forensic_marker','forensic_module_hash','forensic_shape','host_privilege','vm_not_running','credential_shape','guest_identity','transport_timeout','path_invalid','path_outside_root','path_link')
+        $allowed = @('forensic_hash','forensic_size','forensic_encoding','forensic_json','forensic_subject','forensic_marker','forensic_module_hash','forensic_shape','host_privilege','vm_not_running','credential_shape','guest_identity','transport_timeout','path_invalid','path_outside_root','path_link')
         $exception = $_.Exception
         for ($i=0; $null -ne $exception -and $i -lt 8; $i++) {
             if ($exception.Message -cin $allowed) { $result.failure_code=$exception.Message; break }
