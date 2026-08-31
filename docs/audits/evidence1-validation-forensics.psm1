@@ -247,4 +247,144 @@ function Invoke-E1ForensicRead([string]$TargetCommit, [string]$TargetTree, [stri
     return $result
 }
 
+function New-E1ForensicInventory {
+    return @{ schema=1; metadata_sha256=$null; counts=@{
+        model=0; tasks=0; report=0; latest=0; init_directory=0; empty_init_directory=0
+        residual_init_files=0; unknown_files=0; unknown_directories=0; unsafe_entries=0
+    } }
+}
+
+function Assert-E1ForensicInventory($Value) {
+    Assert-E1ForensicKeys $Value @('schema','metadata_sha256','counts')
+    if (-not (Test-E1Exact $Value.schema 1) -or $Value.metadata_sha256 -isnot [string] -or
+        $Value.metadata_sha256 -cnotmatch '^[a-f0-9]{64}$') { throw 'forensic_shape' }
+    $keys = @((New-E1ForensicInventory).counts.Keys)
+    Assert-E1ForensicKeys $Value.counts $keys
+    foreach ($key in $keys) {
+        $n = $Value.counts.$key
+        if (($n -isnot [int] -and $n -isnot [long]) -or $n -lt 0 -or $n -gt 128) { throw 'forensic_shape' }
+    }
+}
+
+function ConvertTo-E1ForensicInventoryReceipt($Raw) {
+    $keys=@(Get-E1ObjectKeys $Raw | Where-Object { $_ -cnotin @('PSComputerName','RunspaceId','PSShowComputerName') })
+    if ($keys.Count -ne 3 -or @($keys | Where-Object { $_ -cnotin @('schema','metadata_sha256','counts') }).Count) { throw 'forensic_shape' }
+    $safe=@{schema=(Get-E1Field $Raw 'schema');metadata_sha256=(Get-E1Field $Raw 'metadata_sha256');counts=(Get-E1Field $Raw 'counts')}
+    Assert-E1ForensicInventory $safe
+    return $safe
+}
+
+function Get-E1ForensicSourceInventory([string]$Root) {
+    $rootPath = Resolve-E1Path $Root
+    $runtime = Join-Path $rootPath '.kmp-test-runner'
+    $result = New-E1ForensicInventory
+    $rows = @(); $entries = 0
+    $pending = [Collections.Generic.Queue[string]]::new()
+    if (Test-Path -LiteralPath $runtime) {
+        $null = Resolve-E1Path $runtime
+        if (-not (Get-Item -LiteralPath $runtime -Force).PSIsContainer) { throw 'source_artifacts' }
+        $rows += [ordered]@{name='.kmp-test-runner';directory=$true;attributes=0;length=0;modified=0}
+        $pending.Enqueue($runtime)
+    }
+    while ($pending.Count) {
+        $directory = $pending.Dequeue()
+        $childCount = 0
+        Get-ChildItem -LiteralPath $directory -Force | ForEach-Object {
+            $item = $_
+            $childCount++
+            if (++$entries -gt 128) { throw 'source_artifact_limit' }
+            $relative = $item.FullName.Substring($rootPath.Length + 1).Replace('\','/')
+            $rows += [ordered]@{ name=$relative; directory=$item.PSIsContainer; attributes=[int]$item.Attributes
+                length=$(if ($item.PSIsContainer) { 0 } else { $item.Length }); modified=$item.LastWriteTimeUtc.Ticks }
+            # Inspect metadata only, and never descend through unsafe or unknown directories.
+            try { $null = Resolve-E1Path $item.FullName } catch { $result.counts.unsafe_entries++; return }
+            if ($item.PSIsContainer) {
+                if ($relative -ceq '.kmp-test-runner/init-scripts') { $result.counts.init_directory++ }
+                if ($relative -cin @('.kmp-test-runner/cache','.kmp-test-runner/reports','.kmp-test-runner/reports/coverage','.kmp-test-runner/init-scripts')) {
+                    $pending.Enqueue($item.FullName)
+                } else { $result.counts.unknown_directories++ }
+            } elseif ($relative.StartsWith('.kmp-test-runner/init-scripts/', [StringComparison]::Ordinal)) {
+                $result.counts.residual_init_files++
+            } else {
+                try { $kind = Get-E1ArtifactKind $relative; $result.counts[$kind]++ }
+                catch { $result.counts.unknown_files++ }
+            }
+        }
+        if ($directory -ieq (Join-Path $runtime 'init-scripts') -and $childCount -eq 0) { $result.counts.empty_init_directory++ }
+    }
+    $metadata = @($rows | Sort-Object { $_.name } -CaseSensitive) | ConvertTo-Json -Depth 4 -Compress
+    $result.metadata_sha256 = Get-E1Sha256 ([Text.Encoding]::UTF8.GetBytes([string]$metadata))
+    Assert-E1ForensicInventory $result
+    return $result
+}
+
+function Get-E1ForensicSourceReceiver {
+    return {
+        param($UtilityText, $UtilityHash, $ForensicText, $ForensicHash, $Config)
+        $ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'
+        foreach ($pair in @(@($UtilityText,$UtilityHash), @($ForensicText,$ForensicHash))) {
+            $sha=[Security.Cryptography.SHA256]::Create()
+            try { $hash=-join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($pair[0])) | ForEach-Object { $_.ToString('x2') }) } finally { $sha.Dispose() }
+            if ($pair[1] -cnotmatch '^[a-f0-9]{64}$' -or $hash -cne $pair[1]) { throw 'forensic_module_hash' }
+        }
+        Import-Module (New-Module -Name Evidence1SourceUtility -ScriptBlock ([scriptblock]::Create($UtilityText))) -DisableNameChecking
+        Import-Module (New-Module -Name Evidence1SourceForensics -ScriptBlock ([scriptblock]::Create($ForensicText))) -DisableNameChecking
+        $identity=Get-CimInstance Win32_ComputerSystem
+        $id=Get-ItemPropertyValue -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Virtual Machine\Guest\Parameters' -Name VirtualMachineId
+        Assert-E1GuestIdentity $env:COMPUTERNAME $Config.HostComputerName 'Evidence1Runner' $id $Config.VMId $identity.Manufacturer $identity.Model $env:USERNAME $Config.GuestUser
+        $harness=Resolve-E1Path 'C:\kmp-eval\agentic-evidence1-claude-2x2-windows-stage-b-readiness-v1'
+        $source=Resolve-E1Path 'C:\kmp-eval\NowInAndroid-evidence1-coverage-threshold-windows-stageb-v1'
+        function Assert-Anchor([string]$Root, [string]$Ref, [string]$Expected) {
+            $actual=@(& 'C:\Program Files\Git\cmd\git.exe' --no-optional-locks -C $Root rev-parse --verify $Ref 2>$null)
+            if ($LASTEXITCODE -ne 0 -or $actual.Count -ne 1 -or $actual[0] -cne $Expected) { throw 'forensic_subject' }
+        }
+        Assert-Anchor $harness 'HEAD' $Config.Commit
+        Assert-Anchor $harness 'HEAD^{tree}' $Config.Tree
+        Assert-Anchor $source 'HEAD' '7d45eae4f8720a0c77f507712ba2437ff974b6ed'
+        $before=Get-E1ForensicSourceInventory $source
+        $after=Get-E1ForensicSourceInventory $source
+        if ($before.metadata_sha256 -cne $after.metadata_sha256) { throw 'source_inventory_changed' }
+        Assert-Anchor $harness 'HEAD' $Config.Commit
+        Assert-Anchor $source 'HEAD' '7d45eae4f8720a0c77f507712ba2437ff974b6ed'
+        return $after
+    }
+}
+
+function Invoke-E1ForensicSourceRead([string]$TargetCommit, [string]$TargetTree) {
+    $result=@{schema=1;operation='source-artifact-inventory';state='failed';failure_code='forensic_failed'
+        target_commit=$null;target_tree=$null;inventory=$null;hashes=@{}
+        agent_calls=0;product_invocations=0;guest_writes=0;source_file_contents_read=$false;validation_pass=$false}
+    $session=$null; $job=$null
+    try {
+        if ($TargetCommit -cnotmatch '^[a-f0-9]{40}$' -or $TargetTree -cnotmatch '^[a-f0-9]{40}$') { throw 'forensic_subject' }
+        $result.target_commit=$TargetCommit; $result.target_tree=$TargetTree
+        if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'host_privilege' }
+        $vm=Get-VM -Name 'Evidence1-Runner' -ErrorAction Stop
+        if ($vm.State.ToString() -cne 'Running') { throw 'vm_not_running' }
+        $stored=Import-Clixml -LiteralPath (Resolve-E1Path 'C:\kmp-eval\scratch\hyperv-create-runner\Evidence1-Runner.guest-credential.clixml')
+        if ($stored -isnot [pscredential] -or $stored.UserName -cnotmatch '^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$') { throw 'credential_shape' }
+        $credential=[pscredential]::new("Evidence1Runner\$($stored.UserName)",$stored.Password)
+        $utility=[IO.File]::ReadAllBytes((Resolve-E1Path (Join-Path $PSScriptRoot 'evidence1-validation-ops.psm1')))
+        $forensic=[IO.File]::ReadAllBytes((Resolve-E1Path (Join-Path $PSScriptRoot 'evidence1-validation-forensics.psm1')))
+        $result.hashes.utility_sha256=Get-E1Sha256 $utility; $result.hashes.collector_sha256=Get-E1Sha256 $forensic
+        $config=@{Commit=$TargetCommit;Tree=$TargetTree;VMId=$vm.Id.ToString();HostComputerName=$env:COMPUTERNAME;GuestUser=$stored.UserName}
+        $session=New-PSSession -VMName 'Evidence1-Runner' -Credential $credential -ErrorAction Stop
+        $job=Invoke-Command -Session $session -AsJob -ScriptBlock (Get-E1ForensicSourceReceiver) -ArgumentList ([Text.Encoding]::UTF8.GetString($utility)), $result.hashes.utility_sha256, ([Text.Encoding]::UTF8.GetString($forensic)), $result.hashes.collector_sha256, $config
+        if (-not (Wait-Job $job -Timeout 60)) { throw 'transport_timeout' }
+        $received=@(Receive-Job $job -ErrorAction Stop 3>$null 4>$null 5>$null 6>$null)
+        if ($received.Count -ne 1) { throw 'forensic_shape' }
+        # Strip only remoting metadata, then validate every retained key and scalar.
+        $raw=ConvertTo-E1ForensicInventoryReceipt $received[0]
+        $result.inventory=$raw; $result.state='passed'; $result.failure_code='none'
+    } catch {
+        $allowed=@('forensic_subject','forensic_shape','forensic_module_hash','host_privilege','vm_not_running','credential_shape','guest_identity','transport_timeout','path_invalid','path_outside_root','path_link','source_artifacts','source_artifact_limit','source_inventory_changed')
+        $exception=$_.Exception
+        for($i=0;$exception -and $i -lt 8;$i++) { if($exception.Message -cin $allowed){$result.failure_code=$exception.Message;break}; $exception=$exception.InnerException }
+    } finally {
+        if($job){Stop-Job $job -ErrorAction SilentlyContinue 2>$null;Remove-Job $job -Force -ErrorAction SilentlyContinue 2>$null}
+        if($session){Remove-PSSession $session -ErrorAction SilentlyContinue 2>$null}
+    }
+    return $result
+}
+
 Export-ModuleMember -Function *-E1Forensic*

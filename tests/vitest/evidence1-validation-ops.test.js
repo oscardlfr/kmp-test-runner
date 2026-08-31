@@ -4,7 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { writeCoverageXmlInitScript, cleanupInitScript } from '../../lib/orchestrators/orchestrator-utils.js';
 import { tmpdir } from 'node:os';
 import { canonicalJsonSha256 } from '../../tools/agentic-eval/canonical-json.mjs';
 import { computeExecutionProfileSha256 } from '../../tools/agentic-eval/registries.mjs';
@@ -232,6 +233,24 @@ describe.skipIf(!hasPowerShell)('Evidence1 validation operations functional cont
       expect(result.result.failures).toEqual({ primary: null, postflight: null, persistence: 'terminal_write_failed', transport: null });
       expect(result.result.processes.product).toBeNull();
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it.skipIf(process.platform !== 'win32')('accepts the empty directory left by the real coverage init-script producer and rejects residual scripts', async () => {
+    const f = sourceFixture();
+    try {
+      const script = writeCoverageXmlInitScript(f.repo);
+      expect(script).not.toBeNull();
+      expect(cleanupInitScript(script, { env: {} })).toBe(true);
+      expect(readdirSync(resolve(f.repo, '.kmp-test-runner/init-scripts'))).toEqual([]);
+      const result = await ps(`$repo=${quote(f.repo)}; $scratch=${quote(f.scratch)}
+        $before=Get-E1SourceSnapshot $repo '${f.commit}' '${f.tree}' $scratch
+        $null=Assert-E1SourcePostflight $repo '${f.commit}' '${f.tree}' $scratch $before -Operation 'dry-v3'
+        [IO.File]::WriteAllText(${quote(script)}, 'synthetic residual executable')
+        $rejected=$false
+        try { $null=Get-E1SourceSnapshot $repo '${f.commit}' '${f.tree}' $scratch } catch { $rejected=$_.Exception.Message -ceq 'source_artifacts' }
+        @{empty_accepted=$true;residual_rejected=$rejected} | ConvertTo-Json -Compress`);
+      expect(result).toEqual({ empty_accepted: true, residual_rejected: true });
+    } finally { rmSync(f.dir, { recursive: true, force: true }); }
   });
 
   it.skipIf(process.platform !== 'win32')('permits only bounded generated source artifacts without changing tracked or index content', async () => {
