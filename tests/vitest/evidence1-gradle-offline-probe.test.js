@@ -101,6 +101,29 @@ afterEach(() => {
 });
 
 describe.skipIf(process.platform !== 'win32')('Evidence1 offline cache contract (PowerShell 5.1)', { timeout: 40_000 }, () => {
+  it('represents disconnected isolation without claiming the firewall seal passed', async () => {
+    const result = await ps(`$r=New-E1OfflineReceipt -Disconnected
+      $r.checks.network_disconnected=$true
+      ConvertTo-E1OfflineReceipt $r | ConvertTo-Json -Depth 8 -Compress`);
+    expect(result.schema).toBe(3);
+    expect(result.isolation_mode).toBe('vm-adapters-disconnected');
+    expect(result.checks.network_sealed).toBe(false);
+    expect(result.checks.network_disconnected).toBe(true);
+    expect(result.validation_pass).toBe(false);
+  });
+
+  it('independently rejects an up or unknown guest adapter in disconnected mode', async () => {
+    expect(await ps(`$out=& (Get-Module evidence1-gradle-offline-probe) {
+      function Get-NetAdapter {param([switch]$IncludeHidden) [pscustomobject]@{Status=$script:testStatus}}
+      $out=@()
+      foreach($status in @('Disconnected','Disabled','Up','UNKNOWN')) {
+        $script:testStatus=$status
+        try {Assert-E1OfflineGuestDisconnected;$out+=$true} catch {if($_.Exception.Message -cne 'network_connected'){throw};$out+=$false}
+      }
+      $out
+    };$out | ConvertTo-Json -Compress`)).toEqual([true, true, false, false]);
+  });
+
   it('exports the three proposed functions', async () => {
     const names = ['Get-E1OfflineSignals', 'Test-E1OfflineCacheRelativePath', 'Copy-E1OfflineCache'];
     const result = await ps(`@(${names.map(quote).join(',')}) | ForEach-Object {
@@ -200,7 +223,99 @@ describe.skipIf(process.platform !== 'win32')('Evidence1 offline cache contract 
     ]);
   });
 
-  it.each(['network_outbound_default', 'none', 'evidence_changed', 'evidence_mismatch', 'json_size'])('audits network without dispatch or writes: %s', async failure => {
+  it('projects all scope filters of the rejected any-protocol rules without private values', async () => {
+    const result = await ps(`$r=& (Get-Module evidence1-gradle-offline-probe) {
+      function Get-NetFirewallRule {[pscustomobject]@{Name='PRIVATE_RULE';DisplayName='PRIVATE_TEXT';Enabled=$true;Direction='Outbound';Action='Allow';Profile='Public';EnforcementStatus=@('LocalUserEmpty','InactiveProfile');PolicyAppId='PRIVATE_APP_ID';Owner='PRIVATE_OWNER'}}
+      function Get-NetConnectionProfile {[pscustomobject]@{NetworkCategory='Private'}}
+      function Get-NetFirewallApplicationFilter {param([Parameter(ValueFromPipeline)]$InputObject) process {[pscustomobject]@{Program='Any';Package='Any'}}}
+      function Get-NetFirewallPortFilter {param([Parameter(ValueFromPipeline)]$InputObject) process {[pscustomobject]@{Protocol='Any';DynamicTarget='Any';LocalPort='Any';RemotePort='Any'}}}
+      function Get-NetFirewallAddressFilter {param([Parameter(ValueFromPipeline)]$InputObject) process {[pscustomobject]@{LocalAddress='127.0.0.1';RemoteAddress='Any'}}}
+      function Get-NetFirewallServiceFilter {param([Parameter(ValueFromPipeline)]$InputObject) process {[pscustomobject]@{Service='Any'}}}
+      function Get-NetFirewallInterfaceFilter {param([Parameter(ValueFromPipeline)]$InputObject) process {[pscustomobject]@{InterfaceAlias='PRIVATE_INTERFACE'}}}
+      function Get-NetFirewallInterfaceTypeFilter {param([Parameter(ValueFromPipeline)]$InputObject) process {[pscustomobject]@{InterfaceType='Wireless'}}}
+      function Get-NetFirewallSecurityFilter {param([Parameter(ValueFromPipeline)]$InputObject) process {[pscustomobject]@{Authentication='Required';Encryption='Required';OverrideBlockRules=$false;LocalUser='PRIVATE_SDDL';RemoteUser='Any';RemoteMachine='Any'}}}
+      Get-E1OfflineNetworkRuleScope
+    }; $r | ConvertTo-Json -Depth 8 -Compress`);
+    expect(result).toMatchObject({ rules: [{ action: 'allow', program: 'any', profile_match: 'inactive',
+      local_address: 'loopback', remote_address: 'any', local_port: 'any', remote_port: 'any',
+      interface_alias: 'scoped', interface_type: 'wireless', authentication: 'required', encryption: 'required',
+      override_block_rules: 'false', local_user: 'scoped', remote_user: 'any', remote_machine: 'any',
+      policy_app_id: 'scoped', local_user_owner: 'scoped', enforcement: 'multiple',
+      enforcement_states: ['localuserempty', 'inactiveprofile'], dynamic_target: 'any' }] });
+    expect(JSON.stringify(result)).not.toMatch(/PRIVATE|127\.0\.0|SDDL/);
+  });
+
+  it('validates schema 2 audit scopes strictly and rejects them on historical receipts', async () => {
+    expect(await ps(`$r=New-E1OfflineReceipt; $r.operation='gradle-offline-network-audit';$r.schema=2
+      $r.network_rule_scope=@{rules=@()}
+      $safe=ConvertTo-E1OfflineReceipt $r
+      $out=@($safe.schema -eq 2 -and $safe.network_rule_scope.rules.Count -eq 0)
+      $r.schema=1;try {$null=ConvertTo-E1OfflineReceipt $r;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'result_shape')}
+      $r.schema=2;$r.operation='gradle-offline-cache-probe';try {$null=ConvertTo-E1OfflineReceipt $r;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'result_shape')}
+      $r.operation='gradle-offline-network-audit';$r.network_rule_scope.path='PRIVATE_PATH';try {$null=ConvertTo-E1OfflineReceipt $r;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'result_shape')}
+      $out | ConvertTo-Json -Compress`)).toEqual([true, true, true, true]);
+  });
+
+  it('preserves documented enforcement states including native CIM arrays without free text', async () => {
+    expect(await ps(`@(
+      (Get-E1OfflineEnforcementKind @('LocalUserEmpty')),
+      (Get-E1OfflineEnforcementKind ([uint16[]]@(20))),
+      (Get-E1OfflineEnforcementKind @('NotApplicable')),
+      (Get-E1OfflineEnforcementKind @('PRIVATE_TEXT')),
+      (Get-E1OfflineEnforcementKind @('Full','InactiveProfile'))
+    ) | ConvertTo-Json -Compress`)).toEqual(['localuserempty', 'native-20', 'notapplicable', 'unknown', 'multiple']);
+  });
+
+  it('reads native CIM enforcement codes rather than the formatted PowerShell script property', async () => {
+    expect(await ps(`$rule=New-CimInstance -ClientOnly -ClassName MSFT_NetFirewallRule -Namespace root/StandardCimv2 -Property @{EnforcementStatus=[uint16[]]@(20,5)}
+      $rule | Add-Member -MemberType ScriptProperty -Name EnforcementStatus -Value {'PRIVATE_FORMATTED_TEXT'} -Force
+      $states=Get-E1OfflineNativeEnforcement $rule
+      @($states | ForEach-Object {Get-E1OfflineEnforcementKind $_}) | ConvertTo-Json -Compress`)).toEqual(['native-20','native-5']);
+  });
+
+  it('rejects private scope values, unknown keys and oversized rule collections', async () => {
+    expect(await ps(`$enums=Get-E1OfflineScopeEnums; $row=@{}
+      foreach($key in $enums.Keys) {$row[$key]=$enums[$key][0]}; $row.enforcement_states=@('full')
+      $out=@()
+      foreach($key in $enums.Keys) {
+        $bad=$row.Clone();$bad[$key]='PRIVATE_VALUE'
+        try {$null=ConvertTo-E1OfflineRuleScope @{rules=@($bad)};$out+=$false} catch {$out+=($_.Exception.Message -ceq 'result_shape')}
+      }
+      $bad=$row.Clone();$bad.path='PRIVATE_PATH'
+      try {$null=ConvertTo-E1OfflineRuleScope @{rules=@($bad)};$out+=$false} catch {$out+=($_.Exception.Message -ceq 'result_shape')}
+      try {$null=ConvertTo-E1OfflineRuleScope @{rules=@($row)*129};$out+=$false} catch {$out+=($_.Exception.Message -ceq 'result_shape')}
+      try {$null=ConvertTo-E1OfflineRuleScope @{rules='PRIVATE_TEXT'};$out+=$false} catch {$out+=($_.Exception.Message -ceq 'result_shape')}
+      @($out.Count,(@($out | Where-Object {$_ -ne $true}).Count -eq 0)) | ConvertTo-Json -Compress`)).toEqual([22, true]);
+  });
+
+  it('rejects malformed enforcement arrays and preserves every native reason', async () => {
+    expect(await ps(`$enums=Get-E1OfflineScopeEnums; $row=@{}
+      foreach($key in $enums.Keys) {$row[$key]=$enums[$key][0]}
+      $row.enforcement_states=@('native-5','native-1')
+      $safe=ConvertTo-E1OfflineRuleScope @{rules=@($row)}
+      $out=@(($safe.rules[0].enforcement_states -join ',') -ceq 'native-5,native-1')
+      foreach($mutation in @("@('PRIVATE_TEXT')","@('native-24')","@('full')*25","'full'",'@(1)','$null')) {
+        $bad=$row.Clone(); & ([scriptblock]::Create('$bad.enforcement_states=' + $mutation))
+        try {$null=ConvertTo-E1OfflineRuleScope @{rules=@($bad)};$out+=$false} catch {$out+=($_.Exception.Message -ceq 'result_shape')}
+      }
+      $out | ConvertTo-Json -Compress`)).toEqual(Array(7).fill(true));
+  });
+
+  it('reconstructs safe scope strings after remoting without attached private metadata', async () => {
+    const result = await ps(`$enums=Get-E1OfflineScopeEnums; $row=@{}
+      foreach($key in $enums.Keys) {$row[$key]=$enums[$key][0]}
+      $row.action='allow' | Add-Member -NotePropertyName private_note -NotePropertyValue 'PRIVATE_CATEGORY' -PassThru
+      $state='native-1' | Add-Member -NotePropertyName private_note -NotePropertyValue 'PRIVATE_STATE' -PassThru
+      $row.enforcement_states=@($state)
+      $r=New-E1OfflineReceipt; $r.operation='gradle-offline-network-audit'; $r.schema=2; $r.network_rule_scope=@{rules=@($row)}
+      $raw=[Management.Automation.PSSerializer]::Deserialize([Management.Automation.PSSerializer]::Serialize($r,20))
+      ConvertTo-E1OfflineReceipt $raw | ConvertTo-Json -Depth 12 -Compress`);
+    expect(result.network_rule_scope.rules[0].action).toBe('allow');
+    expect(result.network_rule_scope.rules[0].enforcement_states).toEqual(['native-1']);
+    expect(JSON.stringify(result)).not.toMatch(/PRIVATE|private_note/);
+  });
+
+  it.each(['network_outbound_default', 'none', 'evidence_changed', 'evidence_mismatch', 'json_size', 'diagnostic_limit'])('audits network without dispatch or writes: %s', async failure => {
     const result = await ps(`$null=Get-Command Invoke-E1OfflineNetworkAuditGuest -ErrorAction Stop
       $r=& (Get-Module evidence1-gradle-offline-probe) {
       function Get-CimInstance {return @{Manufacturer='Microsoft Corporation';Model='Virtual Machine'}}
@@ -209,6 +324,7 @@ describe.skipIf(process.platform !== 'win32')('Evidence1 offline cache contract 
       function Assert-E1ForensicSubject {}
       function Assert-E1ForensicMarker {}
       function Read-E1ForensicArtifact {return @{sha256=('a'*64);value=@{}}}
+      function Get-E1OfflineNetworkRuleScope {return @{rules=@()}}
       $script:auditReads=0
       function Get-E1OfflineSealHash {
         $script:auditReads++
@@ -248,7 +364,7 @@ describe.skipIf(process.platform !== 'win32')('Evidence1 offline cache contract 
       $fn=$ast.Find({param($a) $a -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $a.Name -eq 'Invoke-E1OfflineNetworkAuditGuest'},$true)
       @($fn.FindAll({param($a) $a -is [System.Management.Automation.Language.CommandAst]},$true) | ForEach-Object {$_.GetCommandName()} | Sort-Object -Unique) | ConvertTo-Json -Compress`);
     expect(commands.sort()).toEqual(['New-E1OfflineReceipt', 'Get-CimInstance', 'Get-ItemPropertyValue', 'Assert-E1GuestIdentity',
-      'Assert-E1ForensicSubject', 'Assert-E1Fields', 'Read-E1ForensicArtifact', 'Assert-E1ForensicMarker', 'Get-E1OfflineSealHash', 'Get-E1FailureCode'].sort());
+      'Assert-E1ForensicSubject', 'Assert-E1Fields', 'Read-E1ForensicArtifact', 'Assert-E1ForensicMarker', 'Get-E1OfflineSealHash', 'Get-E1FailureCode', 'Get-E1OfflineNetworkRuleScope'].sort());
   });
 
   it.each([

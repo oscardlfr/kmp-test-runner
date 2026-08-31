@@ -345,6 +345,29 @@ offline probe reservation and never authorizes a retry. A successful audit means
 only that the network snapshot and marker checks passed; `validation_pass` stays
 false. The host retains a new uniquely named report for each read.
 
+Audit receipts use schema 2 with a closed `network_rule_scope` object (or null if
+collection was not reached). Historical schema 1 remains readable and cannot carry
+the new field. Actual offline execution receipts stay at schema 1. The scope lists
+at most 128 enabled outbound Any-protocol allow/block rules for broad or Java
+applications, without package/service restrictions. It retains only categories for
+active-profile relation, interface, address/port, principal and IPsec restrictions,
+dynamic target and enforcement status. Names, aliases, SIDs, addresses, executable
+paths and policy IDs never leave the guest. Unknown values remain unknown, not Any.
+The scope is a diagnostic observation, not a complete effective-policy evaluator:
+it does not grant execution, model rule precedence, or change the seal predicate.
+`enforcement_states` preserves every native CIM reason as `native-0` through
+`native-23` (unknown values remain `unknown`). The convenience `enforcement`
+category is `multiple` when several reasons exist. Read the native CIM property,
+not PowerShell's localized `EnforcementStatus` display property. In particular,
+`native-5` (InactiveProfile) together with `native-1` (Full) must not be interpreted
+as a wholly inactive rule. The diagnostic's owner category records only whether
+an owner restriction is present, not whether it matches the executing principal.
+[Microsoft's firewall rule CIM contract](https://learn.microsoft.com/en-us/windows/win32/fwp/wmi/wfascimprov/msft-netfirewallrule)
+defines the native enforcement array. This report is deliberately insufficient
+to exempt a rule or certify all effective application/package restrictions.
+[Microsoft's associated security filters](https://learn.microsoft.com/en-us/powershell/module/netsecurity/get-netfirewallsecurityfilter)
+include authentication, encryption, principals and authenticated block overrides.
+
 Network failures now distinguish profile count, disabled profiles, outbound default,
 seal contract, missing/invalid endpoint addresses, and incompatible TCP/UDP/Any
 allow rules. These are closed codes, not rule names, endpoints or command text.

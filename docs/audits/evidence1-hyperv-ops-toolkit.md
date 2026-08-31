@@ -137,6 +137,51 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File docs\audits\evidence1-ho
   -ScriptArgumentsJson '["-ExpectedRunId","<run-guid>"]'
 ```
 
+## Disconnected Offline Diagnostic
+
+This is an explicitly authorized diagnostic, not V2, a live canary, or a replacement
+for any reserved attempt. Use the existing elevated client with
+`evidence1-hyperv-probe-gradle-offline-direct.ps1` and these arguments:
+
+```powershell
+-TargetCommit <original-failed-V2-commit> -TargetTree <original-failed-V2-tree> `
+  -ExpectedReportSha256 <preserved-host-V2-report-hash> -DisconnectNetwork
+```
+
+The host records an immutable recovery journal under
+`C:\kmp-eval\scratch\hyperv-offline-isolation`, bound to the host, VM, original
+subject and report hash. It disconnects the VM's existing adapters from their
+switches, verifies their state before dispatch and while waiting, and uses
+PowerShell Direct, which does not require networking. It never removes adapters,
+changes firewall rules, opens repository egress, changes pins, or clears old attempts.
+The guest independently rejects connected adapters and uses a copied dependency
+cache and disposable source checkout for one offline Gradle invocation.
+
+A managed owner thread holds the existing guest validation mutex across remote
+calls, from pre-disconnect checks until verified restoration. This lease is
+process-local, not a durable credential or crash-recovery claim. The immutable
+host journal also blocks both offline dispatch modes after process loss, including
+when no guest attempt marker was created. `isolated_on_return` reports final
+observed disconnection separately from the pre-dispatch check; null means unknown.
+
+Guest receipt schema 3 explicitly records `isolation_mode=vm-adapters-disconnected`
+and `checks.network_disconnected`; `network_sealed` remains false. Historical
+receipt schemas 1 and 2 retain their existing firewall-based meaning. The outer
+schema 2 report records restoration separately from the Gradle result. A cache
+miss is diagnostic evidence, never `validation_pass=true`.
+
+After a completed invocation with confirmed cleanup, the host restores the exact
+original switch GUID for each adapter, leaving originally disconnected adapters
+disconnected. Transport loss, a guest timeout, uncertain cleanup, or changed
+topology leaves the VM disconnected with `network_restore_required`. Do not rerun
+the diagnostic. The same entrypoint's mutually exclusive `-RestoreNetwork` mode
+restores from the preserved journal without dispatching anything and **requires
+the VM to be Off**, excluding delayed dispatch by an old guest runspace. Recovery
+does not shut down or restart the VM itself. Never hard-power-off an active run or
+delete the journal to get another attempt. `-AuditNetwork` remains read-only.
+Recovery binds the supplied original pins/report hash to the journal and does not
+depend on the mutable wet-report file still being available.
+
 ## Verification
 
 This toolkit is covered by `tests/vitest/evidence1-hyperv-ops-toolkit.test.js`, which checks:
