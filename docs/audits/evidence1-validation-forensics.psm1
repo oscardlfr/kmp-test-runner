@@ -4,6 +4,84 @@ $script:E1ForensicErrors = @('coverage_threshold_exceeded','coverage_data_unavai
 $script:E1ForensicWarnings = @('coverage_report_dispatch_failed','coverage_aggregation_failed','coverage_aggregation_drift','coverage_report_write_failed','coverage_aggregation_skipped','no_coverage_data','coverage_xml_disabled','coverage_xml_oversized','coverage_parse_failed','unknown')
 $script:E1ForensicReasons = @('report-dispatch-failed','aggregation-failed','target-no-xml','target-parse-error','target-not-detected','no-contributing-data','unknown')
 $script:E1ForensicMetrics = @('envelope_exit','tests_total','tests_passed','tests_failed','individual_total','missed_lines','modules_contributing','module_failed_setup_count','with_data_count','threshold','error_missed_lines')
+$script:E1ForensicGradlePatterns = [ordered]@{
+    build_failed='^\s*(?:\[[^\]]+\]\s*)?BUILD FAILED\b'
+    dependency_resolution='Could not resolve all (files|dependencies)|Could not resolve [^\r\n]+'
+    repository_transport='Could not (GET|HEAD|PUT)\b'
+    tls_handshake='SSLHandshakeException|handshake_failure'
+    tls_certificate='PKIX path building failed|unable to find valid certification path'
+    dns_failure='UnknownHostException|No such host is known'
+    http_unauthorized='Received status code 401\b'
+    http_forbidden='Received status code 403\b'
+    http_not_found='Received status code 404\b'
+    http_proxy_auth='Received status code 407\b'
+    http_throttled='Received status code 429\b'
+    http_server_error='Received status code 5[0-9]{2}\b'
+    sdk_missing='SDK location not found'
+    java_version='requires Java [0-9]+|requires JVM runtime version'
+    compilation='Compilation error|Compilation failed'
+    plugin_resolution='Plugin \[.*\] was not found'
+    file_permission='AccessDeniedException|Access is denied|Permission denied'
+    file_lock='Timeout waiting to lock|being used by another process'
+    daemon_disappeared='Gradle build daemon disappeared unexpectedly'
+    memory_exhausted='OutOfMemoryError|Java heap space'
+    connection_timeout='SocketTimeoutException|Read timed out|Connect timed out'
+    connection_refused='Connection refused'
+    connection_reset='Connection reset'
+    task_missing='Cannot locate tasks that match|Task .+ not found in'
+    invalid_option='Unknown command-line option'
+    class_version='UnsupportedClassVersionError|Unsupported class file major version'
+}
+
+function Get-E1ForensicGradleSummary([string]$Text) {
+    if ($Text.Length -gt 1048576) { throw 'forensic_size' }
+    $signals = [ordered]@{}
+    foreach ($key in $script:E1ForensicGradlePatterns.Keys) { $signals[$key] = 0 }
+    # A line can carry several signatures. Counts are observations, not causal verdicts.
+    foreach ($line in ($Text -split '\r?\n')) {
+        foreach ($key in $script:E1ForensicGradlePatterns.Keys) {
+            if ([regex]::IsMatch($line, $script:E1ForensicGradlePatterns[$key],
+                [Text.RegularExpressions.RegexOptions]::IgnoreCase, [timespan]::FromSeconds(1))) { $signals[$key]++ }
+        }
+    }
+    return @{ schema=1; signals=$signals }
+}
+
+function Assert-E1ForensicGradleSummary($Summary) {
+    Assert-E1ForensicKeys $Summary @('schema','signals')
+    $schema = Get-E1Field $Summary 'schema'
+    if (-not (Test-E1Exact $schema 1) -or @($schema.PSObject.Properties).Count) { throw 'forensic_shape' }
+    $signals = Get-E1Field $Summary 'signals'
+    Assert-E1ForensicKeys $signals @($script:E1ForensicGradlePatterns.Keys)
+    foreach ($key in $script:E1ForensicGradlePatterns.Keys) {
+        $n = Get-E1Field $signals $key
+        if (($n -isnot [int] -and $n -isnot [long]) -or $n -lt 0 -or $n -gt 1048576 -or @($n.PSObject.Properties).Count) { throw 'forensic_shape' }
+    }
+}
+
+function Read-E1ForensicGradleLog([string]$Path, [string]$ExpectedSha, [int]$MaxBytes = 1048576) {
+    if ($ExpectedSha -and $ExpectedSha -cnotmatch '^[a-f0-9]{64}$') { throw 'forensic_hash' }
+    if ($MaxBytes -le 0 -or $MaxBytes -gt 1048576) { throw 'forensic_size' }
+    $path = Resolve-E1Path $Path
+    $stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        $null = Resolve-E1Path $path
+        if ($stream.Length -gt $MaxBytes) { throw 'forensic_size' }
+        $bytes = [byte[]]::new([int]$stream.Length)
+        $offset = 0
+        while ($offset -lt $bytes.Length) {
+            $read = $stream.Read($bytes, $offset, $bytes.Length - $offset)
+            if ($read -eq 0) { throw 'forensic_size' }; $offset += $read
+        }
+        $hash = Get-E1Sha256 $bytes
+        if ($ExpectedSha -and $hash -cne $ExpectedSha) { throw 'forensic_hash' }
+        try { $text = [Text.UTF8Encoding]::new($false, $true).GetString($bytes).TrimStart([char]0xfeff) }
+        catch { throw 'forensic_encoding' }
+        $summary = Get-E1ForensicGradleSummary $text
+        Assert-E1ForensicGradleSummary $summary
+        return @{ sha256=$hash; summary=$summary }
+    } finally { $stream.Dispose() }
+}
 
 function Assert-E1ForensicKeys($Value, [string[]]$Keys) {
     if ($null -eq $Value -or $Value -is [array] -or $Value -is [string]) { throw 'forensic_shape' }
@@ -102,7 +180,7 @@ function Assert-E1ForensicSummary($Summary) {
     }
 }
 
-function ConvertTo-E1ForensicReceipt($Raw, [string]$ExpectedProductHash) {
+function ConvertTo-E1ForensicReceipt($Raw, [string]$ExpectedProductHash, [switch]$IncludeGradleDiagnostics) {
     $marker = Get-E1Field $Raw 'marker_sha256'
     $product = Get-E1Field $Raw 'product_sha256'
     if ($marker -isnot [string] -or $product -isnot [string] -or
@@ -110,7 +188,17 @@ function ConvertTo-E1ForensicReceipt($Raw, [string]$ExpectedProductHash) {
         $product -cne $ExpectedProductHash) { throw 'forensic_hash' }
     $summary = Get-E1Field $Raw 'summary'
     Assert-E1ForensicSummary $summary
-    return @{ marker_sha256=$marker; product_sha256=$product; summary=$summary }
+    $safe = @{ marker_sha256=$marker; product_sha256=$product; summary=$summary }
+    if ($IncludeGradleDiagnostics) {
+        $keys = @(Get-E1ObjectKeys $Raw | Where-Object { $_ -cnotin @('PSComputerName','RunspaceId','PSShowComputerName') })
+        if ($keys.Count -ne 5 -or @($keys | Where-Object { $_ -cnotin @('marker_sha256','product_sha256','summary','gradle_sha256','gradle_summary') }).Count) { throw 'forensic_shape' }
+        $hash = Get-E1Field $Raw 'gradle_sha256'
+        if ($hash -isnot [string] -or $hash -cnotmatch '^[a-f0-9]{64}$') { throw 'forensic_hash' }
+        $gradle = Get-E1Field $Raw 'gradle_summary'
+        Assert-E1ForensicGradleSummary $gradle
+        $safe.gradle_sha256=$hash; $safe.gradle_summary=$gradle
+    }
+    return $safe
 }
 
 function Read-E1ForensicArtifact([string]$Path, [string]$ExpectedSha, [int]$MaxBytes = 1048576) {
@@ -189,18 +277,31 @@ function Get-E1ForensicReceiverScript {
         $product = Read-E1ForensicArtifact ($prefix + '.stdout.json') $Config.Report.hashes.product_stdout_sha256
         $summary = Get-E1ForensicProductSummary $product.value
         Assert-E1ForensicSummary $summary
+        $includeGradle = Get-E1Field $Config 'IncludeGradleDiagnostics'
+        if ($null -ne $includeGradle -and $includeGradle -isnot [bool]) { throw 'forensic_shape' }
+        $receipt = @{ marker_sha256=$marker.sha256; product_sha256=$product.sha256; summary=$summary }
+        if ($includeGradle -eq $true) {
+            Assert-E1Fields $Config.Report @{ state='failed' }
+            $gradle = Read-E1ForensicGradleLog ($prefix + '.stderr.txt') ''
+            $null = Read-E1ForensicGradleLog ($prefix + '.stderr.txt') $gradle.sha256
+            $receipt.gradle_sha256=$gradle.sha256; $receipt.gradle_summary=$gradle.summary
+        }
         # Reopen with the first digest: a concurrent mutation is not accepted as the same evidence.
         $null = Read-E1ForensicArtifact ($prefix + '.json') $marker.sha256
         $null = Read-E1ForensicArtifact ($prefix + '.stdout.json') $product.sha256
-        return @{ marker_sha256=$marker.sha256; product_sha256=$product.sha256; summary=$summary }
+        return $receipt
     }
 }
 
-function Invoke-E1ForensicRead([string]$TargetCommit, [string]$TargetTree, [string]$ExpectedReportSha256) {
+function Invoke-E1ForensicRead([string]$TargetCommit, [string]$TargetTree, [string]$ExpectedReportSha256, [switch]$IncludeGradleDiagnostics) {
     $result = [ordered]@{
         schema=1; operation='wet-v2-forensic-read'; state='failed'; failure_code='forensic_failed'
         subject=$null; hashes=@{}; product=$null; historical=$null
         agent_calls=0; product_invocations=0; guest_writes=0; raw_transcript_read=$false; stderr_read=$false
+    }
+    if ($IncludeGradleDiagnostics) {
+        $result.schema=2; $result.gradle_diagnostics=$null
+        $result.gradle_stderr_read_requested=$true
     }
     $session = $null; $job = $null
     try {
@@ -208,6 +309,7 @@ function Invoke-E1ForensicRead([string]$TargetCommit, [string]$TargetTree, [stri
         $reportPath = 'C:\kmp-eval\scratch\hyperv-verify-wet-gate-v2-direct\HYPERV-VERIFY-WET-GATE-V2-DIRECT.json'
         $report = Read-E1ForensicArtifact $reportPath $ExpectedReportSha256
         Assert-E1ForensicSubject $report.value $TargetCommit $TargetTree
+        if ($IncludeGradleDiagnostics) { Assert-E1Fields $report.value @{ state='failed' } }
         $result.subject = @{ target_commit=$TargetCommit; target_tree=$TargetTree; source_commit=$report.value.source_commit; host_report_sha256=$report.sha256 }
         $result.historical = Get-E1ForensicHistory $report.value
         if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'host_privilege' }
@@ -221,17 +323,24 @@ function Invoke-E1ForensicRead([string]$TargetCommit, [string]$TargetTree, [stri
         $forensic = [IO.File]::ReadAllBytes((Resolve-E1Path (Join-Path $PSScriptRoot 'evidence1-validation-forensics.psm1')))
         $result.hashes.utility_sha256 = Get-E1Sha256 $utility
         $result.hashes.collector_sha256 = Get-E1Sha256 $forensic
-        $config = @{ Commit=$TargetCommit; Tree=$TargetTree; Report=$report.value; VMId=$vm.Id.ToString(); HostComputerName=$env:COMPUTERNAME; GuestUser=$stored.UserName }
+        $config = @{ Commit=$TargetCommit; Tree=$TargetTree; Report=$report.value; VMId=$vm.Id.ToString(); HostComputerName=$env:COMPUTERNAME; GuestUser=$stored.UserName; IncludeGradleDiagnostics=[bool]$IncludeGradleDiagnostics }
         $session = New-PSSession -VMName 'Evidence1-Runner' -Credential $credential -ErrorAction Stop
+        # Transport failure cannot prove whether the optional log was read remotely.
+        if ($IncludeGradleDiagnostics) { $result.stderr_read=$null }
         $job = Invoke-Command -Session $session -AsJob -ScriptBlock (Get-E1ForensicReceiverScript) -ArgumentList ([Text.Encoding]::UTF8.GetString($utility)), $result.hashes.utility_sha256, ([Text.Encoding]::UTF8.GetString($forensic)), $result.hashes.collector_sha256, $config
         if (-not (Wait-Job $job -Timeout 60)) { throw 'transport_timeout' }
         $received = @(Receive-Job $job -ErrorAction Stop 3>$null 4>$null 5>$null 6>$null)
         if ($received.Count -ne 1) { throw 'forensic_shape' }
-        $raw = ConvertTo-E1ForensicReceipt $received[0] $report.value.hashes.product_stdout_sha256
+        $raw = ConvertTo-E1ForensicReceipt $received[0] $report.value.hashes.product_stdout_sha256 -IncludeGradleDiagnostics:$IncludeGradleDiagnostics
         $null = Read-E1ForensicArtifact $reportPath $report.sha256
         $result.hashes.marker_sha256 = $raw.marker_sha256
         $result.hashes.product_sha256 = $raw.product_sha256
         $result.product = $raw.summary
+        if ($IncludeGradleDiagnostics) {
+            $result.hashes.gradle_stderr_sha256=$raw.gradle_sha256
+            $result.gradle_diagnostics=$raw.gradle_summary
+            $result.stderr_read=$true
+        }
         $result.state='passed'; $result.failure_code='none'
     } catch {
         $allowed = @('forensic_hash','forensic_size','forensic_encoding','forensic_json','forensic_subject','forensic_marker','forensic_module_hash','forensic_shape','host_privilege','vm_not_running','credential_shape','guest_identity','transport_timeout','path_invalid','path_outside_root','path_link')

@@ -28,6 +28,143 @@ const json = value => `ConvertFrom-E1Json ${q(JSON.stringify(value))}`;
 const reportFixture = () => ({ schema: 1, operation: 'wet-v2', state: 'failed', target_commit: 'a'.repeat(40), target_tree: 'b'.repeat(40), source_commit: '7d45eae4f8720a0c77f507712ba2437ff974b6ed', agent_calls: 0, product_invocations: 1, dry_plan_invocations: 0, hashes: { product_stdout_sha256: 'c'.repeat(64) }, failure_code: 'product_contract', checks: { postflight: false } });
 
 describe.skipIf(!available)('readonly wet-gate forensics', { timeout: 30000 }, () => {
+  it('classifies deterministic Gradle diagnostics using only closed counts, never log prose', () => {
+    const lines = [
+      'FAILURE: Build failed with an exception.',
+      '* What went wrong:',
+      '> Could not resolve all files for configuration PRIVATE_CONFIGURATION.',
+      '> Could not GET https://private.example/PRIVATE_TOKEN',
+      '> javax.net.ssl.SSLHandshakeException: PKIX path building failed',
+      '> java.net.UnknownHostException: PRIVATE_HOST',
+      '> Received status code 403 from server: PRIVATE_REASON',
+      'C:\\PRIVATE_HOME\\PRIVATE_FILE 2026-08-31T00:00:00Z PRIVATE_COMMAND',
+      'BUILD FAILED in 15s',
+    ].join('\n');
+    const result = ps(`Get-E1ForensicGradleSummary ${q(lines)} | ConvertTo-Json -Depth 8 -Compress`);
+    expect(result.schema).toBe(1);
+    expect(result.signals.dependency_resolution).toBe(1);
+    expect(result.signals.repository_transport).toBe(1);
+    expect(result.signals.tls_handshake).toBe(1);
+    expect(result.signals.tls_certificate).toBe(1);
+    expect(result.signals.dns_failure).toBe(1);
+    expect(result.signals.http_forbidden).toBe(1);
+    expect(result.signals.build_failed).toBe(1);
+    expect(JSON.stringify(result)).not.toMatch(/PRIVATE|https|2026|What went wrong|exception/i);
+  });
+
+  it('distinguishes common Gradle failure signatures without inventing a root-cause verdict', () => {
+    const cases = {
+      sdk_missing: 'SDK location not found. Define sdk.dir in PRIVATE_PATH',
+      java_version: 'Android Gradle plugin requires Java 17 to run.',
+      compilation: 'Compilation error. See log for more details',
+      plugin_resolution: "Plugin [id: 'PRIVATE_PLUGIN'] was not found in any of the following sources:",
+      file_permission: 'java.nio.file.AccessDeniedException: PRIVATE_PATH',
+      file_lock: 'Timeout waiting to lock build logic queue.',
+      daemon_disappeared: 'Gradle build daemon disappeared unexpectedly',
+      memory_exhausted: 'java.lang.OutOfMemoryError: Java heap space',
+      connection_timeout: 'java.net.SocketTimeoutException: Read timed out',
+      connection_refused: 'java.net.ConnectException: Connection refused',
+      task_missing: "Cannot locate tasks that match ':PRIVATE:task'",
+      invalid_option: "Unknown command-line option '--PRIVATE'.",
+      class_version: 'java.lang.UnsupportedClassVersionError: PRIVATE',
+    };
+    const result = ps(`$cases=${json(cases)}; $out=@{}; foreach($key in (Get-E1ObjectKeys $cases)) {
+      $s=Get-E1ForensicGradleSummary (Get-E1Field $cases $key); Assert-E1ForensicGradleSummary $s; $out[$key]=$s.signals[$key]
+    }; $out | ConvertTo-Json -Compress`);
+    expect(result).toEqual(Object.fromEntries(Object.keys(cases).map(key => [key, 1])));
+    const empty = ps(`Get-E1ForensicGradleSummary 'unclassified PRIVATE log' | ConvertTo-Json -Depth 8 -Compress`);
+    expect(Object.values(empty.signals).every(count => count === 0)).toBe(true);
+    expect(empty).not.toHaveProperty('root_cause');
+  });
+
+  it('rejects free-form fields and coerced Gradle counts after remoting', () => {
+    expect(ps(`$out=@(); foreach($bad in @('key','string','fraction','negative','decorated-count','decorated-schema')) {
+      $s=Get-E1ForensicGradleSummary 'BUILD FAILED'
+      switch($bad) {
+        key {$s.PRIVATE='PRIVATE'}
+        string {$s.signals.build_failed='1'}
+        fraction {$s.signals.build_failed=1.5}
+        negative {$s.signals.build_failed=-1}
+        decorated-count {$s.signals.build_failed=123; $s.signals.build_failed | Add-Member -NotePropertyName PRIVATE -NotePropertyValue SYNTHETIC_SECRET}
+        decorated-schema {$s.schema | Add-Member -NotePropertyName PRIVATE -NotePropertyValue SYNTHETIC_SECRET}
+      }
+      $s=[Management.Automation.PSSerializer]::Deserialize([Management.Automation.PSSerializer]::Serialize($s,10))
+      try { Assert-E1ForensicGradleSummary $s; $out+=$false } catch {$out+=($_.Exception.Message -ceq 'forensic_shape')}
+    }; $out | ConvertTo-Json -Compress`)).toEqual([true,true,true,true,true,true]);
+  });
+
+  it('preserves known stderr-read facts if persisting a completed forensic receipt fails', () => {
+    const result = ps(`$entry=[IO.File]::ReadAllText(${q(resolve(root, 'docs/audits/evidence1-hyperv-read-wet-forensics-direct.ps1'))})
+      $tokens=$null; $errors=$null; $ast=[Management.Automation.Language.Parser]::ParseInput($entry,[ref]$tokens,[ref]$errors)
+      $catch=$ast.Find({param($n) $n -is [Management.Automation.Language.TryStatementAst]},$true).CatchClauses[0].Body.Extent.Text
+      $result=@{schema=2;state='passed';failure_code='none';stderr_read=$true;gradle_stderr_read_requested=$true;gradle_diagnostics=(Get-E1ForensicGradleSummary 'BUILD FAILED')}
+      $phase='report-write'; $stream=$null
+      . ([scriptblock]::Create($catch.Substring(1,$catch.Length-2)))
+      $result | ConvertTo-Json -Depth 8 -Compress`);
+    expect(result.schema).toBe(2);
+    expect(result.state).toBe('failed');
+    expect(result.failure_code).toBe('report_write_failed');
+    expect(result.stderr_read).toBe(true);
+    expect(result.gradle_stderr_read_requested).toBe(true);
+    expect(result.gradle_diagnostics.signals.build_failed).toBe(1);
+  });
+
+  it('reads only a bounded deterministic Gradle log, hashes it and leaves its bytes intact', () => {
+    mkdirSync('C:/kmp-eval/scratch', { recursive: true });
+    const dir = mkdtempSync('C:/kmp-eval/scratch/e1-gradle-log-');
+    const path = resolve(dir, 'existing.stderr.txt');
+    const bytes = Buffer.from('BUILD FAILED\n> java.net.UnknownHostException: PRIVATE_HOST');
+    writeFileSync(path, bytes);
+    const hash = createHash('sha256').update(bytes).digest('hex');
+    try {
+      const result = ps(`$r=Read-E1ForensicGradleLog ${q(path)} ''; $out=@(($r.sha256 -ceq '${hash}'),($r.summary.signals.dns_failure -eq 1))
+        try {$null=Read-E1ForensicGradleLog ${q(path)} ('0'*64);$out+=$false} catch {$out+=($_.Exception.Message -ceq 'forensic_hash')}
+        try {$null=Read-E1ForensicGradleLog ${q(path)} '' 2;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'forensic_size')}
+        $out | ConvertTo-Json -Compress`);
+      expect(result).toEqual([true,true,true,true]);
+      expect(readFileSync(path).equals(bytes)).toBe(true);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('keeps Gradle reading opt-in and binds it to the deterministic wet artifact, not any supplied path', () => {
+    const receiver = ps('Get-E1ForensicReceiverScript | ForEach-Object ToString | ConvertTo-Json -Compress');
+    expect(receiver).toContain("Get-E1Field $Config 'IncludeGradleDiagnostics'");
+    expect(receiver).toContain("Read-E1ForensicGradleLog ($prefix + '.stderr.txt')");
+    expect(receiver).toContain("Assert-E1Fields $Config.Report @{ state='failed' }");
+    expect(receiver).not.toMatch(/Config\.(?:LogPath|ScriptBlock|Command)|Start-Process|Invoke-E1OwnedProcess/);
+    const entry = readFileSync(resolve(root, 'docs/audits/evidence1-hyperv-read-wet-forensics-direct.ps1'), 'utf8');
+    expect(entry).toContain('[switch]$IncludeGradleDiagnostics');
+  });
+
+  it('rejects invalid encoding but accepts an empty deterministic log without manufacturing signals', () => {
+    mkdirSync('C:/kmp-eval/scratch', { recursive: true });
+    const dir = mkdtempSync('C:/kmp-eval/scratch/e1-gradle-encoding-');
+    try {
+      const invalid = resolve(dir, 'invalid.stderr.txt');
+      const empty = resolve(dir, 'empty.stderr.txt');
+      writeFileSync(invalid, Buffer.from([0xff]));
+      writeFileSync(empty, '');
+      expect(ps(`$code=try {$null=Read-E1ForensicGradleLog ${q(invalid)} ''; 'accepted'} catch {$_.Exception.Message}; $code | ConvertTo-Json -Compress`)).toBe('forensic_encoding');
+      const result = ps(`Read-E1ForensicGradleLog ${q(empty)} '' | ConvertTo-Json -Depth 8 -Compress`);
+      expect(result.sha256).toBe(createHash('sha256').update('').digest('hex'));
+      expect(Object.values(result.summary.signals).every(n => n === 0)).toBe(true);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('validates the entire opt-in receipt after transport before exporting any Gradle field', () => {
+    expect(ps(`$out=@(); foreach($bad in @('extra','hash','summary','count')) {
+      $r=@{marker_sha256=('c'*64);product_sha256=('c'*64);summary=(Get-E1ForensicProductSummary (${json(env)}));gradle_sha256=('d'*64);gradle_summary=(Get-E1ForensicGradleSummary 'BUILD FAILED')}
+      switch($bad) {
+        extra {$r.PRIVATE='PRIVATE'}
+        hash {$r.gradle_sha256=@('d'*64)}
+        summary {$r.gradle_summary.PRIVATE='PRIVATE'}
+        count {$r.gradle_summary.signals.build_failed='1'}
+      }
+      $r=[Management.Automation.PSSerializer]::Deserialize([Management.Automation.PSSerializer]::Serialize($r,20))
+      try {$null=ConvertTo-E1ForensicReceipt $r ('c'*64) -IncludeGradleDiagnostics; $out+=$false} catch {$out+=($_.Exception.Message -cin @('forensic_shape','forensic_hash'))}
+    }; $out | ConvertTo-Json -Compress`)).toEqual([true,true,true,true]);
+  });
+
   it('counts source artifact metadata without reading file contents or exposing names', () => {
     mkdirSync('C:/kmp-eval/scratch', { recursive: true });
     const dir = mkdtempSync('C:/kmp-eval/scratch/e1-inventory-');
@@ -348,16 +485,19 @@ describe.skipIf(!available)('readonly wet-gate forensics', { timeout: 30000 }, (
     }; $out | ConvertTo-Json -Compress`)).toEqual([true, true, true]);
   });
 
-  it('reads only marker and product through the receiver and validates the remoting round trip', () => {
+  it.each([false, true])('reads only approved artifacts through the receiver (Gradle opt-in: %s)', (includeGradle) => {
     const dir = mkdtempSync(resolve(tmpdir(), 'e1-forensic-receiver-'));
     const productPath = resolve(dir, 'existing.stdout.json');
     const markerPath = resolve(dir, 'existing.json');
+    const gradlePath = resolve(dir, 'existing.stderr.txt');
+    const gradleBytes = Buffer.from('BUILD FAILED\n> javax.net.ssl.SSLHandshakeException: PKIX path building failed PRIVATE');
     const productBytes = Buffer.from(JSON.stringify(env));
     const report = reportFixture();
     report.hashes.product_stdout_sha256 = createHash('sha256').update(productBytes).digest('hex');
     const markerBytes = Buffer.from(JSON.stringify(report));
     writeFileSync(productPath, productBytes);
     writeFileSync(markerPath, markerBytes);
+    writeFileSync(gradlePath, gradleBytes);
     try {
       const result = ps(`$utility=[IO.File]::ReadAllText(${q(resolve(root, 'docs/audits/evidence1-validation-ops.psm1'))})
         $mocks=@'
@@ -365,6 +505,8 @@ describe.skipIf(!available)('readonly wet-gate forensics', { timeout: 30000 }, (
 function Resolve-E1Path([string]$Path) {
   if ($Path -ceq ('C:\\kmp-eval\\scratch\\evidence1-validation-ops\\wet-v2-' + ('a'*40) + '.json')) { return ${q(markerPath)} }
   if ($Path -ceq ('C:\\kmp-eval\\scratch\\evidence1-validation-ops\\wet-v2-' + ('a'*40) + '.stdout.json')) { return ${q(productPath)} }
+  ${includeGradle ? `if ($Path -ceq ('C:\\kmp-eval\\scratch\\evidence1-validation-ops\\wet-v2-' + ('a'*40) + '.stderr.txt')) { return ${q(gradlePath)} }
+  if ($Path -ceq ${q(gradlePath)}) { return $Path }` : ''}
   if ($Path -ceq ${q(markerPath)} -or $Path -ceq ${q(productPath)}) { return $Path }
   throw 'UNEXPECTED_FILE_READ'
 }
@@ -377,15 +519,21 @@ function Start-E1OwnedProcess { throw 'UNEXPECTED_PROCESS' }
         function Get-ItemPropertyValue { return 'aabababa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' }
         $env:COMPUTERNAME='Evidence1Runner'; $env:USERNAME='Evidence1'
         $config=@{ Report=(${json(report)}); Commit=('a'*40); Tree=('b'*40); VMId='aabababa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'; HostComputerName='HOST'; GuestUser='Evidence1' }
+        ${includeGradle ? '$config.IncludeGradleDiagnostics=$true' : ''}
         $r=& (Get-E1ForensicReceiverScript) $utility (Get-E1Sha256 ([Text.Encoding]::UTF8.GetBytes($utility))) $forensic (Get-E1Sha256 ([Text.Encoding]::UTF8.GetBytes($forensic))) $config
         $remote=[Management.Automation.PSSerializer]::Deserialize([Management.Automation.PSSerializer]::Serialize($r,20))
-        ConvertTo-E1ForensicReceipt $remote $config.Report.hashes.product_stdout_sha256 | ConvertTo-Json -Depth 14 -Compress`);
+        ConvertTo-E1ForensicReceipt $remote $config.Report.hashes.product_stdout_sha256 ${includeGradle ? '-IncludeGradleDiagnostics' : ''} | ConvertTo-Json -Depth 14 -Compress`);
       expect(result.product_sha256).toBe(report.hashes.product_stdout_sha256);
       expect(result.marker_sha256).toBe(createHash('sha256').update(markerBytes).digest('hex'));
       expect(result.summary.metrics.envelope_exit.value).toBe(3);
+      if (includeGradle) {
+        expect(result.gradle_sha256).toBe(createHash('sha256').update(gradleBytes).digest('hex'));
+        expect(result.gradle_summary.signals.tls_certificate).toBe(1);
+      } else { expect(result).not.toHaveProperty('gradle_summary'); }
       expect(JSON.stringify(result)).not.toContain('PRIVATE');
       expect(readFileSync(productPath).equals(productBytes)).toBe(true);
       expect(readFileSync(markerPath).equals(markerBytes)).toBe(true);
+      expect(readFileSync(gradlePath).equals(gradleBytes)).toBe(true);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
