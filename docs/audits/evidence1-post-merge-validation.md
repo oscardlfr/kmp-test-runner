@@ -287,16 +287,20 @@ Use `evidence1-hyperv-start-authorized-live.ps1` with `ExpectedTargetCommit`,
 filenames used to preserve an earlier failed report. V1 retains its canonical current pointer.
 Do not overwrite an old V2 report to satisfy a default filename.
 
-After V1, V2 and V3 pass, obtain NEW explicit authorization for the selected arm. The exact
-stable literals are:
+After V1, V2 and V3 pass, consume explicit authorization for the selected arm. An unused
+authorization explicitly granted in advance for live execution after these gates may be used;
+do not request it again solely because the gates have now passed. Record its source and scope
+in the operational audit before translating it to the launcher's exact stable literal:
 
 ```text
 AUTORIZO 1 SESION LIVE NUEVA DEL Evidence1 CLAUDE WINDOWS CANARY product, SIN REINTENTOS, REEMPLAZOS NI RESPAWNS
 AUTORIZO 1 SESION LIVE NUEVA DEL Evidence1 CLAUDE WINDOWS CANARY free-baseline, SIN REINTENTOS, REEMPLAZOS NI RESPAWNS
 ```
 
-Choose only the authorized arm. Generic engineering consent and the historical eight-cell
-authorization do not satisfy this gate. Tooling generates the run GUID and calculates hashes;
+Choose only an explicitly authorized arm within the remaining session budget. Engineering-only
+consent, a consumed authorization, or an unrelated historical matrix authorization does not
+authorize a new session. Never infer an additional session from a fresh run ID. Tooling
+generates the run GUID and calculates hashes;
 the human phrase does not require typing or pasting UUIDs or hashes. At consumption, immutable
 binding bytes connect that authorization to the run, arm, harness/source pins, V1 bytes,
 schema-2 passing V2/V3 reports, raw/canonical attestation hashes, selected V3 plan and staged
