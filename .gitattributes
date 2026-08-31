@@ -172,3 +172,4 @@ tests/vitest/local-ci.test.js text eol=lf
 # Preserve identical checked-out bytes even when their Git autocrlf settings differ.
 docs/audits/evidence1-validation-ops.psm1 text eol=lf
 docs/audits/evidence1-validation-forensics.psm1 text eol=lf
+docs/audits/evidence1-gradle-offline-probe.psm1 text eol=lf
