@@ -336,6 +336,27 @@ with narrowly scoped repository access is a separate isolation decision. A futur
 qualified shared cache must be verified for both arms; this diagnostic's mutable
 home is not a qualified benchmark seed.
 
+For a rejected network preflight, the same entrypoint accepts `-AuditNetwork` with
+the same failed V2 anchors and report digest. This selects a distinct read-only
+operation, `gradle-offline-network-audit`: it checks VM identity, preserved marker
+and firewall policy without creating a guest attempt, cloning/copying files,
+executing a process, or changing firewall rules. It does not reset or reuse the
+offline probe reservation and never authorizes a retry. A successful audit means
+only that the network snapshot and marker checks passed; `validation_pass` stays
+false. The host retains a new uniquely named report for each read.
+
+Network failures now distinguish profile count, disabled profiles, outbound default,
+seal contract, missing/invalid endpoint addresses, and incompatible TCP/UDP/Any
+allow rules. These are closed codes, not rule names, endpoints or command text.
+The enforcement conditions are unchanged. A rule diagnostic means that a rule
+examined by this conservative check is incompatible; it is not proof of successful
+egress or evidence that a previously blocked Gradle request could actually connect.
+For incompatible dynamic rules, the code records the known transport family
+(proximity apps/sharing or Wi-Fi Direct printing/display/devices); an unrecognized
+value stays a closed unknown code. No such rule is silently exempted by this change.
+Microsoft documents that [dynamic transports cannot be identified by standard
+protocol/port conditions alone](https://learn.microsoft.com/en-us/powershell/module/netsecurity/get-netfirewallportfilter#-dynamictarget).
+
 References: [Gradle dependency caching](https://docs.gradle.org/current/userguide/dependency_caching.html)
 documents offline resolution and copying the dependency cache without lock files
 or `gc.properties`. The probe deliberately uses a separate full build, not a

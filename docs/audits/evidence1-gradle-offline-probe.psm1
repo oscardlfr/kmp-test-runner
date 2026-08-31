@@ -1,5 +1,9 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$script:E1OfflineNetworkFailures = @('network_profile_count','network_profile_disabled','network_outbound_default',
+    'network_seal_contract','network_endpoint_missing','network_endpoint_invalid','network_rule_tcp','network_rule_udp','network_rule_any',
+    'network_rule_proximity_apps','network_rule_proximity_sharing','network_rule_wifi_printing','network_rule_wifi_display','network_rule_wifi_devices','network_rule_dynamic_unknown')
+$script:E1OfflineNetworkFailures += @('network_rule_any_loopback','network_rule_any_all_addresses','network_rule_any_scoped_addresses')
 
 function Get-E1OfflineSignals([string]$Text) {
     return @{ offline_cache_miss = [regex]::Matches($Text, '(?m)^.*No cached (?:version of |resource )[^\r\n]+ available for offline mode').Count }
@@ -73,17 +77,19 @@ function Copy-E1OfflineCache([string]$Source, [string]$Destination) {
 
 function Get-E1OfflineSealHash {
     $profiles = @(Get-NetFirewallProfile -PolicyStore ActiveStore | Sort-Object Name)
-    if ($profiles.Count -ne 3 -or @($profiles | Where-Object { $_.Enabled.ToString() -ne 'True' -or $_.DefaultOutboundAction.ToString() -ne 'Block' }).Count) { throw 'network_unsealed' }
+    if ($profiles.Count -ne 3) {throw 'network_profile_count'}
+    if (@($profiles | Where-Object { $_.Enabled.ToString() -ne 'True' }).Count) {throw 'network_profile_disabled'}
+    if (@($profiles | Where-Object { $_.DefaultOutboundAction.ToString() -ne 'Block' }).Count) {throw 'network_outbound_default'}
     $rules = @(Get-NetFirewallRule -PolicyStore ActiveStore | Where-Object { $_.Enabled.ToString() -eq 'True' -and $_.Direction.ToString() -eq 'Outbound' } | Sort-Object Name)
     $seal=Read-E1Json 'C:\kmp-eval\scratch\agentic-evidence1-claude-2x2-windows-stage-b-readiness-v1\NETWORK-SEAL.json'
-    Assert-E1Fields $seal.value @{verdict='PASS';network_mode='restricted'}
+    try {Assert-E1Fields $seal.value @{verdict='PASS';network_mode='restricted'}} catch {throw 'network_seal_contract'}
     $allowedAddresses=@()
     foreach($hostName in @('api.anthropic.com','platform.claude.com','claude.ai','claude.com')) {
         $addresses=Get-E1Field (Get-E1Field $seal.value 'allowed_resolved_ips_by_host') $hostName
-        if(-not $addresses) {throw 'network_unsealed'}
+        if(-not $addresses) {throw 'network_endpoint_missing'}
         foreach($address in $addresses) {
             $ip=$null
-            if(-not [Net.IPAddress]::TryParse([string]$address,[ref]$ip)) {throw 'network_unsealed'}
+            if(-not [Net.IPAddress]::TryParse([string]$address,[ref]$ip)) {throw 'network_endpoint_invalid'}
             $allowedAddresses += $ip.ToString()
         }
     }
@@ -107,11 +113,34 @@ function Get-E1OfflineSealHash {
                     $ip=$null
                     if(-not [Net.IPAddress]::TryParse([string]$remote,[ref]$ip) -or $ip.ToString() -notin $allowedAddresses) {$claude=$false}
                 }
-                if(-not $dns -and -not $claude) {throw 'network_unsealed'}
+                if(-not $dns -and -not $claude) {
+                    $dynamic=[string](Get-E1Field $port 'DynamicTarget')
+                    if($dynamic -and $dynamic -ne 'Any') {
+                        switch -CaseSensitive ($dynamic) {
+                            'ProximityApps' {throw 'network_rule_proximity_apps'}
+                            'ProximitySharing' {throw 'network_rule_proximity_sharing'}
+                            'WifiDirectPrinting' {throw 'network_rule_wifi_printing'}
+                            'WifiDirectDisplay' {throw 'network_rule_wifi_display'}
+                            'WifiDirectDevices' {throw 'network_rule_wifi_devices'}
+                            default {throw 'network_rule_dynamic_unknown'}
+                        }
+                    }
+                    if($protocol -in @('TCP','6')) {throw 'network_rule_tcp'}
+                    if($protocol -in @('UDP','17')) {throw 'network_rule_udp'}
+                    $remotes=@($address.RemoteAddress)
+                    if($remotes.Count -eq 1 -and $remotes[0] -eq 'Any') {throw 'network_rule_any_all_addresses'}
+                    $loopback=($remotes.Count -gt 0)
+                    foreach($remote in $remotes) {
+                        $ip=$null
+                        if(-not [Net.IPAddress]::TryParse([string]$remote,[ref]$ip) -or -not [Net.IPAddress]::IsLoopback($ip)) {$loopback=$false}
+                    }
+                    if($loopback) {throw 'network_rule_any_loopback'}
+                    throw 'network_rule_any_scoped_addresses'
+                }
             }
         }
         $ruleRows+=@{name=$rule.Name;action=[string]$rule.Action;profile=[string]$rule.Profile;program=$app.Program;package=$app.Package;
-            protocol=[string]$port.Protocol;local_port=@($port.LocalPort);remote_port=@($port.RemotePort);
+            protocol=[string]$port.Protocol;dynamic_target=(Get-E1Field $port 'DynamicTarget');local_port=@($port.LocalPort);remote_port=@($port.RemotePort);
             local_address=@($address.LocalAddress);remote_address=@($address.RemoteAddress);service=$service.Service}
     }
     $snapshot = @{ profiles=@($profiles | Select-Object Name,Enabled,DefaultOutboundAction); rules=$ruleRows; seal_sha256=$seal.sha256 }
@@ -124,6 +153,33 @@ function New-E1OfflineReceipt {
         live_records_created=$null; validation_pass=$false; firewall_modified=$false; original_home_used_for_gradle=$false
         process=$null; cache=$null; offline_signals=$null; gradle_signals=$null; hashes=@{}
         checks=@{ guest_identity=$false; network_sealed=$false; source_custody=$false; postflight=$false } }
+}
+
+function Invoke-E1OfflineNetworkAuditGuest($Config) {
+    $result=New-E1OfflineReceipt
+    $result.operation='gradle-offline-network-audit'
+    try {
+        $identity=Get-CimInstance Win32_ComputerSystem
+        $vmId=Get-ItemPropertyValue -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Virtual Machine\Guest\Parameters' -Name VirtualMachineId
+        Assert-E1GuestIdentity $env:COMPUTERNAME $Config.HostComputerName 'Evidence1Runner' $vmId $Config.VMId $identity.Manufacturer $identity.Model $env:USERNAME $Config.GuestUser
+        $result.checks.guest_identity=$true
+        Assert-E1ForensicSubject $Config.Report $Config.Commit $Config.Tree
+        Assert-E1Fields $Config.Report @{state='failed'}
+        $path='C:\kmp-eval\scratch\evidence1-validation-ops\wet-v2-' + $Config.Commit + '.json'
+        $marker=Read-E1ForensicArtifact $path ''
+        Assert-E1ForensicMarker $marker.value $Config.Report
+        $result.hashes.wet_marker_sha256=$marker.sha256
+        $result.hashes.network_seal_sha256=Get-E1OfflineSealHash
+        $result.checks.network_sealed=$true
+        $null=Read-E1ForensicArtifact $path $marker.sha256
+        if((Get-E1OfflineSealHash) -cne $result.hashes.network_seal_sha256) {throw 'evidence_changed'}
+        $result.checks.postflight=$true
+        $result.state='passed'; $result.failure_code='none'
+    } catch {
+        $result.failure_code=Get-E1FailureCode $_ 'preflight_failed'
+        if($_.Exception.Message -cin $script:E1OfflineNetworkFailures) {$result.failure_code=$_.Exception.Message}
+    }
+    return $result
 }
 
 function Assert-E1OfflineQuiescent([string]$Source) {
@@ -245,7 +301,7 @@ function Invoke-E1OfflineGuest($Config) {
     } catch {
         $allowed=@('attempt_exists','network_unsealed','cache_busy','cache_limit','cache_destination','cache_empty','cache_changed','wrapper_identity','wrapper_cache_missing','diagnostic_limit','sdk_configuration')
         $result.state='failed'; $result.failure_code=Get-E1FailureCode $_ 'preflight_failed'
-        if ($_.Exception.Message -cin $allowed) { $result.failure_code=$_.Exception.Message }
+        if ($_.Exception.Message -cin ($allowed + $script:E1OfflineNetworkFailures)) { $result.failure_code=$_.Exception.Message }
     } finally {
         foreach($name in $saved.Keys) { [Environment]::SetEnvironmentVariable($name,$saved[$name],'Process') }
         if ($before) {
@@ -272,7 +328,11 @@ function ConvertTo-E1OfflineReceipt($Raw) {
     $safe=New-E1OfflineReceipt
     $keys=@(Get-E1ObjectKeys $Raw | Where-Object { $_ -cnotin @('PSComputerName','RunspaceId','PSShowComputerName') })
     if (@($keys | Where-Object { $_ -cnotin @($safe.Keys) }).Count -or $keys.Count -ne $safe.Count) { throw 'result_shape' }
-    $fixed=@{schema=1;operation='gradle-offline-cache-probe';agent_calls=0;product_invocations=0;validation_pass=$false;firewall_modified=$false;original_home_used_for_gradle=$false}
+    $operation=Get-E1Field $Raw 'operation'
+    if($operation -cnotin @('gradle-offline-cache-probe','gradle-offline-network-audit')) {throw 'result_shape'}
+    $audit=($operation -ceq 'gradle-offline-network-audit')
+    $safe.operation=$operation
+    $fixed=@{schema=1;operation=$operation;agent_calls=0;product_invocations=0;validation_pass=$false;firewall_modified=$false;original_home_used_for_gradle=$false}
     foreach($key in $fixed.Keys) { if(-not (Test-E1Exact (Get-E1Field $Raw $key) $fixed[$key])) {throw 'result_shape'} }
     foreach($name in @('state','stage','conclusion','failure_code')) {
         $value=Get-E1Field $Raw $name
@@ -282,6 +342,7 @@ function ConvertTo-E1OfflineReceipt($Raw) {
             conclusion { @('inconclusive','offline_cache_incomplete','offline_tasks_completed') }
             failure_code { @('none','probe_failed','preflight_failed','postflight_failed','attempt_exists','network_unsealed','cache_busy','cache_limit','cache_destination','cache_empty','cache_changed','wrapper_identity','wrapper_cache_missing','diagnostic_limit','sdk_configuration','gradle_timeout','process_cleanup','offline_cache_miss','gradle_failed','guest_identity','validation_overlap','live_overlap','ambient_credentials','environment_override','repo_commit','repo_tree','repo_root','repo_dirty','source_artifacts','source_artifact_limit','source_tracked_changed','source_index_changed','records_changed','evidence_changed','path_invalid','path_link','path_outside_root','git_failed','git_output_size','java_toolchain','result_shape') }
         }
+        if($name -ceq 'failure_code') {$allowed += $script:E1OfflineNetworkFailures + @('evidence_mismatch','json_size')}
         if ($value -isnot [string] -or $value -cnotin $allowed) { throw 'result_shape' }; $safe[$name]=$value
     }
     $calls=Get-E1Field $Raw 'gradle_invocations'
@@ -315,14 +376,22 @@ function ConvertTo-E1OfflineReceipt($Raw) {
         $value=Get-E1Field $hashes $key
         if($value -isnot [string] -or $value -cnotmatch '^[a-f0-9]{64}$') {throw 'result_shape'}; $safe.hashes[$key]=$value
     }
-    if($safe.state -ceq 'passed' -and ($safe.failure_code -cne 'none' -or $safe.conclusion -cne 'offline_tasks_completed' -or
+    if($audit) {
+        if($safe.gradle_invocations -ne 0 -or $null -ne $safe.process -or $null -ne $safe.cache -or
+            $null -ne $safe.offline_signals -or $null -ne $safe.gradle_signals -or $null -ne $safe.live_records_created -or
+            $safe.stage -cne 'preflight' -or $safe.conclusion -cne 'inconclusive' -or $safe.checks.source_custody) {throw 'result_shape'}
+        if($safe.state -ceq 'passed' -and ($safe.failure_code -cne 'none' -or -not $safe.checks.guest_identity -or
+            -not $safe.checks.network_sealed -or -not $safe.checks.postflight)) {throw 'result_shape'}
+    }
+    elseif($safe.state -ceq 'passed' -and ($safe.failure_code -cne 'none' -or $safe.conclusion -cne 'offline_tasks_completed' -or
         $safe.gradle_invocations -ne 1 -or $safe.live_records_created -ne 0 -or @($safe.checks.Values | Where-Object {$_ -ne $true}).Count -or
         $null -eq $safe.process -or $safe.process.exit_code -ne 0 -or $safe.process.timed_out -or -not $safe.process.cleanup_ok)) {throw 'result_shape'}
     return $safe
 }
 
-function Invoke-E1OfflineDirect([string]$TargetCommit,[string]$TargetTree,[string]$ExpectedReportSha256) {
+function Invoke-E1OfflineDirect([string]$TargetCommit,[string]$TargetTree,[string]$ExpectedReportSha256,[switch]$AuditNetwork) {
     $result=@{schema=1;operation='gradle-offline-cache-probe';state='failed';failure_code='host_preflight';receipt=$null;subject=$null;module_sha256=$null}
+    if($AuditNetwork) {$result.operation='gradle-offline-network-audit'}
     $session=$null; $job=$null
     try {
         $path='C:\kmp-eval\scratch\hyperv-verify-wet-gate-v2-direct\HYPERV-VERIFY-WET-GATE-V2-DIRECT.json'
@@ -344,7 +413,7 @@ function Invoke-E1OfflineDirect([string]$TargetCommit,[string]$TargetTree,[strin
             $text += [Text.UTF8Encoding]::new($false,$true).GetString([IO.File]::ReadAllBytes($modulePath)) + "`n"
         }
         $result.module_sha256=Get-E1Sha256 ([Text.Encoding]::UTF8.GetBytes($text))
-        $config=@{Commit=$TargetCommit;Tree=$TargetTree;Report=$report.value;VMId=$vm.Id.ToString();HostComputerName=$env:COMPUTERNAME;GuestUser=$stored.UserName}
+        $config=@{Commit=$TargetCommit;Tree=$TargetTree;Report=$report.value;VMId=$vm.Id.ToString();HostComputerName=$env:COMPUTERNAME;GuestUser=$stored.UserName;AuditNetwork=[bool]$AuditNetwork}
         $session=New-PSSession -VMName 'Evidence1-Runner' -Credential $credential -ErrorAction Stop
         $result.failure_code='transport_failed'
         $job=Invoke-Command -Session $session -AsJob -ScriptBlock {
@@ -354,12 +423,14 @@ function Invoke-E1OfflineDirect([string]$TargetCommit,[string]$TargetTree,[strin
             try {$actual=-join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Text)) | ForEach-Object {$_.ToString('x2')})} finally {$sha.Dispose()}
             if($Hash -cnotmatch '^[a-f0-9]{64}$' -or $actual -cne $Hash) {throw 'module_hash_mismatch'}
             Import-Module (New-Module -Name Evidence1OfflineProbeRuntime -ScriptBlock ([scriptblock]::Create($Text))) -DisableNameChecking
-            Invoke-E1OfflineGuest $Config
+            if($Config.AuditNetwork) {Invoke-E1OfflineNetworkAuditGuest $Config}
+            else {Invoke-E1OfflineGuest $Config}
         } -ArgumentList $text,$result.module_sha256,$config
         if(-not (Wait-Job $job -Timeout 900)) {throw 'transport_timeout'}
         $raw=@(Receive-Job $job -ErrorAction Stop 3>$null 4>$null 5>$null 6>$null)
         if($raw.Count -ne 1) {throw 'result_shape'}
         $result.receipt=ConvertTo-E1OfflineReceipt $raw[0]
+        if($result.receipt.operation -cne $result.operation) {throw 'result_shape'}
         $null=Read-E1ForensicArtifact $path $report.sha256
         $result.state=$result.receipt.state; $result.failure_code=$result.receipt.failure_code
     } catch {

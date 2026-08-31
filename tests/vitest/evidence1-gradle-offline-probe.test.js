@@ -152,12 +152,12 @@ describe.skipIf(process.platform !== 'win32')('Evidence1 offline cache contract 
       $ast=[System.Management.Automation.Language.Parser]::ParseFile(${quote(modulePath)},[ref]$tokens,[ref]$errors)
       $fn=$ast.Find({param($a) $a -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $a.Name -eq 'Get-E1OfflineSealHash'},$true)
       . ([scriptblock]::Create($fn.Extent.Text))
-      $testPort='443'; $testAddress='192.0.2.1'; $testProgram='Any'; $testService='Any'; $testPackage='Any'; $testDefault='Block'
+      $testPort='443'; $testProtocol='TCP'; $testDynamic='Any'; $testAddress='192.0.2.1'; $testProgram='Any'; $testService='Any'; $testPackage='Any'; $testDefault='Block'
       function Read-E1Json {return @{sha256=('a'*64);value=@{verdict='PASS';network_mode='restricted';allowed_resolved_ips_by_host=@{'api.anthropic.com'=@('192.0.2.1');'platform.claude.com'=@('192.0.2.1');'claude.ai'=@('192.0.2.1');'claude.com'=@('192.0.2.1')}}}}
       function Get-NetFirewallProfile {foreach($n in @('Domain','Private','Public')) {[pscustomobject]@{Name=$n;Enabled=$true;DefaultOutboundAction=$testDefault}}}
       function Get-NetFirewallRule {[pscustomobject]@{Name='PRIVATE_RULE';Enabled=$true;Direction='Outbound';Action='Allow';Profile='Any'}}
       function Get-NetFirewallApplicationFilter {param([Parameter(ValueFromPipeline)]$InputObject) process {[pscustomobject]@{Program=$testProgram;Package=$testPackage}}}
-      function Get-NetFirewallPortFilter {param([Parameter(ValueFromPipeline)]$InputObject) process {[pscustomobject]@{Protocol='TCP';LocalPort='Any';RemotePort=$testPort}}}
+      function Get-NetFirewallPortFilter {param([Parameter(ValueFromPipeline)]$InputObject) process {[pscustomobject]@{Protocol=$testProtocol;DynamicTarget=$testDynamic;LocalPort='Any';RemotePort=$testPort}}}
       function Get-NetFirewallAddressFilter {param([Parameter(ValueFromPipeline)]$InputObject) process {[pscustomobject]@{LocalAddress='Any';RemoteAddress=$testAddress}}}
       function Get-NetFirewallServiceFilter {param([Parameter(ValueFromPipeline)]$InputObject) process {[pscustomobject]@{Service=$testService}}}
       $first=Get-E1OfflineSealHash; $out=@($first -cmatch '^[a-f0-9]{64}$')
@@ -165,11 +165,90 @@ describe.skipIf(process.platform !== 'win32')('Evidence1 offline cache contract 
       $testPort='Any'; $out+=((Get-E1OfflineSealHash) -cmatch '^[a-f0-9]{64}$')
       $testService='Any'; $testPackage='PRIVATE_PACKAGE'; $out+=((Get-E1OfflineSealHash) -cmatch '^[a-f0-9]{64}$')
       $testPackage='Any'
-      $testPort='Any'; try {$null=Get-E1OfflineSealHash;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'network_unsealed')}
-      $testPort='443';$testAddress='Any'; try {$null=Get-E1OfflineSealHash;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'network_unsealed')}
-      $testAddress='198.51.100.2'; try {$null=Get-E1OfflineSealHash;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'network_unsealed')}
-      $testAddress='192.0.2.1';$testDefault='Allow'; try {$null=Get-E1OfflineSealHash;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'network_unsealed')}
-      $out | ConvertTo-Json -Compress`)).toEqual([true, true, true, true, true, true, true, true]);
+      $testPort='Any'; try {$null=Get-E1OfflineSealHash;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'network_rule_tcp')}
+      $testPort='443';$testAddress='Any'; try {$null=Get-E1OfflineSealHash;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'network_rule_tcp')}
+      $testAddress='198.51.100.2'; try {$null=Get-E1OfflineSealHash;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'network_rule_tcp')}
+      $testAddress='192.0.2.1';$testDefault='Allow'; try {$null=Get-E1OfflineSealHash;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'network_outbound_default')}
+      $testDefault='Block';$testProtocol='UDP';try {$null=Get-E1OfflineSealHash;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'network_rule_udp')}
+      $testProtocol='Any';try {$null=Get-E1OfflineSealHash;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'network_rule_any_scoped_addresses')}
+      $testAddress='Any';try {$null=Get-E1OfflineSealHash;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'network_rule_any_all_addresses')}
+      $testAddress='127.0.0.1';try {$null=Get-E1OfflineSealHash;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'network_rule_any_loopback')}
+      foreach($case in @(@('ProximityApps','network_rule_proximity_apps'),@('ProximitySharing','network_rule_proximity_sharing'),
+        @('WifiDirectPrinting','network_rule_wifi_printing'),@('WifiDirectDisplay','network_rule_wifi_display'),
+        @('WifiDirectDevices','network_rule_wifi_devices'),@('PRIVATE_UNKNOWN','network_rule_dynamic_unknown'))) {
+        $testDynamic=$case[0];try {$null=Get-E1OfflineSealHash;$out+=$false} catch {$out+=($_.Exception.Message -ceq $case[1])}
+      }
+      $out | ConvertTo-Json -Compress`)).toEqual(Array(18).fill(true));
+  });
+
+  it('identifies the firewall preflight condition without exporting rule names', async () => {
+    expect(await ps(`$tokens=$null; $errors=$null
+      $ast=[System.Management.Automation.Language.Parser]::ParseFile(${quote(modulePath)},[ref]$tokens,[ref]$errors)
+      $fn=$ast.Find({param($a) $a -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $a.Name -eq 'Get-E1OfflineSealHash'},$true)
+      . ([scriptblock]::Create($fn.Extent.Text))
+      $profileCount=3; $enabled=$true; $action='Block'
+      function Get-NetFirewallProfile {for($i=0;$i -lt $profileCount;$i++) {[pscustomobject]@{Name="profile$i";Enabled=$enabled;DefaultOutboundAction=$action}}}
+      function Get-NetFirewallRule {return @()}
+      function Read-E1Json {return @{sha256=('a'*64);value=@{verdict='FAIL';network_mode='restricted'}}}
+      $out=@()
+      $profileCount=2;try {$null=Get-E1OfflineSealHash} catch {$out+=$_.Exception.Message}
+      $profileCount=3;$enabled=$false;try {$null=Get-E1OfflineSealHash} catch {$out+=$_.Exception.Message}
+      $enabled=$true;$action='Allow';try {$null=Get-E1OfflineSealHash} catch {$out+=$_.Exception.Message}
+      $action='Block';try {$null=Get-E1OfflineSealHash} catch {$out+=$_.Exception.Message}
+      $out | ConvertTo-Json -Compress`)).toEqual([
+      'network_profile_count', 'network_profile_disabled', 'network_outbound_default', 'network_seal_contract',
+    ]);
+  });
+
+  it.each(['network_outbound_default', 'none', 'evidence_changed', 'evidence_mismatch', 'json_size'])('audits network without dispatch or writes: %s', async failure => {
+    const result = await ps(`$null=Get-Command Invoke-E1OfflineNetworkAuditGuest -ErrorAction Stop
+      $r=& (Get-Module evidence1-gradle-offline-probe) {
+      function Get-CimInstance {return @{Manufacturer='Microsoft Corporation';Model='Virtual Machine'}}
+      function Get-ItemPropertyValue {return '00000000-0000-0000-0000-000000000001'}
+      function Assert-E1GuestIdentity {}
+      function Assert-E1ForensicSubject {}
+      function Assert-E1ForensicMarker {}
+      function Read-E1ForensicArtifact {return @{sha256=('a'*64);value=@{}}}
+      $script:auditReads=0
+      function Get-E1OfflineSealHash {
+        $script:auditReads++
+        if(${quote(failure)} -cnotin @('none','evidence_changed')) {throw ${quote(failure)}}
+        if(${quote(failure)} -ceq 'evidence_changed' -and $script:auditReads -gt 1) {return ('d'*64)}
+        return ('a'*64)
+      }
+      function Invoke-E1OwnedProcess {throw 'FORBIDDEN_PROCESS'}
+      function Copy-E1OfflineCache {throw 'FORBIDDEN_COPY'}
+      function Set-NetFirewallRule {throw 'FORBIDDEN_FIREWALL'}
+      function New-Item {throw 'FORBIDDEN_WRITE'}
+      function Write-E1Record {throw 'FORBIDDEN_WRITE'}
+      Invoke-E1OfflineNetworkAuditGuest @{Report=@{state='failed'};Commit=('b'*40);Tree=('c'*40);HostComputerName='host';VMId='00000000-0000-0000-0000-000000000001';GuestUser='Evidence1'}
+      }
+      $safe=ConvertTo-E1OfflineReceipt $r
+      $safe | ConvertTo-Json -Depth 8 -Compress`);
+    expect(result).toMatchObject({ operation: 'gradle-offline-network-audit', failure_code: failure,
+      agent_calls: 0, product_invocations: 0, gradle_invocations: 0, process: null, cache: null,
+      validation_pass: false, firewall_modified: false, stage: 'preflight', state: failure === 'none' ? 'passed' : 'failed' });
+  });
+
+  it('rejects process/copy claims or unknown data in an audit-only receipt', async () => {
+    const mutations = ['$r.gradle_invocations=1', "$r.conclusion='offline_tasks_completed'", "$r.stage='copy_cache'",
+      '$r.live_records_created=0', '$r.checks.source_custody=$true', "$r.failure_code='PRIVATE_RULE'",
+      "$r.rule_name='PRIVATE_RULE'", "$r.state='passed';$r.failure_code='none'"];
+    expect(await ps(`$out=@()
+      foreach($mutation in @(${mutations.map(quote).join(',')})) {
+        $r=New-E1OfflineReceipt;$r.operation='gradle-offline-network-audit'
+        & ([scriptblock]::Create($mutation))
+        try {$null=ConvertTo-E1OfflineReceipt $r;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'result_shape')}
+      };$out | ConvertTo-Json -Compress`)).toEqual(mutations.map(() => true));
+  });
+
+  it('restricts the audit guest entry to reviewed read-only helpers', async () => {
+    const commands = await ps(`$tokens=$null;$errors=$null
+      $ast=[System.Management.Automation.Language.Parser]::ParseFile(${quote(modulePath)},[ref]$tokens,[ref]$errors)
+      $fn=$ast.Find({param($a) $a -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $a.Name -eq 'Invoke-E1OfflineNetworkAuditGuest'},$true)
+      @($fn.FindAll({param($a) $a -is [System.Management.Automation.Language.CommandAst]},$true) | ForEach-Object {$_.GetCommandName()} | Sort-Object -Unique) | ConvertTo-Json -Compress`);
+    expect(commands.sort()).toEqual(['New-E1OfflineReceipt', 'Get-CimInstance', 'Get-ItemPropertyValue', 'Assert-E1GuestIdentity',
+      'Assert-E1ForensicSubject', 'Assert-E1Fields', 'Read-E1ForensicArtifact', 'Assert-E1ForensicMarker', 'Get-E1OfflineSealHash', 'Get-E1FailureCode'].sort());
   });
 
   it.each([
