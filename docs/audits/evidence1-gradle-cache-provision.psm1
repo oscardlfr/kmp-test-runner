@@ -425,6 +425,22 @@ function Read-E1CacheProvisionGuest($Config) {
     $summary.recorded_addresses=@($journal.repositories | ForEach-Object {$_.addresses}).Count
     $summary.remaining_owned_rules=@(Get-NetFirewallRule -PolicyStore ActiveStore | Where-Object {$_.Name -like ('E1CacheProvision-'+$Config.ProvisionId+'-*')}).Count
     $summary.explicit_outbound_blocks=@(Get-NetFirewallRule -PolicyStore ActiveStore | Where-Object {$_.Enabled.ToString() -eq 'True' -and $_.Direction.ToString() -eq 'Outbound' -and $_.Action.ToString() -eq 'Block'}).Count
+    $summary.local_rule_merge_disabled=@(Get-NetFirewallProfile -PolicyStore ActiveStore | Where-Object {$_.AllowLocalFirewallRules.ToString() -eq 'False'}).Count
+    $summary.hosts_listed=0;$summary.hosts_unlisted=0;$summary.resolver_listed=0;$summary.resolver_unlisted=0
+    $hosts=[IO.File]::ReadAllLines((Join-Path $env:SystemRoot 'System32/drivers/etc/hosts'))
+    foreach($repository in $journal.repositories) {
+        if($repository.host_name -cnotin @('dl.google.com','repo.maven.apache.org','plugins.gradle.org','plugins-artifacts.gradle.org')){throw 'context_mismatch'}
+        $recorded=@($repository.addresses | ForEach-Object {[Net.IPAddress]::Parse($_).ToString()})
+        foreach($line in $hosts) {
+            $parts=@(($line -split '#',2)[0].Trim() -split '\s+')
+            if($parts.Count -lt 2 -or $parts[1..($parts.Count-1)] -notcontains $repository.host_name){continue}
+            $ip=$null;if(-not [Net.IPAddress]::TryParse($parts[0],[ref]$ip)){continue}
+            $key=if($recorded -contains $ip.ToString()){'hosts_listed'}else{'hosts_unlisted'};$summary[$key]++
+        }
+        foreach($ip in [Net.Dns]::GetHostAddresses($repository.host_name)) {
+            $key=if($recorded -contains $ip.ToString()){'resolver_listed'}else{'resolver_unlisted'};$summary[$key]++
+        }
+    }
     Assert-E1OfflineQuiescent 'C:\kmp-eval\NowInAndroid-evidence1-coverage-threshold-windows-stageb-v1'
     return $summary
 }

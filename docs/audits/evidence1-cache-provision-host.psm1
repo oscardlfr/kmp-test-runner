@@ -135,7 +135,8 @@ function Invoke-E1CacheProvisionDirect([string]$TargetCommit,[string]$TargetTree
             $config.Warm=ConvertTo-E1CacheProvisionReceipt $prior.warm
             $raw=Invoke-Command -Session $session -ScriptBlock {param($Config) Read-E1CacheProvisionGuest $Config} -ArgumentList $config -ErrorAction Stop
             $keys=@('socket_permission','connect_exception','ipv4_listed','ipv4_unlisted','ipv6_listed','ipv6_unlisted',
-                'google','maven','plugin_portal','plugin_artifacts','redirect_google','daemon_fork','recorded_addresses','remaining_owned_rules','explicit_outbound_blocks')
+                'google','maven','plugin_portal','plugin_artifacts','redirect_google','daemon_fork','recorded_addresses','remaining_owned_rules','explicit_outbound_blocks',
+                'local_rule_merge_disabled','hosts_listed','hosts_unlisted','resolver_listed','resolver_unlisted')
             $safe=@{}
             foreach($key in $keys) {
                 $v=Get-E1Field $raw $key
