@@ -200,6 +200,38 @@ describe.skipIf(process.platform !== 'win32')('Evidence1 offline cache contract 
     ]);
   });
 
+  it('projects all scope filters of the rejected any-protocol rules without private values', async () => {
+    const result = await ps(`$r=& (Get-Module evidence1-gradle-offline-probe) {
+      function Get-NetFirewallRule {[pscustomobject]@{Name='PRIVATE_RULE';DisplayName='PRIVATE_TEXT';Enabled=$true;Direction='Outbound';Action='Allow';Profile='Public';EnforcementStatus='Full';PolicyAppId='PRIVATE_APP_ID';LocalUserOwner='PRIVATE_OWNER'}}
+      function Get-NetConnectionProfile {[pscustomobject]@{NetworkCategory='Private'}}
+      function Get-NetFirewallApplicationFilter {param([Parameter(ValueFromPipeline)]$InputObject) process {[pscustomobject]@{Program='Any';Package='Any'}}}
+      function Get-NetFirewallPortFilter {param([Parameter(ValueFromPipeline)]$InputObject) process {[pscustomobject]@{Protocol='Any';DynamicTarget='Any';LocalPort='Any';RemotePort='Any'}}}
+      function Get-NetFirewallAddressFilter {param([Parameter(ValueFromPipeline)]$InputObject) process {[pscustomobject]@{LocalAddress='127.0.0.1';RemoteAddress='Any'}}}
+      function Get-NetFirewallServiceFilter {param([Parameter(ValueFromPipeline)]$InputObject) process {[pscustomobject]@{Service='Any'}}}
+      function Get-NetFirewallInterfaceFilter {param([Parameter(ValueFromPipeline)]$InputObject) process {[pscustomobject]@{InterfaceAlias='PRIVATE_INTERFACE'}}}
+      function Get-NetFirewallInterfaceTypeFilter {param([Parameter(ValueFromPipeline)]$InputObject) process {[pscustomobject]@{InterfaceType='Wireless'}}}
+      function Get-NetFirewallSecurityFilter {param([Parameter(ValueFromPipeline)]$InputObject) process {[pscustomobject]@{Authentication='Required';Encryption='Required';OverrideBlockRules=$false;LocalUser='PRIVATE_SDDL';RemoteUser='Any';RemoteMachine='Any'}}}
+      Get-E1OfflineNetworkRuleScope
+    }; $r | ConvertTo-Json -Depth 8 -Compress`);
+    expect(result).toMatchObject({ rules: [{ action: 'allow', program: 'any', profile_match: 'inactive',
+      local_address: 'loopback', remote_address: 'any', local_port: 'any', remote_port: 'any',
+      interface_alias: 'scoped', interface_type: 'wireless', authentication: 'required', encryption: 'required',
+      override_block_rules: 'false', local_user: 'scoped', remote_user: 'any', remote_machine: 'any',
+      policy_app_id: 'scoped', local_user_owner: 'scoped', enforcement: 'full', dynamic_target: 'any' }] });
+    expect(JSON.stringify(result)).not.toMatch(/PRIVATE|127\.0\.0|SDDL/);
+  });
+
+  it('validates schema 2 audit scopes strictly and rejects them on historical receipts', async () => {
+    expect(await ps(`$r=New-E1OfflineReceipt; $r.operation='gradle-offline-network-audit';$r.schema=2
+      $r.network_rule_scope=@{rules=@()}
+      $safe=ConvertTo-E1OfflineReceipt $r
+      $out=@($safe.schema -eq 2 -and $safe.network_rule_scope.rules.Count -eq 0)
+      $r.schema=1;try {$null=ConvertTo-E1OfflineReceipt $r;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'result_shape')}
+      $r.schema=2;$r.operation='gradle-offline-cache-probe';try {$null=ConvertTo-E1OfflineReceipt $r;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'result_shape')}
+      $r.operation='gradle-offline-network-audit';$r.network_rule_scope.path='PRIVATE_PATH';try {$null=ConvertTo-E1OfflineReceipt $r;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'result_shape')}
+      $out | ConvertTo-Json -Compress`)).toEqual([true, true, true, true]);
+  });
+
   it.each(['network_outbound_default', 'none', 'evidence_changed', 'evidence_mismatch', 'json_size'])('audits network without dispatch or writes: %s', async failure => {
     const result = await ps(`$null=Get-Command Invoke-E1OfflineNetworkAuditGuest -ErrorAction Stop
       $r=& (Get-Module evidence1-gradle-offline-probe) {
@@ -209,6 +241,7 @@ describe.skipIf(process.platform !== 'win32')('Evidence1 offline cache contract 
       function Assert-E1ForensicSubject {}
       function Assert-E1ForensicMarker {}
       function Read-E1ForensicArtifact {return @{sha256=('a'*64);value=@{}}}
+      function Get-E1OfflineNetworkRuleScope {return @{rules=@()}}
       $script:auditReads=0
       function Get-E1OfflineSealHash {
         $script:auditReads++
@@ -248,7 +281,7 @@ describe.skipIf(process.platform !== 'win32')('Evidence1 offline cache contract 
       $fn=$ast.Find({param($a) $a -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $a.Name -eq 'Invoke-E1OfflineNetworkAuditGuest'},$true)
       @($fn.FindAll({param($a) $a -is [System.Management.Automation.Language.CommandAst]},$true) | ForEach-Object {$_.GetCommandName()} | Sort-Object -Unique) | ConvertTo-Json -Compress`);
     expect(commands.sort()).toEqual(['New-E1OfflineReceipt', 'Get-CimInstance', 'Get-ItemPropertyValue', 'Assert-E1GuestIdentity',
-      'Assert-E1ForensicSubject', 'Assert-E1Fields', 'Read-E1ForensicArtifact', 'Assert-E1ForensicMarker', 'Get-E1OfflineSealHash', 'Get-E1FailureCode'].sort());
+      'Assert-E1ForensicSubject', 'Assert-E1Fields', 'Read-E1ForensicArtifact', 'Assert-E1ForensicMarker', 'Get-E1OfflineSealHash', 'Get-E1FailureCode', 'Get-E1OfflineNetworkRuleScope'].sort());
   });
 
   it.each([
