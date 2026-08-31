@@ -394,9 +394,13 @@ Describe 'Evidence1 canary wrapper claimed preflight lifecycle' {
         $source = $source.Substring(0, $exit.StartOffset) + 'return $exitCode' + $source.Substring($exit.EndOffset)
         $source = $source.Replace('$PSScriptRoot', ('$script:AuditRoot'))
         $source = $source.Replace('& (Join-Path $env:SystemRoot ''System32\shutdown.exe'')', 'Invoke-FixtureShutdown')
+        $source = $source.Replace('New-Item -Path $regPath -Force | Out-Null', 'Invoke-FixtureRegistry')
+        $source = $source.Replace('New-ItemProperty -Path $regPath -Name ''Evidence1StageBProgress'' -Value ($snapshot | ConvertTo-Json -Depth 8 -Compress) -PropertyType String -Force | Out-Null', 'Invoke-FixtureRegistry')
         if ($source.Contains('shutdown.exe')) { throw 'fixture must never invoke real shutdown' }
+        if ($source.Contains('New-ItemProperty')) { throw 'fixture must never write the registry' }
         $script:WholeCanaryWrapper = [scriptblock]::Create($source)
         function Invoke-FixtureShutdown { param([Parameter(ValueFromRemainingArguments)]$Arguments) }
+        function Invoke-FixtureRegistry { throw 'fixture_registry_disabled' }
         function Invoke-ClaimedWrapperFixture {
             try {
                 $code = & $script:WholeCanaryWrapper -RunId $script:LifecycleId -CanaryArm product -CanaryBindingSha256 ('a'*64) `
@@ -431,17 +435,17 @@ Describe 'Evidence1 canary wrapper claimed preflight lifecycle' {
             if ($script:LifecycleMode -eq 'binding') { throw 'canary_bundle_invalid' }
             @{ binding = @{ scripts = @{ 'evidence1-stageb-live-launch.ps1' = $script:LifecycleLauncherHash } } }
         }
-        Mock Get-ChildItem { throw 'canary_journal_baseline' } -ParameterFilter { $LiteralPath -eq $script:LifecycleJournal -and $script:LifecycleMode -eq 'enumeration' }
+        Mock Get-ChildItem { throw 'canary_journal_baseline' } -ParameterFilter {
+            $LiteralPath -eq $script:LifecycleJournal -and $script:LifecycleMode -in @('enumeration','status','terminal')
+        }
         Mock Write-Evidence1JsonAtomically {
             param($Path, $Value)
             $name = [IO.Path]::GetFileName($Path)
             $script:LifecycleWrites.Add($name)
-            if ($name -eq 'journal-baseline.json') { throw 'canary_journal_baseline' }
             if ($name -eq 'STAGE-B-live.status.json' -and $script:LifecycleMode -eq 'status') { throw 'private status write failure' }
             if ($name -eq 'STAGE-B-live.exit.json' -and $script:LifecycleMode -eq 'terminal') { throw 'fixture_terminal_write_failure' }
             & $script:RealCanaryJsonWriter -Path $Path -Value $Value
         }
-        Mock New-Item { throw 'fixture_registry_disabled' } -ParameterFilter { $Path -like 'HKLM:*' }
         Mock Invoke-FixtureShutdown { $script:LifecycleShutdowns++ }
         Mock Start-E1OwnedProcess { throw 'fixture_dispatch_forbidden' }
     }
