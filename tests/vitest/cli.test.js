@@ -4066,6 +4066,42 @@ describe('extractMigratedEnvelopeDetailed', () => {
 });
 
 describe('dispatcher envelope_parse_failed fallback (e2e via main)', () => {
+  it.each([1, 3])('preserves failed JSON-mode diagnostics on stderr while stdout remains the exact envelope (exit %s)', (exit) => {
+    const envelope = { tool: 'kmp-test', exit_code: exit, tests: { total: 1, passed: 0, failed: 1 }, errors: [{ code: 'module_failed', setup_failed: true }] };
+    const diagnostic = 'FAILURE: Build failed with an exception.\n* What went wrong:\n> Could not resolve all files\n> PKIX path building failed\nBUILD FAILED\n';
+    spawnMock.mockReturnValue({ status: exit, stdout: diagnostic + '__KMP_TEST_ENVELOPE_V1_BEGIN__\n' + JSON.stringify(envelope) + '\n__KMP_TEST_ENVELOPE_V1_END__\n', stderr: 'WRAPPER_STDERR\n' });
+    withFakeGradleProject(dir => {
+      const out = []; const err = [];
+      const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(c => { out.push(String(c)); return true; });
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(c => { err.push(String(c)); return true; });
+      try {
+        process.argv = ['node', 'kmp-test.js', 'parallel', '--json', '--project-root', dir];
+        expect(main()).toBe(exit);
+      } finally { stdout.mockRestore(); stderr.mockRestore(); }
+      expect(JSON.parse(out.join('').trim())).toEqual(envelope);
+      expect(err.join('')).toContain('PKIX path building failed');
+      expect(err.join('')).toContain('WRAPPER_STDERR');
+      expect(err.join('')).not.toContain('__KMP_TEST_ENVELOPE');
+      expect(err.join('')).not.toContain(JSON.stringify(envelope));
+    });
+  });
+
+  it('does not forward successful JSON-mode human logs to stderr', () => {
+    const envelope = { tool: 'kmp-test', exit_code: 0, tests: { total: 1, passed: 1, failed: 0 }, errors: [] };
+    spawnMock.mockReturnValue({ status: 0, stdout: 'HUMAN_PROGRESS\n__KMP_TEST_ENVELOPE_V1_BEGIN__\n' + JSON.stringify(envelope) + '\n__KMP_TEST_ENVELOPE_V1_END__\n', stderr: 'CAPTURED_NOISE' });
+    withFakeGradleProject(dir => {
+      const out = []; const err = [];
+      const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(c => { out.push(String(c)); return true; });
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(c => { err.push(String(c)); return true; });
+      try {
+        process.argv = ['node', 'kmp-test.js', 'parallel', '--json', '--project-root', dir];
+        expect(main()).toBe(0);
+      } finally { stdout.mockRestore(); stderr.mockRestore(); }
+      expect(JSON.parse(out.join('').trim())).toEqual(envelope);
+      expect(err.join('')).not.toMatch(/HUMAN_PROGRESS|CAPTURED_NOISE/);
+    });
+  });
+
   it('corrupt sentinel block falls back to the legacy parser WITH a discriminable warning', () => {
     spawnMock.mockReturnValue({
       status: 0,
@@ -4106,4 +4142,3 @@ describe('dispatcher envelope_parse_failed fallback (e2e via main)', () => {
     });
   });
 });
-
