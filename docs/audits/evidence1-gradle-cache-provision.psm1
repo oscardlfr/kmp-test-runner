@@ -377,4 +377,56 @@ function Invoke-E1CacheProvisionGuest($Config) {
     return ConvertTo-E1CacheProvisionReceipt $result
 }
 
-Export-ModuleMember -Function Invoke-E1CacheProvisionGuest,ConvertTo-E1CacheProvisionReceipt
+function Get-E1ProvisionConnectionSummary([string]$Text,$Repositories) {
+    $result=@{socket_permission=0;connect_exception=0;ipv4_listed=0;ipv4_unlisted=0;ipv6_listed=0;ipv6_unlisted=0;
+        google=0;maven=0;plugin_portal=0;plugin_artifacts=0;redirect_google=0;daemon_fork=0}
+    $patterns=@{socket_permission='(?i)(?:SocketException|ConnectException): Permission denied';
+        connect_exception='(?:HttpHostConnectException|ConnectException):';google='https://dl\.google\.com/';
+        maven='https://repo\.maven\.apache\.org/';plugin_portal='https://plugins\.gradle\.org/';
+        plugin_artifacts='https://plugins-artifacts\.gradle\.org/';redirect_google='https://(?:dl\.googleusercontent\.com|redirector\.gvt1\.com)/';
+        daemon_fork='(?i)single-use Daemon process'}
+    foreach($key in $patterns.Keys) {$result[$key]=[regex]::Matches($Text,$patterns[$key]).Count}
+    $allowed=@($Repositories | ForEach-Object {$_.addresses} | ForEach-Object {[Net.IPAddress]::Parse($_).ToString()})
+    # Only IP literals attached to a hostname by Java's InetAddress formatter are counted.
+    foreach($match in [regex]::Matches($Text,'/[\[]?(?<ip>(?:[0-9]{1,3}\.){3}[0-9]{1,3}|[0-9a-fA-F]*:[0-9a-fA-F:]+)')) {
+        $ip=$null;if(-not [Net.IPAddress]::TryParse($match.Groups['ip'].Value,[ref]$ip)){continue}
+        $family=if($ip.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetwork){'ipv4'}else{'ipv6'}
+        $relation=if($allowed -contains $ip.ToString()){'listed'}else{'unlisted'}
+        $result[$family+'_'+$relation]++
+    }
+    return $result
+}
+
+function Read-E1CacheProvisionGuest($Config) {
+    Assert-E1CacheProvisionLease $Config
+    Assert-E1OfflineQuiescent 'C:\kmp-eval\NowInAndroid-evidence1-coverage-threshold-windows-stageb-v1'
+    $root=Resolve-E1Path ('C:\kmp-eval\scratch\gradle-cache-provision-'+$Config.ProvisionId)
+    $receipt=ConvertTo-E1CacheProvisionReceipt (Read-E1Json (Join-Path $root 'warm.result.json')).value
+    if($receipt.phase -cne 'warm' -or $receipt.provision_id -cne $Config.ProvisionId -or
+        $receipt.hashes.context_sha256 -cne $Config.Warm.hashes.context_sha256){throw 'context_mismatch'}
+    $journal=(Read-E1Json (Join-Path $root 'warm.started.json')).value
+    if($journal.context_sha256 -cne $receipt.hashes.context_sha256){throw 'context_mismatch'}
+    $text=''
+    foreach($stream in @('stdout','stderr')) {
+        $hash=Get-E1Field $Config.Warm.hashes ($stream+'_sha256')
+        if($hash -cne (Get-E1Field $receipt.hashes ($stream+'_sha256'))){throw 'context_mismatch'}
+        $path=Resolve-E1Path (Join-Path $root ('warm/gradle.'+$stream+'.txt'))
+        $file=[IO.File]::Open($path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+        try {
+            if($file.Length -gt 1048576){throw 'diagnostic_limit'}
+            $bytes=[byte[]]::new([int]$file.Length);$offset=0
+            while($offset -lt $bytes.Length){$n=$file.Read($bytes,$offset,$bytes.Length-$offset);if($n -eq 0){throw 'evidence_changed'};$offset+=$n}
+            if((Get-E1Sha256 $bytes) -cne $hash){throw 'evidence_changed'}
+            $text+=[Text.UTF8Encoding]::new($false,$true).GetString($bytes)+"`n"
+        } finally {$file.Dispose()}
+    }
+    $summary=Get-E1ProvisionConnectionSummary $text $journal.repositories
+    $summary.firewall_unchanged=((Get-E1OfflineFirewallHash) -ceq $receipt.hashes.firewall_after_sha256)
+    $summary.recorded_addresses=@($journal.repositories | ForEach-Object {$_.addresses}).Count
+    $summary.remaining_owned_rules=@(Get-NetFirewallRule -PolicyStore ActiveStore | Where-Object {$_.Name -like ('E1CacheProvision-'+$Config.ProvisionId+'-*')}).Count
+    $summary.explicit_outbound_blocks=@(Get-NetFirewallRule -PolicyStore ActiveStore | Where-Object {$_.Enabled.ToString() -eq 'True' -and $_.Direction.ToString() -eq 'Outbound' -and $_.Action.ToString() -eq 'Block'}).Count
+    Assert-E1OfflineQuiescent 'C:\kmp-eval\NowInAndroid-evidence1-coverage-threshold-windows-stageb-v1'
+    return $summary
+}
+
+Export-ModuleMember -Function Invoke-E1CacheProvisionGuest,ConvertTo-E1CacheProvisionReceipt,Read-E1CacheProvisionGuest

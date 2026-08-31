@@ -87,7 +87,7 @@ function Invoke-E1CacheProvisionTransport($Session,$Config,[scriptblock]$Monitor
     }
 }
 
-function Invoke-E1CacheProvisionDirect([string]$TargetCommit,[string]$TargetTree,[string]$ExpectedReportSha256,[string]$ProvisionId) {
+function Invoke-E1CacheProvisionDirect([string]$TargetCommit,[string]$TargetTree,[string]$ExpectedReportSha256,[string]$ProvisionId,[switch]$ReadDiagnostics) {
     $result=@{schema=1;operation='gradle-cache-provision';state='failed';failure_code='preflight_failed';subject=$null;module_sha256=$null;warm=$null;certify=$null;network=$null}
     $session=$null;$lease=$false;$release=$false
     try {
@@ -103,7 +103,7 @@ function Invoke-E1CacheProvisionDirect([string]$TargetCommit,[string]$TargetTree
         $root=Resolve-E1Path 'C:\kmp-eval\scratch\hyperv-cache-provision-direct'
         New-Item -ItemType Directory -Path $root -Force | Out-Null
         $journal=Resolve-E1Path (Join-Path $root ($ProvisionId + '.journal.json'))
-        if(Test-Path -LiteralPath $journal) {throw 'attempt_exists'}
+        if(-not $ReadDiagnostics -and (Test-Path -LiteralPath $journal)) {throw 'attempt_exists'}
         $stored=Import-Clixml -LiteralPath (Resolve-E1Path 'C:\kmp-eval\scratch\hyperv-create-runner\Evidence1-Runner.guest-credential.clixml')
         if($stored -isnot [pscredential] -or $stored.UserName -cnotmatch '^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$') {throw 'credential_shape'}
         $credential=[pscredential]::new("Evidence1Runner\$($stored.UserName)",$stored.Password)
@@ -128,6 +128,26 @@ function Invoke-E1CacheProvisionDirect([string]$TargetCommit,[string]$TargetTree
             [E1OfflineValidationLease]::Acquire($Config.LeaseToken)
         } -ArgumentList $text,$result.module_sha256,$config -ErrorAction Stop | Out-Null
         $lease=$true;$release=$true
+        if($ReadDiagnostics) {
+            $prior=(Read-E1Json (Join-Path $root ($ProvisionId+'.json'))).value
+            Assert-E1Fields $prior @{schema=1;operation='gradle-cache-provision'}
+            Assert-E1Fields $prior.subject @{target_commit=$TargetCommit;target_tree=$TargetTree;host_wet_report_sha256=$ExpectedReportSha256}
+            $config.Warm=ConvertTo-E1CacheProvisionReceipt $prior.warm
+            $raw=Invoke-Command -Session $session -ScriptBlock {param($Config) Read-E1CacheProvisionGuest $Config} -ArgumentList $config -ErrorAction Stop
+            $keys=@('socket_permission','connect_exception','ipv4_listed','ipv4_unlisted','ipv6_listed','ipv6_unlisted',
+                'google','maven','plugin_portal','plugin_artifacts','redirect_google','daemon_fork','recorded_addresses','remaining_owned_rules','explicit_outbound_blocks')
+            $safe=@{}
+            foreach($key in $keys) {
+                $v=Get-E1Field $raw $key
+                if(($v -isnot [int] -and $v -isnot [long]) -or $v -lt 0 -or $v -gt 100000){throw 'result_shape'}
+                $safe[$key]=[int]($v+0)
+            }
+            if($raw.firewall_unchanged -isnot [bool]){throw 'result_shape'}
+            $safe.firewall_unchanged=[bool]$raw.firewall_unchanged
+            $result.diagnostics=$safe;$result.operation='gradle-cache-provision-read'
+            $result.state='passed';$result.failure_code='none'
+            return $result
+        }
         $quiet={Invoke-Command -Session $session -ScriptBlock {param($Config)
             if(-not [E1OfflineValidationLease]::Owns($Config.LeaseToken)) {throw 'validation_overlap'}
             Assert-E1OfflineQuiescent 'C:\kmp-eval\NowInAndroid-evidence1-coverage-threshold-windows-stageb-v1'

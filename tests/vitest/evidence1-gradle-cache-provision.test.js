@@ -152,6 +152,14 @@ async function exercise(mode = 'warm') {
 }
 
 describe.skipIf(process.platform !== 'win32')('guest cache provisioning (mocked PS 5.1)', { timeout: 45_000 }, () => {
+  it('projects only closed connection counters, distinguishing recorded IPs from drift', async () => {
+    const r = await ps(String.raw`$r=& (Get-Module evidence1-gradle-cache-provision) {
+      Get-E1ProvisionConnectionSummary 'Connect to dl.google.com:443 [dl.google.com/142.250.1.1, dl.google.com/142.250.1.2, dl.google.com/2607:f8b0::1] failed: Permission denied; java.net.SocketException: Permission denied https://dl.google.com/PRIVATE_PATH?SECRET=private single-use Daemon process' @(@{addresses=@('142.250.1.1','2607:f8b0::1')})
+    };$r | ConvertTo-Json -Compress`);
+    expect(r).toMatchObject({ ipv4_listed: 1, ipv4_unlisted: 1, ipv6_listed: 1, ipv6_unlisted: 0, socket_permission: 1, daemon_fork: 1, google: 1 });
+    expect(Object.values(r).every(value => Number.isInteger(value) && value >= 0)).toBe(true);
+    expect(JSON.stringify(r)).not.toMatch(/PRIVATE|SECRET|142\.250|2607/);
+  });
   it('exports the guest and strict host receipt APIs', async () => {
     expect(await ps(`@('Invoke-E1CacheProvisionGuest','ConvertTo-E1CacheProvisionReceipt') | ForEach-Object {(Get-Command $_ -Module evidence1-gradle-cache-provision -ErrorAction Stop).Name} | ConvertTo-Json -Compress`)).toEqual(['Invoke-E1CacheProvisionGuest', 'ConvertTo-E1CacheProvisionReceipt']);
   });
