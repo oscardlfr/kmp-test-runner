@@ -265,7 +265,34 @@ describe.skipIf(process.platform !== 'win32')('Evidence1 offline cache contract 
       @($out.Count,(@($out | Where-Object {$_ -ne $true}).Count -eq 0)) | ConvertTo-Json -Compress`)).toEqual([22, true]);
   });
 
-  it.each(['network_outbound_default', 'none', 'evidence_changed', 'evidence_mismatch', 'json_size'])('audits network without dispatch or writes: %s', async failure => {
+  it('rejects malformed enforcement arrays and preserves every native reason', async () => {
+    expect(await ps(`$enums=Get-E1OfflineScopeEnums; $row=@{}
+      foreach($key in $enums.Keys) {$row[$key]=$enums[$key][0]}
+      $row.enforcement_states=@('native-5','native-1')
+      $safe=ConvertTo-E1OfflineRuleScope @{rules=@($row)}
+      $out=@(($safe.rules[0].enforcement_states -join ',') -ceq 'native-5,native-1')
+      foreach($mutation in @("@('PRIVATE_TEXT')","@('native-24')","@('full')*25","'full'",'@(1)','$null')) {
+        $bad=$row.Clone(); & ([scriptblock]::Create('$bad.enforcement_states=' + $mutation))
+        try {$null=ConvertTo-E1OfflineRuleScope @{rules=@($bad)};$out+=$false} catch {$out+=($_.Exception.Message -ceq 'result_shape')}
+      }
+      $out | ConvertTo-Json -Compress`)).toEqual(Array(7).fill(true));
+  });
+
+  it('reconstructs safe scope strings after remoting without attached private metadata', async () => {
+    const result = await ps(`$enums=Get-E1OfflineScopeEnums; $row=@{}
+      foreach($key in $enums.Keys) {$row[$key]=$enums[$key][0]}
+      $row.action='allow' | Add-Member -NotePropertyName private_note -NotePropertyValue 'PRIVATE_CATEGORY' -PassThru
+      $state='native-1' | Add-Member -NotePropertyName private_note -NotePropertyValue 'PRIVATE_STATE' -PassThru
+      $row.enforcement_states=@($state)
+      $r=New-E1OfflineReceipt; $r.operation='gradle-offline-network-audit'; $r.schema=2; $r.network_rule_scope=@{rules=@($row)}
+      $raw=[Management.Automation.PSSerializer]::Deserialize([Management.Automation.PSSerializer]::Serialize($r,20))
+      ConvertTo-E1OfflineReceipt $raw | ConvertTo-Json -Depth 12 -Compress`);
+    expect(result.network_rule_scope.rules[0].action).toBe('allow');
+    expect(result.network_rule_scope.rules[0].enforcement_states).toEqual(['native-1']);
+    expect(JSON.stringify(result)).not.toMatch(/PRIVATE|private_note/);
+  });
+
+  it.each(['network_outbound_default', 'none', 'evidence_changed', 'evidence_mismatch', 'json_size', 'diagnostic_limit'])('audits network without dispatch or writes: %s', async failure => {
     const result = await ps(`$null=Get-Command Invoke-E1OfflineNetworkAuditGuest -ErrorAction Stop
       $r=& (Get-Module evidence1-gradle-offline-probe) {
       function Get-CimInstance {return @{Manufacturer='Microsoft Corporation';Model='Virtual Machine'}}
