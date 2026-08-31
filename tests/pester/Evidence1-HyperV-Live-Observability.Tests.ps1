@@ -289,6 +289,121 @@ Describe 'Evidence1 canary wrapper terminal routing' {
     }
 }
 
+Describe 'Evidence1 canary wrapper claimed preflight lifecycle' {
+    BeforeAll {
+        Import-Module (Join-Path $script:AuditRoot 'evidence1-validation-ops.psm1') -Force
+        $script:RealCanaryJsonWriter = (Get-Command Write-Evidence1JsonAtomically).ScriptBlock
+        $source = [IO.File]::ReadAllText($script:WrapperPath)
+        $ast = [Management.Automation.Language.Parser]::ParseInput($source, [ref]$null, [ref]$null)
+        $exits = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.ExitStatementAst] }, $true))
+        if ($exits.Count -ne 1) { throw 'fixture requires the single wrapper exit' }
+        $exit = $exits[0].Extent
+        $source = $source.Substring(0, $exit.StartOffset) + 'return $exitCode' + $source.Substring($exit.EndOffset)
+        $source = $source.Replace('$PSScriptRoot', ('$script:AuditRoot'))
+        $source = $source.Replace('& (Join-Path $env:SystemRoot ''System32\shutdown.exe'')', 'Invoke-FixtureShutdown')
+        if ($source.Contains('shutdown.exe')) { throw 'fixture must never invoke real shutdown' }
+        $script:WholeCanaryWrapper = [scriptblock]::Create($source)
+        function Invoke-FixtureShutdown { param([Parameter(ValueFromRemainingArguments)]$Arguments) }
+        function Invoke-ClaimedWrapperFixture {
+            try {
+                $code = & $script:WholeCanaryWrapper -RunId $script:LifecycleId -CanaryArm product -CanaryBindingSha256 ('a'*64) `
+                    -OpsDir $script:LifecycleOps -HarnessDir $script:LifecycleHarness -LauncherPath $script:LifecycleLauncher -ShutdownOnExit
+                return @{ exit_code = $code; error = $null }
+            } catch { return @{ exit_code = $null; error = $_.Exception.Message } }
+        }
+        function Assert-SharedCanarySentinels {
+            foreach ($path in $script:LifecycleSentinels.Keys) { (Get-FileHash -LiteralPath $path).Hash | Should -BeExactly $script:LifecycleSentinels[$path] }
+        }
+    }
+    BeforeEach {
+        $script:LifecycleId = 'b48bfb0c-a9ae-4e0e-8d89-56eb1e278090'
+        $script:LifecycleOps = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        $script:LifecycleHarness = Join-Path $script:LifecycleOps 'harness'
+        $script:LifecycleJournal = Join-Path $script:LifecycleHarness 'tools/runs/agentic-eval-journal'
+        $script:LifecycleBundle = Join-Path $script:LifecycleOps "canary/$script:LifecycleId"
+        New-Item -ItemType Directory -Path $script:LifecycleJournal, $script:LifecycleBundle | Out-Null
+        $script:LifecycleLauncher = Join-Path $script:LifecycleOps 'launcher.ps1'
+        [IO.File]::WriteAllText($script:LifecycleLauncher, '# never executed')
+        $script:LifecycleLauncherHash = (Get-FileHash $script:LifecycleLauncher).Hash.ToLowerInvariant()
+        $script:LifecycleSentinels = @{}
+        foreach ($name in @('STAGE-B-live.stdout.log','STAGE-B-live.stderr.log','STAGE-B-live.status.json','STAGE-B-live.exit.json','STAGE-B-live.launcher-exit.json')) {
+            $path = Join-Path $script:LifecycleOps $name
+            [IO.File]::WriteAllText($path, 'prior-run-evidence')
+            $script:LifecycleSentinels[$path] = (Get-FileHash $path).Hash
+        }
+        $script:LifecycleMode = 'enumeration'; $script:LifecycleShutdowns = 0
+        $script:LifecycleWrites = [Collections.Generic.List[string]]::new()
+        Mock Import-Module { }
+        Mock Read-Evidence1CanaryBundle {
+            if ($script:LifecycleMode -eq 'binding') { throw 'canary_bundle_invalid' }
+            @{ binding = @{ scripts = @{ 'evidence1-stageb-live-launch.ps1' = $script:LifecycleLauncherHash } } }
+        }
+        Mock Get-ChildItem { throw 'canary_journal_baseline' } -ParameterFilter { $LiteralPath -eq $script:LifecycleJournal -and $script:LifecycleMode -eq 'enumeration' }
+        Mock Write-Evidence1JsonAtomically {
+            param($Path, $Value)
+            $name = [IO.Path]::GetFileName($Path)
+            $script:LifecycleWrites.Add($name)
+            if ($name -eq 'journal-baseline.json') { throw 'canary_journal_baseline' }
+            if ($name -eq 'STAGE-B-live.status.json' -and $script:LifecycleMode -eq 'status') { throw 'private status write failure' }
+            if ($name -eq 'STAGE-B-live.exit.json' -and $script:LifecycleMode -eq 'terminal') { throw 'fixture_terminal_write_failure' }
+            & $script:RealCanaryJsonWriter -Path $Path -Value $Value
+        }
+        Mock New-Item { throw 'fixture_registry_disabled' } -ParameterFilter { $Path -like 'HKLM:*' }
+        Mock Invoke-FixtureShutdown { $script:LifecycleShutdowns++ }
+        Mock Start-E1OwnedProcess { throw 'fixture_dispatch_forbidden' }
+    }
+    It 'publishes a bound failed terminal and shuts down after claimed baseline enumeration fails' {
+        $result = Invoke-ClaimedWrapperFixture
+        $result.error | Should -BeNullOrEmpty
+        $result.exit_code | Should -Be 997
+        Test-Path (Join-Path $script:LifecycleBundle 'wrapper.claim.json') | Should -BeTrue
+        $terminal = (Read-Evidence1CanaryJson (Join-Path $script:LifecycleOps 'STAGE-B-live.exit.json')).value
+        Assert-Evidence1CanaryTerminalBinding $terminal $script:LifecycleId product ('a'*64)
+        $terminal.wrapper_error_stage | Should -BeExactly 'initialize_journal'
+        $terminal.diagnostics.failure_phase | Should -BeExactly 'guest_preflight'
+        $terminal.diagnostics.failure_code | Should -BeExactly 'canary_journal_baseline'
+        $script:LifecycleShutdowns | Should -Be 1
+        Should -Invoke Start-E1OwnedProcess -Times 0 -Exactly
+    }
+    It 'keeps the baseline failure primary when final status persistence also fails' {
+        $script:LifecycleMode = 'status'
+        $result = Invoke-ClaimedWrapperFixture
+        $result.error | Should -BeNullOrEmpty
+        $result.exit_code | Should -Be 997
+        $terminal = (Read-Evidence1CanaryJson (Join-Path $script:LifecycleOps 'STAGE-B-live.exit.json')).value
+        $terminal.diagnostics.failure_code | Should -BeExactly 'canary_journal_baseline'
+        $terminal.diagnostics.failures.persistence.code | Should -BeExactly 'unclassified'
+        ($terminal | ConvertTo-Json -Depth 12) | Should -Not -Match 'private status'
+        $script:LifecycleShutdowns | Should -Be 1
+        Should -Invoke Start-E1OwnedProcess -Times 0 -Exactly
+    }
+    It 'still shuts down when the post-claim terminal write itself fails' {
+        $script:LifecycleMode = 'terminal'
+        $result = Invoke-ClaimedWrapperFixture
+        $result.error | Should -BeExactly 'fixture_terminal_write_failure'
+        $script:LifecycleWrites | Should -Contain 'STAGE-B-live.exit.json'
+        $script:LifecycleShutdowns | Should -Be 1
+        Should -Invoke Start-E1OwnedProcess -Times 0 -Exactly
+    }
+    It 'preserves shared evidence and claims without shutdown or dispatch for <Mode>' -TestCases @(
+        @{ Mode = 'binding' }, @{ Mode = 'launcher' }, @{ Mode = 'replay' }
+    ) {
+        param($Mode)
+        $script:LifecycleMode = $Mode
+        $claimPath = Join-Path $script:LifecycleBundle 'wrapper.claim.json'
+        if ($Mode -eq 'replay') { $null = New-Evidence1CanaryClaim $script:LifecycleBundle $script:LifecycleId ('a'*64) wrapper; $claimHash = (Get-FileHash $claimPath).Hash }
+        if ($Mode -eq 'launcher') { [IO.File]::AppendAllText($script:LifecycleLauncher, '# drift') }
+        $result = Invoke-ClaimedWrapperFixture
+        $result.error | Should -Match '^canary_'
+        Assert-SharedCanarySentinels
+        if ($Mode -eq 'replay') { (Get-FileHash $claimPath).Hash | Should -BeExactly $claimHash }
+        else { Test-Path $claimPath | Should -BeFalse }
+        $script:LifecycleWrites.Count | Should -Be 0
+        $script:LifecycleShutdowns | Should -Be 0
+        Should -Invoke Start-E1OwnedProcess -Times 0 -Exactly
+    }
+}
+
 Describe 'Evidence1 canary source custody' {
     BeforeAll {
         $script:CloneFixture = Join-Path $script:RepoRoot ('.smoke/canary-source-' + [guid]::NewGuid().ToString('N'))

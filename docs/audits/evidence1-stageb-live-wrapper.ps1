@@ -40,14 +40,9 @@ if ($CanaryArm -or $CanaryBindingSha256) {
     if ($CanaryArm -cnotin @('product','free-baseline') -or -not $CanaryBindingSha256) { throw 'canary_wrapper_parameters' }
     $canary = Read-Evidence1CanaryBundle $canaryDirectory $RunId $CanaryArm $CanaryBindingSha256
     if ((Get-FileHash -LiteralPath $LauncherPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $canary.binding.scripts['evidence1-stageb-live-launch.ps1']) { throw 'canary_launcher_drift' }
-    # Claim before opening shared operational logs: replay must not overwrite the first attempt.
-    $null = New-Evidence1CanaryClaim $canaryDirectory $RunId $CanaryBindingSha256 'wrapper'
-    $journalRoot = Join-Path $HarnessDir 'tools\runs\agentic-eval-journal'
-    $baseline = @(if (Test-Path -LiteralPath $journalRoot) { Get-ChildItem -LiteralPath $journalRoot -Directory -Force | ForEach-Object Name })
-    Write-Evidence1JsonAtomically (Join-Path $canaryDirectory 'journal-baseline.json') @{ run_id = $RunId; binding_sha256 = $CanaryBindingSha256; journal_ids = $baseline }
 }
 
-New-Item -ItemType Directory -Force -Path $OpsDir | Out-Null
+if (-not $canary) { New-Item -ItemType Directory -Force -Path $OpsDir | Out-Null }
 $statusPath = Join-Path $OpsDir 'STAGE-B-live.status.json'
 $terminalPath = Join-Path $OpsDir 'STAGE-B-live.exit.json'
 $launcherTerminalPath = Join-Path $OpsDir 'STAGE-B-live.launcher-exit.json'
@@ -182,7 +177,19 @@ function Invoke-Evidence1CanaryWrapper([string]$Executable, [string[]]$Arguments
     $script:state = 'exited'
 }
 
+if ($canary) {
+    # Rejection must not touch prior shared evidence or shut down its owner.
+    $null = New-Evidence1CanaryClaim $canaryDirectory $RunId $CanaryBindingSha256 'wrapper'
+}
 try {
+    if ($canary) {
+        $currentStage = 'prepare_ops_directory'
+        New-Item -ItemType Directory -Force -Path $OpsDir | Out-Null
+        $currentStage = 'initialize_journal'
+        $journalRoot = Join-Path $HarnessDir 'tools\runs\agentic-eval-journal'
+        $baseline = @(if (Test-Path -LiteralPath $journalRoot) { Get-ChildItem -LiteralPath $journalRoot -Directory -Force | ForEach-Object Name })
+        Write-Evidence1JsonAtomically (Join-Path $canaryDirectory 'journal-baseline.json') @{ run_id = $RunId; binding_sha256 = $CanaryBindingSha256; journal_ids = $baseline }
+    }
     $currentStage = 'write_starting_status'
     Write-Status 'starting' $exitCode
     $currentStage = 'start_launcher'
@@ -269,7 +276,8 @@ try {
     $script:CanaryObservationFailed = $true
     if ($canary) {
         if (-not $script:CanaryLauncherDiagnostics) { $script:CanaryLauncherDiagnostics = New-Evidence1CanaryDiagnostics }
-        $phase = if ($currentStage -eq 'monitor_launcher') { 'journal' } else { 'live' }
+        $phase = if ($currentStage -in @('prepare_ops_directory','initialize_journal')) { 'guest_preflight' }
+            elseif ($currentStage -eq 'monitor_launcher') { 'journal' } else { 'live' }
         Set-Evidence1CanaryFailure $script:CanaryLauncherDiagnostics 'primary' $phase $primaryFailure
     }
     if ($canary -and $script:CanaryOperation -and -not $script:CanaryOperationJoined) {
