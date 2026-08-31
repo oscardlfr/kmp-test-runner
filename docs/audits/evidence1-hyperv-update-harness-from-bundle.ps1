@@ -183,6 +183,19 @@ try {
       throw "HARD STOP: $Message"
     }
 
+    function Assert-GuestHarnessTrackedCustody([string]$Root) {
+      # Untracked finalized artifacts have their own archival policy below.
+      # Never let checkout/restore erase edits or trust concealed index entries.
+      $flags = @(& git.exe -C $Root ls-files -v)
+      if ($LASTEXITCODE -ne 0) { throw 'HARD STOP: harness index inspection failed' }
+      if (@($flags | Where-Object { $_ -cnotmatch '^H ' }).Count -gt 0) {
+        throw 'HARD STOP: harness index contains concealed or unsupported entries'
+      }
+      $tracked = @(& git.exe -C $Root status --porcelain=v1 --untracked-files=no)
+      if ($LASTEXITCODE -ne 0) { throw 'HARD STOP: harness tracked status inspection failed' }
+      if ($tracked.Count -gt 0) { throw 'HARD STOP: harness has tracked changes; nothing restored' }
+    }
+
     $env:Path = @(
       'C:\Program Files\Git\cmd',
       'C:\Program Files\Git\bin',
@@ -234,6 +247,7 @@ try {
 
     Push-Location $HarnessDir
     try {
+      Assert-GuestHarnessTrackedCustody $HarnessDir
       $previousErrorActionPreference = $ErrorActionPreference
       $ErrorActionPreference = 'Continue'
       try {
@@ -246,8 +260,6 @@ try {
       }
       if ($fetchExit -ne 0) { FailGuest "git fetch bundle failed: $($fetchOutput -join ' ')" }
       if ($checkoutExit -ne 0) { FailGuest "git checkout target commit failed: $($checkoutOutput -join ' ')" }
-      & git.exe restore --worktree --staged -- 'tools/runs/agentic-eval-scenario'
-      if ($LASTEXITCODE -ne 0) { FailGuest 'git restore tracked scenario corpus failed' }
       $head = (& git.exe rev-parse HEAD).Trim()
       $tree = (& git.exe rev-parse 'HEAD^{tree}').Trim()
       $archivedUntracked = @()

@@ -68,6 +68,17 @@ isolation attestation to be fresh, the restricted-network checks to pass, and th
 local auth check to pass. The existing full campaign dry-run remains an eight-cell readiness
 check. It must not create live records.
 
+Deployment checks tracked-file and index custody before checkout. It never restores edited
+scenario fixtures to obtain a clean status; staged edits and concealed index entries stop it.
+Its existing archive policy applies only to recognized untracked finalized artifacts.
+
+For the target source, clean means unchanged tracked files and index, plus only the exact
+bounded generated artifacts accepted by V2/V3's source inventory. Readiness fingerprints that
+inventory and must leave it unchanged, including on its failure path. It must not delete the
+previous wet gate's outputs, add ignore rules, or treat all of `.kmp-test-runner` as trusted.
+This operational definition does not relax the CLI's separate clean source-donor requirement
+for a live run.
+
 Local `claude auth status` proves local credential presence only. A remote authentication
 canary, when separately authorized, is a different gate. Neither is run by V2/V3.
 

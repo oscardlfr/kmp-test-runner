@@ -323,6 +323,8 @@ try {
       FailGuest "forbidden secret-like environment variables present: $($forbiddenEnv -join ', ')"
     }
 
+    $sourceSnapshot = $null
+    $sourcePostflightAttempted = $false
     Push-Location $HarnessDir
     try {
       $head = (& git.exe rev-parse HEAD).Trim()
@@ -330,7 +332,14 @@ try {
       $tree = (& git.exe @('rev-parse', 'HEAD^{tree}')).Trim()
       if ($LASTEXITCODE -ne 0 -or $tree -ne $TargetTree) { FailGuest "harness tree drift: $tree" }
       $status = (& git.exe status --short)
-      if ($status) { FailGuest "harness worktree is not clean: $($status -join '; ')" }
+      if ($LASTEXITCODE -ne 0 -or $status) { FailGuest "harness worktree is not clean: $($status -join '; ')" }
+
+      $custodyModule = Join-Path $HarnessDir 'docs/audits/evidence1-validation-ops.psm1'
+      $expectedModuleBlob = (& git.exe rev-parse 'HEAD:docs/audits/evidence1-validation-ops.psm1').Trim()
+      if ($LASTEXITCODE -ne 0 -or $expectedModuleBlob -notmatch '^[0-9a-f]{40}$') { FailGuest 'source custody module identity unavailable' }
+      $actualModuleBlob = (& git.exe hash-object --no-filters -- $custodyModule).Trim()
+      if ($LASTEXITCODE -ne 0 -or $actualModuleBlob -cne $expectedModuleBlob) { FailGuest 'source custody module hash mismatch' }
+      Import-Module $custodyModule -Force -DisableNameChecking
 
       $nodeVersion = (& $node --version).Trim()
       $gitVersion = (& git.exe --version).Trim()
@@ -360,8 +369,7 @@ try {
         if ($LASTEXITCODE -ne 0 -or $sourceHead -ne $SourceCommit) {
           FailGuest "source HEAD drift: $sourceHead"
         }
-        $sourceStatus = (& git.exe status --short)
-        if ($sourceStatus) { FailGuest "source worktree is not clean: $($sourceStatus -join '; ')" }
+        $sourceSnapshot = Get-E1SourceSnapshot $NowInAndroidDir $SourceCommit '' $ScratchDir
       } finally {
         Pop-Location
       }
@@ -561,6 +569,8 @@ if (!r.ok) process.exit(2);
           stderr_content_read = $false
         }
       }
+      $sourcePostflightAttempted = $true
+      $null = Assert-E1SourcePostflight $NowInAndroidDir $SourceCommit $sourceSnapshot.tree $ScratchDir $sourceSnapshot -Operation 'dry-v3'
       $ledgerPath = Join-Path $ScratchDir 'READINESS.json'
       Write-Utf8NoBom $ledgerPath ($ledger | ConvertTo-Json -Depth 12)
       Remove-Item -LiteralPath $dryStdout,$dryStderr -Force -ErrorAction SilentlyContinue
@@ -591,6 +601,17 @@ if (!r.ok) process.exit(2);
           stderr_content_read = $false
         }
       }
+    } catch {
+      $readinessFailure = $_
+      if ($null -ne $sourceSnapshot -and -not $sourcePostflightAttempted) {
+        try {
+          $null = Assert-E1SourcePostflight $NowInAndroidDir $SourceCommit $sourceSnapshot.tree $ScratchDir $sourceSnapshot -Operation 'dry-v3'
+        } catch {
+          # Preserve the primary error and retain only a bounded custody code.
+          $readinessFailure.Exception.Data['source_postflight_failure'] = Get-E1FailureCode $_ 'postflight_failed'
+        }
+      }
+      throw $readinessFailure
     } finally {
       Pop-Location
     }
