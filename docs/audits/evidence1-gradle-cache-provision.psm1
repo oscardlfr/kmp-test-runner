@@ -4,7 +4,7 @@ $script:E1CacheProvisionFailures = @('none','preflight_failed','postflight_faile
     'warm_required','context_mismatch','donor_configuration','repository_dns','repository_address','network_restore_failed',
     'network_unsealed','network_connected','cache_busy','cache_empty','cache_limit','cache_changed','cache_destination',
     'wrapper_identity','wrapper_cache_missing','sdk_configuration','gradle_timeout','process_cleanup','gradle_failed',
-    'offline_cache_miss','diagnostic_limit','validation_overlap','guest_identity','evidence_changed','records_changed',
+    'offline_cache_miss','coverage_artifacts','diagnostic_limit','validation_overlap','guest_identity','evidence_changed','records_changed',
     'repo_commit','repo_tree','repo_root','repo_dirty','source_artifacts','source_artifact_limit','source_tracked_changed',
     'source_index_changed','live_overlap','ambient_credentials','environment_override','path_invalid','path_link',
     'path_outside_root','java_toolchain','git_failed','git_output_size','terminal_write_failed','result_shape')
@@ -24,7 +24,7 @@ function ConvertTo-E1CacheProvisionReceipt($Raw) {
         $phase=Get-E1Field $Raw 'phase'; $id=Get-E1Field $Raw 'provision_id'
         if($phase -isnot [string] -or $phase -cnotin @('warm','certify') -or
             $id -isnot [string] -or $id -cnotmatch '^[a-f0-9]{32}$') {throw 'result_shape'}
-        $safe=New-E1CacheProvisionReceipt $phase $id
+        $safe=New-E1CacheProvisionReceipt $(if($phase -ceq 'warm'){'warm'}else{'certify'}) ([string]::Copy($id))
         $keys=@(Get-E1ObjectKeys $Raw | Where-Object {$_ -cnotin @('PSComputerName','RunspaceId','PSShowComputerName')})
         if($keys.Count -ne $safe.Count -or @($keys | Where-Object {$_ -cnotin @($safe.Keys)}).Count) {throw 'result_shape'}
         foreach($key in @('schema','operation','agent_calls','product_calls','live_records')) {
@@ -34,17 +34,22 @@ function ConvertTo-E1CacheProvisionReceipt($Raw) {
         if($state -isnot [string] -or $state -cnotin @('passed','failed') -or
             $failure -isnot [string] -or $failure -cnotin $script:E1CacheProvisionFailures -or
             (($state -ceq 'passed') -ne ($failure -ceq 'none'))) {throw 'result_shape'}
-        $safe.state=$state;$safe.failure_code=$failure
+        $safe.state=if($state -ceq 'passed'){'passed'}else{'failed'}
+        $safe.failure_code=@($script:E1CacheProvisionFailures | Where-Object {$_ -ceq $failure})[0]
         $calls=Get-E1Field $Raw 'gradle_invocations'
         if(-not (Test-E1Exact $calls 0) -and -not (Test-E1Exact $calls 1)) {throw 'result_shape'}
-        $safe.gradle_invocations=$calls
+        $safe.gradle_invocations=if($calls -eq 1){1}else{0}
         $checks=Get-E1Field $Raw 'checks';Assert-E1Keys $checks @($safe.checks.Keys)
         foreach($key in @($safe.checks.Keys)) {
             $value=Get-E1Field $checks $key
-            if($value -isnot [bool]) {throw 'result_shape'};$safe.checks[$key]=$value
+            if($value -isnot [bool]) {throw 'result_shape'};$safe.checks[$key]=if($value){$true}else{$false}
         }
         $process=Get-E1Field $Raw 'process'
-        if($null -ne $process) {$safe.process=ConvertTo-E1ProcessObservation $process}
+        if($null -ne $process) {
+            $p=ConvertTo-E1ProcessObservation $process
+            $safe.process=@{exit_code=([int]($p.exit_code+0));wall_seconds=([double]($p.wall_seconds+0));
+                timed_out=$(if($p.timed_out){$true}else{$false});cleanup_ok=$(if($p.cleanup_ok){$true}else{$false})}
+        }
         if($calls -eq 0 -and $null -ne $safe.process) {throw 'result_shape'}
         $cache=Get-E1Field $Raw 'cache'
         if($null -ne $cache) {
@@ -52,18 +57,18 @@ function ConvertTo-E1CacheProvisionReceipt($Raw) {
             foreach($key in @('file_count','bytes')) {
                 $value=Get-E1Field $cache $key;$max=if($key -ceq 'file_count'){200000}else{17179869184L}
                 if(($value -isnot [int] -and $value -isnot [long]) -or $value -lt 0 -or $value -gt $max) {throw 'result_shape'}
-                $safe.cache[$key]=$value
+                $safe.cache[$key]=[long]($value+0)
             }
             $value=Get-E1Field $cache 'sha256'
             if($value -isnot [string] -or $value -cnotmatch '^[a-f0-9]{64}$') {throw 'result_shape'}
-            $safe.cache.sha256=$value
+            $safe.cache.sha256=[string]::Copy($value)
         }
         if($phase -ceq 'warm' -and ($null -ne $cache -or $safe.checks.network_disconnected)) {throw 'result_shape'}
         $offline=Get-E1Field $Raw 'offline_signals'
         if($null -ne $offline) {
             Assert-E1Keys $offline @('offline_cache_miss');$value=Get-E1Field $offline 'offline_cache_miss'
             if(($value -isnot [int] -and $value -isnot [long]) -or $value -lt 0 -or $value -gt 100000) {throw 'result_shape'}
-            $safe.offline_signals=@{offline_cache_miss=$value}
+            $safe.offline_signals=@{offline_cache_miss=([int]($value+0))}
         }
         $gradle=Get-E1Field $Raw 'gradle_signals'
         if($null -ne $gradle) {
@@ -76,9 +81,10 @@ function ConvertTo-E1CacheProvisionReceipt($Raw) {
         foreach($key in Get-E1ObjectKeys $hashes) {
             if($key -cnotin @('wet_marker_sha256','firewall_before_sha256','firewall_after_sha256','context_sha256',
                 'wrapper_properties_sha256','wrapper_jar_sha256','java_executable_sha256','sdk_configuration_sha256',
-                'sdk_build_tools_sha256','stdout_sha256','stderr_sha256','records_metadata_before_sha256','records_metadata_after_sha256')) {throw 'result_shape'}
+                'sdk_build_tools_sha256','stdout_sha256','stderr_sha256','demo_coverage_sha256','prod_coverage_sha256',
+                'records_metadata_before_sha256','records_metadata_after_sha256')) {throw 'result_shape'}
             $value=Get-E1Field $hashes $key
-            if($value -isnot [string] -or $value -cnotmatch '^[a-f0-9]{64}$') {throw 'result_shape'};$safe.hashes[$key]=$value
+            if($value -isnot [string] -or $value -cnotmatch '^[a-f0-9]{64}$') {throw 'result_shape'};$safe.hashes[$key]=[string]::Copy($value)
         }
         if($safe.checks.network_restored -and (-not $safe.hashes.ContainsKey('firewall_before_sha256') -or
             -not $safe.hashes.ContainsKey('firewall_after_sha256') -or
@@ -95,6 +101,8 @@ function ConvertTo-E1CacheProvisionReceipt($Raw) {
                 if(-not $safe.hashes.ContainsKey($key)) {throw 'result_shape'}
             }
             if($safe.hashes.records_metadata_before_sha256 -cne $safe.hashes.records_metadata_after_sha256) {throw 'result_shape'}
+            if($phase -ceq 'certify' -and (-not $safe.hashes.ContainsKey('demo_coverage_sha256') -or
+                -not $safe.hashes.ContainsKey('prod_coverage_sha256'))) {throw 'result_shape'}
         }
         return $safe
     } catch {throw 'result_shape'}
@@ -108,6 +116,28 @@ function Write-E1CacheProvisionNew([string]$Path, $Value) {
 
 function Assert-E1CacheProvisionLease($Config) {
     if(-not ('E1OfflineValidationLease' -as [type]) -or -not [E1OfflineValidationLease]::Owns($Config.LeaseToken)) {throw 'validation_overlap'}
+}
+
+function Get-E1CacheProvisionCoverage([string]$Source) {
+    $hashes=@{}
+    foreach($flavor in @('demo','prod')) {
+        $reader=$null
+        try {
+            $path=Resolve-E1Path (Join-Path $Source ('core/domain/build/reports/coverage/test/'+$flavor+'/debug/report.xml'))
+            $item=Get-Item -LiteralPath $path -ErrorAction Stop
+            if($item.PSIsContainer -or $item.Length -eq 0 -or $item.Length -gt 8388608) {throw 'coverage_artifacts'}
+            $settings=[Xml.XmlReaderSettings]::new()
+            # JaCoCo emits a public DOCTYPE. Ignore it without resolving external resources.
+            $settings.DtdProcessing=[Xml.DtdProcessing]::Ignore;$settings.XmlResolver=$null
+            $settings.MaxCharactersInDocument=8388608
+            $reader=[Xml.XmlReader]::Create($path,$settings)
+            $null=$reader.MoveToContent()
+            if($reader.LocalName -cne 'report' -or $reader.NamespaceURI -cne '') {throw 'coverage_artifacts'}
+            while($reader.Read()) { }
+            $hashes[$flavor+'_coverage_sha256']=Get-E1SourceFileHash $path 8388608
+        } catch {throw 'coverage_artifacts'} finally {if($reader){$reader.Dispose()}}
+    }
+    return $hashes
 }
 
 function Assert-E1CacheProvisionDonor([string]$Donor) {
@@ -248,7 +278,6 @@ function Invoke-E1CacheProvisionGuest($Config) {
         }
         Assert-E1OfflineWrapper $home
         $env:GRADLE_USER_HOME=$home;$env:GRADLE_OPTS='-Dorg.gradle.daemon=false'
-        [IO.File]::WriteAllText((Join-Path $home 'gradle.properties'),"org.gradle.daemon=false`norg.gradle.java.installations.auto-download=false`n",[Text.UTF8Encoding]::new($false))
         Invoke-E1Java21Environment $directory {
             param($java)
             $result.hashes.java_executable_sha256=Get-E1SourceFileHash $java.executable 16777216
@@ -263,7 +292,8 @@ function Invoke-E1CacheProvisionGuest($Config) {
                     $null=New-NetFirewallRule -Name $ruleNames[$i] -DisplayName $ruleNames[$i] -Group ('E1CacheProvision-'+$id) -PolicyStore PersistentStore -Direction Outbound -Action Allow -Enabled True -Profile Any -Program $java.executable -Protocol TCP -RemotePort 443 -RemoteAddress $repositories[$i].addresses -ErrorAction Stop
                 }
             }
-            $arguments=@('-classpath',$wrapperJar,'org.gradle.wrapper.GradleWrapperMain',':core:domain:test',
+            $arguments=@('-Dorg.gradle.daemon=false','-Dorg.gradle.java.installations.auto-download=false',
+                '-classpath',$wrapperJar,'org.gradle.wrapper.GradleWrapperMain',':core:domain:test',
                 ':core:domain:createDemoDebugUnitTestCoverageReport',':core:domain:createProdDebugUnitTestCoverageReport',
                 '--no-daemon','--no-build-cache','--no-configuration-cache','--console=plain','--stacktrace')
             $timeout=600;if($phase -ceq 'certify') {$arguments+='--offline';$timeout=300}
@@ -283,6 +313,10 @@ function Invoke-E1CacheProvisionGuest($Config) {
             if(-not $p.CleanupOk) {throw 'process_cleanup'}
             if($result.offline_signals.offline_cache_miss -gt 0) {throw 'offline_cache_miss'}
             if($p.ExitCode -ne 0) {throw 'gradle_failed'}
+            if($phase -ceq 'certify') {
+                $coverage=Get-E1CacheProvisionCoverage $copy
+                foreach($key in $coverage.Keys) {$result.hashes[$key]=$coverage[$key]}
+            }
             $result.state='passed';$result.failure_code='none'
         }
     } catch {

@@ -14,7 +14,10 @@ async function exercise(mode) {
   try {
     const script = `$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue'
       Import-Module ${quote(resolve(root, 'docs/audits/evidence1-validation-ops.psm1'))} -DisableNameChecking
-      Import-Module ${quote(resolve(root, 'docs/audits/evidence1-cache-provision-host.psm1'))} -DisableNameChecking
+      $code=[IO.File]::ReadAllText(${quote(resolve(root, 'docs/audits/evidence1-cache-provision-host.psm1'))})
+      $code=$code.Replace('Global\\Evidence1OfflineNetwork',('Local\\ProvisionFixture-'+[guid]::NewGuid().ToString('N')))
+      if($code.Contains('Global\\Evidence1OfflineNetwork')){throw 'fixture_mutex_not_replaced'}
+      Import-Module (New-Module -Name evidence1-cache-provision-host -ScriptBlock ([scriptblock]::Create($code))) -DisableNameChecking
       $r=& (Get-Module evidence1-cache-provision-host) {
         param($journal,$mode)
         $script:connected=$true;$script:events=@()
@@ -29,13 +32,13 @@ async function exercise(mode) {
           $script:events+='warm'
           if(-not (Test-Path -LiteralPath $journal)){throw 'journal_missing'}
           if($mode -eq 'transport'){throw 'PRIVATE_DETAIL'}
-          @{state=$(if($mode -eq 'warm-failed'){'failed'}else{'passed'});failure_code='gradle_failed';checks=@{network_restored=($mode -ne 'cleanup')};process=@{timed_out=$false;cleanup_ok=$true}}
+          @{state=$(if($mode -eq 'warm-failed'){'failed'}else{'passed'});failure_code='gradle_failed';hashes=@{firewall_after_sha256=('a'*64)};checks=@{network_restored=($mode -ne 'cleanup')};process=@{timed_out=$false;cleanup_ok=$true}}
         }
         $certify={param($monitor)
           & $monitor;$script:events+='certify'
           if($script:connected){throw 'certify_online'}
           if($mode -eq 'certify-transport'){throw 'PRIVATE_DETAIL'}
-          @{state=$(if($mode -eq 'cache-miss'){'failed'}else{'passed'});failure_code='offline_cache_miss';checks=@{network_restored=$true};process=@{timed_out=$false;cleanup_ok=$true}}
+          @{state=$(if($mode -in @('cache-miss','baseline-drift')){'failed'}else{'passed'});failure_code='offline_cache_miss';hashes=@{firewall_before_sha256=$(if($mode -eq 'baseline-drift'){'b'*64}else{'a'*64});firewall_after_sha256=$(if($mode -eq 'baseline-drift'){'b'*64}else{'a'*64})};checks=@{network_restored=$true};process=@{timed_out=$false;cleanup_ok=$true}}
         }
         $quiet={ $script:events+='quiet' }
         if($mode -eq 'existing'){[IO.File]::WriteAllText($journal,'PRESERVED')}
@@ -62,7 +65,7 @@ describe.skipIf(process.platform !== 'win32')('cache provisioning host isolation
     expect(r.result.network.restored).toBe(true);
     expect(r.connected).toBe(true);
   });
-  it.each(['transport', 'cleanup', 'certify-transport'])('isolates on uncertain completion: %s', async mode => {
+  it.each(['transport', 'cleanup', 'certify-transport', 'baseline-drift'])('isolates on uncertain completion: %s', async mode => {
     const r = await exercise(mode);
     expect(r.result.state).toBe('failed');
     expect(r.connected).toBe(false);

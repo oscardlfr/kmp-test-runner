@@ -29,6 +29,8 @@ function Invoke-E1ProvisionLifecycle($VM,[string]$JournalPath,[scriptblock]$Warm
         $safe=$false
         $result.certify=& $Certify $monitor
         $safe=$result.certify.checks.network_restored -and ($null -eq $result.certify.process -or $result.certify.process.cleanup_ok)
+        $safe=$safe -and $result.certify.hashes.firewall_before_sha256 -ceq $result.warm.hashes.firewall_after_sha256 -and
+            $result.certify.hashes.firewall_after_sha256 -ceq $result.warm.hashes.firewall_after_sha256
         if(-not $safe) {throw 'network_restore_required'}
         & $monitor
         $result.failure_code=$result.certify.failure_code

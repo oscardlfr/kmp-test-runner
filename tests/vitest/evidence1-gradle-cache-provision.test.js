@@ -45,6 +45,9 @@ async function exercise(mode = 'warm') {
           [IO.File]::WriteAllText((Join-Path $init 'inject.gradle'),'PRIVATE_INIT')
         }
         if($mode -eq 'properties') {[IO.File]::WriteAllText((Join-Path $donor 'gradle.properties'),'systemProp.https.proxyHost=PRIVATE_PROXY')}
+        if($mode -eq 'donor-preserve') {[IO.File]::WriteAllText((Join-Path $donor 'gradle.properties'),('# benign configuration'+[Environment]::NewLine+'org.gradle.daemon = false'))}
+        $donorProperties=Join-Path $donor 'gradle.properties'
+        $donorBefore=if(Test-Path -LiteralPath $donorProperties){[IO.File]::ReadAllText($donorProperties)}else{$null}
         if($mode -eq 'lease') {[E1OfflineValidationLease]::Held=$false}
         function Resolve-E1Path {param($Path)
           if($Path -like 'C:\kmp-eval\scratch\gradle-cache-provision-*') {return Join-Path $base ([IO.Path]::GetFileName($Path))}
@@ -112,9 +115,11 @@ async function exercise(mode = 'warm') {
           $log=if($mode -eq 'cache-miss'){'No cached version of PRIVATE:module:1 available for offline mode.'}else{'BUILD SUCCESSFUL'}
           [IO.File]::WriteAllText($Stdout,$log);[IO.File]::WriteAllText($Stderr,'')
           foreach($flavor in @('demo','prod')) {
-            $dir=Join-Path $WorkingDirectory ('core/domain/build/reports/coverage/test/'+$flavor+'Debug')
+            if($mode -eq 'certify-missing-xml' -and $flavor -eq 'prod'){continue}
+            $dir=Join-Path $WorkingDirectory ('core/domain/build/reports/coverage/test/'+$flavor+'/debug')
             $null=New-Item -ItemType Directory -Path $dir -Force
-            [IO.File]::WriteAllText((Join-Path $dir ('create'+$flavor+'DebugUnitTestCoverageReport.xml')),'<report name="fixture"><counter type="LINE" missed="1" covered="1"/></report>')
+            $xml=if($mode -eq 'certify-malformed-xml'){'<report>'}else{'<!DOCTYPE report PUBLIC "-//JACOCO//DTD Report 1.1//EN" "report.dtd"><report name="fixture"><counter type="LINE" missed="1" covered="1"/></report>'}
+            [IO.File]::WriteAllText((Join-Path $dir 'report.xml'),$xml)
           }
           @{ExitCode=$(if($mode -eq 'cache-miss'){1}else{0});WallSeconds=0.5;TimedOut=($mode -eq 'timeout');CleanupOk=($mode -ne 'cleanup')}
         }
@@ -125,7 +130,7 @@ async function exercise(mode = 'warm') {
         $warmPath=Join-Path (Join-Path $base ('gradle-cache-provision-'+('a'*32))) 'warm.result.json'
         $warmBytes=if(Test-Path -LiteralPath $warmPath){[IO.File]::ReadAllText($warmPath)}else{''}
         $result=$warm
-        if($mode -in @('certify','certify-connected','certify-binding','replay-certify')) {
+        if($mode -in @('certify','certify-connected','certify-binding','replay-certify','certify-missing-xml','certify-malformed-xml')) {
           $config.Phase='certify';$script:connected=($mode -eq 'certify-connected')
           if($mode -eq 'certify-binding'){$config.Commit='0'*40}
           $result=Invoke-E1CacheProvisionGuest $config
@@ -137,6 +142,7 @@ async function exercise(mode = 'warm') {
         $copy=Join-Path (Join-Path $base ('gradle-cache-provision-'+('a'*32))) 'certify/gradle-home/caches/modules-2/metadata-2.107/module.bin'
         @{result=$safe;warm=$warm;events=$script:events;commands=$script:commands;rules=$script:rules.Count;removed=$script:removed;added=$script:added;
           copied_metadata=(Test-Path -LiteralPath $copy);lease=[E1OfflineValidationLease]::Owns('test-lease');
+          donor_preserved=($(if(Test-Path -LiteralPath $donorProperties){[IO.File]::ReadAllText($donorProperties)}else{$null}) -ceq $donorBefore);
           warm_preserved=($(if(Test-Path -LiteralPath $warmPath){[IO.File]::ReadAllText($warmPath)}else{''}) -ceq $warmBytes)}
       } ${quote(fixture)} ${quote(mode)}
       $r | ConvertTo-Json -Depth 15 -Compress`);
@@ -171,7 +177,7 @@ describe.skipIf(process.platform !== 'win32')('guest cache provisioning (mocked 
         function Receive-Job {param($Job) $script:raw}
         function Stop-Job {param($Job)}
         function Remove-Job {param($Job,[switch]$Force)}
-        Invoke-E1CacheProvisionTransport @{} @{Phase='warm'} $null
+        Invoke-E1CacheProvisionTransport @{} @{Phase='warm';ProvisionId=$script:raw.provision_id} $null
       } ${quote(JSON.stringify(result))}
       $r | ConvertTo-Json -Depth 15 -Compress`);
     expect(transported).toEqual(result);
@@ -186,12 +192,37 @@ describe.skipIf(process.platform !== 'win32')('guest cache provisioning (mocked 
     expect(r.commands).toHaveLength(1);
     expect(r.commands[0].args).toEqual(expect.arrayContaining([':core:domain:test', ':core:domain:createDemoDebugUnitTestCoverageReport', ':core:domain:createProdDebugUnitTestCoverageReport', '--no-build-cache', '--no-configuration-cache']));
     expect(r.commands[0].args).not.toContain('--offline');
+    expect(r.commands[0].args).toContain('-Dorg.gradle.java.installations.auto-download=false');
     expect(r.commands[0].timeout).toBe(600);
     expect(r.commands[0].home).toMatch(/profile[\\/]\.gradle$/);
     expect(r.events.indexOf('add')).toBeLessThan(r.events.indexOf('gradle'));
     expect(r.rules).toBe(0);
     expect(r.lease).toBe(true);
+    expect(r.donor_preserved).toBe(true);
     expect(JSON.stringify(r.result)).not.toMatch(/PRIVATE|java\.exe|profile|gradle-cache-provision-test/);
+  });
+
+  it('preserves existing benign donor properties byte-for-byte', async () => {
+    const r = await exercise('donor-preserve');
+    expect(r.result.state).toBe('passed');
+    expect(r.donor_preserved).toBe(true);
+  });
+
+  it.each(['certify-missing-xml', 'certify-malformed-xml'])('rejects successful Gradle exit with %s', async mode => {
+    const r = await exercise(mode);
+    expect(r.warm.state).toBe('passed');
+    expect(r.result).toMatchObject({ state: 'failed', failure_code: 'coverage_artifacts', process: { exit_code: 0 } });
+    expect(r.commands).toHaveLength(2);
+  });
+
+  it('reconstructs decorated PowerShell enum and hash strings without forwarding metadata', async () => {
+    const result = await ps(`$r=& (Get-Module evidence1-gradle-cache-provision) {New-E1CacheProvisionReceipt 'warm' ('a'*32)}
+      foreach($key in @('phase','state','failure_code','provision_id')) {$r[$key]=$r[$key] | Add-Member -NotePropertyName PRIVATE -NotePropertyValue 'SYNTHETIC_SECRET' -PassThru}
+      $r.hashes.context_sha256=('b'*64) | Add-Member -NotePropertyName PRIVATE -NotePropertyValue 'SYNTHETIC_SECRET' -PassThru
+      $safe=ConvertTo-E1CacheProvisionReceipt $r
+      $json=$safe | ConvertTo-Json -Depth 15 -Compress
+      @{phase=$safe.phase;state=$safe.state;leaked=($json -match 'PRIVATE|SYNTHETIC_SECRET')} | ConvertTo-Json -Compress`);
+    expect(result).toEqual({ phase: 'warm', state: 'failed', leaked: false });
   });
 
   it('certifies a fresh metadata-complete export offline with no additional firewall mutation', async () => {
