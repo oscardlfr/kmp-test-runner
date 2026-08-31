@@ -503,7 +503,8 @@ Describe 'Evidence1 canary wrapper claimed preflight lifecycle' {
 
 Describe 'Evidence1 canary source custody' {
     BeforeAll {
-        $script:CloneFixture = Join-Path $script:RepoRoot ('.smoke/canary-source-' + [guid]::NewGuid().ToString('N'))
+        $script:CloneFixtureRoot = 'C:\kmp-eval\.smoke'
+        $script:CloneFixture = Join-Path $script:CloneFixtureRoot ('canary-source-' + [guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $script:CloneFixture | Out-Null
         $script:FixtureSource = Join-Path $script:CloneFixture 'preserved'
         New-Item -ItemType Directory -Path $script:FixtureSource | Out-Null
@@ -518,7 +519,7 @@ Describe 'Evidence1 canary source custody' {
         [IO.File]::WriteAllText((Join-Path $script:FixtureSource 'build/failed.xml'), '<failed/>')
     }
     AfterAll {
-        $root = [IO.Path]::GetFullPath((Join-Path $script:RepoRoot '.smoke')).TrimEnd('\') + '\'
+        $root = [IO.Path]::GetFullPath($script:CloneFixtureRoot).TrimEnd('\') + '\'
         $target = [IO.Path]::GetFullPath($script:CloneFixture)
         if (-not $target.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { throw 'fixture cleanup outside owned worktree' }
         Remove-Item -LiteralPath $target -Recurse -Force
