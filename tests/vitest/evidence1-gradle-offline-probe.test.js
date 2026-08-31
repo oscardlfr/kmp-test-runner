@@ -170,13 +170,15 @@ describe.skipIf(process.platform !== 'win32')('Evidence1 offline cache contract 
       $testAddress='198.51.100.2'; try {$null=Get-E1OfflineSealHash;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'network_rule_tcp')}
       $testAddress='192.0.2.1';$testDefault='Allow'; try {$null=Get-E1OfflineSealHash;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'network_outbound_default')}
       $testDefault='Block';$testProtocol='UDP';try {$null=Get-E1OfflineSealHash;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'network_rule_udp')}
-      $testProtocol='Any';try {$null=Get-E1OfflineSealHash;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'network_rule_any')}
+      $testProtocol='Any';try {$null=Get-E1OfflineSealHash;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'network_rule_any_scoped_addresses')}
+      $testAddress='Any';try {$null=Get-E1OfflineSealHash;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'network_rule_any_all_addresses')}
+      $testAddress='127.0.0.1';try {$null=Get-E1OfflineSealHash;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'network_rule_any_loopback')}
       foreach($case in @(@('ProximityApps','network_rule_proximity_apps'),@('ProximitySharing','network_rule_proximity_sharing'),
         @('WifiDirectPrinting','network_rule_wifi_printing'),@('WifiDirectDisplay','network_rule_wifi_display'),
         @('WifiDirectDevices','network_rule_wifi_devices'),@('PRIVATE_UNKNOWN','network_rule_dynamic_unknown'))) {
         $testDynamic=$case[0];try {$null=Get-E1OfflineSealHash;$out+=$false} catch {$out+=($_.Exception.Message -ceq $case[1])}
       }
-      $out | ConvertTo-Json -Compress`)).toEqual(Array(16).fill(true));
+      $out | ConvertTo-Json -Compress`)).toEqual(Array(18).fill(true));
   });
 
   it('identifies the firewall preflight condition without exporting rule names', async () => {

@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 $script:E1OfflineNetworkFailures = @('network_profile_count','network_profile_disabled','network_outbound_default',
     'network_seal_contract','network_endpoint_missing','network_endpoint_invalid','network_rule_tcp','network_rule_udp','network_rule_any',
     'network_rule_proximity_apps','network_rule_proximity_sharing','network_rule_wifi_printing','network_rule_wifi_display','network_rule_wifi_devices','network_rule_dynamic_unknown')
+$script:E1OfflineNetworkFailures += @('network_rule_any_loopback','network_rule_any_all_addresses','network_rule_any_scoped_addresses')
 
 function Get-E1OfflineSignals([string]$Text) {
     return @{ offline_cache_miss = [regex]::Matches($Text, '(?m)^.*No cached (?:version of |resource )[^\r\n]+ available for offline mode').Count }
@@ -126,7 +127,15 @@ function Get-E1OfflineSealHash {
                     }
                     if($protocol -in @('TCP','6')) {throw 'network_rule_tcp'}
                     if($protocol -in @('UDP','17')) {throw 'network_rule_udp'}
-                    throw 'network_rule_any'
+                    $remotes=@($address.RemoteAddress)
+                    if($remotes.Count -eq 1 -and $remotes[0] -eq 'Any') {throw 'network_rule_any_all_addresses'}
+                    $loopback=($remotes.Count -gt 0)
+                    foreach($remote in $remotes) {
+                        $ip=$null
+                        if(-not [Net.IPAddress]::TryParse([string]$remote,[ref]$ip) -or -not [Net.IPAddress]::IsLoopback($ip)) {$loopback=$false}
+                    }
+                    if($loopback) {throw 'network_rule_any_loopback'}
+                    throw 'network_rule_any_scoped_addresses'
                 }
             }
         }
