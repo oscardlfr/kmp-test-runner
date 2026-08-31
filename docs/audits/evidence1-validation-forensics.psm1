@@ -150,7 +150,9 @@ function Get-E1ForensicProductSummary($Envelope) {
         error_codes = (Get-E1ForensicCodes $errors 'code' $script:E1ForensicErrors)
         warning_codes = (Get-E1ForensicCodes $warnings 'code' $script:E1ForensicWarnings)
         coverage_reasons = (Get-E1ForensicCodes $(if ($errors -is [array]) { ,$availabilityErrors } else { $null }) 'reason' $script:E1ForensicReasons)
-        with_data_target_match = $(if ($withData -is [array]) { $withData.Count -eq 1 -and (Test-E1Exact $withData[0] ':core:domain') } else { $null })
+        with_data_target_match = $(if ($withData -is [array]) {
+            $withData.Count -eq 1 -and ((Test-E1Exact $withData[0] 'core:domain') -or (Test-E1Exact $withData[0] ':core:domain'))
+        } else { $null })
     }
 }
 

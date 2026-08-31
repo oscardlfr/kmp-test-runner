@@ -57,6 +57,18 @@ describe.skipIf(!available)('readonly wet-gate forensics', { timeout: 30000 }, (
     }`)).toEqual([true,true]);
   });
 
+  it('recognizes only the two equivalent target identities without exposing module names', () => {
+    const cases = [ ['core:domain'], [':core:domain'], ['::core:domain'], ['Core:domain'],
+      ['core:domain-other'], ['core:domain', 'other'], 'core:domain', [['core:domain']] ];
+    const results = ps(`$out=@(); foreach($bucket in (${json(cases)})) {
+      $e=${json(env)}; $e.coverage.module_buckets.with_data=$bucket
+      $s=Get-E1ForensicProductSummary $e; Assert-E1ForensicSummary $s
+      $out+=@{match=$s.with_data_target_match;summary=$s}
+    }; ConvertTo-Json -InputObject $out -Depth 12 -Compress`);
+    expect(results.map(x => x.match)).toEqual([true, true, false, false, false, false, null, false]);
+    expect(JSON.stringify(results)).not.toMatch(/core:domain|PRIVATE/);
+  });
+
   it('separates socket permissions from filesystem denial without exporting repository URLs', () => {
     const result = ps(`Get-E1ForensicGradleSummary ${q([
       '> Could not GET \'https://dl.google.com/dl/android/maven2/PRIVATE_PATH?token=PRIVATE\'.',
