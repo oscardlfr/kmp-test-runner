@@ -355,6 +355,16 @@ dynamic target and enforcement status. Names, aliases, SIDs, addresses, executab
 paths and policy IDs never leave the guest. Unknown values remain unknown, not Any.
 The scope is a diagnostic observation, not a complete effective-policy evaluator:
 it does not grant execution, model rule precedence, or change the seal predicate.
+`enforcement_states` preserves every native CIM reason as `native-0` through
+`native-23` (unknown values remain `unknown`). The convenience `enforcement`
+category is `multiple` when several reasons exist. Read the native CIM property,
+not PowerShell's localized `EnforcementStatus` display property. In particular,
+`native-5` (InactiveProfile) together with `native-1` (Full) must not be interpreted
+as a wholly inactive rule. The diagnostic's owner category records only whether
+an owner restriction is present, not whether it matches the executing principal.
+[Microsoft's firewall rule CIM contract](https://learn.microsoft.com/en-us/windows/win32/fwp/wmi/wfascimprov/msft-netfirewallrule)
+defines the native enforcement array. This report is deliberately insufficient
+to exempt a rule or certify all effective application/package restrictions.
 [Microsoft's associated security filters](https://learn.microsoft.com/en-us/powershell/module/netsecurity/get-netfirewallsecurityfilter)
 include authentication, encryption, principals and authenticated block overrides.
 

@@ -208,14 +208,15 @@ function ConvertTo-E1OfflineRuleScope($Raw) {
         foreach($key in $enums.Keys) {
             $value=Get-E1Field $rule $key
             if($value -isnot [string] -or $value -cnotin $enums[$key]) {throw 'result_shape'}
-            $row[$key]=$value
+            # Return a canonical literal, not a remoted string's attached metadata.
+            $row[$key]=@($enums[$key] | Where-Object {$_ -ceq $value})[0]
         }
         $states=Get-E1Field $rule 'enforcement_states'
         if($states -isnot [System.Collections.IList] -or $states.Count -gt 24) {throw 'result_shape'}
         $row.enforcement_states=@()
         foreach($state in $states) {
             if($state -isnot [string] -or $state -cnotin $enums.enforcement) {throw 'result_shape'}
-            $row.enforcement_states+=,$state
+            $row.enforcement_states+=,@($enums.enforcement | Where-Object {$_ -ceq $state})[0]
         }
         $safe.rules+=,$row
     }
@@ -303,7 +304,7 @@ function Invoke-E1OfflineNetworkAuditGuest($Config) {
         $result.state='passed'; $result.failure_code='none'
     } catch {
         $result.failure_code=Get-E1FailureCode $_ 'preflight_failed'
-        if($_.Exception.Message -cin $script:E1OfflineNetworkFailures) {$result.failure_code=$_.Exception.Message}
+        if($_.Exception.Message -cin ($script:E1OfflineNetworkFailures + @('diagnostic_limit'))) {$result.failure_code=$_.Exception.Message}
     }
     return $result
 }
