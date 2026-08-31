@@ -13,6 +13,9 @@ const moduleRelative = 'docs/audits/evidence1-validation-ops.psm1';
 const quote = value => `'${value.replaceAll("'", "''")}'`;
 const model = `.kmp-test-runner/cache/model-${'a'.repeat(40)}.json`;
 const tasks = `.kmp-test-runner/cache/tasks-${'a'.repeat(40)}.txt`;
+// Guest path validation deliberately rejects short-name aliases (RUNNER~1).
+// Windows hosted TEMP may contain them, so use a disposable, valid guest-shaped root.
+const fixtureParent = process.platform === 'win32' ? resolve('C:/kmp-eval/scratch') : resolve(tmpdir());
 const options = { encoding: 'utf8', windowsHide: true, timeout: 40_000 };
 const hasPowerShell = await exec('pwsh', ['-NoProfile', '-NonInteractive', '-Command', '$PSVersionTable.PSVersion.Major'], options)
   .then(() => true, error => { if (error.code === 'ENOENT') return false; throw error; });
@@ -24,7 +27,8 @@ async function put(dir, path, text = 'synthetic') {
 }
 
 async function fixture() {
-  const dir = await mkdtemp(join(tmpdir(), 'e1-readiness-'));
+  await mkdir(fixtureParent, { recursive: true });
+  const dir = await mkdtemp(join(fixtureParent, 'e1-readiness-'));
   const source = join(dir, 'source');
   const harness = join(dir, 'harness');
   const scratch = join(dir, 'scratch');
@@ -54,7 +58,7 @@ async function withFixture(action) {
   try { await action(f); }
   finally {
     const target = resolve(f.dir);
-    if (dirname(target) !== resolve(tmpdir()) || !target.startsWith(join(resolve(tmpdir()), 'e1-readiness-'))) {
+    if (dirname(target) !== fixtureParent || !target.startsWith(join(fixtureParent, 'e1-readiness-'))) {
       throw new Error('unsafe fixture cleanup');
     }
     await rm(target, { recursive: true, force: true });
@@ -189,6 +193,26 @@ $ledger=if(Test-Path -LiteralPath $ledgerPath) { Get-Content -LiteralPath $ledge
 }
 
 describe.skipIf(!hasPowerShell)('readiness source custody guest integration', { timeout: 45_000 }, () => {
+  it.skipIf(process.platform !== 'win32')('keeps a valid guest fixture when Windows TEMP uses a short-name alias', async () => {
+    const parent = 'C:/kmp-eval/scratch';
+    await mkdir(parent, { recursive: true });
+    const alias = await mkdtemp(join(parent, 'e1-ci-temp~'));
+    const previous = process.env.TEMP;
+    process.env.TEMP = alias;
+    try {
+      await withFixture(async f => {
+        const result = await runGuest(f);
+        expect(result.failure).toBeNull();
+        expect(result.result.verdict).toBe('PASS');
+      });
+    } finally {
+      if (previous === undefined) delete process.env.TEMP;
+      else process.env.TEMP = previous;
+      if (dirname(resolve(alias)) !== resolve(parent)) throw new Error('unsafe alias cleanup');
+      await rm(alias, { recursive: true, force: true });
+    }
+  });
+
   it.each([false, true])('accepts immutable bounded runtime artifacts (present=%s) and preserves source anchors', async present => {
     await withFixture(async f => {
       if (present) {
