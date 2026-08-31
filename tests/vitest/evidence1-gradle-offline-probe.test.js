@@ -202,7 +202,7 @@ describe.skipIf(process.platform !== 'win32')('Evidence1 offline cache contract 
 
   it('projects all scope filters of the rejected any-protocol rules without private values', async () => {
     const result = await ps(`$r=& (Get-Module evidence1-gradle-offline-probe) {
-      function Get-NetFirewallRule {[pscustomobject]@{Name='PRIVATE_RULE';DisplayName='PRIVATE_TEXT';Enabled=$true;Direction='Outbound';Action='Allow';Profile='Public';EnforcementStatus='Full';PolicyAppId='PRIVATE_APP_ID';Owner='PRIVATE_OWNER'}}
+      function Get-NetFirewallRule {[pscustomobject]@{Name='PRIVATE_RULE';DisplayName='PRIVATE_TEXT';Enabled=$true;Direction='Outbound';Action='Allow';Profile='Public';EnforcementStatus=@('LocalUserEmpty','InactiveProfile');PolicyAppId='PRIVATE_APP_ID';Owner='PRIVATE_OWNER'}}
       function Get-NetConnectionProfile {[pscustomobject]@{NetworkCategory='Private'}}
       function Get-NetFirewallApplicationFilter {param([Parameter(ValueFromPipeline)]$InputObject) process {[pscustomobject]@{Program='Any';Package='Any'}}}
       function Get-NetFirewallPortFilter {param([Parameter(ValueFromPipeline)]$InputObject) process {[pscustomobject]@{Protocol='Any';DynamicTarget='Any';LocalPort='Any';RemotePort='Any'}}}
@@ -217,7 +217,8 @@ describe.skipIf(process.platform !== 'win32')('Evidence1 offline cache contract 
       local_address: 'loopback', remote_address: 'any', local_port: 'any', remote_port: 'any',
       interface_alias: 'scoped', interface_type: 'wireless', authentication: 'required', encryption: 'required',
       override_block_rules: 'false', local_user: 'scoped', remote_user: 'any', remote_machine: 'any',
-      policy_app_id: 'scoped', local_user_owner: 'scoped', enforcement: 'full', dynamic_target: 'any' }] });
+      policy_app_id: 'scoped', local_user_owner: 'scoped', enforcement: 'multiple',
+      enforcement_states: ['localuserempty', 'inactiveprofile'], dynamic_target: 'any' }] });
     expect(JSON.stringify(result)).not.toMatch(/PRIVATE|127\.0\.0|SDDL/);
   });
 
@@ -244,7 +245,7 @@ describe.skipIf(process.platform !== 'win32')('Evidence1 offline cache contract 
 
   it('rejects private scope values, unknown keys and oversized rule collections', async () => {
     expect(await ps(`$enums=Get-E1OfflineScopeEnums; $row=@{}
-      foreach($key in $enums.Keys) {$row[$key]=$enums[$key][0]}
+      foreach($key in $enums.Keys) {$row[$key]=$enums[$key][0]}; $row.enforcement_states=@('full')
       $out=@()
       foreach($key in $enums.Keys) {
         $bad=$row.Clone();$bad[$key]='PRIVATE_VALUE'

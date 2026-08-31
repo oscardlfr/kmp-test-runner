@@ -194,11 +194,18 @@ function ConvertTo-E1OfflineRuleScope($Raw) {
     if($rules -isnot [System.Collections.IList] -or $rules.Count -gt 128) {throw 'result_shape'}
     $enums=Get-E1OfflineScopeEnums; $safe=@{rules=@()}
     foreach($rule in $rules) {
-        Assert-E1Keys $rule @($enums.Keys); $row=@{}
+        Assert-E1Keys $rule (@($enums.Keys) + @('enforcement_states')); $row=@{}
         foreach($key in $enums.Keys) {
             $value=Get-E1Field $rule $key
             if($value -isnot [string] -or $value -cnotin $enums[$key]) {throw 'result_shape'}
             $row[$key]=$value
+        }
+        $states=Get-E1Field $rule 'enforcement_states'
+        if($states -isnot [System.Collections.IList] -or $states.Count -gt 24) {throw 'result_shape'}
+        $row.enforcement_states=@()
+        foreach($state in $states) {
+            if($state -isnot [string] -or $state -cnotin $enums.enforcement) {throw 'result_shape'}
+            $row.enforcement_states+=,$state
         }
         $safe.rules+=,$row
     }
@@ -233,7 +240,9 @@ function Get-E1OfflineNetworkRuleScope {
             if('Any' -in $profiles -or @($profiles | Where-Object {$_ -in $active}).Count -gt 0) {$profileMatch='active'}
         }
         $row=@{action=([string]$rule.Action).ToLowerInvariant();program=$program;profile_match=$profileMatch;enforcement='unknown'}
-        $row.enforcement=Get-E1OfflineEnforcementKind (Get-E1Field $rule 'EnforcementStatus')
+        $nativeStates=Get-E1Field $rule 'EnforcementStatus'
+        $row.enforcement=Get-E1OfflineEnforcementKind $nativeStates
+        $row.enforcement_states=@(foreach($state in $nativeStates) {Get-E1OfflineEnforcementKind $state})
         foreach($mapping in @(@('local_address',$address.LocalAddress),@('remote_address',$address.RemoteAddress),
             @('local_port',$port.LocalPort),@('remote_port',$port.RemotePort),@('interface_alias',$iface.InterfaceAlias),
             @('local_user',$security.LocalUser),@('remote_user',$security.RemoteUser),@('remote_machine',$security.RemoteMachine),
