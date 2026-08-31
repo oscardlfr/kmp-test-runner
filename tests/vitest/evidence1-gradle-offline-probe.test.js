@@ -52,6 +52,14 @@ function put(rootPath, path, bytes = 'PRIVATE_SYNTHETIC_CONTENT') {
   writeFileSync(file, bytes);
   return file;
 }
+function sdkFixtureScript(f) {
+  return `$tokens=$null; $errors=$null
+    $ast=[System.Management.Automation.Language.Parser]::ParseFile(${quote(modulePath)},[ref]$tokens,[ref]$errors)
+    $fn=$ast.Find({param($a) $a -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $a.Name -eq 'Get-E1OfflineSdk'},$true)
+    . ([scriptblock]::Create($fn.Extent.Text))
+    $realResolver=(Get-Command Resolve-E1Path).ScriptBlock
+    function Resolve-E1Path([string]$Path) { & $realResolver $Path ${quote(f.dir)} }`;
+}
 function snapshot(dir) {
   const out = {};
   function walk(parent, prefix = '') {
@@ -284,6 +292,34 @@ describe.skipIf(process.platform !== 'win32')('Evidence1 offline cache contract 
     expect(await ps(`Assert-E1OfflineWrapper ${quote(f.source)}; $true | ConvertTo-Json`)).toBe(true);
     mkdirSync(resolve(f.source, slot, 'unexpected-directory'));
     expect(await ps(`$rejected=$false; try {Assert-E1OfflineWrapper ${quote(f.source)}} catch {$rejected=($_.Exception.Message -ceq 'wrapper_cache_missing')}; $rejected | ConvertTo-Json`)).toBe(true);
+  });
+
+  it('binds the installed SDK from the preserved bootstrap property without copying other values', async () => {
+    const f = fixture();
+    const sdk = resolve(f.dir, 'sdk');
+    put(sdk, 'platforms/android-36/android.jar');
+    put(sdk, 'build-tools/36.0.0/source.properties', 'Pkg.Revision=36.0.0');
+    put(f.source, 'local.properties', `sdk.dir=${sdk.replaceAll('\\', '/')}\nprivate.value=PRIVATE_SENTINEL\n`);
+    const before = snapshot(f.dir);
+    const result = await ps(`${sdkFixtureScript(f)}
+      Get-E1OfflineSdk ${quote(f.source)} | ConvertTo-Json -Compress`);
+    expect(result.root).toBe(sdk);
+    expect(result.configuration_sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.build_tools_sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.stringify(result)).not.toContain('PRIVATE_SENTINEL');
+    expect(snapshot(f.dir)).toEqual(before);
+  });
+
+  it('rejects duplicate SDK declarations and SDK paths outside the permitted root', async () => {
+    const f = fixture();
+    put(f.source, 'local.properties', 'sdk.dir=C:/outside/sdk\nsdk.dir=C:/another/sdk\n');
+    expect(await ps(`${sdkFixtureScript(f)}
+      $rejected=$false; try {Get-E1OfflineSdk ${quote(f.source)} | Out-Null} catch {$rejected=($_.Exception.Message -ceq 'sdk_configuration')}
+      $rejected | ConvertTo-Json`)).toBe(true);
+    put(f.source, 'local.properties', 'sdk.dir=C:/outside/sdk\n');
+    expect(await ps(`${sdkFixtureScript(f)}
+      $rejected=$false; try {Get-E1OfflineSdk ${quote(f.source)} | Out-Null} catch {$rejected=($_.Exception.Message -ceq 'path_outside_root')}
+      $rejected | ConvertTo-Json`)).toBe(true);
   });
 
   it('does not assign automatic HOME and keeps Gradle captures outside the Java helper scope', async () => {

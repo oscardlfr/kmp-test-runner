@@ -311,6 +311,12 @@ It excludes ambient init scripts, properties, credentials, daemon state, locks a
 build-output caches. No firewall rule is changed. The original home is never used
 as the Gradle execution home.
 
+The diagnostic reads only the bootstrap's `sdk.dir` setting from the preserved
+source's ignored `local.properties`, verifies the installed SDK files, and supplies
+the SDK via process-local environment variables. It does not copy other local
+properties or change the original file. SDK configuration hashes are retained and
+checked again after execution.
+
 One bounded raw Gradle invocation requests `:core:domain:test` and both demo/prod
 unit coverage report tasks with `--offline --no-daemon --no-build-cache`. A guest
 receipt under `scratch/gradle-offline-probe-<target-commit>/PROBE.json` reserves the

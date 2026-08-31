@@ -145,6 +145,22 @@ function Assert-E1OfflineWrapper([string]$ProbeGradleHome) {
     if($launchers.Count -ne 1 -or $launchers[0].Name -cne 'gradle-launcher-9.4.0.jar') {throw 'wrapper_cache_missing'}
 }
 
+function Get-E1OfflineSdk([string]$Source) {
+    $path=Resolve-E1Path (Join-Path $Source 'local.properties')
+    if(-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -gt 16384) {throw 'sdk_configuration'}
+    $bytes=[IO.File]::ReadAllBytes($path)
+    $text=[Text.UTF8Encoding]::new($false,$true).GetString($bytes).TrimStart([char]0xfeff)
+    # The existing VM bootstrap writes this literal sdk.dir form. Do not copy
+    # arbitrary local.properties content or interpret additional properties.
+    $lines=@($text.Split("`n") | Where-Object {$_ -match '^\s*sdk\.dir\s*='})
+    if($lines.Count -ne 1 -or $lines[0].Trim() -cnotmatch '^sdk\.dir=(C:/[A-Za-z0-9 _./-]+)$') {throw 'sdk_configuration'}
+    $sdkRoot=Resolve-E1Path $Matches[1]
+    $platform=Resolve-E1Path (Join-Path $sdkRoot 'platforms/android-36/android.jar')
+    $tools=Resolve-E1Path (Join-Path $sdkRoot 'build-tools/36.0.0/source.properties')
+    if(-not (Test-Path -LiteralPath $platform -PathType Leaf) -or -not (Test-Path -LiteralPath $tools -PathType Leaf)) {throw 'sdk_configuration'}
+    return @{root=$sdkRoot;configuration_sha256=(Get-E1Sha256 $bytes);build_tools_sha256=(Get-E1SourceFileHash $tools 16384)}
+}
+
 function Invoke-E1OfflineGuest($Config) {
     $result = New-E1OfflineReceipt
     $mutex=$null; $locked=$false; $stream=$null; $before=$null; $saved=@{}; $sourceBefore=$null
@@ -175,7 +191,11 @@ function Invoke-E1OfflineGuest($Config) {
         $before=Get-E1RecordsSnapshot $harness
         $null=Assert-E1Repo $harness $Config.Commit $Config.Tree $directory
         $sourceBefore=Get-E1SourceSnapshot $source $sourceCommit '' $directory
-        foreach($name in @('GRADLE_USER_HOME','GRADLE_OPTS','TEMP','TMP','GIT_CONFIG_GLOBAL','GIT_CONFIG_NOSYSTEM')) { $saved[$name]=[Environment]::GetEnvironmentVariable($name,'Process') }
+        $sdk=Get-E1OfflineSdk $source
+        $result.hashes.sdk_configuration_sha256=$sdk.configuration_sha256
+        $result.hashes.sdk_build_tools_sha256=$sdk.build_tools_sha256
+        foreach($name in @('GRADLE_USER_HOME','GRADLE_OPTS','ANDROID_HOME','ANDROID_SDK_ROOT','TEMP','TMP','GIT_CONFIG_GLOBAL','GIT_CONFIG_NOSYSTEM')) { $saved[$name]=[Environment]::GetEnvironmentVariable($name,'Process') }
+        $env:ANDROID_HOME=$sdk.root; $env:ANDROID_SDK_ROOT=$sdk.root
         $env:TEMP=$directory; $env:TMP=$directory; $env:GIT_CONFIG_NOSYSTEM='1'
         $env:GIT_CONFIG_GLOBAL=Join-Path $directory 'empty-git-config'
         [IO.File]::WriteAllText($env:GIT_CONFIG_GLOBAL,'',[Text.UTF8Encoding]::new($false))
@@ -223,7 +243,7 @@ function Invoke-E1OfflineGuest($Config) {
         elseif ($result.process.exit_code -eq 0) { $result.conclusion='offline_tasks_completed'; $result.failure_code='none'; $result.state='passed' }
         else { $result.failure_code='gradle_failed' }
     } catch {
-        $allowed=@('attempt_exists','network_unsealed','cache_busy','cache_limit','cache_destination','cache_empty','cache_changed','wrapper_identity','wrapper_cache_missing','diagnostic_limit')
+        $allowed=@('attempt_exists','network_unsealed','cache_busy','cache_limit','cache_destination','cache_empty','cache_changed','wrapper_identity','wrapper_cache_missing','diagnostic_limit','sdk_configuration')
         $result.state='failed'; $result.failure_code=Get-E1FailureCode $_ 'preflight_failed'
         if ($_.Exception.Message -cin $allowed) { $result.failure_code=$_.Exception.Message }
     } finally {
@@ -233,12 +253,16 @@ function Invoke-E1OfflineGuest($Config) {
                 Set-E1RecordsCheck $result $before (Get-E1RecordsSnapshot $harness)
                 if ($sourceBefore) { Assert-E1SourcePostflight $source $sourceCommit $sourceBefore.tree $directory $sourceBefore -Operation 'dry-v3'; $result.checks.source_custody=$true }
                 $null=Read-E1ForensicArtifact $markerPath $marker.sha256
+                if($result.hashes.ContainsKey('sdk_configuration_sha256')) {
+                    $sdkAfter=Get-E1OfflineSdk $source
+                    if($sdkAfter.configuration_sha256 -cne $result.hashes.sdk_configuration_sha256 -or $sdkAfter.build_tools_sha256 -cne $result.hashes.sdk_build_tools_sha256) {throw 'evidence_changed'}
+                }
                 if ((Get-E1OfflineSealHash) -cne $result.hashes.network_seal_sha256) { throw 'evidence_changed' }
                 Assert-E1OfflineQuiescent $source
                 $result.checks.postflight=$true
             } catch { $result.state='failed'; $result.failure_code=Get-E1FailureCode $_ 'postflight_failed'; $result.conclusion='inconclusive' }
         }
-        if ($stream) { try { $result.stage='complete'; Write-E1Record $stream $result } finally { $stream.Dispose() } }
+        if ($stream) { try { if($result.state -ceq 'passed') {$result.stage='complete'}; Write-E1Record $stream $result } finally { $stream.Dispose() } }
         if ($locked) { $mutex.ReleaseMutex() }; if ($mutex) { $mutex.Dispose() }
     }
     return $result
@@ -256,7 +280,7 @@ function ConvertTo-E1OfflineReceipt($Raw) {
             state { @('passed','failed') }
             stage { @('preflight','copy_cache','clone_source','offline_gradle','complete') }
             conclusion { @('inconclusive','offline_cache_incomplete','offline_tasks_completed') }
-            failure_code { @('none','probe_failed','preflight_failed','postflight_failed','attempt_exists','network_unsealed','cache_busy','cache_limit','cache_destination','cache_empty','cache_changed','wrapper_identity','wrapper_cache_missing','diagnostic_limit','gradle_timeout','process_cleanup','offline_cache_miss','gradle_failed','guest_identity','validation_overlap','live_overlap','ambient_credentials','environment_override','repo_commit','repo_tree','repo_root','repo_dirty','source_artifacts','source_artifact_limit','source_tracked_changed','source_index_changed','records_changed','evidence_changed','path_invalid','path_link','path_outside_root','git_failed','git_output_size','java_toolchain','result_shape') }
+            failure_code { @('none','probe_failed','preflight_failed','postflight_failed','attempt_exists','network_unsealed','cache_busy','cache_limit','cache_destination','cache_empty','cache_changed','wrapper_identity','wrapper_cache_missing','diagnostic_limit','sdk_configuration','gradle_timeout','process_cleanup','offline_cache_miss','gradle_failed','guest_identity','validation_overlap','live_overlap','ambient_credentials','environment_override','repo_commit','repo_tree','repo_root','repo_dirty','source_artifacts','source_artifact_limit','source_tracked_changed','source_index_changed','records_changed','evidence_changed','path_invalid','path_link','path_outside_root','git_failed','git_output_size','java_toolchain','result_shape') }
         }
         if ($value -isnot [string] -or $value -cnotin $allowed) { throw 'result_shape' }; $safe[$name]=$value
     }
@@ -287,7 +311,7 @@ function ConvertTo-E1OfflineReceipt($Raw) {
     if($null -ne $gradle) { Assert-E1ForensicGradleSummary $gradle; $safe.gradle_signals=$gradle }
     $hashes=Get-E1Field $Raw 'hashes'
     foreach($key in Get-E1ObjectKeys $hashes) {
-        if($key -cnotin @('wet_marker_sha256','network_seal_sha256','wrapper_properties_sha256','wrapper_jar_sha256','java_executable_sha256','stdout_sha256','stderr_sha256','records_metadata_before_sha256','records_metadata_after_sha256')) {throw 'result_shape'}
+        if($key -cnotin @('wet_marker_sha256','network_seal_sha256','wrapper_properties_sha256','wrapper_jar_sha256','java_executable_sha256','sdk_configuration_sha256','sdk_build_tools_sha256','stdout_sha256','stderr_sha256','records_metadata_before_sha256','records_metadata_after_sha256')) {throw 'result_shape'}
         $value=Get-E1Field $hashes $key
         if($value -isnot [string] -or $value -cnotmatch '^[a-f0-9]{64}$') {throw 'result_shape'}; $safe.hashes[$key]=$value
     }
