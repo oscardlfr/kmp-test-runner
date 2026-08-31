@@ -32,6 +32,15 @@ $script:E1ForensicGradlePatterns = [ordered]@{
     invalid_option='Unknown command-line option'
     class_version='UnsupportedClassVersionError|Unsupported class file major version'
 }
+$script:E1ForensicGradleV1Keys = @($script:E1ForensicGradlePatterns.Keys)
+# Schema 1's broad file_permission includes socket errors; retain it only for compatibility.
+$script:E1ForensicGradlePatterns.network_permission_denied = 'Permission denied:\s*(?:connect|getsockopt)\b|An attempt was made to access a socket in a way forbidden by its access permissions'
+$script:E1ForensicGradlePatterns.socket_error = 'java\.net\.SocketException\b'
+$script:E1ForensicGradlePatterns.filesystem_access_denied = 'java\.nio\.file\.AccessDeniedException\b|java\.io\.FileNotFoundException[^\r\n]+\(Access is denied\)'
+$script:E1ForensicGradlePatterns.repository_google = 'Could not (?:GET|HEAD)\s+[''"]?https://(?:dl\.google\.com|maven\.google\.com)(?::443)?/'
+$script:E1ForensicGradlePatterns.repository_maven_central = 'Could not (?:GET|HEAD)\s+[''"]?https://(?:repo\.maven\.apache\.org|repo1\.maven\.org)(?::443)?/'
+$script:E1ForensicGradlePatterns.repository_gradle_plugins = 'Could not (?:GET|HEAD)\s+[''"]?https://plugins\.gradle\.org(?::443)?/'
+$script:E1ForensicGradlePatterns.repository_gradle_distribution = 'Could not (?:GET|HEAD)\s+[''"]?https://(?:services\.gradle\.org|downloads\.gradle\.org)(?::443)?/'
 
 function Get-E1ForensicGradleSummary([string]$Text) {
     if ($Text.Length -gt 1048576) { throw 'forensic_size' }
@@ -44,16 +53,17 @@ function Get-E1ForensicGradleSummary([string]$Text) {
                 [Text.RegularExpressions.RegexOptions]::IgnoreCase, [timespan]::FromSeconds(1))) { $signals[$key]++ }
         }
     }
-    return @{ schema=1; signals=$signals }
+    return @{ schema=2; signals=$signals }
 }
 
 function Assert-E1ForensicGradleSummary($Summary) {
     Assert-E1ForensicKeys $Summary @('schema','signals')
     $schema = Get-E1Field $Summary 'schema'
-    if (-not (Test-E1Exact $schema 1) -or @($schema.PSObject.Properties).Count) { throw 'forensic_shape' }
+    if ((-not (Test-E1Exact $schema 1) -and -not (Test-E1Exact $schema 2)) -or @($schema.PSObject.Properties).Count) { throw 'forensic_shape' }
     $signals = Get-E1Field $Summary 'signals'
-    Assert-E1ForensicKeys $signals @($script:E1ForensicGradlePatterns.Keys)
-    foreach ($key in $script:E1ForensicGradlePatterns.Keys) {
+    $keys = if (Test-E1Exact $schema 1) { $script:E1ForensicGradleV1Keys } else { @($script:E1ForensicGradlePatterns.Keys) }
+    Assert-E1ForensicKeys $signals $keys
+    foreach ($key in $keys) {
         $n = Get-E1Field $signals $key
         if (($n -isnot [int] -and $n -isnot [long]) -or $n -lt 0 -or $n -gt 1048576 -or @($n.PSObject.Properties).Count) { throw 'forensic_shape' }
     }

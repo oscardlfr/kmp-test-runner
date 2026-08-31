@@ -224,6 +224,19 @@ URLs, commands, paths, exception names, or captures. Zero counts mean no recogni
 not proof of absence. Multiple signatures may describe the same failure; they are not a
 root-cause verdict or a count of distinct failures.
 
+The nested Gradle summary now uses schema 2; historical nested schema 1 remains valid
+with its exact original keys. Schema 2 adds separate socket-permission, socket-error and
+filesystem-denial counters, plus fixed public repository families (Google, Maven Central,
+Gradle plugin portal and distributions). These are signature observations only, not proof
+that the current firewall caused an error. The legacy `file_permission` counter also matches
+generic socket permission messages and must NOT be interpreted as filesystem denial by itself.
+Repository families require a failed GET/HEAD and an exact HTTPS hostname boundary; no URL
+or artifact coordinate is exported. All historical marker/hash/no-rerun checks still apply.
+Windows NIO can report socket denial as `Permission denied: getsockopt` without printing
+the exception class. This signature is included alongside `connect`; see the OpenJDK
+[Windows socket error mapping](https://github.com/openjdk/jdk21u/blob/master/src/java.base/windows/native/libnet/net_util_md.c)
+and [NIO socket calls](https://github.com/openjdk/jdk21u/blob/master/src/java.base/windows/native/libnio/ch/Net.c).
+
 Opt-in reports use forensic schema 2 and add `gradle_diagnostics`,
 `gradle_stderr_read_requested: true`, and `hashes.gradle_stderr_sha256` on success.
 `stderr_read` is true after a validated receipt, false before remote dispatch, or null if

@@ -28,6 +28,55 @@ const json = value => `ConvertFrom-E1Json ${q(JSON.stringify(value))}`;
 const reportFixture = () => ({ schema: 1, operation: 'wet-v2', state: 'failed', target_commit: 'a'.repeat(40), target_tree: 'b'.repeat(40), source_commit: '7d45eae4f8720a0c77f507712ba2437ff974b6ed', agent_calls: 0, product_invocations: 1, dry_plan_invocations: 0, hashes: { product_stdout_sha256: 'c'.repeat(64) }, failure_code: 'product_contract', checks: { postflight: false } });
 
 describe.skipIf(!available)('readonly wet-gate forensics', { timeout: 30000 }, () => {
+  it('separates socket permissions from filesystem denial without exporting repository URLs', () => {
+    const result = ps(`Get-E1ForensicGradleSummary ${q([
+      '> Could not GET \'https://dl.google.com/dl/android/maven2/PRIVATE_PATH?token=PRIVATE\'.',
+      '> java.net.SocketException: Permission denied: connect',
+      '> Could not HEAD \'https://repo.maven.apache.org/maven2/PRIVATE\'.',
+      '> java.nio.file.AccessDeniedException: C:\\PRIVATE_PATH',
+    ].join('\n'))} | ConvertTo-Json -Depth 8 -Compress`);
+    expect(result.schema).toBe(2);
+    expect(result.signals.network_permission_denied).toBe(1);
+    expect(result.signals.socket_error).toBe(1);
+    expect(result.signals.filesystem_access_denied).toBe(1);
+    expect(result.signals.repository_google).toBe(1);
+    expect(result.signals.repository_maven_central).toBe(1);
+    expect(JSON.stringify(result)).not.toMatch(/PRIVATE|https|token|google\.com|maven\.apache/i);
+  });
+
+  it('rejects spoofed repository domains and unrelated filesystem prose as network permission', () => {
+    const result = ps(`Get-E1ForensicGradleSummary ${q([
+      'Could not GET https://dl.google.com.evil.invalid/PRIVATE',
+      'Could not GET https://repo.maven.apache.org@evil.invalid/PRIVATE',
+      'Could not GET https://evil.invalid/dl.google.com/PRIVATE',
+      'Access is denied: C:\\PRIVATE',
+      'java.io.FileNotFoundException: C:\\PRIVATE (Permission denied)',
+    ].join('\n'))} | ConvertTo-Json -Depth 8 -Compress`);
+    expect(result.signals.network_permission_denied).toBe(0);
+    expect(result.signals.repository_google).toBe(0);
+    expect(result.signals.repository_maven_central).toBe(0);
+  });
+
+  it('recognizes the Windows NIO getsockopt permission diagnostic without a printed class name', () => {
+    const result = ps(`Get-E1ForensicGradleSummary '> Permission denied: getsockopt' | ConvertTo-Json -Depth 8 -Compress`);
+    expect(result.signals.network_permission_denied).toBe(1);
+    expect(result.signals.filesystem_access_denied).toBe(0);
+    expect(result.signals.socket_error).toBe(0);
+  });
+
+  it('retains exact historical Gradle schema 1 and rejects cross-version fields', () => {
+    expect(ps(`$s=Get-E1ForensicGradleSummary 'BUILD FAILED'; $v1=ConvertFrom-E1Json ($s | ConvertTo-Json -Depth 8)
+      $v1.schema=1
+      foreach($k in @('network_permission_denied','socket_error','filesystem_access_denied','repository_google','repository_maven_central','repository_gradle_plugins','repository_gradle_distribution')) {$v1.signals.PSObject.Properties.Remove($k)}
+      Assert-E1ForensicGradleSummary $v1
+      $out=@($s.schema -eq 2)
+      $v1.signals | Add-Member -NotePropertyName network_permission_denied -NotePropertyValue 0
+      try {Assert-E1ForensicGradleSummary $v1; $out+=$false} catch {$out+=($_.Exception.Message -ceq 'forensic_shape')}
+      $s.signals.Remove('socket_error')
+      try {Assert-E1ForensicGradleSummary $s; $out+=$false} catch {$out+=($_.Exception.Message -ceq 'forensic_shape')}
+      $out | ConvertTo-Json -Compress`)).toEqual([true,true,true]);
+  });
+
   it('classifies deterministic Gradle diagnostics using only closed counts, never log prose', () => {
     const lines = [
       'FAILURE: Build failed with an exception.',
@@ -41,7 +90,7 @@ describe.skipIf(!available)('readonly wet-gate forensics', { timeout: 30000 }, (
       'BUILD FAILED in 15s',
     ].join('\n');
     const result = ps(`Get-E1ForensicGradleSummary ${q(lines)} | ConvertTo-Json -Depth 8 -Compress`);
-    expect(result.schema).toBe(1);
+    expect(result.schema).toBe(2);
     expect(result.signals.dependency_resolution).toBe(1);
     expect(result.signals.repository_transport).toBe(1);
     expect(result.signals.tls_handshake).toBe(1);
