@@ -225,12 +225,34 @@ function Initialize-E1ProcessJob {
     # Closing this job cannot terminate a process from another operation or an existing Gradle daemon.
     Add-Type -TypeDefinition @'
 using System;
+using System.Collections;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 namespace Evidence1 {
   public sealed class ProcessResult {
     public int ExitCode; public bool TimedOut; public double WallSeconds; public bool CleanupOk;
+  }
+  public sealed class AsyncProcessResult {
+    public int ExitCode; public bool TimedOut; public double WallSeconds; public bool CleanupOk; public bool Cancelled;
+  }
+  public sealed class ProcessOperation {
+    readonly object gate = new object();
+    CancellationTokenSource cancellation = new CancellationTokenSource();
+    public Task<AsyncProcessResult> Task { get; private set; }
+    internal ProcessOperation(Func<CancellationToken,AsyncProcessResult> run) {
+      var token = cancellation.Token;
+      Task = System.Threading.Tasks.Task.Factory.StartNew(() => {
+        try { return run(token); }
+        finally { lock(gate) { cancellation.Dispose(); cancellation = null; } }
+      }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+    }
+    public void Cancel() {
+      lock(gate) { if(cancellation != null) cancellation.Cancel(); }
+    }
   }
   public static class ValidationJob {
     [StructLayout(LayoutKind.Sequential)] struct Limits {
@@ -277,8 +299,35 @@ namespace Evidence1 {
       return b.Append('\\',slash*2).Append('"').ToString();
     }
     public static ProcessResult Run(string exe,string[] args,string cwd,string stdout,string stderr,int seconds) {
+      bool cancelled;
+      return RunCore(exe,args,cwd,stdout,stderr,seconds,CancellationToken.None,null,out cancelled);
+    }
+    public static ProcessOperation RunAsync(string exe,string[] args,string cwd,string stdout,string stderr,int seconds) {
+      if(seconds < 1 || seconds > 86400) throw new ArgumentOutOfRangeException("seconds");
+      var arguments = (string[])args.Clone();
+      // Capture before returning: callers may immediately restore their scoped environment.
+      var environment = new SortedDictionary<string,string>(StringComparer.OrdinalIgnoreCase);
+      foreach(DictionaryEntry entry in Environment.GetEnvironmentVariables()) environment[(string)entry.Key] = (string)entry.Value;
+      var block = new StringBuilder();
+      foreach(var entry in environment) block.Append(entry.Key).Append('=').Append(entry.Value).Append('\0');
+      block.Append('\0');
+      string snapshot = block.ToString();
+      return new ProcessOperation(token => {
+        bool cancelled;
+        var result = RunCore(exe,arguments,cwd,stdout,stderr,seconds,token,snapshot,out cancelled);
+        return new AsyncProcessResult { ExitCode=result.ExitCode, TimedOut=result.TimedOut,
+          WallSeconds=result.WallSeconds, CleanupOk=result.CleanupOk, Cancelled=cancelled };
+      });
+    }
+    static ProcessResult RunCore(string exe,string[] args,string cwd,string stdout,string stderr,int seconds,
+        CancellationToken cancellation,string environment,out bool cancelled) {
+      cancelled=false;
+      if(cancellation.IsCancellationRequested) {
+        cancelled=true;
+        return new ProcessResult { ExitCode=130, CleanupOk=true };
+      }
       IntPtr job=IntPtr.Zero, o=IntPtr.Zero, e=IntPtr.Zero, input=IntPtr.Zero;
-      IntPtr attributes=IntPtr.Zero, jobList=IntPtr.Zero, handleList=IntPtr.Zero; bool initialized=false;
+      IntPtr attributes=IntPtr.Zero, jobList=IntPtr.Zero, handleList=IntPtr.Zero, environmentBlock=IntPtr.Zero; bool initialized=false;
       Info pi=new Info(); var clock=new Stopwatch();
       try {
         job=CreateJobObject(IntPtr.Zero,null);
@@ -300,9 +349,24 @@ namespace Evidence1 {
            !UpdateProcThreadAttribute(attributes,0,new IntPtr(0x20002),handleList,new IntPtr(IntPtr.Size*3),IntPtr.Zero,IntPtr.Zero)) throw new Exception("attributes_update");
         var start=new StartupEx { Startup=new Startup { Size=Marshal.SizeOf(typeof(StartupEx)), Flags=0x100, Input=input, Output=o, Error=e }, Attributes=attributes };
         var cmd=new StringBuilder(Quote(exe)); foreach(var arg in args) cmd.Append(' ').Append(Quote(arg));
+        if(environment != null) environmentBlock=Marshal.StringToHGlobalUni(environment);
         clock.Start();
-        if(!CreateProcess(exe,cmd,IntPtr.Zero,IntPtr.Zero,true,0x08080000,IntPtr.Zero,cwd,ref start,out pi)) throw new Exception("process_create");
-        uint wait=WaitForSingleObject(pi.Process,(uint)(seconds*1000));
+        if(!CreateProcess(exe,cmd,IntPtr.Zero,IntPtr.Zero,true,environment == null ? 0x08080000u : 0x08080400u,environmentBlock,cwd,ref start,out pi)) throw new Exception("process_create");
+        uint wait;
+        if(!cancellation.CanBeCanceled) {
+          wait=WaitForSingleObject(pi.Process,(uint)(seconds*1000));
+        } else {
+          var waiting=Stopwatch.StartNew();
+          while(true) {
+            wait=WaitForSingleObject(pi.Process,0);
+            if(wait!=258) break;
+            if(cancellation.IsCancellationRequested) { cancelled=true; break; }
+            long remaining=(long)seconds*1000-waiting.ElapsedMilliseconds;
+            if(remaining<=0) break;
+            wait=WaitForSingleObject(pi.Process,(uint)Math.Min(100,remaining));
+            if(wait!=258) break;
+          }
+        }
         if(wait!=0 && wait!=258) throw new Exception("process_wait");
         clock.Stop(); uint exit;
         if(!GetExitCodeProcess(pi.Process,out exit)) throw new Exception("process_exit");
@@ -313,14 +377,14 @@ namespace Evidence1 {
           if(accounting.Active==0) break;
           System.Threading.Thread.Sleep(20);
         }
-        return new ProcessResult { ExitCode=wait==258?124:(int)exit, TimedOut=wait==258,
+        return new ProcessResult { ExitCode=cancelled?130:(wait==258?124:(int)exit), TimedOut=wait==258&&!cancelled,
           WallSeconds=clock.Elapsed.TotalSeconds, CleanupOk=stopped&&accounting.Active==0 };
       } finally {
         if(pi.Process!=IntPtr.Zero) { TerminateProcess(pi.Process,124); WaitForSingleObject(pi.Process,10000); CloseHandle(pi.Process); }
         if(pi.Thread!=IntPtr.Zero) CloseHandle(pi.Thread);
         if(job!=IntPtr.Zero) CloseHandle(job);
         if(initialized) DeleteProcThreadAttributeList(attributes);
-        foreach(var p in new[]{attributes,jobList,handleList}) if(p!=IntPtr.Zero) Marshal.FreeHGlobal(p);
+        foreach(var p in new[]{attributes,jobList,handleList,environmentBlock}) if(p!=IntPtr.Zero) Marshal.FreeHGlobal(p);
         foreach(var h in new[]{o,e,input}) if(h!=IntPtr.Zero&&h!=new IntPtr(-1)) CloseHandle(h);
       }
     }
@@ -333,6 +397,22 @@ function Invoke-E1OwnedProcess([string]$Executable, [string[]]$Arguments, [strin
     [string]$Stdout, [string]$Stderr, [int]$Seconds) {
     Initialize-E1ProcessJob
     return [Evidence1.ValidationJob]::Run($Executable, $Arguments, $WorkingDirectory, $Stdout, $Stderr, $Seconds)
+}
+
+function Start-E1OwnedProcess([string]$Executable, [string[]]$Arguments, [string]$WorkingDirectory,
+    [string]$Stdout, [string]$Stderr, [ValidateRange(1,86400)][int]$Seconds) {
+    Initialize-E1ProcessJob
+    return [Evidence1.ValidationJob]::RunAsync($Executable, $Arguments, $WorkingDirectory, $Stdout, $Stderr, $Seconds)
+}
+
+function Stop-E1OwnedProcess($Operation) {
+    if ($null -eq $Operation -or $Operation -isnot [Evidence1.ProcessOperation]) { throw 'owned_process_handle' }
+    $Operation.Cancel()
+}
+
+function Wait-E1OwnedProcess($Operation) {
+    if ($null -eq $Operation -or $Operation -isnot [Evidence1.ProcessOperation]) { throw 'owned_process_handle' }
+    return $Operation.Task.GetAwaiter().GetResult()
 }
 
 function New-E1Result([string]$Operation, [string]$TargetCommit, [string]$TargetTree) {
