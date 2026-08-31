@@ -38,8 +38,9 @@ async function ps(body, importModule = true) {
 }
 
 const fixtureRoots = [];
-function fixture() {
-  const dir = mkdtempSync(resolve(tmpdir(), 'e1-offline-cache-test-'));
+function fixture(parent = tmpdir()) {
+  mkdirSync(parent, { recursive: true });
+  const dir = mkdtempSync(resolve(parent, 'e1-offline-cache-test-'));
   fixtureRoots.push(dir);
   const source = resolve(dir, 'source');
   const destination = resolve(dir, 'destination');
@@ -295,7 +296,9 @@ describe.skipIf(process.platform !== 'win32')('Evidence1 offline cache contract 
   });
 
   it('binds the installed SDK from the preserved bootstrap property without copying other values', async () => {
-    const f = fixture();
+    // Match the existing ops fixtures: hosted TEMP may contain RUNNER~1, which
+    // the guest's deliberately narrow path contract rejects.
+    const f = fixture('C:/kmp-eval/scratch');
     const sdk = resolve(f.dir, 'sdk');
     put(sdk, 'platforms/android-36/android.jar');
     put(sdk, 'build-tools/36.0.0/source.properties', 'Pkg.Revision=36.0.0');
@@ -311,7 +314,7 @@ describe.skipIf(process.platform !== 'win32')('Evidence1 offline cache contract 
   });
 
   it('rejects duplicate SDK declarations and SDK paths outside the permitted root', async () => {
-    const f = fixture();
+    const f = fixture('C:/kmp-eval/scratch');
     put(f.source, 'local.properties', 'sdk.dir=C:/outside/sdk\nsdk.dir=C:/another/sdk\n');
     expect(await ps(`${sdkFixtureScript(f)}
       $rejected=$false; try {Get-E1OfflineSdk ${quote(f.source)} | Out-Null} catch {$rejected=($_.Exception.Message -ceq 'sdk_configuration')}
