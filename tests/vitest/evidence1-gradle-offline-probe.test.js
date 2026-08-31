@@ -172,6 +172,49 @@ describe.skipIf(process.platform !== 'win32')('Evidence1 offline cache contract 
       $out | ConvertTo-Json -Compress`)).toEqual([true, true, true, true, true, true, true, true]);
   });
 
+  it('identifies the firewall preflight condition without exporting rule names', async () => {
+    expect(await ps(`$tokens=$null; $errors=$null
+      $ast=[System.Management.Automation.Language.Parser]::ParseFile(${quote(modulePath)},[ref]$tokens,[ref]$errors)
+      $fn=$ast.Find({param($a) $a -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $a.Name -eq 'Get-E1OfflineSealHash'},$true)
+      . ([scriptblock]::Create($fn.Extent.Text))
+      $profileCount=3; $enabled=$true; $action='Block'
+      function Get-NetFirewallProfile {for($i=0;$i -lt $profileCount;$i++) {[pscustomobject]@{Name="profile$i";Enabled=$enabled;DefaultOutboundAction=$action}}}
+      function Get-NetFirewallRule {return @()}
+      function Read-E1Json {return @{sha256=('a'*64);value=@{verdict='FAIL';network_mode='restricted'}}}
+      $out=@()
+      $profileCount=2;try {$null=Get-E1OfflineSealHash} catch {$out+=$_.Exception.Message}
+      $profileCount=3;$enabled=$false;try {$null=Get-E1OfflineSealHash} catch {$out+=$_.Exception.Message}
+      $enabled=$true;$action='Allow';try {$null=Get-E1OfflineSealHash} catch {$out+=$_.Exception.Message}
+      $action='Block';try {$null=Get-E1OfflineSealHash} catch {$out+=$_.Exception.Message}
+      $out | ConvertTo-Json -Compress`)).toEqual([
+      'network_profile_count', 'network_profile_disabled', 'network_outbound_default', 'network_seal_contract',
+    ]);
+  });
+
+  it('audits network preflight without creating an attempt or dispatching any process', async () => {
+    const result = await ps(`$null=Get-Command Invoke-E1OfflineNetworkAuditGuest -ErrorAction Stop
+      $tokens=$null;$errors=$null
+      $ast=[System.Management.Automation.Language.Parser]::ParseFile(${quote(modulePath)},[ref]$tokens,[ref]$errors)
+      $fn=$ast.Find({param($a) $a -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $a.Name -eq 'Invoke-E1OfflineNetworkAuditGuest'},$true)
+      . ([scriptblock]::Create($fn.Extent.Text))
+      function Get-CimInstance {return @{Manufacturer='Microsoft Corporation';Model='Virtual Machine'}}
+      function Get-ItemPropertyValue {return '00000000-0000-0000-0000-000000000001'}
+      function Assert-E1GuestIdentity {}
+      function Assert-E1ForensicSubject {}
+      function Assert-E1ForensicMarker {}
+      function Read-E1ForensicArtifact {return @{sha256=('a'*64);value=@{}}}
+      function Get-E1OfflineSealHash {throw 'network_outbound_default'}
+      function Invoke-E1OwnedProcess {throw 'FORBIDDEN_PROCESS'}
+      function New-Item {throw 'FORBIDDEN_WRITE'}
+      function Write-E1Record {throw 'FORBIDDEN_WRITE'}
+      $r=Invoke-E1OfflineNetworkAuditGuest @{Report=@{state='failed'};Commit=('b'*40);Tree=('c'*40);HostComputerName='host';VMId='00000000-0000-0000-0000-000000000001';GuestUser='Evidence1'}
+      $safe=ConvertTo-E1OfflineReceipt $r
+      $safe | ConvertTo-Json -Depth 8 -Compress`);
+    expect(result).toMatchObject({ operation: 'gradle-offline-network-audit', failure_code: 'network_outbound_default',
+      agent_calls: 0, product_invocations: 0, gradle_invocations: 0, process: null, cache: null,
+      validation_pass: false, firewall_modified: false, stage: 'preflight', state: 'failed' });
+  });
+
   it.each([
     ['empty input', '', 0],
     ['artifact miss', '> No cached version of PRIVATE_GROUP:artifact:1.0 available for offline mode.', 1],
