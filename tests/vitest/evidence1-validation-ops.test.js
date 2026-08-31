@@ -521,6 +521,51 @@ describe.skipIf(!hasPowerShell)('Evidence1 validation operations functional cont
     expect(JSON.stringify(checks)).not.toContain('PRIVATE');
   });
 
+  for (const shell of ['pwsh', ...(process.platform === 'win32' ? ['powershell.exe'] : [])]) {
+    it(`accepts only the two exact coverage module identities in ${shell}`, async () => {
+      const values = [['core:domain'], [':core:domain']].map(withData => {
+        const value = structuredClone(envelope);
+        value.coverage.module_buckets.with_data = withData;
+        return value;
+      });
+      const checks = await ps(`$values = ${json(values)}
+        @($values | ForEach-Object { Get-E1WetChecks $_ 1 52 }) | ConvertTo-Json -Depth 4 -Compress`, shell);
+      expect(checks.map(value => value.with_data)).toEqual([true, true]);
+      expect(checks[0]).toEqual(checks[1]);
+      expect(checks.every(value => Object.values(value).every(check => check === true))).toBe(true);
+    });
+
+    it(`rejects malformed coverage module buckets without coercion in ${shell}`, async () => {
+      const buckets = [
+        ['core:domain', ':core:domain'], ['core:domain', 'other'],
+        'core:domain', ':core:domain', [['core:domain']], [[':core:domain']],
+        ['::core:domain'], ['other:core:domain'], [':other:core:domain'],
+        ['core:domain:other'], ['Core:domain'], [':core:Domain'],
+        [' core:domain'], ['core:domain '], [], null, { module: 'core:domain' },
+      ];
+      const values = buckets.map(withData => {
+        const value = structuredClone(envelope);
+        value.coverage.module_buckets.with_data = withData;
+        return value;
+      });
+      const checks = await ps(`$values = ${json(values)}
+        @($values | ForEach-Object { (Get-E1WetChecks $_ 1 52).with_data }) | ConvertTo-Json -Compress`, shell);
+      expect(checks).toEqual(buckets.map(() => false));
+    });
+
+    it(`keeps individual_total strictly four with a normalized coverage module in ${shell}`, async () => {
+      const values = [2, 3, '4', 4].map(count => {
+        const value = structuredClone(envelope);
+        value.tests.individual_total = count;
+        value.coverage.module_buckets.with_data = ['core:domain'];
+        return value;
+      });
+      const checks = await ps(`$values = ${json(values)}
+        @($values | ForEach-Object { (Get-E1WetChecks $_ 1 52).individual_total }) | ConvertTo-Json -Compress`, shell);
+      expect(checks).toEqual([false, false, false, true]);
+    });
+  }
+
   it('rejects wrong counts, coercible strings, extra errors, wrong buckets and timeout', async () => {
     const mutations = [
       e => { e.tool = 'KMP-TEST'; }, e => { e.tests.failed = '0'; },

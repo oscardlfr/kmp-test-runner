@@ -206,7 +206,7 @@ function Get-E1WetChecks($Envelope, $ProcessExitCode, $WallSeconds) {
         individual_total = (Test-E1Exact (Get-E1Field $tests 'individual_total') 4)
         missed_lines = (Test-E1Exact (Get-E1Field $coverage 'missed_lines') 23)
         modules_contributing = (Test-E1Exact (Get-E1Field $coverage 'modules_contributing') 1)
-        with_data = ($bucketValue -is [array] -and $buckets.Count -eq 1 -and (Test-E1Exact $buckets[0] ':core:domain'))
+        with_data = ($bucketValue -is [array] -and $buckets.Count -eq 1 -and ((Test-E1Exact $buckets[0] ':core:domain') -or (Test-E1Exact $buckets[0] 'core:domain')))
         error_count = ($errorValue -is [array] -and $errors.Count -eq 1)
         error_code = (Test-E1Exact (Get-E1Field $firstError 'code') 'coverage_threshold_exceeded')
         error_threshold = (Test-E1Exact (Get-E1Field $firstError 'threshold') 15)
