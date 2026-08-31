@@ -293,6 +293,8 @@ function Get-E1ForensicSourceInventory([string]$Root) {
             $item = $_
             $childCount++
             if (++$entries -gt 128) { throw 'source_artifact_limit' }
+            # Enumeration returns cached FileSystemInfo metadata; refresh before fingerprinting.
+            $item.Refresh()
             $relative = $item.FullName.Substring($rootPath.Length + 1).Replace('\','/')
             $rows += [ordered]@{ name=$relative; directory=$item.PSIsContainer; attributes=[int]$item.Attributes
                 length=$(if ($item.PSIsContainer) { 0 } else { $item.Length }); modified=$item.LastWriteTimeUtc.Ticks }

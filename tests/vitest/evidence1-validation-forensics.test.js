@@ -50,7 +50,8 @@ describe.skipIf(!available)('readonly wet-gate forensics', { timeout: 30000 }, (
       expect(JSON.stringify(result)).not.toMatch(/PRIVATE|kmp-eval|timestamp/);
       expect(readdirSync(resolve(runtime, 'init-scripts'))).toEqual([]);
       expect(readFileSync(resolve(runtime, 'PRIVATE_FILE.txt'), 'utf8')).toBe('PRIVATE_CONTENT');
-      expect(ps(`$s=Get-E1ForensicSourceInventory ${q(dir)}; Assert-E1ForensicInventory $s; $s | ConvertTo-Json -Depth 8 -Compress`)).toEqual(result);
+      const second = ps(`$s=Get-E1ForensicSourceInventory ${q(dir)}; Assert-E1ForensicInventory $s; $s | ConvertTo-Json -Depth 8 -Compress`);
+      expect(second).toEqual(result);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
@@ -66,6 +67,32 @@ describe.skipIf(!available)('readonly wet-gate forensics', { timeout: 30000 }, (
       }
       try { Assert-E1ForensicInventory $s; $out+=$false } catch { $out+=($_.Exception.Message -ceq 'forensic_shape') }
     }; $out | ConvertTo-Json -Compress`)).toEqual([true, true, true, true]);
+  });
+
+  it('refreshes cached enumeration metadata before hashing an unchanged directory', () => {
+    mkdirSync('C:/kmp-eval/scratch', { recursive: true });
+    const dir = mkdtempSync('C:/kmp-eval/scratch/e1-inventory-refresh-');
+    mkdirSync(resolve(dir, '.kmp-test-runner/cache'), { recursive: true });
+    try {
+      const result = ps(`& (Get-Module evidence1-validation-forensics) {
+        param($root)
+        $script:cached=Get-Item -LiteralPath (Join-Path $root '.kmp-test-runner/cache')
+        $old=$script:cached.LastWriteTimeUtc
+        [IO.Directory]::SetLastWriteTimeUtc($script:cached.FullName,$old.AddMinutes(1))
+        $wasStale=($script:cached.LastWriteTimeUtc -eq $old)
+        function Get-ChildItem { param($LiteralPath)
+          if($LiteralPath -eq (Join-Path $root '.kmp-test-runner')) { $script:cached }
+        }
+        $first=Get-E1ForensicSourceInventory $root
+        $script:cached.Refresh()
+        $second=Get-E1ForensicSourceInventory $root
+        [IO.Directory]::SetLastWriteTimeUtc($script:cached.FullName,$old.AddMinutes(2))
+        $changed=Get-E1ForensicSourceInventory $root
+        @{was_stale=$wasStale;hashes_equal=($first.metadata_sha256 -ceq $second.metadata_sha256)
+          real_change_detected=($changed.metadata_sha256 -cne $second.metadata_sha256)} | ConvertTo-Json -Compress
+      } ${q(dir)}`);
+      expect(result).toEqual({ was_stale: true, hashes_equal: true, real_change_detected: true });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
   it('source inventory receiver verifies identity and repository anchors and has no write or executable dispatch', () => {
@@ -142,7 +169,9 @@ describe.skipIf(!available)('readonly wet-gate forensics', { timeout: 30000 }, (
         function Get-ChildItem { param($LiteralPath)
           foreach($i in 1..10000) {
             $script:consumed++
-            [pscustomobject]@{FullName=(Join-Path $LiteralPath "$i.txt");PSIsContainer=$false;Attributes=0;Length=0;LastWriteTimeUtc=[datetime]'2020-01-01'}
+            $item=[pscustomobject]@{FullName=(Join-Path $LiteralPath "$i.txt");PSIsContainer=$false;Attributes=0;Length=0;LastWriteTimeUtc=[datetime]'2020-01-01'}
+            $item | Add-Member -MemberType ScriptMethod -Name Refresh -Value {}
+            $item
           }
         }
         $code='none'

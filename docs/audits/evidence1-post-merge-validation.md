@@ -187,6 +187,10 @@ new host `hyperv-read-source-inventory-direct/INVENTORY-<id>.json`; no guest fil
 Names, paths, timestamps and free text are not exported. A successful read is explicitly
 `validation_pass: false`: it is not a source-integrity or readiness PASS, and a metadata hash
 is not a content-custody proof. Unknown entries require investigation, never blanket acceptance.
+The collector refreshes enumerated `FileSystemInfo` metadata before hashing: enumeration can
+return a cached directory timestamp even without an intervening write. This preserves the
+strict two-snapshot comparison without sleeps, retries or omitted metadata fields. See
+[Microsoft's LastWriteTimeUtc caching contract](https://learn.microsoft.com/en-us/dotnet/api/system.io.filesysteminfo.lastwritetimeutc).
 
 Use `evidence1-hyperv-read-wet-forensics-direct.ps1` through the same elevated client. Its only
 arguments are the original `TargetCommit`, original `TargetTree`, and `ExpectedReportSha256`
