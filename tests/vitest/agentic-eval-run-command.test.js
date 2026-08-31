@@ -117,7 +117,9 @@ beforeEach(() => {
     first_useful_signal_predicate: { description: 'first well-formed evidence confirming :fakemod has no applicable tests' },
     tags: ['train'],
   }, null, 2));
-});
+// Hosted Windows performs seven real Git processes here, concurrently with the
+// remaining suite. Bound fixture setup separately from measured CLI execution.
+}, 30_000);
 
 afterEach(() => {
   rmSync(runsRoot, { recursive: true, force: true });

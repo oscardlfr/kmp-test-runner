@@ -484,6 +484,10 @@ function Assert-E1OfflineGuestDisconnected {
 
 function Get-E1OfflineDisconnectedHash {
     Assert-E1OfflineGuestDisconnected
+    return Get-E1OfflineFirewallHash
+}
+
+function Get-E1OfflineFirewallHash {
     $seal=Read-E1Json 'C:\kmp-eval\scratch\agentic-evidence1-claude-2x2-windows-stage-b-readiness-v1\NETWORK-SEAL.json'
     Assert-E1Fields $seal.value @{verdict='PASS';network_mode='restricted'}
     # Fingerprint the unchanged firewall configuration without reinterpreting its

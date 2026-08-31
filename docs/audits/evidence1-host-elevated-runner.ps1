@@ -21,7 +21,8 @@ $AllowedScripts = @(
   'evidence1-hyperv-verify-canary-dryrun-v3-direct.ps1',
   'evidence1-hyperv-read-wet-forensics-direct.ps1',
   'evidence1-hyperv-read-source-inventory-direct.ps1',
-  'evidence1-hyperv-probe-gradle-offline-direct.ps1'
+  'evidence1-hyperv-probe-gradle-offline-direct.ps1',
+  'evidence1-hyperv-provision-gradle-cache-direct.ps1'
 )
 
 function Resolve-FullPath([string]$Path) {

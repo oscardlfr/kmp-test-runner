@@ -62,7 +62,9 @@ function makeWorktree(sourceRepoDir, pinnedCommit) {
   return fixtureDir;
 }
 
-describe('applyFixtureSetup -- precondition: clean tree required', () => {
+// These integration cases create real Git repos/worktrees through Bash. Their
+// process startup cost is not a product latency assertion (especially on Windows CI).
+describe('applyFixtureSetup -- precondition: clean tree required', { timeout: 30000 }, () => {
   it('throws when a TRACKED file is already modified before the setup runs', () => {
     const { sourceRepoDir, pinnedCommit, blobOid } = makeSourceRepo();
     const fixtureDir = makeWorktree(sourceRepoDir, pinnedCommit);
@@ -84,7 +86,7 @@ describe('applyFixtureSetup -- precondition: clean tree required', () => {
   });
 });
 
-describe('applyFixtureSetup -- target validation (defense in depth, independent of schema-level checks)', () => {
+describe('applyFixtureSetup -- target validation (defense in depth, independent of schema-level checks)', { timeout: 30000 }, () => {
   it('throws on a traversal-shaped relative_path -- git itself refuses a pathspec outside the repo', () => {
     const { sourceRepoDir, pinnedCommit, blobOid } = makeSourceRepo();
     const fixtureDir = makeWorktree(sourceRepoDir, pinnedCommit);
@@ -174,7 +176,7 @@ describe('applyFixtureSetup -- target validation (defense in depth, independent 
   });
 });
 
-describe('applyFixtureSetup -- correct application', () => {
+describe('applyFixtureSetup -- correct application', { timeout: 30000 }, () => {
   it('produces exactly one unstaged modification, appending the exact harness-constant comment', () => {
     const { sourceRepoDir, pinnedCommit, blobOid } = makeSourceRepo();
     const fixtureDir = makeWorktree(sourceRepoDir, pinnedCommit);
