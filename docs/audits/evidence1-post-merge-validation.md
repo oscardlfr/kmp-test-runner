@@ -232,6 +232,10 @@ that the current firewall caused an error. The legacy `file_permission` counter 
 generic socket permission messages and must NOT be interpreted as filesystem denial by itself.
 Repository families require a failed GET/HEAD and an exact HTTPS hostname boundary; no URL
 or artifact coordinate is exported. All historical marker/hash/no-rerun checks still apply.
+Windows NIO can report socket denial as `Permission denied: getsockopt` without printing
+the exception class. This signature is included alongside `connect`; see the OpenJDK
+[Windows socket error mapping](https://github.com/openjdk/jdk21u/blob/master/src/java.base/windows/native/libnet/net_util_md.c)
+and [NIO socket calls](https://github.com/openjdk/jdk21u/blob/master/src/java.base/windows/native/libnio/ch/Net.c).
 
 Opt-in reports use forensic schema 2 and add `gradle_diagnostics`,
 `gradle_stderr_read_requested: true`, and `hashes.gradle_stderr_sha256` on success.

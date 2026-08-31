@@ -34,7 +34,7 @@ $script:E1ForensicGradlePatterns = [ordered]@{
 }
 $script:E1ForensicGradleV1Keys = @($script:E1ForensicGradlePatterns.Keys)
 # Schema 1's broad file_permission includes socket errors; retain it only for compatibility.
-$script:E1ForensicGradlePatterns.network_permission_denied = 'Permission denied:\s*connect\b|An attempt was made to access a socket in a way forbidden by its access permissions'
+$script:E1ForensicGradlePatterns.network_permission_denied = 'Permission denied:\s*(?:connect|getsockopt)\b|An attempt was made to access a socket in a way forbidden by its access permissions'
 $script:E1ForensicGradlePatterns.socket_error = 'java\.net\.SocketException\b'
 $script:E1ForensicGradlePatterns.filesystem_access_denied = 'java\.nio\.file\.AccessDeniedException\b|java\.io\.FileNotFoundException[^\r\n]+\(Access is denied\)'
 $script:E1ForensicGradlePatterns.repository_google = 'Could not (?:GET|HEAD)\s+[''"]?https://(?:dl\.google\.com|maven\.google\.com)(?::443)?/'

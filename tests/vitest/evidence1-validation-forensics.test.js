@@ -57,6 +57,13 @@ describe.skipIf(!available)('readonly wet-gate forensics', { timeout: 30000 }, (
     expect(result.signals.repository_maven_central).toBe(0);
   });
 
+  it('recognizes the Windows NIO getsockopt permission diagnostic without a printed class name', () => {
+    const result = ps(`Get-E1ForensicGradleSummary '> Permission denied: getsockopt' | ConvertTo-Json -Depth 8 -Compress`);
+    expect(result.signals.network_permission_denied).toBe(1);
+    expect(result.signals.filesystem_access_denied).toBe(0);
+    expect(result.signals.socket_error).toBe(0);
+  });
+
   it('retains exact historical Gradle schema 1 and rejects cross-version fields', () => {
     expect(ps(`$s=Get-E1ForensicGradleSummary 'BUILD FAILED'; $v1=ConvertFrom-E1Json ($s | ConvertTo-Json -Depth 8)
       $v1.schema=1
