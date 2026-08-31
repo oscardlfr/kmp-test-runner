@@ -95,6 +95,257 @@ BeforeAll {
             -ExpectedAttestationPath $script:AttestationPath `
             -NowUtc $script:Now
     }
+
+    Import-Module (Join-Path $script:AuditRoot 'evidence1-validation-ops.psm1') -Force
+    function New-CanaryValidationReport([string]$Operation) {
+        $report = New-E1Result $Operation $script:Commit $script:Tree
+        $report.state = 'passed'; $report.stage = 'complete'; $report.failure_code = 'none'
+        $report.live_records_created = 0
+        foreach ($name in @('guest_identity','preflight','postflight','module_target','source_integrity')) { $report.checks[$name] = $true }
+        foreach ($name in @('readiness_sha256','ledger_sha256','attestation_sha256','attestation_canonical_sha256',
+            'validation_module_sha256','scenario_sha256','product_entry_sha256','product_stdout_sha256',
+            'records_metadata_before_sha256','records_metadata_after_sha256','execution_profile_sha256','execution_profile_registry_sha256')) {
+            $report.hashes[$name] = 'd' * 64
+        }
+        $report.hashes.validation_module_sha256 = (Get-FileHash (Join-Path $script:AuditRoot 'evidence1-validation-ops.psm1')).Hash.ToLowerInvariant()
+        if ($Operation -eq 'wet-v2') {
+            $report.product_invocations = 1
+            foreach ($name in @('gradle_daemon_disabled','owned_tree_stopped','not_timed_out','java21_verified') + @((Get-E1WetChecks $null 0 0).Keys)) { $report.checks[$name] = $true }
+            $report.processes.product = @{ exit_code = 1; timed_out = $false; cleanup_ok = $true; wall_seconds = 2 }
+        } else {
+            $report.dry_plan_invocations = 2
+            $report.hashes.free_baseline_stdout_sha256 = 'e' * 64
+            foreach ($arm in @('product','free_baseline')) {
+                foreach ($name in @('process','stderr_empty') + @((Get-E1DryChecks $null 'claude-product-canary-v1' ('d' * 64) ('d' * 64)).Keys)) { $report.checks["${arm}_$name"] = $true }
+                $report.processes["${arm}_dry_plan"] = @{ exit_code = 0; timed_out = $false; cleanup_ok = $true; wall_seconds = 1 }
+            }
+        }
+        return ConvertTo-E1SafeResult $report $Operation $script:Commit $script:Tree
+    }
+    function New-CanaryParameters([string]$Arm = 'product') {
+        $readiness = New-ReadinessReport
+        $readiness.guest.source_head = '7d45eae4f8720a0c77f507712ba2437ff974b6ed'
+        return @{
+            Arm = $Arm; RunId = 'b48bfb0c-a9ae-4e0e-8d89-56eb1e278090'
+            TargetCommit = $script:Commit; TargetTree = $script:Tree
+            WetReport = New-CanaryValidationReport 'wet-v2'; DryReport = New-CanaryValidationReport 'dry-v3'
+            ReadinessReport = $readiness; ReadinessSha256 = 'd' * 64
+            WetReportSha256 = '1' * 64; DryReportSha256 = '2' * 64
+        }
+    }
+    function Write-CanaryTestBundle([string]$Directory) {
+        $p = New-CanaryParameters
+        New-Item -ItemType Directory -Path $Directory | Out-Null
+        $utf8 = [Text.UTF8Encoding]::new($false)
+        $readinessBytes = $utf8.GetBytes(($p.ReadinessReport | ConvertTo-Json -Depth 20))
+        $p.ReadinessSha256 = Get-E1Sha256 $readinessBytes
+        $p.WetReport.hashes.readiness_sha256 = $p.ReadinessSha256
+        $p.DryReport.hashes.readiness_sha256 = $p.ReadinessSha256
+        $wetBytes = $utf8.GetBytes(($p.WetReport | ConvertTo-Json -Depth 20))
+        $dryBytes = $utf8.GetBytes(($p.DryReport | ConvertTo-Json -Depth 20))
+        $p.WetReportSha256 = Get-E1Sha256 $wetBytes; $p.DryReportSha256 = Get-E1Sha256 $dryBytes
+        [IO.File]::WriteAllBytes((Join-Path $Directory 'readiness.json'), $readinessBytes)
+        [IO.File]::WriteAllBytes((Join-Path $Directory 'wet.json'), $wetBytes)
+        [IO.File]::WriteAllBytes((Join-Path $Directory 'dry.json'), $dryBytes)
+        $binding = New-Evidence1CanaryBinding @p
+        $bindingBytes = $utf8.GetBytes(($binding | ConvertTo-Json -Depth 20))
+        [IO.File]::WriteAllBytes((Join-Path $Directory 'binding.json'), $bindingBytes)
+        return @{ Directory = $Directory; RunId = $p.RunId; Arm = $p.Arm; BindingSha256 = Get-E1Sha256 $bindingBytes }
+    }
+}
+
+Describe 'Evidence1 Stage L canary evidence and authorization' {
+    BeforeAll { Import-Module (Join-Path $script:AuditRoot 'evidence1-live-run-contract.psm1') -Force }
+    It 'binds <Arm> to exactly one registered V2 cell while retaining eight-cell readiness' -TestCases @(
+        @{ Arm = 'product'; Label = 'A'; Condition = 'current-skill'; Access = 'product-assisted'; Hash = 'd' }
+        @{ Arm = 'free-baseline'; Label = 'B'; Condition = 'no-skill'; Access = 'free-baseline-no-product'; Hash = 'e' }
+    ) {
+        param($Arm, $Label, $Condition, $Access, $Hash)
+        $p = New-CanaryParameters $Arm
+        $binding = New-Evidence1CanaryBinding @p
+        $binding.campaign_design_id | Should -BeExactly "claude-$Arm-canary-v1"
+        $binding.scenario_id | Should -BeExactly 'coverage-threshold-failure-v2'
+        $binding.planned_sessions | Should -Be 1
+        $binding.condition | Should -BeExactly $Condition
+        $binding.cell_label | Should -BeExactly $Label
+        $binding.product_access_mode | Should -BeExactly $Access
+        $binding.plan_sha256 | Should -BeExactly ($Hash * 64)
+        $p.ReadinessReport.guest.planned_sessions | Should -Be 8
+        $binding.wet_report_sha256 | Should -BeExactly $p.WetReportSha256
+        $binding.dry_report_sha256 | Should -BeExactly $p.DryReportSha256
+    }
+
+    It 'rejects <Name> before producing a launch binding' -TestCases @(
+        @{ Name = 'unknown arm'; Change = { $p.Arm = 'full' } }
+        @{ Name = 'missing arm'; Change = { $p.Arm = '' } }
+        @{ Name = 'noncanonical run'; Change = { $p.RunId = 'not-a-run' } }
+        @{ Name = 'failed V2'; Change = { $p.WetReport.state = 'failed'; $p.WetReport.failure_code = 'product_failed' } }
+        @{ Name = 'failed V3'; Change = { $p.DryReport.state = 'failed'; $p.DryReport.failure_code = 'dry_plan_failed' } }
+        @{ Name = 'schema 1 report'; Change = { $p.WetReport.schema = 1 } }
+        @{ Name = 'V2 anchor drift'; Change = { $p.WetReport.target_tree = 'f' * 40 } }
+        @{ Name = 'V3 anchor drift'; Change = { $p.DryReport.target_commit = 'f' * 40 } }
+        @{ Name = 'attestation mismatch'; Change = { $p.DryReport.hashes.attestation_canonical_sha256 = 'f' * 64 } }
+        @{ Name = 'raw attestation mismatch'; Change = { $p.DryReport.hashes.attestation_sha256 = 'f' * 64 } }
+        @{ Name = 'readiness bytes changed'; Change = { $p.ReadinessSha256 = 'f' * 64 } }
+        @{ Name = 'module hash mismatch'; Change = { $p.DryReport.hashes.validation_module_sha256 = 'f' * 64 } }
+        @{ Name = 'both reports agree on the wrong local module'; Change = { $p.WetReport.hashes.validation_module_sha256 = 'f' * 64; $p.DryReport.hashes.validation_module_sha256 = 'f' * 64 } }
+        @{ Name = 'false one-cell check'; Change = { $p.DryReport.checks.product_planned_sessions = $false } }
+        @{ Name = 'string counter'; Change = { $p.WetReport.product_invocations = '1' } }
+        @{ Name = 'V2 exit zero'; Change = { $p.WetReport.processes.product.exit_code = 0 } }
+        @{ Name = 'unknown report field'; Change = { $p.WetReport.secret = 'private' } }
+    ) {
+        param($Name, $Change)
+        $p = New-CanaryParameters
+        . $Change
+        { New-Evidence1CanaryBinding @p } | Should -Throw '*canary*'
+    }
+
+    It 'requires the stable one-cell literal for the selected arm without human UUIDs or hashes' {
+        $p = New-CanaryParameters
+        $binding = New-Evidence1CanaryBinding @p
+        $phrase = Get-Evidence1CanaryAuthorizationLiteral $binding
+        $phrase | Should -Match '^AUTORIZO 1 SESION LIVE NUEVA'
+        $phrase | Should -Not -Match ([regex]::Escape($binding.run_id))
+        $phrase | Should -Not -Match ([regex]::Escape($binding.dry_report_sha256))
+        { Assert-Evidence1CanaryAuthorization $binding $phrase } | Should -Not -Throw
+        foreach ($wrong in @('', $phrase.ToLowerInvariant(), $phrase.Replace('product', 'free-baseline'),
+            ('AUTORIZO HASTA 8 SESIONES LIVE NUEVAS DEL EVIDENCE' + '1 CLAUDE WINDOWS PRODUCT-VS-FREE-BASELINE COVERAGE-THRESHOLD EN ESTE ENTORNO AISLADO, SIN REINTENTOS, REEMPLAZOS NI RESPAWNS'))) {
+            { Assert-Evidence1CanaryAuthorization $binding $wrong } | Should -Throw
+        }
+    }
+
+    It 'revalidates staged bytes and rejects substitution of any bound file or arm' {
+        $p = Write-CanaryTestBundle (Join-Path $TestDrive 'bundle')
+        $actual = Read-Evidence1CanaryBundle @p
+        $actual.binding.planned_sessions | Should -Be 1
+        foreach ($name in @('wet.json','dry.json','readiness.json','binding.json')) {
+            $path = Join-Path $p.Directory $name
+            $before = [IO.File]::ReadAllBytes($path)
+            [IO.File]::AppendAllText($path, ' ')
+            { Read-Evidence1CanaryBundle @p } | Should -Throw '*canary_bundle*'
+            [IO.File]::WriteAllBytes($path, $before)
+        }
+        $p.Arm = 'free-baseline'
+        { Read-Evidence1CanaryBundle @p } | Should -Throw '*canary_bundle*'
+    }
+
+    It 'uses supplied unique report paths and never replaces original failed evidence' {
+        $p = Write-CanaryTestBundle (Join-Path $TestDrive 'supplied')
+        $binding = (Read-Evidence1CanaryBundle @p).binding
+        $failed = Join-Path $TestDrive 'original-failed.json'
+        [IO.File]::WriteAllText($failed, '{"state":"failed"}')
+        $before = (Get-FileHash $failed).Hash
+        $hostArgs = @{
+            Directory = Join-Path $TestDrive 'host-attempt'; RunId = $p.RunId; Arm = $p.Arm
+            TargetCommit = $script:Commit; TargetTree = $script:Tree
+            WetReportPath = Join-Path $p.Directory 'wet.json'; DryReportPath = Join-Path $p.Directory 'dry.json'
+            ReadinessReportPath = Join-Path $p.Directory 'readiness.json'
+            ExpectedWetReportSha256 = $binding.wet_report_sha256; ExpectedDryReportSha256 = $binding.dry_report_sha256
+            AuthorizationPhrase = Get-Evidence1CanaryAuthorizationLiteral $binding
+        }
+        $result = New-Evidence1CanaryHostBundle @hostArgs
+        (Get-FileHash $failed).Hash | Should -BeExactly $before
+        $result.binding.dry_report_sha256 | Should -BeExactly $binding.dry_report_sha256
+        Test-Path (Join-Path $result.directory 'handoff.claim.json') | Should -BeTrue
+        { New-Evidence1CanaryHostBundle @hostArgs } | Should -Throw '*canary*'
+        $hostArgs.Directory = Join-Path $TestDrive 'bad-hash-attempt'
+        $hostArgs.ExpectedWetReportSha256 = 'f' * 64
+        { New-Evidence1CanaryHostBundle @hostArgs } | Should -Throw '*canary*'
+        Test-Path $hostArgs.Directory | Should -BeFalse
+    }
+
+    It 'builds the selected registered CLI invocation without repeats, profile override or full-matrix fallback' {
+        foreach ($arm in @('product','free-baseline')) {
+            $p = New-CanaryParameters $arm
+            $binding = New-Evidence1CanaryBinding @p
+            $args = @(Get-Evidence1CanaryArguments $binding 'C:\fixture\source' 'C:\fixture\attestation.json')
+            $args[0] | Should -BeExactly 'tools/agentic-eval/cli.mjs'
+            $args[1] | Should -BeExactly 'run'
+            $args[[array]::IndexOf($args, '--scenario') + 1] | Should -BeExactly 'coverage-threshold-failure-v2'
+            $args[[array]::IndexOf($args, '--campaign-design') + 1] | Should -BeExactly "claude-$arm-canary-v1"
+            $args | Should -Not -Contain '--repeats'
+            $args | Should -Not -Contain '--execution-profile'
+            $args | Should -Not -Contain '--dry-run'
+            $dry = @(Get-Evidence1CanaryArguments $binding 'C:\fixture\source' 'C:\fixture\attestation.json' -DryRun)
+            ($dry[0..($dry.Length - 2)] -join '|') | Should -BeExactly ($args -join '|')
+            $dry[-1] | Should -BeExactly '--dry-run'
+            $binding.planned_sessions = 8
+            { Get-Evidence1CanaryArguments $binding 'C:\fixture\source' 'C:\fixture\attestation.json' } | Should -Throw '*canary*'
+        }
+    }
+
+    It 'validates mounted staged scripts and copied canary custody against placement, not the host script path' {
+        $ops = Join-Path $TestDrive 'mounted/Evidence1Ops'
+        $p = Write-CanaryTestBundle (Join-Path $ops 'canary/b48bfb0c-a9ae-4e0e-8d89-56eb1e278090')
+        $b = (Read-Evidence1CanaryBundle @p).binding
+        foreach ($name in $b.scripts.Keys) { Copy-Item (Join-Path $script:AuditRoot $name) (Join-Path $ops $name) }
+        $null = New-Evidence1CanaryClaim $p.Directory $p.RunId $p.BindingSha256 'handoff'
+        $null = New-Evidence1CanaryClaim $p.Directory $p.RunId $p.BindingSha256 'wrapper'
+        $null = New-Evidence1CanaryClaim $p.Directory $p.RunId $p.BindingSha256 'launcher'
+        Write-Evidence1JsonAtomically (Join-Path $p.Directory 'source-custody.json') @{
+            schema = 1; run_id = $p.RunId; binding_sha256 = $p.BindingSha256; source_preserved = $true
+            validation_inventory_before_sha256 = 'd' * 64; validation_inventory_after_sha256 = 'd' * 64
+        }
+        $terminal = @{ run_id = $p.RunId; canary = @{ arm = 'product'; planned_sessions = 1; binding_sha256 = $p.BindingSha256 } }
+        $custody = Get-Evidence1CanaryCustody $p.Directory $p.RunId $p.BindingSha256 $terminal
+        $custody.verified | Should -BeTrue
+        $custody.binding_sha256 | Should -BeExactly $p.BindingSha256
+        $staged = Join-Path $ops 'evidence1-live-run-contract.psm1'
+        [IO.File]::AppendAllText($staged, "`n# altered staged module")
+        { Get-Evidence1CanaryCustody $p.Directory $p.RunId $p.BindingSha256 $terminal } | Should -Throw '*canary*'
+        Copy-Item (Join-Path $script:AuditRoot 'evidence1-live-run-contract.psm1') $staged -Force
+        [IO.File]::AppendAllText((Join-Path $p.Directory 'wet.json'), ' ')
+        { Get-Evidence1CanaryCustody $p.Directory $p.RunId $p.BindingSha256 $terminal } | Should -Throw '*canary*'
+    }
+
+    It 'returns copy-ready incomplete custody for a claimed wrapper preflight failure without authorizing retry' {
+        $ops = Join-Path $TestDrive 'mounted-preflight/Evidence1Ops'
+        $p = Write-CanaryTestBundle (Join-Path $ops 'canary/b48bfb0c-a9ae-4e0e-8d89-56eb1e278090')
+        $b = (Read-Evidence1CanaryBundle @p).binding
+        foreach ($name in $b.scripts.Keys) { Copy-Item (Join-Path $script:AuditRoot $name) (Join-Path $ops $name) }
+        $null = New-Evidence1CanaryClaim $p.Directory $p.RunId $p.BindingSha256 'handoff'
+        $null = New-Evidence1CanaryClaim $p.Directory $p.RunId $p.BindingSha256 'wrapper'
+        Write-Evidence1JsonAtomically (Join-Path $p.Directory 'journal-baseline.json') @{
+            run_id = $p.RunId; binding_sha256 = $p.BindingSha256; journal_ids = @()
+        }
+        $diagnostics = New-Evidence1CanaryDiagnostics
+        try { throw 'canary_journal_baseline' } catch { Set-Evidence1CanaryFailure $diagnostics primary guest_preflight $_ }
+        $terminal = @{
+            schema = 1; run_id = $p.RunId; state = 'wrapper_error'; exit_code = 997; exit_code_source = 'wrapper_error'
+            wrapper_error_stage = 'initialize_journal'; canary = @{ arm = 'product'; planned_sessions = 1; binding_sha256 = $p.BindingSha256 }
+            diagnostics = $diagnostics
+        }
+
+        $custody = Get-Evidence1CanaryCustody $p.Directory $p.RunId $p.BindingSha256 $terminal
+        $custody.verified | Should -BeFalse
+        $custody.complete | Should -BeFalse
+        $custody.custody_state | Should -BeExactly 'incomplete_wrapper_preflight'
+        $custody.attempt_consumed | Should -BeTrue
+        $custody.retry_authorized | Should -BeFalse
+        $custody.source_preserved | Should -BeFalse
+        $custody.failure_phase | Should -BeExactly 'guest_preflight'
+        $custody.failure_code | Should -BeExactly 'canary_journal_baseline'
+        $custody.files.Keys | Should -Contain 'wrapper.claim.json'
+        $custody.files.Keys | Should -Not -Contain 'launcher.claim.json'
+        Test-Path (Join-Path $p.Directory 'wrapper.claim.json') | Should -BeTrue
+    }
+
+    It 'rejects incomplete custody outside the exact claimed wrapper preflight failure shape' {
+        $ops = Join-Path $TestDrive 'mounted-invalid-preflight/Evidence1Ops'
+        $p = Write-CanaryTestBundle (Join-Path $ops 'canary/b48bfb0c-a9ae-4e0e-8d89-56eb1e278090')
+        $b = (Read-Evidence1CanaryBundle @p).binding
+        foreach ($name in $b.scripts.Keys) { Copy-Item (Join-Path $script:AuditRoot $name) (Join-Path $ops $name) }
+        $null = New-Evidence1CanaryClaim $p.Directory $p.RunId $p.BindingSha256 'handoff'
+        $null = New-Evidence1CanaryClaim $p.Directory $p.RunId $p.BindingSha256 'wrapper'
+        $diagnostics = New-Evidence1CanaryDiagnostics
+        try { throw 'canary_live_exit_nonzero' } catch { Set-Evidence1CanaryFailure $diagnostics primary live $_ }
+        $terminal = @{
+            schema = 1; run_id = $p.RunId; state = 'wrapper_error'; exit_code = 997; exit_code_source = 'wrapper_error'
+            wrapper_error_stage = 'start_launcher'; canary = @{ arm = 'product'; planned_sessions = 1; binding_sha256 = $p.BindingSha256 }
+            diagnostics = $diagnostics
+        }
+        { Get-Evidence1CanaryCustody $p.Directory $p.RunId $p.BindingSha256 $terminal } | Should -Throw '*canary*'
+    }
 }
 
 Describe 'Evidence1 live handoff evidence contract' {

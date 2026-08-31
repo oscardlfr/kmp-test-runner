@@ -176,6 +176,14 @@ historical files. Safe validation rejects extra keys, free text and coerced nume
 
 ### Read an Existing Failed Wet Gate
 
+When V2 used a versioned `-ReportPath`, supply that same path to the forensic
+entrypoint as `-WetReportPath`, together with its exact `-ExpectedReportSha256`.
+The default remains the historical canonical report. Only JSON files under
+`C:\kmp-eval\scratch\hyperv-verify-wet-gate-v2-direct` are accepted; the subject,
+marker and stdout hash checks remain mandatory. Do not replace the old report
+to make the reader select a newer attempt. This selector changes no guest path,
+executes no product command and does not authorize a retry.
+
 For `source_artifacts` before a wet attempt, use
 `evidence1-hyperv-read-source-inventory-direct.ps1` through the same elevated client with the
 current guest `TargetCommit`/`TargetTree`. This separate read needs no fresh readiness and must
@@ -265,22 +273,65 @@ Before any future Stage L launch, verify that its operational launcher explicitl
 registered canary design and enforces the one-session authorization, progress, and custody
 contract. This document does not claim that an eight-session launcher satisfies that contract.
 
-The currently installed Stage L path still has these concrete dependencies:
+### Stage L One-Cell Handoff
 
-- `evidence1-stageb-live-launch.ps1` fixes the eight-cell design, the historical scenario, and
-  the eight-cell readiness fingerprint. Changing the registry alone does not change them.
-- `evidence1-hyperv-start-authorized-live.ps1` and the placement script require the eight-session
-  authorization and do not propagate a canary arm.
-- The live handoff does not yet consume the V2/V3 reports. A future canary handoff must bind
-  those passing reports to the same anchors and attestation, and retain prior-run custody.
-- Real CLI execution also checks that its materialization source is clean, unlike a dry-run.
-  The allowed V2 output inventory is not a waiver of that separate live-source hygiene gate.
-  Resolve source custody explicitly in the future Stage L handoff without deleting failed
-  validation evidence or hiding files through ignore rules.
+The versioned handoff now has an explicit canary branch. Deployment and review of this branch
+are prerequisites; its presence in a checkout does not prove that a guest has it installed.
+With no canary parameters the legacy eight-cell path remains unchanged. Supplying any canary
+parameter requires the complete one-cell contract; missing or invalid arms never fall back.
 
-Do not edit those launch contracts incidentally while validating Stage V. Their implementation
-and regression tests must be reviewed before Stage L, with one-session authorization and no
-fallback to the full matrix. Remote authentication must then be refreshed under its own gate.
+Use `evidence1-hyperv-start-authorized-live.ps1` with `ExpectedTargetCommit`,
+`ExpectedTargetTree`, `CanaryArm` (`product` or `free-baseline`), `CanaryRunId`,
+`WetReportPath`, `DryReportPath`, `ExpectedWetReportSha256`, `ExpectedDryReportSha256`, and
+`LiveAuthorizationPhrase`. Supply the exact V2/V3 host report paths, including unique report
+filenames used to preserve an earlier failed report. V1 retains its canonical current pointer.
+Do not overwrite an old V2 report to satisfy a default filename.
+
+After V1, V2 and V3 pass, consume explicit authorization for the selected arm. An unused
+authorization explicitly granted in advance for live execution after these gates may be used;
+do not request it again solely because the gates have now passed. Record its source and scope
+in the operational audit before translating it to the launcher's exact stable literal:
+
+```text
+AUTORIZO 1 SESION LIVE NUEVA DEL Evidence1 CLAUDE WINDOWS CANARY product, SIN REINTENTOS, REEMPLAZOS NI RESPAWNS
+AUTORIZO 1 SESION LIVE NUEVA DEL Evidence1 CLAUDE WINDOWS CANARY free-baseline, SIN REINTENTOS, REEMPLAZOS NI RESPAWNS
+```
+
+Choose only an explicitly authorized arm within the remaining session budget. Engineering-only
+consent, a consumed authorization, or an unrelated historical matrix authorization does not
+authorize a new session. Never infer an additional session from a fresh run ID. Tooling
+generates the run GUID and calculates hashes;
+the human phrase does not require typing or pasting UUIDs or hashes. At consumption, immutable
+binding bytes connect that authorization to the run, arm, harness/source pins, V1 bytes,
+schema-2 passing V2/V3 reports, raw/canonical attestation hashes, selected V3 plan and staged
+implementation hashes. The validation module must also match the locally computed module hash.
+
+Placement copies and verifies those bytes on the mounted guest volume. Exclusive handoff,
+wrapper and launcher claim files make the attempt one-use, including failures or interruption.
+Never delete claims, replace a session or reuse a consumed run ID. A fresh ID is not permission
+for another session. Unknown prior state remains a hard stop requiring custody review.
+
+The launcher uses the registered `claude-product-canary-v1` or `claude-free-baseline-canary-v1`
+design, `coverage-threshold-failure-v2`, one condition, one repeat and one planned session.
+It creates an independent pinned local source clone; it does not clean/reset the original
+source, edit ignores, or delete failed V2 outputs. Original source/validation inventories are
+checked after execution. The warmed donor remains guest `USERPROFILE/.gradle`; cache
+provisioning alone does not substitute for the actual product V2 gate.
+
+Before live dispatch the selected dry-plan hash and evidence are checked again. Existing
+Job Object containment owns the launcher and live descendants with direct-file stdout/stderr.
+The live timeout is 1800 seconds; the outer launcher guard allows 2400 seconds for preflight
+and cleanup. Journal failure requests cancellation and joins cleanup before postflight.
+Progress is bound to the explicit run and the one journal absent from its baseline, never
+the newest directory. Known atomic publication windows retain the previous safe snapshot for
+at most five seconds; unknown files or persistent links fail closed.
+
+Terminal records require the same run, arm and binding hash, with no process-exit fallback.
+Closed primary, cleanup, postflight and persistence diagnoses remain independent. Copying
+artifacts requires `ExpectedRunId` and verifies the mounted staged modules, supplied report
+bytes, one-use claims and source custody. Existing artifact-copy exclusions remain in place.
+Remote authentication must still be refreshed under its separate gate. No step here grants
+automatic live execution to an engineering agent.
 
 ## Prevention
 

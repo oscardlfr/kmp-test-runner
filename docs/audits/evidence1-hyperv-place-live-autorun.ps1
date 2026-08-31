@@ -10,6 +10,10 @@ param(
     [string]$GuestScratchDir = 'C:\kmp-eval\scratch\agentic-evidence1-claude-2x2-windows-stage-b-readiness-v1',
     [string]$ReportPath = 'C:\kmp-eval\scratch\hyperv-place-live-autorun\HYPERV-PLACE-LIVE-AUTORUN.json',
     [string]$LiveAuthorizationPhrase = '',
+    [string]$CanaryArm = '',
+    [string]$CanaryRunId = '',
+    [string]$CanaryBindingPath = '',
+    [string]$CanaryBindingSha256 = '',
     [string]$ClosedPriorRunId = '',
     [switch]$SkipStartupEntry
 )
@@ -59,7 +63,19 @@ if ($GuestOpsDir -ne 'C:\Evidence1Ops') { Fail 'GuestOpsDir must stay exactly C:
 if (-not $GuestScratchDir.StartsWith('C:\kmp-eval\scratch\', [StringComparison]::OrdinalIgnoreCase)) {
     Fail 'GuestScratchDir must stay under C:\kmp-eval\scratch'
 }
-if ($LiveAuthorizationPhrase -ne $RequiredLivePhrase) {
+$canary = $null
+if ($CanaryArm -or $CanaryRunId -or $CanaryBindingPath -or $CanaryBindingSha256) {
+    if ($CanaryArm -cnotin @('product','free-baseline') -or -not $CanaryRunId -or -not $CanaryBindingPath -or -not $CanaryBindingSha256 -or
+        $VMName -cne 'Evidence1-Runner' -or $GuestUserName -cne 'Evidence1' -or $SkipStartupEntry) { Fail 'canary placement parameters invalid' }
+    Import-Module (Join-Path $PSScriptRoot 'evidence1-live-run-contract.psm1') -ErrorAction Stop
+    Import-Module (Join-Path $PSScriptRoot 'evidence1-live-handoff-contract.psm1') -ErrorAction Stop
+    $expectedBindingPath = 'C:\kmp-eval\scratch\hyperv-start-authorized-live\canary\' + $CanaryRunId + '\binding.json'
+    if ((Resolve-FullPath $CanaryBindingPath) -cne $expectedBindingPath) { Fail 'canary binding path mismatch' }
+    $canary = Read-Evidence1CanaryBundle (Split-Path -Parent $CanaryBindingPath) $CanaryRunId $CanaryArm $CanaryBindingSha256
+    Assert-Evidence1CanaryAuthorization $canary.binding $LiveAuthorizationPhrase
+    $claim = (Read-Evidence1CanaryJson (Join-Path (Split-Path -Parent $CanaryBindingPath) 'handoff.claim.json')).value
+    if ($claim.run_id -cne $CanaryRunId -or $claim.binding_sha256 -cne $CanaryBindingSha256 -or $claim.phase -cne 'handoff') { Fail 'canary handoff claim mismatch' }
+} elseif ($LiveAuthorizationPhrase -ne $RequiredLivePhrase) {
     Fail 'exact Stage B live authorization phrase is required before placing live autorun'
 }
 if ($ClosedPriorRunId) {
@@ -76,7 +92,7 @@ if (-not $diskDrive -or -not $diskDrive.Path) { Fail "could not resolve active V
 $vhdPath = Resolve-FullPath $diskDrive.Path
 Assert-PathInside $vhdPath 'C:\kmp-eval\hyperv\' 'active VHD'
 
-$runId = [guid]::NewGuid().ToString('D')
+$runId = if ($canary) { $CanaryRunId } else { [guid]::NewGuid().ToString('D') }
 $mount = $null
 try {
     $mount = Mount-VHD -Path $vhdPath -Passthru
@@ -90,6 +106,8 @@ try {
     $opsOnHost = Join-Path $driveRoot ($GuestOpsDir.Substring(3))
     $scratchOnHost = Join-Path $driveRoot ($GuestScratchDir.Substring(3))
     New-Item -ItemType Directory -Force -Path $opsOnHost | Out-Null
+    $canaryOnHost = Join-Path $opsOnHost "canary\$runId"
+    if ($canary -and (Test-Path -LiteralPath $canaryOnHost)) { Fail 'canary placement already exists; no retry or replacement' }
 
     $startupDir = Join-Path $driveRoot "Users\$GuestUserName\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup"
     if (-not (Test-Path -LiteralPath $startupDir)) { Fail "guest Startup directory not found: $startupDir" }
@@ -155,16 +173,36 @@ try {
         'evidence1-stageb-live-wrapper.ps1' = $LiveWrapperSourcePath
         'evidence1-live-run-contract.psm1' = $ContractSourcePath
     }
+    if ($canary) {
+        foreach ($name in @('evidence1-live-handoff-contract.psm1','evidence1-validation-ops.psm1')) { $sourceMap[$name] = Join-Path $PSScriptRoot $name }
+        foreach ($name in $sourceMap.Keys) {
+            if ((Get-FileHash -LiteralPath $sourceMap[$name] -Algorithm SHA256).Hash.ToLowerInvariant() -cne $canary.binding.scripts[$name]) { Fail 'canary asset drift' }
+        }
+        New-Item -ItemType Directory -Path $canaryOnHost -ErrorAction Stop | Out-Null
+        foreach ($name in @('binding.json','wet.json','dry.json','readiness.json','handoff.claim.json')) {
+            $source = Join-Path (Split-Path -Parent $CanaryBindingPath) $name
+            $destination = Join-Path $canaryOnHost $name
+            Copy-Item -LiteralPath $source -Destination $destination -ErrorAction Stop
+            if ((Get-FileHash -LiteralPath $source).Hash -cne (Get-FileHash -LiteralPath $destination).Hash) { Fail 'canary evidence copy drift' }
+        }
+        $null = Read-Evidence1CanaryBundle $canaryOnHost $runId $CanaryArm $CanaryBindingSha256
+    }
     foreach ($entry in $sourceMap.GetEnumerator()) {
         Copy-Item -LiteralPath $entry.Value -Destination (Join-Path $opsOnHost $entry.Key) -Force
+        if ($canary) {
+            $staged = Get-Item -LiteralPath (Join-Path $opsOnHost $entry.Key) -Force
+            if (($staged.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $staged.LinkType -eq 'HardLink' -or
+                (Get-FileHash -LiteralPath $staged.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $canary.binding.scripts[$entry.Key]) { Fail 'canary staged asset drift' }
+        }
     }
 
     $wrapperGuestPath = Join-Path $GuestOpsDir 'evidence1-stageb-live-wrapper.ps1'
+    $canaryArguments = if ($canary) { " -CanaryArm `"$CanaryArm`" -CanaryBindingSha256 `"$CanaryBindingSha256`"" } else { '' }
     if (-not $SkipStartupEntry) {
         Set-Content -LiteralPath $startupPath -Encoding ASCII -Value @"
 @echo off
 set "SELF=%~f0"
-C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$wrapperGuestPath" -RunId "$runId" -ShutdownOnExit
+C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$wrapperGuestPath" -RunId "$runId" -ShutdownOnExit$canaryArguments
 set "WRAPPER_EXIT=%ERRORLEVEL%"
 del "%SELF%" >nul 2>nul
 if exist "%SELF%" exit /b 91
@@ -196,6 +234,7 @@ exit /b %WRAPPER_EXIT%
             'one-shot Startup entry is consumed after the wrapper process exits; every state record is bound to run_id'
         }
     }
+    if ($canary) { $report.canary = @{ binding_sha256 = $CanaryBindingSha256; binding = $canary.binding } }
     $report | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $ReportPath -Encoding UTF8
     Write-Host "[hyperv-place-live-autorun] PASS: $ReportPath"
 } finally {

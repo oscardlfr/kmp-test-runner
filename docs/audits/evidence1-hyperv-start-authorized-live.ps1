@@ -4,6 +4,12 @@ param(
     [Parameter(Mandatory = $true)][string]$ExpectedTargetCommit,
     [Parameter(Mandatory = $true)][string]$ExpectedTargetTree,
     [string]$LiveAuthorizationPhrase = '',
+    [string]$CanaryArm = '',
+    [string]$CanaryRunId = '',
+    [string]$WetReportPath = '',
+    [string]$DryReportPath = '',
+    [string]$ExpectedWetReportSha256 = '',
+    [string]$ExpectedDryReportSha256 = '',
     [ValidateRange(30, 900)][int]$GracefulShutdownTimeoutSeconds = 300,
     [ValidateRange(15, 300)][int]$StartTimeoutSeconds = 120
 )
@@ -30,6 +36,15 @@ $ReadinessMaxAgeMinutes = 60
 $RemoteAuthMaxAgeMinutes = 30
 $ContractPath = Join-Path $PSScriptRoot 'evidence1-live-handoff-contract.psm1'
 Import-Module $ContractPath -Force
+$script:Canary = $null
+if ($CanaryArm -or $CanaryRunId -or $WetReportPath -or $DryReportPath -or $ExpectedWetReportSha256 -or $ExpectedDryReportSha256) {
+    if ($CanaryArm -cnotin @('product','free-baseline') -or -not $CanaryRunId -or -not $WetReportPath -or -not $DryReportPath -or
+        -not $ExpectedWetReportSha256 -or -not $ExpectedDryReportSha256) { throw 'canary_parameters_required' }
+    Import-Module (Join-Path $PSScriptRoot 'evidence1-validation-ops.psm1') -ErrorAction Stop
+    Import-Module (Join-Path $PSScriptRoot 'evidence1-live-run-contract.psm1') -ErrorAction Stop
+    $null = Resolve-E1Path $WetReportPath 'C:\kmp-eval\scratch\hyperv-verify-wet-gate-v2-direct'
+    $null = Resolve-E1Path $DryReportPath 'C:\kmp-eval\scratch\hyperv-verify-canary-dryrun-v3-direct'
+}
 
 function Fail([string]$Message) {
     throw "HARD STOP: $Message"
@@ -107,6 +122,7 @@ function Write-HandoffState([string]$State, [string]$FailureKind = $null) {
         replacement_or_respawn_used = $false
         raw_content_read = $false
     }
+    if ($script:Canary) { $record.canary = @{ binding_sha256 = $script:Canary.sha256; binding = $script:Canary.binding } }
     Write-JsonAtomically $HandoffReportPath $record
 }
 
@@ -121,6 +137,10 @@ function Invoke-PlaceLiveAutorun([string]$ClosedPriorRunId) {
     )
     if (-not [string]::IsNullOrWhiteSpace($ClosedPriorRunId)) {
         $arguments += @('-ClosedPriorRunId', $ClosedPriorRunId)
+    }
+    if ($script:Canary) {
+        $arguments += @('-CanaryArm', $CanaryArm, '-CanaryRunId', $CanaryRunId,
+            '-CanaryBindingPath', (Join-Path $script:Canary.directory 'binding.json'), '-CanaryBindingSha256', $script:Canary.sha256)
     }
 
     $previousErrorActionPreference = $ErrorActionPreference
@@ -167,7 +187,7 @@ if ($PlaceScriptPath -ne $expectedPlaceScript) {
 if (-not (Test-Path -LiteralPath $PlaceScriptPath -PathType Leaf)) {
     Fail 'internal live autorun placement script is missing'
 }
-if ($LiveAuthorizationPhrase -ne $RequiredLivePhrase) {
+if (-not $CanaryArm -and $LiveAuthorizationPhrase -ne $RequiredLivePhrase) {
     Fail 'exact Stage B live authorization phrase is required'
 }
 
@@ -191,7 +211,7 @@ $script:PriorCustody = Assert-Evidence1PreviousRunCustody `
     -PlacementReport $placement `
     -CopyReport $copy `
     -ExpectedVMName $VMName
-$script:CurrentRunId = $null
+$script:CurrentRunId = if ($CanaryArm) { $CanaryRunId } else { $null }
 
 $existingHandoff = Read-JsonFile $HandoffReportPath 'existing handoff report' -Optional
 $archivePreviousHandoff = $false
@@ -207,6 +227,14 @@ if ($null -ne $existingHandoff) {
         Fail 'previous handoff and copied terminal custody run_id mismatch'
     }
     $archivePreviousHandoff = $true
+}
+
+if ($CanaryArm) {
+    if ($CanaryRunId -eq $script:PriorCustody.run_id) { Fail 'canary cannot reuse a prior run_id' }
+    $script:Canary = New-Evidence1CanaryHostBundle -Directory (Join-Path (Split-Path -Parent $HandoffReportPath) "canary\$CanaryRunId") `
+        -RunId $CanaryRunId -Arm $CanaryArm -TargetCommit $ExpectedTargetCommit -TargetTree $ExpectedTargetTree `
+        -WetReportPath $WetReportPath -DryReportPath $DryReportPath -ReadinessReportPath $ReadinessReportPath `
+        -ExpectedWetReportSha256 $ExpectedWetReportSha256 -ExpectedDryReportSha256 $ExpectedDryReportSha256 -AuthorizationPhrase $LiveAuthorizationPhrase
 }
 
 $phase = 'initial_state'
@@ -239,6 +267,10 @@ try {
     Write-HandoffState 'off'
 
     $phase = 'placing_autorun'
+    if ($script:Canary) {
+        $null = Read-Evidence1CanaryBundle $script:Canary.directory $CanaryRunId $CanaryArm $script:Canary.sha256
+        if ((Read-Evidence1CanaryJson $ReadinessReportPath).sha256 -cne $script:Canary.binding.hashes.readiness_sha256) { Fail 'canary readiness changed during handoff' }
+    }
     $null = Invoke-PlaceLiveAutorun $script:PriorCustody.run_id
     $newPlacement = Read-JsonFile $PlacementReportPath 'new placement report'
     if ($newPlacement.verdict -ne 'PASS') {
@@ -257,6 +289,9 @@ try {
         Fail 'new placement prior-run custody mismatch'
     }
     $newRunId = [string]$newPlacement.run_id
+    if ($script:Canary -and ($newRunId -cne $CanaryRunId -or $newPlacement.canary.binding_sha256 -cne $script:Canary.sha256)) {
+        Fail 'canary placement binding mismatch'
+    }
     $parsedRunId = [guid]::Empty
     if (-not [guid]::TryParseExact($newRunId, 'D', [ref]$parsedRunId)) {
         Fail 'new placement report run_id is not canonical'

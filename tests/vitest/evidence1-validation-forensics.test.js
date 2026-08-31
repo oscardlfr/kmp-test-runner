@@ -28,6 +28,47 @@ const json = value => `ConvertFrom-E1Json ${q(JSON.stringify(value))}`;
 const reportFixture = () => ({ schema: 1, operation: 'wet-v2', state: 'failed', target_commit: 'a'.repeat(40), target_tree: 'b'.repeat(40), source_commit: '7d45eae4f8720a0c77f507712ba2437ff974b6ed', agent_calls: 0, product_invocations: 1, dry_plan_invocations: 0, hashes: { product_stdout_sha256: 'c'.repeat(64) }, failure_code: 'product_contract', checks: { postflight: false } });
 
 describe.skipIf(!available)('readonly wet-gate forensics', { timeout: 30000 }, () => {
+  it('selects an immutable versioned wet report while preserving the default and hash binding', () => {
+    const result = ps(`& (Get-Module evidence1-validation-forensics) {
+      $script:reads=@()
+      function Read-E1ForensicArtifact($Path,$ExpectedHash) {
+        $script:reads+=@{path=$Path;hash=$ExpectedHash}
+        throw 'forensic_marker'
+      }
+      $null=Invoke-E1ForensicRead ('a'*40) ('b'*40) ('c'*64)
+      $null=Invoke-E1ForensicRead ('a'*40) ('b'*40) ('d'*64) -WetReportPath 'C:\\kmp-eval\\scratch\\hyperv-verify-wet-gate-v2-direct\\WET-synthetic.json'
+      ConvertTo-Json -InputObject @($script:reads) -Compress
+    }`);
+    expect(result).toEqual([
+      {path:'C:\\kmp-eval\\scratch\\hyperv-verify-wet-gate-v2-direct\\HYPERV-VERIFY-WET-GATE-V2-DIRECT.json',hash:'c'.repeat(64)},
+      {path:'C:\\kmp-eval\\scratch\\hyperv-verify-wet-gate-v2-direct\\WET-synthetic.json',hash:'d'.repeat(64)},
+    ]);
+  });
+
+  it('rejects non-wet report roots and non-JSON names before reading', () => {
+    expect(ps(`& (Get-Module evidence1-validation-forensics) {
+      function Read-E1ForensicArtifact { throw 'UNEXPECTED_READ' }
+      $out=@()
+      foreach($path in @('C:\\kmp-eval\\scratch\\elsewhere\\report.json','C:\\kmp-eval\\scratch\\hyperv-verify-wet-gate-v2-direct\\report.txt')) {
+        $r=Invoke-E1ForensicRead ('a'*40) ('b'*40) ('c'*64) -WetReportPath $path
+        $out+=($r.failure_code -cin @('path_outside_root','path_invalid'))
+      }
+      ConvertTo-Json -InputObject $out -Compress
+    }`)).toEqual([true,true]);
+  });
+
+  it('recognizes only the two equivalent target identities without exposing module names', () => {
+    const cases = [ ['core:domain'], [':core:domain'], ['::core:domain'], ['Core:domain'],
+      ['core:domain-other'], ['core:domain', 'other'], 'core:domain', [['core:domain']] ];
+    const results = ps(`$out=@(); foreach($bucket in (${json(cases)})) {
+      $e=${json(env)}; $e.coverage.module_buckets.with_data=$bucket
+      $s=Get-E1ForensicProductSummary $e; Assert-E1ForensicSummary $s
+      $out+=@{match=$s.with_data_target_match;summary=$s}
+    }; ConvertTo-Json -InputObject $out -Depth 12 -Compress`);
+    expect(results.map(x => x.match)).toEqual([true, true, false, false, false, false, null, false]);
+    expect(JSON.stringify(results)).not.toMatch(/core:domain|PRIVATE/);
+  });
+
   it('separates socket permissions from filesystem denial without exporting repository URLs', () => {
     const result = ps(`Get-E1ForensicGradleSummary ${q([
       '> Could not GET \'https://dl.google.com/dl/android/maven2/PRIVATE_PATH?token=PRIVATE\'.',

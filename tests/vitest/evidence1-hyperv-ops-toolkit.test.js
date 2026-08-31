@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 
 const root = resolve(import.meta.dirname, '../..');
 const rel = path => path.replaceAll('\\', '/');
@@ -62,6 +63,53 @@ const staleCommitPin = ['e5f5974d980faaadda5bd', '48ef53564a08043cdcf'].join('')
 const staleTreePin = ['79fe454c9156775ea2d', '6115cae289132895b91bb'].join('');
 
 describe('Evidence1 Hyper-V ops toolkit', () => {
+  it.skipIf(process.platform !== 'win32')('observes the real atomic journal publisher before and after linkSync without false failure', () => {
+    const contract = rel(resolve(root, 'docs/audits/evidence1-live-run-contract.psm1')).replaceAll("'", "''");
+    const publisher = pathToFileURL(resolve(root, 'tools/agentic-eval/evidence-io.mjs')).href;
+    const script = `
+import fs from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+const fixture = fs.mkdtempSync(join(tmpdir(), 'e1-canary-publish-'));
+const journalRoot = join(fixture, 'journals');
+const events = join(journalRoot, '69cd5780-49fa-4531-960a-e26cbd7fda54', 'events');
+const prior = join(fixture, 'prior.json');
+fs.mkdirSync(events, { recursive: true });
+const observations = [];
+const quote = s => s.replaceAll("'", "''");
+function observe() {
+  const ps = "$ErrorActionPreference='Stop'; Import-Module '${contract}'; " +
+    "$previous = if (Test-Path -LiteralPath '" + quote(prior) + "') { (Read-Evidence1CanaryJson '" + quote(prior) + "').value } else { $null }; " +
+    "$value = Get-Evidence1CanaryJournalProgress '" + quote(journalRoot) + "' @() 'b48bfb0c-a9ae-4e0e-8d89-56eb1e278090' $previous -NowUtc ([datetime]'2026-08-31T12:00:00Z'); " +
+    "$json = $value | ConvertTo-Json -Depth 8 -Compress; [IO.File]::WriteAllText('" + quote(prior) + "', $json); $json";
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-EncodedCommand', Buffer.from(ps, 'utf16le').toString('base64')], { encoding: 'utf8', timeout: 20000 });
+  if (result.status !== 0) throw new Error(result.stdout + result.stderr);
+  observations.push(JSON.parse(result.stdout.trim()));
+}
+const originalLink = fs.linkSync;
+try {
+  fs.linkSync = (...args) => { observe(); originalLink(...args); observe(); };
+  syncBuiltinESMExports();
+  const { promoteTargetsAtomically } = await import(${JSON.stringify(publisher)});
+  promoteTargetsAtomically([[join(events, '000000000000-0-planned.json'), JSON.stringify({ seq: 0, runKind: 'scenario', cellOrdinal: 0, transition: 'planned', meta: {} })]], events);
+  observe();
+  process.stdout.write(JSON.stringify(observations));
+} finally {
+  fs.linkSync = originalLink;
+  syncBuiltinESMExports();
+  fs.rmSync(fixture, { recursive: true, force: true });
+}
+`;
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', timeout: 70_000 });
+    expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+    const observations = JSON.parse(result.stdout);
+    expect(observations.map(item => item.publication_pending)).toEqual([true, true, false]);
+    expect(observations.map(item => item.event_count)).toEqual([0, 0, 1]);
+    expect(observations[2].transition_counts).toEqual({ planned: 1 });
+  }, 75_000);
+
   it('keeps host-side ops scripts portable and free of stale target pins', () => {
     for (const script of portableOpsScripts) {
       const source = read(script);

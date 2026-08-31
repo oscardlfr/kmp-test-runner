@@ -150,7 +150,9 @@ function Get-E1ForensicProductSummary($Envelope) {
         error_codes = (Get-E1ForensicCodes $errors 'code' $script:E1ForensicErrors)
         warning_codes = (Get-E1ForensicCodes $warnings 'code' $script:E1ForensicWarnings)
         coverage_reasons = (Get-E1ForensicCodes $(if ($errors -is [array]) { ,$availabilityErrors } else { $null }) 'reason' $script:E1ForensicReasons)
-        with_data_target_match = $(if ($withData -is [array]) { $withData.Count -eq 1 -and (Test-E1Exact $withData[0] ':core:domain') } else { $null })
+        with_data_target_match = $(if ($withData -is [array]) {
+            $withData.Count -eq 1 -and ((Test-E1Exact $withData[0] 'core:domain') -or (Test-E1Exact $withData[0] ':core:domain'))
+        } else { $null })
     }
 }
 
@@ -303,7 +305,8 @@ function Get-E1ForensicReceiverScript {
     }
 }
 
-function Invoke-E1ForensicRead([string]$TargetCommit, [string]$TargetTree, [string]$ExpectedReportSha256, [switch]$IncludeGradleDiagnostics) {
+function Invoke-E1ForensicRead([string]$TargetCommit, [string]$TargetTree, [string]$ExpectedReportSha256, [switch]$IncludeGradleDiagnostics,
+    [string]$WetReportPath = 'C:\kmp-eval\scratch\hyperv-verify-wet-gate-v2-direct\HYPERV-VERIFY-WET-GATE-V2-DIRECT.json') {
     $result = [ordered]@{
         schema=1; operation='wet-v2-forensic-read'; state='failed'; failure_code='forensic_failed'
         subject=$null; hashes=@{}; product=$null; historical=$null
@@ -316,7 +319,8 @@ function Invoke-E1ForensicRead([string]$TargetCommit, [string]$TargetTree, [stri
     $session = $null; $job = $null
     try {
         if ($ExpectedReportSha256 -cnotmatch '^[a-f0-9]{64}$') { throw 'forensic_hash' }
-        $reportPath = 'C:\kmp-eval\scratch\hyperv-verify-wet-gate-v2-direct\HYPERV-VERIFY-WET-GATE-V2-DIRECT.json'
+        $reportPath = Resolve-E1Path $WetReportPath 'C:\kmp-eval\scratch\hyperv-verify-wet-gate-v2-direct'
+        if ([IO.Path]::GetExtension($reportPath) -cne '.json') { throw 'path_invalid' }
         $report = Read-E1ForensicArtifact $reportPath $ExpectedReportSha256
         Assert-E1ForensicSubject $report.value $TargetCommit $TargetTree
         if ($IncludeGradleDiagnostics) { Assert-E1Fields $report.value @{ state='failed' } }

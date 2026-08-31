@@ -359,6 +359,17 @@ function Assert-Evidence1PreviousRunCustody {
     if ($terminalRunId -ne $runId) {
         throw 'prior copy terminal run_id mismatch'
     }
+    $canaryProperty = if ($PlacementReport -is [Collections.IDictionary]) { $PlacementReport['canary'] } else { $PlacementReport.PSObject.Properties['canary'] }
+    if ($null -ne $canaryProperty) {
+        $canaryPlacement = Get-Evidence1Property $PlacementReport 'canary' 'prior placement'
+        $canaryCopy = Get-Evidence1Property $CopyReport 'canary' 'prior copy'
+        if ((Get-Evidence1Property $canaryCopy 'verified' 'canary copy') -ne $true -or
+            (Get-Evidence1Property $canaryCopy 'source_preserved' 'canary copy') -ne $true -or
+            [string](Get-Evidence1Property $canaryCopy 'run_id' 'canary copy') -cne $runId -or
+            [string](Get-Evidence1Property $canaryCopy 'binding_sha256' 'canary copy') -cne [string](Get-Evidence1Property $canaryPlacement 'binding_sha256' 'canary placement')) {
+            throw 'canary prior custody mismatch'
+        }
+    }
 
     $placementAt = ConvertFrom-Evidence1UtcTimestamp `
         ([string](Get-Evidence1Property $PlacementReport 'generated_at_utc' 'prior placement')) `
@@ -377,7 +388,70 @@ function Assert-Evidence1PreviousRunCustody {
     }
 }
 
+function New-Evidence1CanaryBinding {
+    param([string]$Arm, [string]$RunId, [string]$TargetCommit, [string]$TargetTree,
+        $WetReport, $DryReport, $ReadinessReport, [string]$WetReportSha256,
+        [string]$DryReportSha256, [string]$ReadinessSha256)
+
+    # Stage L adds a one-cell gate; it does not reinterpret the eight-cell V1 ledger.
+    try {
+        Import-Module (Join-Path $PSScriptRoot 'evidence1-validation-ops.psm1') -ErrorAction Stop
+        if ($Arm -cnotin @('product','free-baseline')) { throw 'arm' }
+        $id = [guid]::Empty
+        if (-not [guid]::TryParseExact($RunId, 'D', [ref]$id) -or $id -eq [guid]::Empty -or $RunId -cne $id.ToString('D')) { throw 'run' }
+        foreach ($sha in @($TargetCommit,$TargetTree)) { if ($sha -cnotmatch '^[a-f0-9]{40}$') { throw 'anchor' } }
+        foreach ($sha in @($WetReportSha256,$DryReportSha256,$ReadinessSha256)) { if ($sha -cnotmatch '^[a-f0-9]{64}$') { throw 'hash' } }
+        Assert-E1Fields $WetReport @{ schema = 2; state = 'passed' }
+        Assert-E1Fields $DryReport @{ schema = 2; state = 'passed' }
+        $wet = ConvertTo-E1SafeResult $WetReport 'wet-v2' $TargetCommit $TargetTree
+        $dry = ConvertTo-E1SafeResult $DryReport 'dry-v3' $TargetCommit $TargetTree
+        Assert-E1Fields $ReadinessReport @{ verdict = 'PASS'; vm_name = 'Evidence1-Runner'; vm_state = 'Running'; target_commit = $TargetCommit; target_tree = $TargetTree }
+        Assert-E1Fields (Get-E1Field $ReadinessReport 'guest') @{
+            verdict = 'PASS'; planned_sessions = 8; harness_head = $TargetCommit; harness_tree = $TargetTree
+            source_head = $wet.source_commit; attestation_sha256 = $wet.hashes.attestation_canonical_sha256
+        }
+        $shared = [ordered]@{}
+        foreach ($key in @('readiness_sha256','ledger_sha256','attestation_sha256','attestation_canonical_sha256',
+            'validation_module_sha256','scenario_sha256','product_entry_sha256','execution_profile_sha256','execution_profile_registry_sha256')) {
+            if ($wet.hashes[$key] -cne $dry.hashes[$key]) { throw 'report_binding' }
+            $shared[$key] = $wet.hashes[$key]
+        }
+        if ($shared.readiness_sha256 -cne $ReadinessSha256) { throw 'readiness_binding' }
+        $scripts = [ordered]@{}
+        foreach ($name in @('evidence1-stageb-live-launch.ps1','evidence1-stageb-live-wrapper.ps1',
+            'evidence1-live-run-contract.psm1','evidence1-live-handoff-contract.psm1','evidence1-validation-ops.psm1')) {
+            $scripts[$name] = (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+        if ($shared.validation_module_sha256 -cne $scripts['evidence1-validation-ops.psm1']) { throw 'local_validation_module' }
+        $product = $Arm -ceq 'product'
+        return [ordered]@{
+            schema = 1; run_id = $RunId; arm = $Arm; target_commit = $TargetCommit; target_tree = $TargetTree
+            source_commit = $wet.source_commit; campaign_design_id = "claude-$Arm-canary-v1"
+            scenario_id = 'coverage-threshold-failure-v2'; planned_sessions = 1; repeats = 1
+            cell_label = $(if ($product) { 'A' } else { 'B' })
+            condition = $(if ($product) { 'current-skill' } else { 'no-skill' })
+            product_access_mode = $(if ($product) { 'product-assisted' } else { 'free-baseline-no-product' })
+            execution_profile_id = 'sandboxed-unrestricted-v1'; seed = 20260821; max_budget_usd = 2
+            wet_report_sha256 = $WetReportSha256; dry_report_sha256 = $DryReportSha256
+            plan_sha256 = $(if ($product) { $dry.hashes.product_stdout_sha256 } else { $dry.hashes.free_baseline_stdout_sha256 })
+            hashes = $shared; scripts = $scripts
+        }
+    } catch { throw 'canary_evidence_invalid' }
+}
+
+function Get-Evidence1CanaryAuthorizationLiteral($Binding) {
+    if ($Binding.arm -cnotin @('product','free-baseline') -or $Binding.planned_sessions -ne 1) { throw 'canary_authorization_scope' }
+    return "AUTORIZO 1 SESION LIVE NUEVA DEL Evidence1 CLAUDE WINDOWS CANARY $($Binding.arm), SIN REINTENTOS, REEMPLAZOS NI RESPAWNS"
+}
+
+function Assert-Evidence1CanaryAuthorization($Binding, [string]$Phrase) {
+    if ($Phrase -cne (Get-Evidence1CanaryAuthorizationLiteral $Binding)) { throw 'canary_authorization_required' }
+}
+
 Export-ModuleMember -Function @(
     'Assert-Evidence1LiveHandoffEvidence',
-    'Assert-Evidence1PreviousRunCustody'
+    'Assert-Evidence1PreviousRunCustody',
+    'New-Evidence1CanaryBinding',
+    'Get-Evidence1CanaryAuthorizationLiteral',
+    'Assert-Evidence1CanaryAuthorization'
 )
