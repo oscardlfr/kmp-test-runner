@@ -101,6 +101,29 @@ afterEach(() => {
 });
 
 describe.skipIf(process.platform !== 'win32')('Evidence1 offline cache contract (PowerShell 5.1)', { timeout: 40_000 }, () => {
+  it('represents disconnected isolation without claiming the firewall seal passed', async () => {
+    const result = await ps(`$r=New-E1OfflineReceipt -Disconnected
+      $r.checks.network_disconnected=$true
+      ConvertTo-E1OfflineReceipt $r | ConvertTo-Json -Depth 8 -Compress`);
+    expect(result.schema).toBe(3);
+    expect(result.isolation_mode).toBe('vm-adapters-disconnected');
+    expect(result.checks.network_sealed).toBe(false);
+    expect(result.checks.network_disconnected).toBe(true);
+    expect(result.validation_pass).toBe(false);
+  });
+
+  it('independently rejects an up or unknown guest adapter in disconnected mode', async () => {
+    expect(await ps(`$out=& (Get-Module evidence1-gradle-offline-probe) {
+      function Get-NetAdapter {param([switch]$IncludeHidden) [pscustomobject]@{Status=$script:testStatus}}
+      $out=@()
+      foreach($status in @('Disconnected','Disabled','Up','UNKNOWN')) {
+        $script:testStatus=$status
+        try {Assert-E1OfflineGuestDisconnected;$out+=$true} catch {if($_.Exception.Message -cne 'network_connected'){throw};$out+=$false}
+      }
+      $out
+    };$out | ConvertTo-Json -Compress`)).toEqual([true, true, false, false]);
+  });
+
   it('exports the three proposed functions', async () => {
     const names = ['Get-E1OfflineSignals', 'Test-E1OfflineCacheRelativePath', 'Copy-E1OfflineCache'];
     const result = await ps(`@(${names.map(quote).join(',')}) | ForEach-Object {
