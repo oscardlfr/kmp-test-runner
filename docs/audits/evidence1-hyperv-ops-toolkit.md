@@ -56,6 +56,36 @@ actual task action path while the task and queue are idle. Keep the trusted dire
 
 ## Standard Retake Flow
 
+### Dependency Cache Provisioning
+
+If a preserved offline diagnostic proves missing dependencies, use
+`evidence1-hyperv-provision-gradle-cache-direct.ps1` with the original
+`TargetCommit`, `TargetTree`, `ExpectedReportSha256` and a new 32-hex
+`ProvisionId`. This is an explicitly authorized provisioning operation, not a
+retry of the diagnostic, V2, or a live cell. Never delete old attempt markers.
+
+The operation holds the validation lease and snapshots source/record custody.
+It warms the disposable guest Gradle home using the pinned source's aggregate
+unit-test task and both Demo/Prod coverage-report tasks. Temporary HTTPS rules
+are limited to the selected Java 21 executable and resolved public addresses of
+Google Maven, Maven Central and the Gradle Plugin Portal (including its artifact
+redirect host). These are IP restrictions, not hostname-level enforcement.
+Default outbound blocking stays enabled; rules are removed and the original
+firewall fingerprint is verified before certification.
+
+Certification copies the complete allowed Gradle dependency cache, including
+metadata, to a fresh directory and runs the same tasks from a fresh source clone
+with `--offline` and every VM network adapter disconnected. It requires clean
+process teardown and successful tasks; a cache miss is never readiness success.
+Original source, harness records and prior failed receipts remain unchanged.
+
+The host emits only closed structured receipts under its operational scratch
+directory. No model is invoked and no agent raw transcript is opened. An
+uncertain transport or firewall cleanup leaves the VM disconnected, with the
+immutable topology journal retained. Do not reconnect until temporary rules are
+confirmed removed and old execution cannot resume. A provisioning PASS does not
+replace post-merge V1, V2, V3 or authentication checks.
+
 1. Update the guest harness from the current target:
 
 ```powershell
