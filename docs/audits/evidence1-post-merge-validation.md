@@ -293,3 +293,50 @@ Windows process containment is checked against Microsoft's
 Timeout cleanup must cover the invocation's descendants without terminating unrelated host or
 guest work. A terminal PASS must be persisted only after postflight custody and anchor checks,
 never immediately after the product process exits.
+
+## Offline Cache Diagnostic (Not V2)
+
+After a preserved V2 dependency-resolution failure, the optional
+`evidence1-hyperv-probe-gradle-offline-direct.ps1` entrypoint distinguishes an
+explicit offline cache miss from other Gradle failures. It accepts only the failed
+V2 `-TargetCommit`, `-TargetTree`, and `-ExpectedReportSha256`. Run it through the
+existing elevated-runner client, with a transport timeout of at least 16 minutes.
+This is a single diagnostic dispatch, not a retry of V2 and not a live session.
+
+The entrypoint verifies the VM identity, a sealed outbound firewall and absence of
+agent/Java processes. It preserves the failed V2 files and source checkout, creates
+an independent clone at the scenario's fixed source commit, and copies only Gradle
+dependency artifacts/metadata plus the pinned wrapper distribution into a new home.
+It excludes ambient init scripts, properties, credentials, daemon state, locks and
+build-output caches. No firewall rule is changed. The original home is never used
+as the Gradle execution home.
+
+The diagnostic reads only the bootstrap's `sdk.dir` setting from the preserved
+source's ignored `local.properties`, verifies the installed SDK files, and supplies
+the SDK via process-local environment variables. It does not copy other local
+properties or change the original file. SDK configuration hashes are retained and
+checked again after execution.
+
+One bounded raw Gradle invocation requests `:core:domain:test` and both demo/prod
+unit coverage report tasks with `--offline --no-daemon --no-build-cache`. A guest
+receipt under `scratch/gradle-offline-probe-<target-commit>/PROBE.json` reserves the
+attempt before dispatch; its directory must not be removed to retry. Host receipts
+use unique filenames under `scratch/hyperv-probe-gradle-offline-direct/`.
+
+Only closed codes/counts, process observations and byte hashes leave the guest.
+Diagnostic Gradle stdout/stderr stay in the attempt directory, never mixed with
+agent transcripts. `offline_cache_incomplete` requires an explicit offline cache
+miss diagnostic. Other failures remain `inconclusive`. `offline_tasks_completed`
+means the requested task invocation exited successfully, not that the benchmark
+contract or exact coverage/test counts passed: `validation_pass` remains false.
+V1-V3 and the live gates remain mandatory and unchanged.
+
+Do not enable repository access automatically after a miss. A preparation phase
+with narrowly scoped repository access is a separate isolation decision. A future
+qualified shared cache must be verified for both arms; this diagnostic's mutable
+home is not a qualified benchmark seed.
+
+References: [Gradle dependency caching](https://docs.gradle.org/current/userguide/dependency_caching.html)
+documents offline resolution and copying the dependency cache without lock files
+or `gc.properties`. The probe deliberately uses a separate full build, not a
+mock of dependency resolution or an empty Gradle dry run.
