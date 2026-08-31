@@ -3279,6 +3279,19 @@ describe('runParallel', () => {
   // push time. Below the caps the emitted text is byte-identical to the old
   // collect-all-then-slice shape; above them a suppressed-count line points
   // at the per-module log.
+  it('retains unprefixed Gradle failure cause lines but not prose after the next section', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const logs = [];
+    await runParallel({
+      projectRoot: dir, args: ['--test-type', 'common'],
+      spawn: makeSpawnStub({ status: 1, stdout: '> Task :core:jvmTest FAILED\n* What went wrong:\nSYNTHETIC_PLAIN_CAUSE\n  unprefixed continuation\n* Try:\nUNRELATED_PROSE\nBUILD FAILED\n' }),
+      log: line => logs.push(line), runCoverageInjection: makeRunCoverageStub(),
+    });
+    expect(logs).toContain('SYNTHETIC_PLAIN_CAUSE');
+    expect(logs).toContain('  unprefixed continuation');
+    expect(logs).not.toContain('UNRELATED_PROSE');
+  });
+
   it('L6: >50 critical lines emit exactly 50 + a suppressed-count line', async () => {
     const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
     const criticalFlood = Array.from({ length: 60 },

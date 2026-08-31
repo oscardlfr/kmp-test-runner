@@ -2,6 +2,19 @@
 
 Stable from `v0.9.0`. Bumped via `schema_version` on breaking change.
 
+`stdout` contains the single JSON envelope. For a failed migrated command, `stderr`
+also retains a bounded excerpt of the runner's captured human diagnostics (at most
+64 KiB, with truncation labelled). Internal envelope markers and their JSON blocks
+are excluded. Successful commands do not forward those captured progress logs.
+Exit codes, grading facts and envelope schema are unchanged. Parse `stdout` only;
+do not concatenate the streams before parsing JSON.
+
+Diagnostic stderr is **not privacy-safe telemetry**: Gradle can include source paths,
+repository URLs or build messages. Keep it in the execution's protected artifact
+boundary. A restricted evaluator must export only approved structured projections,
+not the text itself. The excerpt is not a complete Gradle transcript and cannot
+recover captures already discarded by an older CLI version.
+
 ## Top-level shape
 
 Every subcommand emits the same canonical envelope on `--json`. Subcommand-specific blocks (`parallel`, `android`, `benchmark`, `changed`, `doctor`, `info`, `describe`, `clean`) are added at the top level when relevant.

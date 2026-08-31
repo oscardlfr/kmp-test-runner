@@ -28,7 +28,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { execFileSync, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtempSync, cpSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, cpSync, rmSync, existsSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -81,6 +81,7 @@ function setupProject() {
 // exit code.
 async function runRealCli(projectRoot, extraArgs = []) {
   let stdout;
+  let stderr;
   let exitCode = 0;
   try {
     const result = await execFileAsync(
@@ -89,18 +90,31 @@ async function runRealCli(projectRoot, extraArgs = []) {
       { encoding: 'utf8', timeout: TEST_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 },
     );
     stdout = result.stdout;
+    stderr = result.stderr;
   } catch (e) {
     // A discriminated non-zero exit (1/2/3) still writes the JSON envelope to
     // stdout; promisified execFile rejects for any non-zero exit (Node core's
     // own execFile[promisify.custom] still attaches stdout/stderr/code to the
     // rejected error), so recover it here.
     stdout = e.stdout;
+    stderr = e.stderr;
     exitCode = typeof e.code === 'number' ? e.code : 1;
   }
-  return { envelope: JSON.parse(stdout), exitCode };
+  return { envelope: JSON.parse(stdout), exitCode, stderr };
 }
 
 describe('coverage-budget-real-producer — real Gradle/JaCoCo/Kotlin E2E (Section 8.8)', () => {
+  it('retains a real Gradle configuration failure in stderr without contaminating JSON', async () => {
+    const dir = setupProject();
+    appendFileSync(path.join(dir, 'app', 'build.gradle.kts'), '\nthrow GradleException("SYNTHETIC_CONFIGURATION_FAILURE")\n');
+    const { envelope, exitCode, stderr } = await runRealCli(dir, ['--min-missed-lines', '3']);
+    expect(exitCode).not.toBe(0);
+    expect(envelope.tool).toBe('kmp-test');
+    expect(envelope.errors.some(error => error.code === 'module_failed')).toBe(true);
+    expect(stderr).toContain('SYNTHETIC_CONFIGURATION_FAILURE');
+    expect(stderr).not.toContain('__KMP_TEST_ENVELOPE');
+  }, TEST_TIMEOUT_MS);
+
   it('threshold below the real missed-line count -> coverage_threshold_exceeded, exit 1, real with_data', async () => {
     const dir = setupProject();
     const { envelope, exitCode } = await runRealCli(dir, ['--min-missed-lines', '3']);
