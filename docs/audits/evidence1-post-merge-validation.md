@@ -351,6 +351,11 @@ allow rules. These are closed codes, not rule names, endpoints or command text.
 The enforcement conditions are unchanged. A rule diagnostic means that a rule
 examined by this conservative check is incompatible; it is not proof of successful
 egress or evidence that a previously blocked Gradle request could actually connect.
+For incompatible dynamic rules, the code records the known transport family
+(proximity apps/sharing or Wi-Fi Direct printing/display/devices); an unrecognized
+value stays a closed unknown code. No such rule is silently exempted by this change.
+Microsoft documents that [dynamic transports cannot be identified by standard
+protocol/port conditions alone](https://learn.microsoft.com/en-us/powershell/module/netsecurity/get-netfirewallportfilter#-dynamictarget).
 
 References: [Gradle dependency caching](https://docs.gradle.org/current/userguide/dependency_caching.html)
 documents offline resolution and copying the dependency cache without lock files

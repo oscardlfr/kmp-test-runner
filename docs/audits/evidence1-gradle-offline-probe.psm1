@@ -1,7 +1,8 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $script:E1OfflineNetworkFailures = @('network_profile_count','network_profile_disabled','network_outbound_default',
-    'network_seal_contract','network_endpoint_missing','network_endpoint_invalid','network_rule_tcp','network_rule_udp','network_rule_any')
+    'network_seal_contract','network_endpoint_missing','network_endpoint_invalid','network_rule_tcp','network_rule_udp','network_rule_any',
+    'network_rule_proximity_apps','network_rule_proximity_sharing','network_rule_wifi_printing','network_rule_wifi_display','network_rule_wifi_devices','network_rule_dynamic_unknown')
 
 function Get-E1OfflineSignals([string]$Text) {
     return @{ offline_cache_miss = [regex]::Matches($Text, '(?m)^.*No cached (?:version of |resource )[^\r\n]+ available for offline mode').Count }
@@ -112,6 +113,17 @@ function Get-E1OfflineSealHash {
                     if(-not [Net.IPAddress]::TryParse([string]$remote,[ref]$ip) -or $ip.ToString() -notin $allowedAddresses) {$claude=$false}
                 }
                 if(-not $dns -and -not $claude) {
+                    $dynamic=[string](Get-E1Field $port 'DynamicTarget')
+                    if($dynamic -and $dynamic -ne 'Any') {
+                        switch -CaseSensitive ($dynamic) {
+                            'ProximityApps' {throw 'network_rule_proximity_apps'}
+                            'ProximitySharing' {throw 'network_rule_proximity_sharing'}
+                            'WifiDirectPrinting' {throw 'network_rule_wifi_printing'}
+                            'WifiDirectDisplay' {throw 'network_rule_wifi_display'}
+                            'WifiDirectDevices' {throw 'network_rule_wifi_devices'}
+                            default {throw 'network_rule_dynamic_unknown'}
+                        }
+                    }
                     if($protocol -in @('TCP','6')) {throw 'network_rule_tcp'}
                     if($protocol -in @('UDP','17')) {throw 'network_rule_udp'}
                     throw 'network_rule_any'
@@ -119,7 +131,7 @@ function Get-E1OfflineSealHash {
             }
         }
         $ruleRows+=@{name=$rule.Name;action=[string]$rule.Action;profile=[string]$rule.Profile;program=$app.Program;package=$app.Package;
-            protocol=[string]$port.Protocol;local_port=@($port.LocalPort);remote_port=@($port.RemotePort);
+            protocol=[string]$port.Protocol;dynamic_target=(Get-E1Field $port 'DynamicTarget');local_port=@($port.LocalPort);remote_port=@($port.RemotePort);
             local_address=@($address.LocalAddress);remote_address=@($address.RemoteAddress);service=$service.Service}
     }
     $snapshot = @{ profiles=@($profiles | Select-Object Name,Enabled,DefaultOutboundAction); rules=$ruleRows; seal_sha256=$seal.sha256 }

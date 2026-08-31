@@ -152,12 +152,12 @@ describe.skipIf(process.platform !== 'win32')('Evidence1 offline cache contract 
       $ast=[System.Management.Automation.Language.Parser]::ParseFile(${quote(modulePath)},[ref]$tokens,[ref]$errors)
       $fn=$ast.Find({param($a) $a -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $a.Name -eq 'Get-E1OfflineSealHash'},$true)
       . ([scriptblock]::Create($fn.Extent.Text))
-      $testPort='443'; $testProtocol='TCP'; $testAddress='192.0.2.1'; $testProgram='Any'; $testService='Any'; $testPackage='Any'; $testDefault='Block'
+      $testPort='443'; $testProtocol='TCP'; $testDynamic='Any'; $testAddress='192.0.2.1'; $testProgram='Any'; $testService='Any'; $testPackage='Any'; $testDefault='Block'
       function Read-E1Json {return @{sha256=('a'*64);value=@{verdict='PASS';network_mode='restricted';allowed_resolved_ips_by_host=@{'api.anthropic.com'=@('192.0.2.1');'platform.claude.com'=@('192.0.2.1');'claude.ai'=@('192.0.2.1');'claude.com'=@('192.0.2.1')}}}}
       function Get-NetFirewallProfile {foreach($n in @('Domain','Private','Public')) {[pscustomobject]@{Name=$n;Enabled=$true;DefaultOutboundAction=$testDefault}}}
       function Get-NetFirewallRule {[pscustomobject]@{Name='PRIVATE_RULE';Enabled=$true;Direction='Outbound';Action='Allow';Profile='Any'}}
       function Get-NetFirewallApplicationFilter {param([Parameter(ValueFromPipeline)]$InputObject) process {[pscustomobject]@{Program=$testProgram;Package=$testPackage}}}
-      function Get-NetFirewallPortFilter {param([Parameter(ValueFromPipeline)]$InputObject) process {[pscustomobject]@{Protocol=$testProtocol;LocalPort='Any';RemotePort=$testPort}}}
+      function Get-NetFirewallPortFilter {param([Parameter(ValueFromPipeline)]$InputObject) process {[pscustomobject]@{Protocol=$testProtocol;DynamicTarget=$testDynamic;LocalPort='Any';RemotePort=$testPort}}}
       function Get-NetFirewallAddressFilter {param([Parameter(ValueFromPipeline)]$InputObject) process {[pscustomobject]@{LocalAddress='Any';RemoteAddress=$testAddress}}}
       function Get-NetFirewallServiceFilter {param([Parameter(ValueFromPipeline)]$InputObject) process {[pscustomobject]@{Service=$testService}}}
       $first=Get-E1OfflineSealHash; $out=@($first -cmatch '^[a-f0-9]{64}$')
@@ -171,7 +171,12 @@ describe.skipIf(process.platform !== 'win32')('Evidence1 offline cache contract 
       $testAddress='192.0.2.1';$testDefault='Allow'; try {$null=Get-E1OfflineSealHash;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'network_outbound_default')}
       $testDefault='Block';$testProtocol='UDP';try {$null=Get-E1OfflineSealHash;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'network_rule_udp')}
       $testProtocol='Any';try {$null=Get-E1OfflineSealHash;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'network_rule_any')}
-      $out | ConvertTo-Json -Compress`)).toEqual(Array(10).fill(true));
+      foreach($case in @(@('ProximityApps','network_rule_proximity_apps'),@('ProximitySharing','network_rule_proximity_sharing'),
+        @('WifiDirectPrinting','network_rule_wifi_printing'),@('WifiDirectDisplay','network_rule_wifi_display'),
+        @('WifiDirectDevices','network_rule_wifi_devices'),@('PRIVATE_UNKNOWN','network_rule_dynamic_unknown'))) {
+        $testDynamic=$case[0];try {$null=Get-E1OfflineSealHash;$out+=$false} catch {$out+=($_.Exception.Message -ceq $case[1])}
+      }
+      $out | ConvertTo-Json -Compress`)).toEqual(Array(16).fill(true));
   });
 
   it('identifies the firewall preflight condition without exporting rule names', async () => {
