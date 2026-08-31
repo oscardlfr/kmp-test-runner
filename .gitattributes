@@ -173,3 +173,5 @@ tests/vitest/local-ci.test.js text eol=lf
 docs/audits/evidence1-validation-ops.psm1 text eol=lf
 docs/audits/evidence1-validation-forensics.psm1 text eol=lf
 docs/audits/evidence1-gradle-offline-probe.psm1 text eol=lf
+docs/audits/evidence1-cache-provision-host.psm1 text eol=lf
+docs/audits/evidence1-gradle-cache-provision.psm1 text eol=lf
