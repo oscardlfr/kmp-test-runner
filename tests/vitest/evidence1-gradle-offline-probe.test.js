@@ -243,6 +243,13 @@ describe.skipIf(process.platform !== 'win32')('Evidence1 offline cache contract 
     ) | ConvertTo-Json -Compress`)).toEqual(['localuserempty', 'native-20', 'notapplicable', 'unknown', 'multiple']);
   });
 
+  it('reads native CIM enforcement codes rather than the formatted PowerShell script property', async () => {
+    expect(await ps(`$rule=New-CimInstance -ClientOnly -ClassName MSFT_NetFirewallRule -Namespace root/StandardCimv2 -Property @{EnforcementStatus=[uint16[]]@(20,5)}
+      $rule | Add-Member -MemberType ScriptProperty -Name EnforcementStatus -Value {'PRIVATE_FORMATTED_TEXT'} -Force
+      $states=Get-E1OfflineNativeEnforcement $rule
+      @($states | ForEach-Object {Get-E1OfflineEnforcementKind $_}) | ConvertTo-Json -Compress`)).toEqual(['native-20','native-5']);
+  });
+
   it('rejects private scope values, unknown keys and oversized rule collections', async () => {
     expect(await ps(`$enums=Get-E1OfflineScopeEnums; $row=@{}
       foreach($key in $enums.Keys) {$row[$key]=$enums[$key][0]}; $row.enforcement_states=@('full')

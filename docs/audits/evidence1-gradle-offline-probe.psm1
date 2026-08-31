@@ -188,6 +188,16 @@ function Get-E1OfflineEnforcementKind($Value) {
     return 'unknown'
 }
 
+function Get-E1OfflineNativeEnforcement($Rule) {
+    # NetSecurity.types.ps1xml shadows this CIM array with localized display text.
+    if($Rule -is [Microsoft.Management.Infrastructure.CimInstance]) {
+        $property=$Rule.PSBase.CimInstanceProperties['EnforcementStatus']
+        if($null -eq $property) {return $null}
+        return ,$property.Value
+    }
+    return Get-E1Field $Rule 'EnforcementStatus'
+}
+
 function ConvertTo-E1OfflineRuleScope($Raw) {
     Assert-E1Keys $Raw @('rules')
     $rules=Get-E1Field $Raw 'rules'
@@ -240,7 +250,7 @@ function Get-E1OfflineNetworkRuleScope {
             if('Any' -in $profiles -or @($profiles | Where-Object {$_ -in $active}).Count -gt 0) {$profileMatch='active'}
         }
         $row=@{action=([string]$rule.Action).ToLowerInvariant();program=$program;profile_match=$profileMatch;enforcement='unknown'}
-        $nativeStates=Get-E1Field $rule 'EnforcementStatus'
+        $nativeStates=Get-E1OfflineNativeEnforcement $rule
         $row.enforcement=Get-E1OfflineEnforcementKind $nativeStates
         $row.enforcement_states=@(foreach($state in $nativeStates) {Get-E1OfflineEnforcementKind $state})
         foreach($mapping in @(@('local_address',$address.LocalAddress),@('remote_address',$address.RemoteAddress),
