@@ -232,6 +232,16 @@ describe.skipIf(process.platform !== 'win32')('Evidence1 offline cache contract 
       $out | ConvertTo-Json -Compress`)).toEqual([true, true, true, true]);
   });
 
+  it('preserves documented enforcement states including native CIM arrays without free text', async () => {
+    expect(await ps(`@(
+      (Get-E1OfflineEnforcementKind @('LocalUserEmpty')),
+      (Get-E1OfflineEnforcementKind ([uint16[]]@(20))),
+      (Get-E1OfflineEnforcementKind @('NotApplicable')),
+      (Get-E1OfflineEnforcementKind @('PRIVATE_TEXT')),
+      (Get-E1OfflineEnforcementKind @('Full','InactiveProfile'))
+    ) | ConvertTo-Json -Compress`)).toEqual(['localuserempty', 'native-20', 'notapplicable', 'unknown', 'multiple']);
+  });
+
   it('rejects private scope values, unknown keys and oversized rule collections', async () => {
     expect(await ps(`$enums=Get-E1OfflineScopeEnums; $row=@{}
       foreach($key in $enums.Keys) {$row[$key]=$enums[$key][0]}

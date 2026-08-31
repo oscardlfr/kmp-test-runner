@@ -164,13 +164,28 @@ function Get-E1OfflineScopeEnums {
     $scope=@('any','scoped','loopback','unknown')
     return @{
         action=@('allow','block'); program=@('any','java','javaw'); profile_match=@('active','inactive','unknown')
-        enforcement=@('full','other','unknown'); dynamic_target=@('any','scoped','unknown')
+        enforcement=@('full','other','unknown','multiple','notapplicable','invalid','firewalloffinprofile','categoryoff','disabledobject',
+            'inactiveprofile','localaddressresolutionempty','remoteaddressresolutionempty','localportresolutionempty','remoteportresolutionempty',
+            'interfaceresolutionempty','applicationresolutionempty','remotemachineempty','remoteuserempty','localglobalopenportsdisallowed',
+            'localauthorizedapplicationsdisallowed','localfirewallrulesdisallowed','localconsecrulesdisallowed','nottargetplatform','optimizedout',
+            'localuserempty','transportmachinesempty','tunnelmachinesempty','tupleresolutionempty') + @(0..23 | ForEach-Object {"native-$_"})
+        dynamic_target=@('any','scoped','unknown')
         local_address=$scope; remote_address=$scope; local_port=$scope; remote_port=$scope
         interface_alias=$scope; interface_type=@('any','wired','wireless','remoteaccess','unknown')
         authentication=@('notrequired','required','noencap','unknown'); encryption=@('notrequired','required','dynamic','unknown')
         override_block_rules=@('true','false','unknown'); local_user=$scope; remote_user=$scope; remote_machine=$scope
         local_user_owner=$scope; policy_app_id=$scope
     }
+}
+
+function Get-E1OfflineEnforcementKind($Value) {
+    $values=@($Value)
+    if($values.Count -eq 0) {return 'unknown'}
+    if($values.Count -ne 1) {return 'multiple'}
+    $valueText=([string]$values[0]).ToLowerInvariant()
+    if($valueText -cmatch '^(?:[0-9]|1[0-9]|2[0-3])$') {return "native-$valueText"}
+    if($valueText -cin (Get-E1OfflineScopeEnums).enforcement) {return $valueText}
+    return 'unknown'
 }
 
 function ConvertTo-E1OfflineRuleScope($Raw) {
@@ -218,8 +233,7 @@ function Get-E1OfflineNetworkRuleScope {
             if('Any' -in $profiles -or @($profiles | Where-Object {$_ -in $active}).Count -gt 0) {$profileMatch='active'}
         }
         $row=@{action=([string]$rule.Action).ToLowerInvariant();program=$program;profile_match=$profileMatch;enforcement='unknown'}
-        $enforcement=[string](Get-E1Field $rule 'EnforcementStatus')
-        if($enforcement -eq 'Full') {$row.enforcement='full'} elseif($enforcement) {$row.enforcement='other'}
+        $row.enforcement=Get-E1OfflineEnforcementKind (Get-E1Field $rule 'EnforcementStatus')
         foreach($mapping in @(@('local_address',$address.LocalAddress),@('remote_address',$address.RemoteAddress),
             @('local_port',$port.LocalPort),@('remote_port',$port.RemotePort),@('interface_alias',$iface.InterfaceAlias),
             @('local_user',$security.LocalUser),@('remote_user',$security.RemoteUser),@('remote_machine',$security.RemoteMachine),
