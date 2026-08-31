@@ -111,6 +111,10 @@ async function exercise(mode = 'warm') {
         function Invoke-E1Java21Environment {param($Directory,$Action) & $Action @{executable=$script:javaPath;home=$base}}
         function Invoke-E1OwnedProcess {param($FileName,$Arguments,$WorkingDirectory,$Stdout,$Stderr,$TimeoutSeconds)
           $script:events+='gradle';$script:commands+=@{args=$Arguments;timeout=$TimeoutSeconds;home=$env:GRADLE_USER_HOME;cwd=$WorkingDirectory}
+          $script:commands[-1].java_options=$env:JAVA_TOOL_OPTIONS
+          $dnsFile=Join-Path ([IO.Path]::GetDirectoryName($WorkingDirectory)) 'repository.hosts'
+          $script:commands[-1].dns_pinned=(Test-Path -LiteralPath $dnsFile)
+          if(Test-Path -LiteralPath $dnsFile) {$script:commands[-1].dns_text=[IO.File]::ReadAllText($dnsFile)}
           if($mode -eq 'transport'){throw 'PRIVATE_PROCESS_ERROR'}
           $log=if($mode -eq 'cache-miss'){'No cached version of PRIVATE:module:1 available for offline mode.'}else{'BUILD SUCCESSFUL'}
           [IO.File]::WriteAllText($Stdout,$log);[IO.File]::WriteAllText($Stderr,'')
@@ -214,6 +218,18 @@ describe.skipIf(process.platform !== 'win32')('guest cache provisioning (mocked 
     const r = await exercise('donor-preserve');
     expect(r.result.state).toBe('passed');
     expect(r.donor_preserved).toBe(true);
+  });
+
+  it('pins child JVM resolution to exactly the journaled firewall destinations', async () => {
+    const r = await exercise();
+    expect(r.result.state).toBe('passed');
+    expect(r.commands[0].dns_pinned).toBe(true);
+    expect(r.commands[0].java_options).toMatch(/^-Djdk\.net\.hosts\.file=".*repository\.hosts"$/);
+    expect(r.commands[0].dns_text).toContain('142.250.74.14 dl.google.com');
+    expect(r.commands[0].dns_text).toContain('2607:f8b0:4004:c07::5e dl.google.com');
+    expect(r.commands[0].dns_text).toContain('127.0.0.1 localhost');
+    expect(r.commands[0].args).toContain(`-Dorg.gradle.java.home=${r.commands[0].cwd.split(/[\\/]/).slice(0, -3).join('\\')}`);
+    expect(r.result.hashes.resolver_sha256).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it.each(['certify-missing-xml', 'certify-malformed-xml'])('rejects successful Gradle exit with %s', async mode => {

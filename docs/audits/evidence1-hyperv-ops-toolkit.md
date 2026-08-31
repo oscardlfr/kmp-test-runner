@@ -73,6 +73,21 @@ redirect host). These are IP restrictions, not hostname-level enforcement.
 Default outbound blocking stays enabled; rules are removed and the original
 firewall fingerprint is verified before certification.
 
+Java and its child JVMs use an operation-local `jdk.net.hosts.file` containing
+that exact address snapshot, supplied only around the contained Gradle process
+via `JAVA_TOOL_OPTIONS`. The original process environment is restored, the
+system hosts file is untouched, and TLS hostname/certificate checks remain on.
+This closes the race between independent DNS resolutions and firewall IP rules.
+The mechanism is documented for controlled testing by
+[Oracle's Java networking guide](https://docs.oracle.com/en/java/javase/21/core/java-networking.html).
+
+To inspect a completed provisioning operation, reuse its original arguments with
+`-ReadDiagnostics`. This mode does not reserve or execute another operation,
+compile, modify rules or alter VM topology. It verifies the saved log hashes and
+returns closed connection/resolver counters only. Its separate read receipt does
+not overwrite the warm/certify reports; no log text, URL, IP or credentials are
+returned. Later resolver differences prove drift, not the historical peer IP.
+
 Certification copies the complete allowed Gradle dependency cache, including
 metadata, to a fresh directory and runs the same tasks from a fresh source clone
 with `--offline` and every VM network adapter disconnected. It requires clean

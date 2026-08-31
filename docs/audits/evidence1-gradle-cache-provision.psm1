@@ -82,7 +82,7 @@ function ConvertTo-E1CacheProvisionReceipt($Raw) {
             if($key -cnotin @('wet_marker_sha256','firewall_before_sha256','firewall_after_sha256','context_sha256',
                 'wrapper_properties_sha256','wrapper_jar_sha256','java_executable_sha256','sdk_configuration_sha256',
                 'sdk_build_tools_sha256','stdout_sha256','stderr_sha256','demo_coverage_sha256','prod_coverage_sha256',
-                'records_metadata_before_sha256','records_metadata_after_sha256')) {throw 'result_shape'}
+                'records_metadata_before_sha256','records_metadata_after_sha256','resolver_sha256')) {throw 'result_shape'}
             $value=Get-E1Field $hashes $key
             if($value -isnot [string] -or $value -cnotmatch '^[a-f0-9]{64}$') {throw 'result_shape'};$safe.hashes[$key]=[string]::Copy($value)
         }
@@ -264,12 +264,19 @@ function Invoke-E1CacheProvisionGuest($Config) {
         $result.hashes.wrapper_properties_sha256=Get-E1SourceFileHash $wrapper 16384
         $result.hashes.wrapper_jar_sha256=Get-E1SourceFileHash $wrapperJar 1048576
         # The operation marker is immutable. Only separate terminal files are written later.
-        $repositories=if($phase -ceq 'warm'){Get-E1CacheProvisionRepositories}else{@()}
+        $repositories=if($phase -ceq 'warm'){Get-E1CacheProvisionRepositories}else{@($context.repositories)}
+        $resolverPath=Join-Path $directory 'repository.hosts'
+        $resolverLines=@('127.0.0.1 localhost',('127.0.0.1 '+$env:COMPUTERNAME),'::1 localhost')
+        foreach($repository in $repositories) {
+            foreach($address in $repository.addresses){$resolverLines+=($address+' '+$repository.host_name)}
+        }
+        [IO.File]::WriteAllText($resolverPath,($resolverLines -join "`n")+"`n",[Text.UTF8Encoding]::new($false))
+        $result.hashes.resolver_sha256=Get-E1SourceFileHash $resolverPath 16384
         if($phase -ceq 'warm') {
             $ruleNames=@(0..3 | ForEach-Object {'E1CacheProvision-'+$id+'-'+$_})
             foreach($name in $ruleNames) {if(Get-NetFirewallRule -Name $name -PolicyStore ActiveStore -ErrorAction SilentlyContinue) {throw 'attempt_exists'}}
         }
-        Write-E1CacheProvisionNew (Join-Path $operation ($phase+'.started.json')) @{schema=1;phase=$phase;context_sha256=$bindingHash;binding=$binding;rule_names=$ruleNames;repositories=$repositories}
+        Write-E1CacheProvisionNew (Join-Path $operation ($phase+'.started.json')) @{schema=1;phase=$phase;context_sha256=$bindingHash;binding=$binding;rule_names=$ruleNames;repositories=$repositories;resolver_sha256=$result.hashes.resolver_sha256}
         $reserved=$true
         $home=$donor
         if($phase -ceq 'certify') {
@@ -292,14 +299,21 @@ function Invoke-E1CacheProvisionGuest($Config) {
                     $null=New-NetFirewallRule -Name $ruleNames[$i] -DisplayName $ruleNames[$i] -Group ('E1CacheProvision-'+$id) -PolicyStore PersistentStore -Direction Outbound -Action Allow -Enabled True -Profile Any -Program $java.executable -Protocol TCP -RemotePort 443 -RemoteAddress $repositories[$i].addresses -ErrorAction Stop
                 }
             }
-            $arguments=@('-Dorg.gradle.daemon=false','-Dorg.gradle.java.installations.auto-download=false',
+            $arguments=@('-Dorg.gradle.daemon=false','-Dorg.gradle.java.installations.auto-download=false',('-Dorg.gradle.java.home='+$java.home),
                 '-classpath',$wrapperJar,'org.gradle.wrapper.GradleWrapperMain',':core:domain:test',
                 ':core:domain:createDemoDebugUnitTestCoverageReport',':core:domain:createProdDebugUnitTestCoverageReport',
                 '--no-daemon','--no-build-cache','--no-configuration-cache','--console=plain','--stacktrace')
             $timeout=600;if($phase -ceq 'certify') {$arguments+='--offline';$timeout=300}
             $stdout=Join-Path $directory 'gradle.stdout.txt';$stderr=Join-Path $directory 'gradle.stderr.txt'
             $result.gradle_invocations=1
-            $p=Invoke-E1OwnedProcess $java.executable $arguments $copy $stdout $stderr $timeout
+            # Child JVMs (including Gradle's single-use daemon) inherit the same
+            # operation-local resolver as the firewall. The system hosts file is untouched.
+            $previousJavaOptions=$env:JAVA_TOOL_OPTIONS
+            try {
+                $env:JAVA_TOOL_OPTIONS='-Djdk.net.hosts.file="'+$resolverPath+'"'
+                $p=Invoke-E1OwnedProcess $java.executable $arguments $copy $stdout $stderr $timeout
+            } finally {$env:JAVA_TOOL_OPTIONS=$previousJavaOptions}
+            if((Get-E1SourceFileHash $resolverPath 16384) -cne $result.hashes.resolver_sha256){throw 'evidence_changed'}
             $result.process=ConvertTo-E1ProcessObservation @{exit_code=$p.ExitCode;wall_seconds=$p.WallSeconds;timed_out=$p.TimedOut;cleanup_ok=$p.CleanupOk}
             $text=''
             foreach($log in @($stdout,$stderr)) {
