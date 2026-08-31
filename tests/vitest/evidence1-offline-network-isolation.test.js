@@ -26,7 +26,10 @@ async function exercise(mode = 'normal') {
   try {
     const script = `$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue'
       Import-Module ${quote(resolve(root, 'docs/audits/evidence1-validation-ops.psm1'))} -DisableNameChecking
-      Import-Module ${quote(resolve(root, 'docs/audits/evidence1-gradle-offline-probe.psm1'))} -DisableNameChecking
+      $code=[IO.File]::ReadAllText(${quote(resolve(root, 'docs/audits/evidence1-gradle-offline-probe.psm1'))})
+      $code=$code.Replace('Global\\Evidence1OfflineNetwork',('Local\\OfflineFixture-'+[guid]::NewGuid().ToString('N')))
+      if($code.Contains('Global\\Evidence1OfflineNetwork')){throw 'fixture_mutex_not_replaced'}
+      Import-Module (New-Module -Name evidence1-gradle-offline-probe -ScriptBlock ([scriptblock]::Create($code))) -DisableNameChecking
       $r=& (Get-Module evidence1-gradle-offline-probe) {
         param($journal,$mode)
         $script:nics=@([pscustomobject]@{Id='nic-a';VMId=[guid]'00000000-0000-0000-0000-000000000001';SwitchId=[guid]'00000000-0000-0000-0000-000000000002';MacAddress='001122334455';Connected=$true})
