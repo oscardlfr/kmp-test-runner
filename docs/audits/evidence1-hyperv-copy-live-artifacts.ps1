@@ -409,6 +409,27 @@ try {
   }
 
   $stageBExit = Resolve-StageBExit
+  $canaryCustody = $null
+  $placementPath = 'C:\kmp-eval\scratch\hyperv-place-live-autorun\HYPERV-PLACE-LIVE-AUTORUN.json'
+  if (Test-Path -LiteralPath $placementPath) {
+    $placement = (Read-Evidence1CanaryJson $placementPath).value
+    if ($placement.PSObject.Properties['canary']) {
+      if (-not $ExpectedRunId -or $ExpectedRunId -cne $placement.run_id -or -not $stageBExit.valid) { Fail 'canary copy requires exact placement run_id and terminal custody' }
+      $canarySource = Join-Path $guestOps "canary\$ExpectedRunId"
+      $canaryCustody = Get-Evidence1CanaryCustody $canarySource $ExpectedRunId $placement.canary.binding_sha256 $stageBExit.record
+      $canaryDestination = Join-Path $OutDir "canary\$ExpectedRunId"
+      foreach ($name in $canaryCustody.files.Keys) {
+        $destination = Join-Path $canaryDestination $name
+        if (Test-Path -LiteralPath $destination) {
+          if ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant() -cne $canaryCustody.files[$name]) { Fail 'canary copied custody already exists with different bytes' }
+        } else {
+          New-Item -ItemType Directory -Path $canaryDestination -Force | Out-Null
+          Copy-Item -LiteralPath (Join-Path $canarySource $name) -Destination $destination -ErrorAction Stop
+          if ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant() -cne $canaryCustody.files[$name]) { Fail 'canary copied custody hash mismatch' }
+        }
+      }
+    }
+  }
 
   $report = [ordered]@{
     verdict = 'PASS'
@@ -433,6 +454,7 @@ try {
     raw_content_read = $false
     note = 'Inventory uses file names, sizes and hashes only. Raw transcript/stderr contents are not read.'
   }
+  if ($canaryCustody) { $report.canary = $canaryCustody }
   $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $OutDir 'HYPERV-COPY-LIVE-ARTIFACTS.json') -Encoding UTF8
   Write-Host "[hyperv-copy-live-artifacts] PASS: $OutDir"
 } finally {

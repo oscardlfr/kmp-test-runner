@@ -182,6 +182,37 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File docs\audits\evidence1-ho
   -ScriptArgumentsJson '["-ExpectedRunId","<run-guid>"]'
 ```
 
+## One-Cell Stage L
+
+The standard eight-cell flow above remains available only under its own authorization.
+For a registered single-cell canary, follow the separate
+[Stage L contract](evidence1-post-merge-validation.md#stage-l-one-cell-handoff). The same host
+handoff entrypoint accepts the following additional arguments as one complete set:
+
+```powershell
+-CanaryArm <product-or-free-baseline> -CanaryRunId <machine-generated-run-guid> `
+  -WetReportPath <exact-passing-V2-host-report> -ExpectedWetReportSha256 <V2-sha256> `
+  -DryReportPath <exact-passing-V3-host-report> -ExpectedDryReportSha256 <V3-sha256>
+```
+
+Continue supplying `ExpectedTargetCommit`, `ExpectedTargetTree`, and the NEW selected-arm
+`LiveAuthorizationPhrase` obtained after V3. The stable phrase is documented in the contract;
+UUIDs and hashes are machine-bound in immutable records, not part of the human phrase.
+Neither generic engineering authorization nor the eight-session phrase authorizes this path.
+
+V2/V3 report paths may use unique filenames under their existing host report roots. V1 uses
+the canonical current readiness report. Original failed V2 reports and source files remain
+intact; live materialization starts from a fresh pinned clone. The guest canary bundle under
+`C:\Evidence1Ops\canary\<run-guid>` retains binding, report bytes and exclusive claims.
+The host copy command requires that exact `ExpectedRunId` and checks staged-module hashes
+on the mounted volume, not merely the host checkout. A copied terminal for another arm or
+binding cannot close the attempt. Missing custody is not repaired by a new run.
+
+Progress reads only a closed summary from the run-bound journal, including bounded pending
+atomic publication. The canary never selects a newest journal, retries a cell, or promotes a
+bare process exit to successful terminal custody. Primary and secondary failure diagnoses
+are separate; raw exception text and per-cell transcript content are not projected.
+
 ## Disconnected Offline Diagnostic
 
 This is an explicitly authorized diagnostic, not V2, a live canary, or a replacement

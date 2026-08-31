@@ -8,6 +8,328 @@ BeforeAll {
     $script:PlacePath = Join-Path $script:AuditRoot 'evidence1-hyperv-place-live-autorun.ps1'
     $script:ProgressPath = Join-Path $script:AuditRoot 'evidence1-hyperv-read-live-progress.ps1'
     $script:LauncherPath = Join-Path $script:AuditRoot 'evidence1-stageb-live-launch.ps1'
+    Import-Module $script:ContractPath -Force
+}
+
+Describe 'Evidence1 canary one-use and journal contracts' {
+    BeforeEach {
+        $script:CanaryId = 'b48bfb0c-a9ae-4e0e-8d89-56eb1e278090'
+        $script:BindingHash = 'a' * 64
+        $script:CanaryDirectory = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:CanaryDirectory | Out-Null
+    }
+
+    It 'reserves wrapper and launcher once and preserves consumed evidence on replay' {
+        $first = New-Evidence1CanaryClaim $script:CanaryDirectory $script:CanaryId $script:BindingHash 'wrapper'
+        $first.phase | Should -BeExactly 'wrapper'
+        $path = Join-Path $script:CanaryDirectory 'wrapper.claim.json'
+        $before = (Get-FileHash $path).Hash
+        { New-Evidence1CanaryClaim $script:CanaryDirectory $script:CanaryId $script:BindingHash 'wrapper' } | Should -Throw '*canary*'
+        (Get-FileHash $path).Hash | Should -BeExactly $before
+        $launch = New-Evidence1CanaryClaim $script:CanaryDirectory $script:CanaryId $script:BindingHash 'launcher'
+        $launch.run_id | Should -BeExactly $script:CanaryId
+        { New-Evidence1CanaryClaim $script:CanaryDirectory $script:CanaryId $script:BindingHash 'launcher' } | Should -Throw '*canary*'
+    }
+
+    It 'rejects direct launcher dispatch and cross-run or cross-binding claims' {
+        { New-Evidence1CanaryClaim $script:CanaryDirectory $script:CanaryId $script:BindingHash 'launcher' } | Should -Throw '*canary*'
+        $null = New-Evidence1CanaryClaim $script:CanaryDirectory $script:CanaryId $script:BindingHash 'wrapper'
+        { New-Evidence1CanaryClaim $script:CanaryDirectory ([guid]::NewGuid().ToString()) $script:BindingHash 'launcher' } | Should -Throw '*canary*'
+        { New-Evidence1CanaryClaim $script:CanaryDirectory $script:CanaryId ('b' * 64) 'launcher' } | Should -Throw '*canary*'
+        Test-Path (Join-Path $script:CanaryDirectory 'launcher.claim.json') | Should -BeFalse
+    }
+
+    It 'ignores historical journals even when they are newest and binds the one newly created journal' {
+        $oldId = [guid]::NewGuid().ToString(); $newId = [guid]::NewGuid().ToString()
+        New-Item -ItemType Directory -Path (Join-Path $script:CanaryDirectory $oldId) | Out-Null
+        $pending = Get-Evidence1CanaryJournalProgress $script:CanaryDirectory @($oldId) $script:CanaryId
+        $pending.journal_id | Should -BeNullOrEmpty
+        $events = Join-Path $script:CanaryDirectory "$newId/events"
+        New-Item -ItemType Directory -Path $events | Out-Null
+        [IO.File]::WriteAllText((Join-Path $events '000000-0000-planned.json'), '{"seq":0,"runKind":"scenario","cellOrdinal":0,"transition":"planned","meta":{}}')
+        (Get-Item (Join-Path $script:CanaryDirectory $oldId)).LastWriteTimeUtc = [datetime]::UtcNow.AddHours(1)
+        $progress = Get-Evidence1CanaryJournalProgress $script:CanaryDirectory @($oldId) $script:CanaryId
+        $progress.run_id | Should -BeExactly $script:CanaryId
+        $progress.journal_id | Should -BeExactly $newId
+        $progress.transition_counts.planned | Should -Be 1
+        $progress.event_count | Should -Be 1
+    }
+
+    It 'rejects multiple new journals rather than selecting the newest' {
+        foreach ($i in 1..2) { New-Item -ItemType Directory -Path (Join-Path $script:CanaryDirectory ([guid]::NewGuid().ToString())) | Out-Null }
+        { Get-Evidence1CanaryJournalProgress $script:CanaryDirectory @() $script:CanaryId } | Should -Throw '*canary*'
+    }
+
+    It 'rejects a second cell, duplicate spawn, or a journal belonging to a different run' {
+        $newId = [guid]::NewGuid().ToString()
+        $events = Join-Path $script:CanaryDirectory "$newId/events"
+        New-Item -ItemType Directory -Path $events | Out-Null
+        [IO.File]::WriteAllText((Join-Path $events '000000-0000-planned.json'), '{"seq":0,"runKind":"scenario","cellOrdinal":0,"transition":"planned","meta":{}}')
+        $progress = Get-Evidence1CanaryJournalProgress $script:CanaryDirectory @() $script:CanaryId
+        { Get-Evidence1CanaryJournalProgress $script:CanaryDirectory @() ([guid]::NewGuid().ToString()) $progress } | Should -Throw '*canary*'
+        [IO.File]::WriteAllText((Join-Path $events '000001-0001-planned.json'), '{"seq":1,"runKind":"scenario","cellOrdinal":1,"transition":"planned","meta":{}}')
+        { Get-Evidence1CanaryJournalProgress $script:CanaryDirectory @() $script:CanaryId } | Should -Throw '*canary*'
+        Remove-Item (Join-Path $events '000001-0001-planned.json')
+        foreach ($i in 1..2) { [IO.File]::WriteAllText((Join-Path $events ('{0:d6}-0000-spawn_started.json' -f $i)), ('{"seq":' + $i + ',"runKind":"scenario","cellOrdinal":0,"transition":"spawn_started","meta":{}}')) }
+        { Get-Evidence1CanaryJournalProgress $script:CanaryDirectory @() $script:CanaryId } | Should -Throw '*canary*'
+    }
+
+    It 'keeps publication pending before and after the atomic hardlink, then reads the committed event' {
+        $newId = [guid]::NewGuid().ToString()
+        $events = Join-Path $script:CanaryDirectory "$newId/events"
+        New-Item -ItemType Directory -Path $events | Out-Null
+        $target = Join-Path $events '000000000000-0-planned.json'
+        $temp = $target + '.tmp-1234abcd'
+        [IO.File]::WriteAllText($temp, '{"seq":0,"runKind":"scenario","cellOrdinal":0,"transition":"planned","meta":{}}')
+        $before = Get-Evidence1CanaryJournalProgress $script:CanaryDirectory @() $script:CanaryId
+        $before.publication_pending | Should -BeTrue
+        $before.event_count | Should -Be 0
+        New-Item -ItemType HardLink -Path $target -Target $temp | Out-Null
+        $linked = Get-Evidence1CanaryJournalProgress $script:CanaryDirectory @() $script:CanaryId $before
+        $linked.publication_pending | Should -BeTrue
+        $linked.event_count | Should -Be 0
+        Remove-Item -LiteralPath $temp
+        $committed = Get-Evidence1CanaryJournalProgress $script:CanaryDirectory @() $script:CanaryId $linked
+        $committed.publication_pending | Should -BeFalse
+        $committed.transition_counts.planned | Should -Be 1
+    }
+
+    It 'rejects persistent publication windows, unrelated hardlinks, and unknown files' {
+        $newId = [guid]::NewGuid().ToString()
+        $events = Join-Path $script:CanaryDirectory "$newId/events"
+        New-Item -ItemType Directory -Path $events | Out-Null
+        $target = Join-Path $events '000000000000-0-planned.json'
+        $temp = $target + '.tmp-1234abcd'
+        [IO.File]::WriteAllText($temp, '{}')
+        $now = [datetime]::UtcNow
+        $pending = Get-Evidence1CanaryJournalProgress $script:CanaryDirectory @() $script:CanaryId -NowUtc $now
+        { Get-Evidence1CanaryJournalProgress $script:CanaryDirectory @() $script:CanaryId $pending -NowUtc $now.AddSeconds(6) } | Should -Throw '*canary*'
+        Remove-Item -LiteralPath $temp
+        [IO.File]::WriteAllText($target, '{"seq":0,"runKind":"scenario","cellOrdinal":0,"transition":"planned","meta":{}}')
+        New-Item -ItemType HardLink -Path (Join-Path $script:CanaryDirectory 'external-link') -Target $target | Out-Null
+        { Get-Evidence1CanaryJournalProgress $script:CanaryDirectory @() $script:CanaryId } | Should -Throw '*canary*'
+        Remove-Item (Join-Path $script:CanaryDirectory 'external-link')
+        [IO.File]::WriteAllText((Join-Path $events 'raw.json'), '{}')
+        { Get-Evidence1CanaryJournalProgress $script:CanaryDirectory @() $script:CanaryId } | Should -Throw '*canary*'
+    }
+
+    It 'preserves primary failure independently from cleanup, postflight and persistence without leaking exception text' {
+        $diagnostics = New-Evidence1CanaryDiagnostics
+        try { throw 'canary_dry_plan_changed' } catch { Set-Evidence1CanaryFailure $diagnostics 'primary' 'dry_plan' $_ }
+        try { throw 'job_create' } catch { Set-Evidence1CanaryFailure $diagnostics 'cleanup' 'live' $_ }
+        try { throw 'canary_sdk_changed' } catch { Set-Evidence1CanaryFailure $diagnostics 'postflight' 'postflight' $_ }
+        try { throw 'failed to write C:\private\secret.json with secret-value' } catch { Set-Evidence1CanaryFailure $diagnostics 'persistence' 'terminal_write' $_ }
+        $diagnostics.failure_phase | Should -BeExactly 'dry_plan'
+        $diagnostics.failure_code | Should -BeExactly 'canary_dry_plan_changed'
+        $diagnostics.failures.cleanup.code | Should -BeExactly 'job_create'
+        $diagnostics.failures.postflight.code | Should -BeExactly 'canary_sdk_changed'
+        $diagnostics.failures.persistence.code | Should -BeExactly 'unclassified'
+        ($diagnostics | ConvertTo-Json -Depth 10) | Should -Not -Match 'private|secret-value|secret.json'
+    }
+
+    It 'rejects unknown fields and raw content in transported canary progress and diagnostics' {
+        $progress = Get-Evidence1CanaryJournalProgress $script:CanaryDirectory @() $script:CanaryId
+        (ConvertTo-Evidence1CanaryJournalSnapshot $progress $script:CanaryId).event_count | Should -Be 0
+        $progress.raw = 'secret-value'
+        { ConvertTo-Evidence1CanaryJournalSnapshot $progress $script:CanaryId } | Should -Throw '*canary*'
+        $diagnostics = New-Evidence1CanaryDiagnostics
+        (ConvertTo-Evidence1CanaryDiagnostics $diagnostics).schema | Should -Be 1
+        $diagnostics.failures.primary = @{ phase = 'live'; code = 'C:\private\secret-value' }
+        { ConvertTo-Evidence1CanaryDiagnostics $diagnostics } | Should -Throw '*canary*'
+    }
+}
+
+Describe 'Evidence1 canary launcher runtime failures' {
+    BeforeAll {
+        Import-Module (Join-Path $script:AuditRoot 'evidence1-validation-ops.psm1') -Force
+        Import-Module (Join-Path $script:AuditRoot 'evidence1-gradle-offline-probe.psm1') -Force
+        . $script:LauncherPath -LoadOnly
+        $ast = [Management.Automation.Language.Parser]::ParseFile($script:LauncherPath, [ref]$null, [ref]$null)
+        $definition = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Invoke-Evidence1CanaryLaunch' }, $true).Extent.Text
+        $definition = $definition.Replace("'C:\Evidence1Ops'", '$script:FixtureOps').Replace("'C:\kmp-eval\scratch\evidence1-validation-ops'", '$script:FixtureOps')
+        $definition = $definition.Replace('$PSScriptRoot', '$script:AuditRoot')
+        $definition = $definition.Replace('Global\Evidence1ValidationOps', ('Local\Evidence1CanaryFixture-' + [guid]::NewGuid().ToString('N')))
+        . ([scriptblock]::Create($definition))
+        function Invoke-FixtureClaude { $global:LASTEXITCODE = 0; return '2.1.238 (Claude Code)' }
+    }
+    BeforeEach {
+        $RunId = 'b48bfb0c-a9ae-4e0e-8d89-56eb1e278090'
+        $CanaryArm = 'product'; $CanaryBindingSha256 = 'a' * 64
+        $script:FixtureOps = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:FixtureOps | Out-Null
+        $GradleUserHomeSeedDir = $script:FixtureOps; $TerminalRecordPath = Join-Path $script:FixtureOps 'terminal.json'
+        $script:FixtureWrites = @{}; $script:FixtureCalls = [Collections.Generic.List[string]]::new()
+        $script:JournalCalls = 0; $script:InventoryCalls = 0
+        $script:FixtureOp = [pscustomobject]@{ Task = [pscustomobject]@{ IsCompleted = $false } }
+        $script:FixtureResult = [pscustomobject]@{ ExitCode = 0; WallSeconds = 1.0; TimedOut = $false; CleanupOk = $true; Cancelled = $false }
+        [IO.File]::WriteAllText((Join-Path $script:FixtureOps 'prelaunch-dry.stderr.txt'), '')
+        Mock Import-Module { }
+        Mock Refresh-StageBPath { }
+        Mock Set-StageBClaudeNetworkEnvironment { }
+        Mock Read-Evidence1CanaryBundle { @{ binding = @{ target_commit = 'b'*40; target_tree = 'c'*40; source_commit = 'd'*40; campaign_design_id = 'claude-product-canary-v1'; plan_sha256 = 'e'*64; hashes = @{ attestation_canonical_sha256 = 'f'*64; execution_profile_sha256 = '0'*64 } } } }
+        Mock New-Evidence1CanaryClaim { }
+        Mock Assert-E1NoGuestLive { }
+        Mock Assert-E1Repo { }
+        Mock Assert-Evidence1CanaryGuestEvidence { }
+        Mock Get-Evidence1CanaryValidationInventory { $script:InventoryCalls++; return ('d'*64) }
+        Mock Command-Source { 'Invoke-FixtureClaude' }
+        Mock Assert-CredentialEnvironmentPosture { }
+        Mock Assert-ClaudeAuthReady { }
+        Mock Assert-RestrictedNetwork { }
+        Mock Assert-RemoteAuthCanary { }
+        Mock Read-ReadinessLedger { }
+        Mock Read-Evidence1CanaryJson { @{ value = @{ run_id = 'b48bfb0c-a9ae-4e0e-8d89-56eb1e278090'; binding_sha256 = 'a'*64; journal_ids = @() } } }
+        Mock Get-Evidence1CanaryJournalProgress {
+            $script:JournalCalls++
+            if ($script:JournalCalls -gt 1) { $script:FixtureOp.Task.IsCompleted = $true }
+            @{ run_id = 'b48bfb0c-a9ae-4e0e-8d89-56eb1e278090'; journal_id = $(if ($script:JournalCalls -gt 1) { '69cd5780-49fa-4531-960a-e26cbd7fda54' } else { $null }); publication_pending = $false }
+        }
+        Mock New-Evidence1CanarySource { @{ path = $script:FixtureOps; directory = $script:FixtureOps; tree = 'e'*40; before = @{} } }
+        Mock Get-E1SourceSnapshot { @{ tree = 'e'*40 } }
+        Mock Get-E1OfflineSdk { @{ root = $script:FixtureOps; configuration_sha256 = 'a'*64; build_tools_sha256 = 'b'*64 } }
+        Mock Get-Evidence1CanaryArguments { @('fixture-only') }
+        Mock Invoke-E1OwnedProcess { [pscustomobject]@{ ExitCode = 0; WallSeconds = 1.0; TimedOut = $false; CleanupOk = $true } }
+        Mock Start-E1OwnedProcess { $script:FixtureCalls.Add('start'); $script:FixtureOp }
+        Mock Stop-E1OwnedProcess { $script:FixtureCalls.Add('stop'); $script:FixtureOp.Task.IsCompleted = $true }
+        Mock Wait-E1OwnedProcess { $script:FixtureCalls.Add('wait'); $script:FixtureResult }
+        Mock Start-Sleep { }
+        Mock Read-E1Json { @{ value = @{}; sha256 = 'e'*64 } }
+        Mock Get-E1DryChecks { @{ pass = $true } }
+        Mock Assert-E1SourcePostflight { }
+        Mock Write-Evidence1JsonAtomically {
+            param($Path, $Value)
+            $script:FixtureWrites[[IO.Path]::GetFileName($Path)] = $Value | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+        }
+    }
+    It 'uses the owned async operation, observes its journal and waits for cleanup before success' {
+        Invoke-Evidence1CanaryLaunch | Should -Be 0
+        ($script:FixtureCalls -join ',') | Should -BeExactly 'start,wait'
+        Should -Invoke Invoke-E1OwnedProcess -Times 1 -Exactly
+        Should -Invoke Start-E1OwnedProcess -Times 1 -Exactly -ParameterFilter { $Seconds -eq 1800 }
+        $script:FixtureWrites['terminal.json'].diagnostics.processes.live.cleanup_ok | Should -BeTrue
+        $script:FixtureWrites['terminal.json'].diagnostics.failure_code | Should -BeNullOrEmpty
+    }
+    It 'cancels and joins on a journal failure without replacing it with cleanup or postflight failures' {
+        Mock Get-Evidence1CanaryJournalProgress {
+            $script:JournalCalls++
+            if ($script:JournalCalls -gt 1) { throw 'canary_journal_cell' }
+            @{ journal_id = $null; publication_pending = $false }
+        }
+        Mock Get-Evidence1CanaryValidationInventory {
+            $script:InventoryCalls++
+            if ($script:InventoryCalls -gt 2) { throw 'canary_validation_changed' }
+            return ('d'*64)
+        }
+        $script:FixtureResult.ExitCode = 130; $script:FixtureResult.Cancelled = $true; $script:FixtureResult.CleanupOk = $false
+        Invoke-Evidence1CanaryLaunch | Should -Be 997
+        ($script:FixtureCalls -join ',') | Should -BeExactly 'start,stop,wait'
+        $record = $script:FixtureWrites['terminal.json']
+        $record.diagnostics.failure_phase | Should -BeExactly 'journal'
+        $record.diagnostics.failure_code | Should -BeExactly 'canary_journal_cell'
+        $record.diagnostics.failures.cleanup.code | Should -BeExactly 'canary_process_cleanup'
+        $record.diagnostics.failures.postflight.code | Should -BeExactly 'canary_validation_changed'
+        $record.diagnostics.processes.live.exit_code | Should -Be 130
+    }
+    It 'preserves a source-clone primary failure in custody when terminal persistence also fails' {
+        Mock New-Evidence1CanarySource { throw 'canary_source_invalid' }
+        Mock Write-Evidence1JsonAtomically {
+            param($Path, $Value)
+            if ([IO.Path]::GetFileName($Path) -eq 'terminal.json') { throw 'C:\private\secret.json could not be written' }
+            $script:FixtureWrites[[IO.Path]::GetFileName($Path)] = $Value | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+        }
+        Invoke-Evidence1CanaryLaunch | Should -Be 997
+        Should -Invoke Start-E1OwnedProcess -Times 0 -Exactly
+        Should -Invoke Invoke-E1OwnedProcess -Times 0 -Exactly
+        Should -Invoke Assert-E1SourcePostflight -Times 1 -Exactly
+        $record = $script:FixtureWrites['source-custody.json']
+        $record.diagnostics.failure_phase | Should -BeExactly 'source_clone'
+        $record.diagnostics.failure_code | Should -BeExactly 'canary_source_invalid'
+        $record.diagnostics.failures.persistence.phase | Should -BeExactly 'terminal_write'
+        $record.diagnostics.failures.persistence.code | Should -BeExactly 'unclassified'
+        ($record | ConvertTo-Json -Depth 15) | Should -Not -Match 'private|secret.json'
+    }
+}
+
+Describe 'Evidence1 canary wrapper terminal routing' {
+    BeforeAll {
+        Import-Module (Join-Path $script:AuditRoot 'evidence1-validation-ops.psm1') -Force
+        $ast = [Management.Automation.Language.Parser]::ParseFile($script:WrapperPath, [ref]$null, [ref]$null)
+        $definition = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Invoke-Evidence1CanaryWrapper' }, $true)
+        if ($definition) { . ([scriptblock]::Create($definition.Extent.Text)) }
+        function Write-Status { param($CurrentState, $CurrentExitCode) }
+    }
+    BeforeEach {
+        $RunId = 'b48bfb0c-a9ae-4e0e-8d89-56eb1e278090'; $CanaryArm = 'product'; $CanaryBindingSha256 = 'a'*64
+        $HarnessDir = $TestDrive; $stdoutPath = Join-Path $TestDrive 'stdout'; $stderrPath = Join-Path $TestDrive 'stderr'
+        $launcherTerminalPath = Join-Path $TestDrive 'terminal.json'
+        $script:exitCode = 997
+        $script:FixtureTerminal = @{ valid = $true; exit_code = 7; record = @{ run_id = $RunId; canary = @{ arm = $CanaryArm; planned_sessions = 1; binding_sha256 = $CanaryBindingSha256 }; diagnostics = New-Evidence1CanaryDiagnostics } }
+        Mock Start-E1OwnedProcess { @{ Task = @{ IsCompleted = $true } } }
+        Mock Wait-E1OwnedProcess { @{ ExitCode = 7; TimedOut = $false; Cancelled = $false; CleanupOk = $true } }
+        Mock Read-Evidence1TerminalRecord { $script:FixtureTerminal }
+        Mock Write-Status { }
+    }
+    It 'uses owned direct-file transport and carries the bound launcher terminal diagnosis' {
+        Invoke-Evidence1CanaryWrapper 'fixture.exe' @('fixture-only')
+        $script:exitCode | Should -Be 7
+        Should -Invoke Start-E1OwnedProcess -Exactly -Times 1 -ParameterFilter { $Stdout -eq $stdoutPath -and $Stderr -eq $stderrPath }
+        Should -Invoke Wait-E1OwnedProcess -Exactly -Times 1
+        $script:CanaryLauncherDiagnostics.schema | Should -Be 1
+    }
+    It 'rejects a same-run terminal for the wrong arm or binding' {
+        $script:FixtureTerminal.record.canary.arm = 'free-baseline'
+        { Invoke-Evidence1CanaryWrapper 'fixture.exe' @('fixture-only') } | Should -Throw '*canary_terminal_binding*'
+        $script:FixtureTerminal.record.canary.arm = 'product'; $script:FixtureTerminal.record.canary.binding_sha256 = 'b'*64
+        { Invoke-Evidence1CanaryWrapper 'fixture.exe' @('fixture-only') } | Should -Throw '*canary_terminal_binding*'
+    }
+    It 'never promotes a process exit code when the canary terminal is missing or stale' {
+        $script:FixtureTerminal.valid = $false
+        { Invoke-Evidence1CanaryWrapper 'fixture.exe' @('fixture-only') } | Should -Throw '*canary_terminal_required*'
+        $script:exitCode | Should -Be 997
+    }
+}
+
+Describe 'Evidence1 canary source custody' {
+    BeforeAll {
+        $script:CloneFixture = Join-Path $script:RepoRoot ('.smoke/canary-source-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:CloneFixture | Out-Null
+        $script:FixtureSource = Join-Path $script:CloneFixture 'preserved'
+        New-Item -ItemType Directory -Path $script:FixtureSource | Out-Null
+        & git init --quiet $script:FixtureSource
+        [IO.File]::WriteAllText((Join-Path $script:FixtureSource 'build.gradle.kts'), '// pinned source')
+        [IO.File]::WriteAllText((Join-Path $script:FixtureSource '.gitignore'), "build/`n.gradle/`n")
+        & git -C $script:FixtureSource add .
+        & git -C $script:FixtureSource -c user.name=Fixture -c user.email=fixture@example.invalid -c core.hooksPath=NUL commit --quiet -m fixture
+        $script:FixtureCommit = (& git -C $script:FixtureSource rev-parse HEAD).Trim()
+        New-Item -ItemType Directory -Path (Join-Path $script:FixtureSource '.kmp-test-runner/reports/coverage'), (Join-Path $script:FixtureSource 'build') | Out-Null
+        [IO.File]::WriteAllText((Join-Path $script:FixtureSource '.kmp-test-runner/reports/coverage/20260831-120000-000001.md'), 'failed V2 evidence')
+        [IO.File]::WriteAllText((Join-Path $script:FixtureSource 'build/failed.xml'), '<failed/>')
+    }
+    AfterAll {
+        $root = [IO.Path]::GetFullPath((Join-Path $script:RepoRoot '.smoke')).TrimEnd('\') + '\'
+        $target = [IO.Path]::GetFullPath($script:CloneFixture)
+        if (-not $target.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { throw 'fixture cleanup outside owned worktree' }
+        Remove-Item -LiteralPath $target -Recurse -Force
+    }
+    It 'clones pinned objects independently without cleaning the failed V2 source' {
+        $before = @(Get-ChildItem $script:FixtureSource -File -Recurse -Force | Sort-Object FullName | ForEach-Object { $_.FullName + ':' + (Get-FileHash $_.FullName).Hash })
+        $directory = Join-Path $script:CloneFixture 'attempt'
+        $result = New-Evidence1CanarySource $script:FixtureSource $directory $script:FixtureCommit
+        (& git -C $result.path rev-parse HEAD).Trim() | Should -BeExactly $script:FixtureCommit
+        @(& git -C $result.path status --porcelain).Count | Should -Be 0
+        (& git -C $result.path remote get-url origin).Trim() | Should -BeExactly 'https://github.com/android/nowinandroid'
+        Test-Path (Join-Path $result.path '.git/objects/info/alternates') | Should -BeFalse
+        Test-Path (Join-Path $result.path '.kmp-test-runner/reports/coverage/20260831-120000-000001.md') | Should -BeFalse
+        $after = @(Get-ChildItem $script:FixtureSource -File -Recurse -Force | Sort-Object FullName | ForEach-Object { $_.FullName + ':' + (Get-FileHash $_.FullName).Hash })
+        ($after -join "`n") | Should -BeExactly ($before -join "`n")
+        { New-Evidence1CanarySource $script:FixtureSource $directory $script:FixtureCommit } | Should -Throw '*canary*'
+    }
+    It 'rejects overlapping paths and tracked source edits without repairing them' {
+        { New-Evidence1CanarySource $script:FixtureSource (Join-Path $script:FixtureSource 'attempt') $script:FixtureCommit } | Should -Throw '*canary*'
+        [IO.File]::AppendAllText((Join-Path $script:FixtureSource 'build.gradle.kts'), '// uncommitted')
+        { New-Evidence1CanarySource $script:FixtureSource (Join-Path $script:CloneFixture 'dirty-attempt') $script:FixtureCommit } | Should -Throw '*canary*'
+        (Get-Content (Join-Path $script:FixtureSource 'build.gradle.kts') -Raw) | Should -Match 'uncommitted'
+    }
 }
 
 Describe 'Evidence1 Hyper-V live observability scripts' {

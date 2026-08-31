@@ -1,6 +1,8 @@
 param(
   [string]$RunId = '',
   [string]$TerminalRecordPath = '',
+  [string]$CanaryArm = '',
+  [string]$CanaryBindingSha256 = '',
   [switch]$LoadOnly
 )
 
@@ -644,9 +646,168 @@ process.exit(result.status ?? 125);
   }
 }
 
+function Invoke-Evidence1CanaryLaunch {
+  if (-not $RunId -or $CanaryArm -cnotin @('product','free-baseline') -or -not $CanaryBindingSha256) { throw 'canary_launch_parameters' }
+  Import-Module (Join-Path $PSScriptRoot 'evidence1-validation-ops.psm1') -ErrorAction Stop
+  $directory = Join-Path 'C:\Evidence1Ops' "canary\$RunId"
+  $bundle = Read-Evidence1CanaryBundle $directory $RunId $CanaryArm $CanaryBindingSha256
+  $binding = $bundle.binding
+  $null = New-Evidence1CanaryClaim $directory $RunId $CanaryBindingSha256 'launcher'
+  $validationDirectory = 'C:\kmp-eval\scratch\evidence1-validation-ops'
+  $sourceContext = $null; $sourceBefore = $null; $inventoryBefore = $null; $inventoryAfter = $null
+  $mutex = $null; $locked = $false; $journal = $null; $exitCode = 997; $state = 'wrapper_error'
+  $preserved = $false; $sdk = $null
+  $liveOperation = $null; $liveJoined = $false
+  $diagnostics = New-Evidence1CanaryDiagnostics
+  $phase = 'guest_preflight'
+  $environment = @{}
+  foreach ($name in @('GIT_OPTIONAL_LOCKS','ANDROID_HOME','ANDROID_SDK_ROOT','KMP_AGENTIC_EVAL_GRADLE_USER_HOME_SEED_DIR')) { $environment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
+  try {
+    $env:GIT_OPTIONAL_LOCKS = '0'
+    Refresh-StageBPath
+    Set-StageBClaudeNetworkEnvironment
+    $mutex = [Threading.Mutex]::new($false, 'Global\Evidence1ValidationOps')
+    $locked = $mutex.WaitOne(0)
+    if (-not $locked) { throw 'canary_validation_overlap' }
+    Assert-E1NoGuestLive $SourceDir
+    $null = Assert-E1Repo $HarnessDir $binding.target_commit $binding.target_tree $directory
+    $HarnessCommit = $binding.target_commit; $HarnessTree = $binding.target_tree
+    Assert-Evidence1CanaryGuestEvidence $bundle $HarnessDir $ReadinessLedgerPath $AttestationFile $validationDirectory
+    $inventoryBefore = Get-Evidence1CanaryValidationInventory $validationDirectory
+    $phase = 'auth'
+    $node = Command-Source 'node.exe'
+    $claude = Command-Source 'claude.cmd'
+    if (-not $claude) { $claude = Command-Source 'claude.exe' }
+    if (-not $node -or -not $claude) { throw 'canary_tools_missing' }
+    $actualClaude = (& $claude --version).Trim()
+    if ($LASTEXITCODE -ne 0 -or $actualClaude -cnotmatch '^2\.1\.238(?: \(Claude Code\))?$') { throw 'canary_claude_version' }
+    $null = Assert-CredentialEnvironmentPosture
+    $null = Assert-ClaudeAuthReady $claude
+    Assert-RestrictedNetwork
+    $null = Assert-RemoteAuthCanary $actualClaude
+    # This remains the legacy eight-cell V1 check, not the selected V3 fingerprint.
+    $null = Read-ReadinessLedger
+    if (-not (Test-Path -LiteralPath $GradleUserHomeSeedDir -PathType Container)) { throw 'canary_seed_missing' }
+    $baseline = (Read-Evidence1CanaryJson (Join-Path $directory 'journal-baseline.json')).value
+    if ($baseline.run_id -cne $RunId -or $baseline.binding_sha256 -cne $CanaryBindingSha256 -or $baseline.journal_ids -isnot [array]) { throw 'canary_journal_baseline' }
+    $journalRoot = Join-Path $HarnessDir 'tools/runs/agentic-eval-journal'
+    $journal = Get-Evidence1CanaryJournalProgress $journalRoot @($baseline.journal_ids) $RunId
+    if ($journal.journal_id) { throw 'canary_journal_overlap' }
+    $phase = 'source_clone'
+    $sourceBefore = Get-E1SourceSnapshot $SourceDir $binding.source_commit '' $directory
+    $sourceContext = New-Evidence1CanarySource $SourceDir (Join-Path $ScratchDir "canary-$RunId") $binding.source_commit
+    # Reuse the existing bounded sdk.dir reader; do not copy ambient local.properties.
+    Import-Module (Join-Path $HarnessDir 'docs/audits/evidence1-gradle-offline-probe.psm1') -ErrorAction Stop
+    $sdk = Get-E1OfflineSdk $SourceDir
+    $env:ANDROID_HOME = $sdk.root; $env:ANDROID_SDK_ROOT = $sdk.root
+    $phase = 'dry_plan'
+    $dryStdout = Join-Path $sourceContext.directory 'prelaunch-dry.stdout.json'
+    $dryStderr = Join-Path $sourceContext.directory 'prelaunch-dry.stderr.txt'
+    $dryProcess = Invoke-E1OwnedProcess $node @(Get-Evidence1CanaryArguments $binding $sourceContext.path $AttestationFile -DryRun) $HarnessDir $dryStdout $dryStderr 60
+    $diagnostics.processes.dry_plan = ConvertTo-E1ProcessObservation @{ exit_code = [int]$dryProcess.ExitCode; wall_seconds = $dryProcess.WallSeconds; timed_out = $dryProcess.TimedOut; cleanup_ok = $dryProcess.CleanupOk }
+    if ($dryProcess.ExitCode -ne 0 -or $dryProcess.TimedOut -or -not $dryProcess.CleanupOk -or (Get-Item $dryStderr).Length -ne 0) { throw 'canary_dry_process' }
+    $dry = Read-E1Json $dryStdout
+    $checks = Get-E1DryChecks $dry.value $binding.campaign_design_id $binding.hashes.attestation_canonical_sha256 $binding.hashes.execution_profile_sha256
+    if ($checks.Values -contains $false -or $dry.sha256 -cne $binding.plan_sha256) { throw 'canary_dry_plan_changed' }
+    $phase = 'live_preflight'
+    $bundle = Read-Evidence1CanaryBundle $directory $RunId $CanaryArm $CanaryBindingSha256
+    Assert-Evidence1CanaryGuestEvidence $bundle $HarnessDir $ReadinessLedgerPath $AttestationFile $validationDirectory
+    $null = Assert-RemoteAuthCanary $actualClaude
+    Assert-RestrictedNetwork
+    Assert-E1NoGuestLive $SourceDir
+    if ((Get-Evidence1CanaryValidationInventory $validationDirectory) -cne $inventoryBefore) { throw 'canary_validation_changed' }
+    $null = Assert-E1SourcePostflight $SourceDir $binding.source_commit $sourceContext.tree $directory $sourceContext.before -Operation 'dry-v3'
+    $null = Assert-E1Repo $sourceContext.path $binding.source_commit $sourceContext.tree $directory
+    $arguments = @(Get-Evidence1CanaryArguments $binding $sourceContext.path $AttestationFile)
+    $env:KMP_AGENTIC_EVAL_GRADLE_USER_HOME_SEED_DIR = $GradleUserHomeSeedDir
+    $phase = 'live'
+    $liveOperation = Start-E1OwnedProcess $node $arguments $HarnessDir (Join-Path $sourceContext.directory 'live.stdout.log') (Join-Path $sourceContext.directory 'live.stderr.log') 1800
+    while (-not $liveOperation.Task.IsCompleted) {
+      $phase = 'journal'
+      $journal = Get-Evidence1CanaryJournalProgress $journalRoot @($baseline.journal_ids) $RunId $journal
+      Write-Evidence1JsonAtomically (Join-Path $directory 'journal.json') $journal
+      Start-Sleep -Milliseconds 200
+    }
+    $phase = 'live'
+    $live = Wait-E1OwnedProcess $liveOperation
+    $liveJoined = $true
+    $diagnostics.processes.live = ConvertTo-E1ProcessObservation @{ exit_code = [int]$live.ExitCode; wall_seconds = $live.WallSeconds; timed_out = $live.TimedOut; cleanup_ok = $live.CleanupOk }
+    if ($live.TimedOut -or $live.Cancelled -or -not $live.CleanupOk) { throw 'canary_process_cleanup' }
+    $phase = 'journal'
+    $journalPath = Join-Path $directory 'journal.json'
+    $journal = Get-Evidence1CanaryJournalProgress $journalRoot @($baseline.journal_ids) $RunId $journal
+    Write-Evidence1JsonAtomically $journalPath $journal
+    if ($journal.publication_pending) { throw 'canary_publication_incomplete' }
+    $exitCode = [int]$live.ExitCode
+    if ($exitCode -eq 0 -and -not $journal.journal_id) { throw 'canary_journal_unobserved' }
+    $state = 'exited'
+    if ($exitCode -ne 0) { try { throw 'canary_live_exit_nonzero' } catch { Set-Evidence1CanaryFailure $diagnostics 'primary' 'live' $_ } }
+  } catch {
+    Set-Evidence1CanaryFailure $diagnostics 'primary' $phase $_
+    if ($liveOperation -and -not $liveJoined) {
+      try {
+        Stop-E1OwnedProcess $liveOperation
+        $live = Wait-E1OwnedProcess $liveOperation
+        $liveJoined = $true
+        $diagnostics.processes.live = ConvertTo-E1ProcessObservation @{ exit_code = [int]$live.ExitCode; wall_seconds = $live.WallSeconds; timed_out = $live.TimedOut; cleanup_ok = $live.CleanupOk }
+      } catch { Set-Evidence1CanaryFailure $diagnostics 'cleanup' 'live' $_ }
+    }
+    foreach ($processPhase in @('live','dry_plan')) {
+      if ($diagnostics.processes[$processPhase] -and -not $diagnostics.processes[$processPhase].cleanup_ok) {
+        try { throw 'canary_process_cleanup' } catch { Set-Evidence1CanaryFailure $diagnostics 'cleanup' $processPhase $_ }
+      }
+    }
+    $exitCode = 997; $state = 'wrapper_error'
+  } finally {
+    try {
+      if ($sourceBefore) {
+        $null = Assert-E1SourcePostflight $SourceDir $binding.source_commit $sourceBefore.tree $directory $sourceBefore -Operation 'dry-v3'
+      }
+      if ($sdk) {
+        $sdkAfter = Get-E1OfflineSdk $SourceDir
+        if ($sdkAfter.configuration_sha256 -cne $sdk.configuration_sha256 -or $sdkAfter.build_tools_sha256 -cne $sdk.build_tools_sha256) { throw 'canary_sdk_changed' }
+      }
+      if ($inventoryBefore) {
+        $inventoryAfter = Get-Evidence1CanaryValidationInventory $validationDirectory
+        if ($inventoryAfter -cne $inventoryBefore) { throw 'canary_validation_changed' }
+        $preserved = $null -ne $sourceBefore
+      }
+    } catch { Set-Evidence1CanaryFailure $diagnostics 'postflight' 'postflight' $_; $exitCode = 997; $state = 'wrapper_error'; $preserved = $false }
+    $diagnostics.checks.source_preserved = $preserved
+    $custody = [ordered]@{ schema = 1; run_id = $RunId; binding_sha256 = $CanaryBindingSha256; source_commit = $binding.source_commit
+      source_preserved = $preserved; validation_inventory_before_sha256 = $inventoryBefore; validation_inventory_after_sha256 = $inventoryAfter
+      clone_kind = 'independent-local-object-clone'; source_tree = $(if ($sourceContext) { $sourceContext.tree } else { $null }); diagnostics = $diagnostics }
+    try {
+      $diagnostics.checks.custody_written = $true
+      Write-Evidence1JsonAtomically (Join-Path $directory 'source-custody.json') $custody
+    } catch {
+      $diagnostics.checks.custody_written = $false
+      Set-Evidence1CanaryFailure $diagnostics 'persistence' 'custody_write' $_
+      $exitCode = 997; $state = 'wrapper_error'
+    }
+    foreach ($name in $environment.Keys) { [Environment]::SetEnvironmentVariable($name, $environment[$name], 'Process') }
+    if ($locked) { $mutex.ReleaseMutex() }; if ($mutex) { $mutex.Dispose() }
+    try {
+      $diagnostics.checks.terminal_written = $true
+      Write-Evidence1JsonAtomically $TerminalRecordPath ([ordered]@{
+        schema = 1; run_id = $RunId; state = $state; ts_utc = [datetime]::UtcNow.ToString('o'); exit_code = $exitCode; exit_code_source = 'launcher_record'
+        canary = @{ arm = $CanaryArm; planned_sessions = 1; binding_sha256 = $CanaryBindingSha256 }; diagnostics = $diagnostics
+      })
+    } catch {
+      $diagnostics.checks.terminal_written = $false
+      Set-Evidence1CanaryFailure $diagnostics 'persistence' 'terminal_write' $_
+      $exitCode = 997
+      try { Write-Evidence1JsonAtomically (Join-Path $directory 'source-custody.json') $custody } catch { }
+    }
+  }
+  return $exitCode
+}
+
 if ($LoadOnly) {
   return
 }
+
+if ($CanaryArm -or $CanaryBindingSha256) { exit (Invoke-Evidence1CanaryLaunch) }
 
 Refresh-StageBPath
 Set-StageBClaudeNetworkEnvironment

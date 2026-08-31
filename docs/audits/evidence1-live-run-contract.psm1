@@ -212,10 +212,423 @@ function Stop-Evidence1ProcessTree {
     return [ordered]@{ stopped = $false; reason = 'process_still_running' }
 }
 
+function Initialize-Evidence1CanarySupport {
+    Import-Module (Join-Path $PSScriptRoot 'evidence1-validation-ops.psm1') -ErrorAction Stop
+    Import-Module (Join-Path $PSScriptRoot 'evidence1-live-handoff-contract.psm1') -ErrorAction Stop
+}
+
+function Read-Evidence1CanaryJson([string]$Path, [int]$MaxBytes = 1048576) {
+    Initialize-Evidence1CanarySupport
+    $full = [IO.Path]::GetFullPath($Path)
+    $current = $full
+    while ($current) {
+        if (Test-Path -LiteralPath $current) {
+            $item = Get-Item -LiteralPath $current -Force
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or (Get-E1Field $item 'LinkType') -eq 'HardLink') { throw 'canary_path_link' }
+        }
+        $current = [IO.Path]::GetDirectoryName($current)
+    }
+    $stream = [IO.File]::Open($full, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        if ($stream.Length -gt $MaxBytes) { throw 'canary_json_size' }
+        $memory = [IO.MemoryStream]::new()
+        try { $stream.CopyTo($memory); $bytes = $memory.ToArray() } finally { $memory.Dispose() }
+    } finally { $stream.Dispose() }
+    return @{ value = (ConvertFrom-E1Json ([Text.UTF8Encoding]::new($false,$true).GetString($bytes).TrimStart([char]0xfeff))); sha256 = (Get-E1Sha256 $bytes); bytes = $bytes }
+}
+
+function New-Evidence1CanaryClaim([string]$Directory, [string]$RunId, [string]$BindingSha256, [string]$Phase) {
+    $id = [guid]::Empty
+    if (-not [guid]::TryParseExact($RunId, 'D', [ref]$id) -or $id -eq [guid]::Empty -or $RunId -cne $id.ToString('D') -or
+        $BindingSha256 -cnotmatch '^[a-f0-9]{64}$' -or $Phase -cnotin @('handoff','wrapper','launcher')) { throw 'canary_claim_scope' }
+    if ($Phase -ceq 'launcher') {
+        try { $wrapper = (Read-Evidence1CanaryJson (Join-Path $Directory 'wrapper.claim.json')).value }
+        catch { throw 'canary_wrapper_claim_missing' }
+        if ($wrapper.run_id -cne $RunId -or $wrapper.binding_sha256 -cne $BindingSha256 -or $wrapper.phase -cne 'wrapper') { throw 'canary_wrapper_claim_mismatch' }
+    }
+    $record = [ordered]@{ schema = 1; run_id = $RunId; binding_sha256 = $BindingSha256; phase = $Phase; ts_utc = [datetime]::UtcNow.ToString('o') }
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($record | ConvertTo-Json -Compress))
+    $stream = $null
+    try {
+        $stream = [IO.File]::Open((Join-Path $Directory "$Phase.claim.json"), [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+        $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true)
+    } catch { throw 'canary_attempt_consumed_or_unknown' }
+    finally { if ($stream) { $stream.Dispose() } }
+    return $record
+}
+
+function Read-Evidence1CanaryBundle([string]$Directory, [string]$RunId, [string]$Arm, [string]$BindingSha256) {
+    Initialize-Evidence1CanarySupport
+    try {
+        $file = Read-Evidence1CanaryJson (Join-Path $Directory 'binding.json')
+        if ($file.sha256 -cne $BindingSha256) { throw 'binding_hash' }
+        $binding = $file.value
+        $wet = Read-Evidence1CanaryJson (Join-Path $Directory 'wet.json')
+        $dry = Read-Evidence1CanaryJson (Join-Path $Directory 'dry.json')
+        $readiness = Read-Evidence1CanaryJson (Join-Path $Directory 'readiness.json')
+        $expected = New-Evidence1CanaryBinding -Arm $Arm -RunId $RunId -TargetCommit $binding.target_commit -TargetTree $binding.target_tree `
+            -WetReport $wet.value -DryReport $dry.value -ReadinessReport $readiness.value `
+            -WetReportSha256 $wet.sha256 -DryReportSha256 $dry.sha256 -ReadinessSha256 $readiness.sha256
+        Assert-E1Keys $binding @($expected.Keys)
+        foreach ($key in $expected.Keys) {
+            if ($key -cin @('hashes','scripts')) {
+                Assert-E1Keys $binding.$key @($expected[$key].Keys)
+                Assert-E1Fields $binding.$key $expected[$key]
+            } elseif (-not (Test-E1Exact $binding.$key $expected[$key])) { throw 'binding_value' }
+        }
+        return @{ binding = $expected; wet = $wet.value; dry = $dry.value; readiness = $readiness.value; sha256 = $file.sha256 }
+    } catch { throw 'canary_bundle_invalid' }
+}
+
+function New-Evidence1CanaryHostBundle {
+    param([string]$Directory, [string]$RunId, [string]$Arm, [string]$TargetCommit, [string]$TargetTree,
+        [string]$WetReportPath, [string]$DryReportPath, [string]$ReadinessReportPath,
+        [string]$ExpectedWetReportSha256, [string]$ExpectedDryReportSha256, [string]$AuthorizationPhrase)
+    Initialize-Evidence1CanarySupport
+    try {
+        $wet = Read-Evidence1CanaryJson $WetReportPath
+        $dry = Read-Evidence1CanaryJson $DryReportPath
+        $readiness = Read-Evidence1CanaryJson $ReadinessReportPath
+        if ($wet.sha256 -cne $ExpectedWetReportSha256 -or $dry.sha256 -cne $ExpectedDryReportSha256) { throw 'report_hash' }
+        $binding = New-Evidence1CanaryBinding -Arm $Arm -RunId $RunId -TargetCommit $TargetCommit -TargetTree $TargetTree `
+            -WetReport $wet.value -DryReport $dry.value -ReadinessReport $readiness.value `
+            -WetReportSha256 $wet.sha256 -DryReportSha256 $dry.sha256 -ReadinessSha256 $readiness.sha256
+        Assert-Evidence1CanaryAuthorization $binding $AuthorizationPhrase
+        $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($binding | ConvertTo-Json -Depth 12))
+        $hash = Get-E1Sha256 $bytes
+        if (Test-Path -LiteralPath $Directory) { throw 'attempt_exists' }
+        New-Item -ItemType Directory -Path $Directory -ErrorAction Stop | Out-Null
+        $null = New-Evidence1CanaryClaim $Directory $RunId $hash 'handoff'
+        $files = @{ 'binding.json' = $bytes; 'wet.json' = $wet.bytes; 'dry.json' = $dry.bytes; 'readiness.json' = $readiness.bytes }
+        foreach ($name in $files.Keys) {
+            $stream = [IO.File]::Open((Join-Path $Directory $name), [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+            try { $stream.Write($files[$name], 0, $files[$name].Length); $stream.Flush($true) } finally { $stream.Dispose() }
+        }
+        return @{ binding = $binding; sha256 = $hash; directory = $Directory }
+    } catch { throw 'canary_host_bundle_rejected' }
+}
+
+function New-Evidence1PendingJournalSnapshot($Previous, [string]$RunId, [string]$JournalId, [datetime]$NowUtc) {
+    $since = Get-E1Field $Previous 'publication_pending_since_utc'
+    if (-not $since) { $since = $NowUtc.ToUniversalTime().ToString('o') }
+    if (($NowUtc.ToUniversalTime() - [datetime]::Parse($since).ToUniversalTime()).TotalSeconds -gt 5) { throw 'canary_publication_stalled' }
+    return [ordered]@{
+        run_id = $RunId; journal_id = $JournalId; available = $true
+        event_count = $(if ($Previous) { $Previous.event_count } else { 0 })
+        latest_event = $(if ($Previous) { $Previous.latest_event } else { $null })
+        transition_counts = $(if ($Previous) { $Previous.transition_counts } else { @{} })
+        publication_pending = $true; publication_pending_since_utc = $since
+    }
+}
+
+function Get-Evidence1CanaryJournalProgress([string]$JournalRoot, [string[]]$BaselineIds, [string]$RunId, $Previous = $null, [datetime]$NowUtc = [datetime]::UtcNow) {
+    Initialize-Evidence1CanarySupport
+    if ($Previous -and $Previous.run_id -cne $RunId) { throw 'canary_journal_run_mismatch' }
+    $ids = @(if (Test-Path -LiteralPath $JournalRoot) { Get-ChildItem -LiteralPath $JournalRoot -Directory -Force | ForEach-Object Name })
+    $new = @($ids | Where-Object { $_ -cnotin $BaselineIds })
+    if ($new.Count -gt 1) { throw 'canary_journal_ambiguous' }
+    $bound = if ($Previous) { $Previous.journal_id } else { $null }
+    if ($bound -and $new.Count -eq 1 -and $new[0] -cne $bound) { throw 'canary_journal_changed' }
+    if ($new.Count -eq 0) {
+        if ($bound) { $Previous.available = $false; return $Previous }
+        return [ordered]@{ run_id = $RunId; journal_id = $null; available = $false; event_count = 0; latest_event = $null; transition_counts = @{}; publication_pending = $false; publication_pending_since_utc = $null }
+    }
+    $bound = $new[0]
+    $id = [guid]::Empty
+    if (-not [guid]::TryParseExact($bound, 'D', [ref]$id) -or $bound -cne $id.ToString('D')) { throw 'canary_journal_identity' }
+    $eventsPath = Join-Path $JournalRoot "$bound/events"
+    $events = @(if (Test-Path -LiteralPath $eventsPath) { Get-ChildItem -LiteralPath $eventsPath -File -Force | Sort-Object Name })
+    if ($events.Count -gt 32) { throw 'canary_journal_count' }
+    $transitionPattern = '(planned|spawn_started|spawn_completed|spawn_failed|raw_persisted|parsed|evaluated)'
+    $temporaryPattern = '^[0-9]{12}-0-' + $transitionPattern + '\.json\.tmp-[a-f0-9]{8}$'
+    $temporary = @($events | Where-Object Name -CMatch $temporaryPattern)
+    foreach ($event in $events) {
+        if ($event.Name -cnotmatch ('^[0-9]+-[0-9]+-' + $transitionPattern + '\.json$') -and $event.Name -cnotmatch $temporaryPattern) { throw 'canary_journal_event' }
+    }
+    if ($temporary.Count -gt 1) { throw 'canary_publication_ambiguous' }
+    if ($temporary.Count -eq 1) {
+        if ($temporary[0].Length -gt 65536) { throw 'canary_publication_size' }
+        $targetName = $temporary[0].Name -creplace '\.tmp-[a-f0-9]{8}$', ''
+        foreach ($event in $events) {
+            if ((Get-E1Field $event 'LinkType') -eq 'HardLink' -and $event.Name -cnotin @($targetName,$temporary[0].Name)) { throw 'canary_path_link' }
+        }
+        return New-Evidence1PendingJournalSnapshot $Previous $RunId $bound $NowUtc
+    }
+    $counts = [ordered]@{}
+    foreach ($event in $events) {
+        if ($event.Name -cnotmatch '^([0-9]+)-([0-9]+)-(planned|spawn_started|spawn_completed|spawn_failed|raw_persisted|parsed|evaluated)\.json$') { throw 'canary_journal_event' }
+        $sequence = [int]$Matches[1]; $ordinal = [int]$Matches[2]; $transition = $Matches[3]
+        try { $value = (Read-Evidence1CanaryJson $event.FullName 65536).value }
+        catch {
+            # Publication may start between enumeration and reading. Only its exact companion
+            # temp name permits a bounded pending observation; persistent links remain rejected.
+            $publishing = @(Get-ChildItem -LiteralPath $eventsPath -File -Force | Where-Object { $_.Name -cmatch $temporaryPattern -and $_.Name.StartsWith($event.Name + '.tmp-', [StringComparison]::Ordinal) })
+            if ($publishing.Count -eq 1 -and $publishing[0].Length -le 65536) { return New-Evidence1PendingJournalSnapshot $Previous $RunId $bound $NowUtc }
+            throw
+        }
+        if ($ordinal -ne 0 -or -not (Test-E1Exact $value.cellOrdinal 0) -or -not (Test-E1Exact $value.seq $sequence) -or
+            $value.runKind -cne 'scenario' -or $value.transition -cne $transition) { throw 'canary_journal_cell' }
+        if ($counts.Contains($transition)) { throw 'canary_journal_duplicate_transition' }
+        $counts[$transition] = 1
+    }
+    if ($events.Count -gt 0 -and -not $counts.Contains('planned')) { throw 'canary_journal_planned' }
+    return [ordered]@{ run_id = $RunId; journal_id = $bound; available = $true; event_count = $events.Count; latest_event = $(if ($events.Count) { $events[-1].Name } else { $null }); transition_counts = $counts; publication_pending = $false; publication_pending_since_utc = $null }
+}
+
+function Get-Evidence1CanaryArguments($Binding, [string]$SourceDir, [string]$AttestationFile, [switch]$DryRun) {
+    Initialize-Evidence1CanarySupport
+    $product = $Binding.arm -ceq 'product'
+    if ($Binding.arm -cnotin @('product','free-baseline')) { throw 'canary_argument_scope' }
+    try {
+        Assert-E1Fields $Binding @{
+            planned_sessions = 1; repeats = 1; scenario_id = 'coverage-threshold-failure-v2'; campaign_design_id = "claude-$($Binding.arm)-canary-v1"
+            cell_label = $(if ($product) { 'A' } else { 'B' }); condition = $(if ($product) { 'current-skill' } else { 'no-skill' })
+            product_access_mode = $(if ($product) { 'product-assisted' } else { 'free-baseline-no-product' })
+            execution_profile_id = 'sandboxed-unrestricted-v1'; seed = 20260821; max_budget_usd = 2
+        }
+    } catch { throw 'canary_argument_scope' }
+    $arguments = @('tools/agentic-eval/cli.mjs','run','--scenario','coverage-threshold-failure-v2',
+        '--source-repo-dir',$SourceDir,'--seed','20260821','--runtime','claude-code',
+        '--campaign-design',$Binding.campaign_design_id,'--max-budget-usd','2','--isolation-attestation-file',$AttestationFile)
+    if ($DryRun) { $arguments += '--dry-run' }
+    return $arguments
+}
+
+function Get-Evidence1CanaryValidationInventory([string]$Directory) {
+    Initialize-Evidence1CanarySupport
+    $rows = @()
+    foreach ($file in @(Get-ChildItem -LiteralPath $Directory -File -Force | Sort-Object Name)) {
+        if ($file.Name -cnotmatch '^(wet-v2|dry-v3)-[a-f0-9]{40}(?:-(?:product|free-baseline))?(?:\.stdout\.json|\.stderr\.txt|\.json)$') { continue }
+        if ($rows.Count -ge 256 -or $file.Length -gt 16777216 -or ($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'canary_validation_inventory' }
+        $rows += $file.Name + '|' + $file.Length + '|' + (Get-E1SourceFileHash $file.FullName 16777216)
+    }
+    return Get-E1Sha256 ([Text.Encoding]::UTF8.GetBytes(($rows -join "`n")))
+}
+
+function Assert-Evidence1CanaryGuestEvidence($Bundle, [string]$HarnessDir, [string]$LedgerPath, [string]$AttestationPath, [string]$ValidationDirectory) {
+    Initialize-Evidence1CanarySupport
+    $b = $Bundle.binding
+    $ledger = Read-E1Json $LedgerPath
+    $attestation = Read-E1Json $AttestationPath 16384
+    if ($ledger.sha256 -cne $b.hashes.ledger_sha256 -or $attestation.sha256 -cne $b.hashes.attestation_sha256) { throw 'canary_guest_evidence_changed' }
+    $canonical = Assert-E1Evidence $Bundle.readiness $ledger.value $attestation.value 'Evidence1-Runner' $b.target_commit $b.target_tree $AttestationPath
+    if ($canonical -cne $b.hashes.attestation_canonical_sha256) { throw 'canary_guest_attestation_changed' }
+    $files = @{
+        scenario_sha256 = 'tools/agentic-eval/corpus/scenarios/coverage-threshold-failure-v2.json'
+        product_entry_sha256 = 'bin/kmp-test.js'
+        execution_profile_registry_sha256 = 'tools/agentic-eval/execution-profiles/registry.json'
+    }
+    foreach ($key in $files.Keys) {
+        if ((Get-FileHash -LiteralPath (Join-Path $HarnessDir $files[$key]) -Algorithm SHA256).Hash.ToLowerInvariant() -cne $b.hashes[$key]) { throw 'canary_guest_implementation_changed' }
+    }
+    foreach ($name in $b.scripts.Keys) {
+        if ((Get-FileHash -LiteralPath (Join-Path $HarnessDir "docs/audits/$name") -Algorithm SHA256).Hash.ToLowerInvariant() -cne $b.scripts[$name]) { throw 'canary_guest_script_changed' }
+    }
+    foreach ($operation in @('wet-v2','dry-v3')) {
+        $hostReport = if ($operation -ceq 'wet-v2') { $Bundle.wet } else { $Bundle.dry }
+        $marker = (Read-E1Json (Join-Path $ValidationDirectory "$operation-$($b.target_commit).json")).value
+        $safe = ConvertTo-E1SafeResult $marker $operation $b.target_commit $b.target_tree
+        if ($safe.schema -ne 2 -or $safe.state -cne 'passed') { throw 'canary_guest_validation_failed' }
+        foreach ($key in $safe.hashes.Keys) {
+            if ($safe.hashes[$key] -cne (Get-E1Field $hostReport.hashes $key)) { throw 'canary_guest_validation_changed' }
+        }
+        $outputs = if ($operation -ceq 'wet-v2') { @{ 'product_stdout_sha256' = '' } } else { @{ 'product_stdout_sha256' = '-product'; 'free_baseline_stdout_sha256' = '-free-baseline' } }
+        foreach ($key in $outputs.Keys) {
+            $path = Join-Path $ValidationDirectory "$operation-$($b.target_commit)$($outputs[$key]).stdout.json"
+            if ((Read-E1Json $path).sha256 -cne $safe.hashes[$key]) { throw 'canary_guest_stdout_changed' }
+        }
+    }
+}
+
+function Assert-Evidence1CanaryTerminalBinding($Record, [string]$RunId, [string]$Arm, [string]$BindingSha256) {
+    Initialize-Evidence1CanarySupport
+    try {
+        Assert-E1Fields $Record @{ run_id = $RunId }
+        Assert-E1Fields (Get-E1Field $Record 'canary') @{ arm = $Arm; planned_sessions = 1; binding_sha256 = $BindingSha256 }
+    } catch { throw 'canary_terminal_binding' }
+}
+
+function New-Evidence1CanaryDiagnostics {
+    return [ordered]@{
+        schema = 1; failure_phase = $null; failure_code = $null
+        failures = [ordered]@{ primary = $null; cleanup = $null; postflight = $null; persistence = $null }
+        processes = [ordered]@{ dry_plan = $null; live = $null }
+        checks = [ordered]@{ source_preserved = $null; custody_written = $null; terminal_written = $null }
+    }
+}
+
+function ConvertTo-Evidence1CanaryJournalSnapshot($Raw, [string]$RunId) {
+    Initialize-Evidence1CanarySupport
+    try {
+        Assert-E1Keys $Raw @('run_id','journal_id','available','event_count','latest_event','transition_counts','publication_pending','publication_pending_since_utc')
+        Assert-E1Fields $Raw @{ run_id = $RunId }
+        if ($null -ne $Raw.journal_id -and ([string]$Raw.journal_id -cnotmatch '^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$')) { throw 'identity' }
+        if ($Raw.available -isnot [bool] -or $Raw.publication_pending -isnot [bool]) { throw 'boolean' }
+        if ($null -ne $Raw.latest_event -and ([string]$Raw.latest_event -cnotmatch '^[0-9]+-0+-(planned|spawn_started|spawn_completed|spawn_failed|raw_persisted|parsed|evaluated)\.json$')) { throw 'event' }
+        $counts = [ordered]@{}
+        $keys = if ($Raw.transition_counts -is [Collections.IDictionary]) { @($Raw.transition_counts.Keys) } else { @($Raw.transition_counts.PSObject.Properties.Name) }
+        foreach ($key in $keys) {
+            if ($key -cnotin @('planned','spawn_started','spawn_completed','spawn_failed','raw_persisted','parsed','evaluated') -or -not (Test-E1Exact $Raw.transition_counts.$key 1)) { throw 'transition' }
+            $counts[$key] = 1
+        }
+        if (-not (Test-E1Exact $Raw.event_count $counts.Count)) { throw 'count' }
+        if ($null -ne $Raw.publication_pending_since_utc -and ([string]$Raw.publication_pending_since_utc -cnotmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z$')) { throw 'timestamp' }
+        return [ordered]@{ run_id = $RunId; journal_id = $Raw.journal_id; available = $Raw.available; event_count = $counts.Count
+            latest_event = $Raw.latest_event; transition_counts = $counts; publication_pending = $Raw.publication_pending; publication_pending_since_utc = $Raw.publication_pending_since_utc }
+    } catch { throw 'canary_progress_shape' }
+}
+
+function ConvertTo-Evidence1CanaryDiagnostics($Raw) {
+    Initialize-Evidence1CanarySupport
+    try {
+        $safe = New-Evidence1CanaryDiagnostics
+        Assert-E1Keys $Raw @($safe.Keys); Assert-E1Fields $Raw @{ schema = 1 }
+        foreach ($group in @('failures','processes','checks')) { Assert-E1Keys $Raw.$group @($safe[$group].Keys) }
+        foreach ($slot in @($safe.failures.Keys)) {
+            $failure = $Raw.failures.$slot
+            if ($null -eq $failure) { continue }
+            Assert-E1Keys $failure @('phase','code')
+            if ($failure.code -isnot [string] -or $failure.phase -isnot [string]) { throw 'failure' }
+            $errorRecord = [Management.Automation.ErrorRecord]::new([Exception]::new($failure.code), 'canary', [Management.Automation.ErrorCategory]::NotSpecified, $null)
+            Set-Evidence1CanaryFailure $safe $slot $failure.phase $errorRecord
+            if ($safe.failures[$slot].code -cne $failure.code) { throw 'failure_code' }
+        }
+        foreach ($phase in @($safe.processes.Keys)) {
+            if ($null -ne $Raw.processes.$phase) { $safe.processes[$phase] = ConvertTo-E1ProcessObservation $Raw.processes.$phase }
+        }
+        foreach ($check in @($safe.checks.Keys)) {
+            $value = $Raw.checks.$check
+            if ($null -ne $value -and $value -isnot [bool]) { throw 'check' }
+            $safe.checks[$check] = $value
+        }
+        foreach ($key in @('failure_phase','failure_code')) {
+            if ($null -eq $safe[$key]) { if ($null -ne $Raw.$key) { throw 'summary' } }
+            elseif (-not (Test-E1Exact $Raw.$key $safe[$key])) { throw 'summary' }
+        }
+        return $safe
+    } catch { throw 'canary_diagnostics_shape' }
+}
+
+function Set-Evidence1CanaryFailure($Diagnostics, [string]$Slot, [string]$Phase, $Failure) {
+    Initialize-Evidence1CanarySupport
+    if ($Slot -cnotin @('primary','cleanup','postflight','persistence') -or $Phase -cnotin @(
+        'guest_preflight','auth','source_clone','dry_plan','live_preflight','live','journal','postflight','custody_write','terminal_write')) { throw 'canary_failure_shape' }
+    $known = @('canary_bundle_invalid','canary_guest_evidence_changed','canary_guest_attestation_changed','canary_guest_implementation_changed',
+        'canary_guest_script_changed','canary_guest_validation_failed','canary_guest_validation_changed','canary_guest_stdout_changed',
+        'canary_validation_overlap','canary_tools_missing','canary_claude_version','canary_seed_missing','canary_journal_baseline',
+        'canary_journal_overlap','canary_source_invalid','sdk_configuration','canary_dry_process','canary_dry_plan_changed',
+        'canary_validation_changed','canary_process_cleanup','canary_publication_incomplete','canary_journal_unobserved','canary_sdk_changed',
+        'canary_journal_event','canary_publication_stalled','canary_journal_ambiguous','canary_path_link','canary_journal_duplicate_transition',
+        'canary_journal_cell','canary_journal_changed','canary_journal_run_mismatch','canary_journal_count','canary_publication_ambiguous',
+        'canary_publication_size','canary_journal_planned','canary_json_size','canary_journal_identity','canary_live_exit_nonzero',
+        'canary_terminal_required','canary_terminal_binding','canary_progress_shape','canary_diagnostics_shape')
+    $code = Get-E1FailureCode $Failure 'preflight_failed'
+    if ($code -ceq 'preflight_failed') { $code = 'unclassified' }
+    $exception = $Failure.Exception
+    for ($i = 0; $exception -and $i -lt 8; $i++) {
+        if ($exception.Message -cin $known) { $code = $exception.Message; break }
+        $exception = $exception.InnerException
+    }
+    if ($null -eq $Diagnostics.failures[$Slot]) { $Diagnostics.failures[$Slot] = [ordered]@{ phase = $Phase; code = $code } }
+    foreach ($priority in @('primary','cleanup','postflight','persistence')) {
+        if ($Diagnostics.failures[$priority]) {
+            $Diagnostics.failure_phase = $Diagnostics.failures[$priority].phase
+            $Diagnostics.failure_code = $Diagnostics.failures[$priority].code
+            break
+        }
+    }
+}
+
+function Get-Evidence1CanaryCustody([string]$Directory, [string]$RunId, [string]$BindingSha256, $TerminalRecord) {
+    Initialize-Evidence1CanarySupport
+    try {
+        $file = Read-Evidence1CanaryJson (Join-Path $Directory 'binding.json')
+        if ($file.sha256 -cne $BindingSha256 -or $file.value.run_id -cne $RunId) { throw 'binding' }
+        $b = $file.value
+        $null = Get-Evidence1CanaryArguments $b 'unused' 'unused'
+        Assert-Evidence1CanaryTerminalBinding $TerminalRecord $RunId $b.arm $BindingSha256
+        $ops = Split-Path -Parent (Split-Path -Parent $Directory)
+        $names = @('evidence1-stageb-live-launch.ps1','evidence1-stageb-live-wrapper.ps1','evidence1-live-run-contract.psm1',
+            'evidence1-live-handoff-contract.psm1','evidence1-validation-ops.psm1')
+        Assert-E1Keys $b.scripts $names
+        foreach ($name in $names) {
+            $path = Join-Path $ops $name
+            $item = Get-Item -LiteralPath $path -Force
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or (Get-E1Field $item 'LinkType') -eq 'HardLink' -or
+                (Get-E1SourceFileHash $path 1048576) -cne $b.scripts.$name) { throw 'staged_script' }
+        }
+        $files = [ordered]@{ 'binding.json' = $file.sha256 }
+        $expected = @{ 'wet.json' = $b.wet_report_sha256; 'dry.json' = $b.dry_report_sha256; 'readiness.json' = $b.hashes.readiness_sha256 }
+        foreach ($name in $expected.Keys) {
+            $data = Read-Evidence1CanaryJson (Join-Path $Directory $name)
+            if ($data.sha256 -cne $expected[$name]) { throw 'report' }
+            $files[$name] = $data.sha256
+        }
+        foreach ($phase in @('handoff','wrapper','launcher')) {
+            $name = "$phase.claim.json"
+            $claim = Read-Evidence1CanaryJson (Join-Path $Directory $name)
+            Assert-E1Fields $claim.value @{ schema = 1; run_id = $RunId; binding_sha256 = $BindingSha256; phase = $phase }
+            $files[$name] = $claim.sha256
+        }
+        $source = Read-Evidence1CanaryJson (Join-Path $Directory 'source-custody.json')
+        Assert-E1Fields $source.value @{ schema = 1; run_id = $RunId; binding_sha256 = $BindingSha256; source_preserved = $true }
+        if ($source.value.validation_inventory_before_sha256 -cnotmatch '^[a-f0-9]{64}$' -or
+            $source.value.validation_inventory_before_sha256 -cne $source.value.validation_inventory_after_sha256) { throw 'source_custody' }
+        $files['source-custody.json'] = $source.sha256
+        foreach ($name in @('journal-baseline.json','journal.json')) {
+            $path = Join-Path $Directory $name
+            if (Test-Path -LiteralPath $path) {
+                $data = Read-Evidence1CanaryJson $path
+                Assert-E1Fields $data.value @{ run_id = $RunId }
+                $files[$name] = $data.sha256
+            }
+        }
+        return [ordered]@{ verified = $true; run_id = $RunId; arm = $b.arm; planned_sessions = 1; binding_sha256 = $BindingSha256; source_preserved = $true; files = $files }
+    } catch { throw 'canary_custody_invalid' }
+}
+
+function New-Evidence1CanarySource([string]$SourcePath, [string]$Directory, [string]$Commit) {
+    Initialize-Evidence1CanarySupport
+    try {
+        $source = Resolve-E1Path $SourcePath
+        $directory = Resolve-E1Path $Directory
+        if ($Commit -cnotmatch '^[a-f0-9]{40}$' -or $source -ieq $directory -or
+            $directory.StartsWith($source + '\', [StringComparison]::OrdinalIgnoreCase) -or
+            $source.StartsWith($directory + '\', [StringComparison]::OrdinalIgnoreCase) -or
+            (Test-Path -LiteralPath $directory)) { throw 'source_scope' }
+        New-Item -ItemType Directory -Path $directory -ErrorAction Stop | Out-Null
+        $before = Get-E1SourceSnapshot $source $Commit '' $directory
+        $clone = Join-Path $directory 'source'
+        # Local upload-pack reads Git objects only; no worktree registration, alternates or hardlinks.
+        $null = Invoke-E1Git $source @('-c','core.hooksPath=NUL','clone','--no-local','--no-checkout','--',$source,$clone) $directory
+        $null = Invoke-E1Git $clone @('-c','core.hooksPath=NUL','checkout','--detach',$Commit) $directory
+        $null = Invoke-E1Git $clone @('remote','set-url','origin','https://github.com/android/nowinandroid') $directory
+        $tree = Assert-E1Repo $clone $Commit $before.tree $directory
+        if (Test-Path -LiteralPath (Join-Path $clone '.git/objects/info/alternates')) { throw 'source_shared_objects' }
+        $null = Assert-E1SourcePostflight $source $Commit $tree $directory $before -Operation 'dry-v3'
+        return @{ path = $clone; source = $source; tree = $tree; before = $before; directory = $directory }
+    } catch { throw 'canary_source_invalid' }
+}
+
 Export-ModuleMember -Function @(
     'Write-Evidence1JsonAtomically',
     'Read-Evidence1TerminalRecord',
     'Test-Evidence1TerminalRecordObject',
     'Test-Evidence1ProgressRecord',
-    'Stop-Evidence1ProcessTree'
+    'Stop-Evidence1ProcessTree',
+    'Read-Evidence1CanaryJson',
+    'New-Evidence1CanaryClaim',
+    'Read-Evidence1CanaryBundle',
+    'New-Evidence1CanaryHostBundle',
+    'Get-Evidence1CanaryJournalProgress',
+    'New-Evidence1CanarySource'
+    'Get-Evidence1CanaryArguments'
+    'Get-Evidence1CanaryValidationInventory'
+    'Assert-Evidence1CanaryGuestEvidence'
+    'Assert-Evidence1CanaryTerminalBinding'
+    'Get-Evidence1CanaryCustody'
+    'New-Evidence1CanaryDiagnostics'
+    'Set-Evidence1CanaryFailure'
+    'ConvertTo-Evidence1CanaryJournalSnapshot'
+    'ConvertTo-Evidence1CanaryDiagnostics'
 )
