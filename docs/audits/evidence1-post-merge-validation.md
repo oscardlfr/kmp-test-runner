@@ -192,7 +192,7 @@ return a cached directory timestamp even without an intervening write. This pres
 strict two-snapshot comparison without sleeps, retries or omitted metadata fields. See
 [Microsoft's LastWriteTimeUtc caching contract](https://learn.microsoft.com/en-us/dotnet/api/system.io.filesysteminfo.lastwritetimeutc).
 
-Use `evidence1-hyperv-read-wet-forensics-direct.ps1` through the same elevated client. Its only
+Use `evidence1-hyperv-read-wet-forensics-direct.ps1` through the same elevated client. Its required
 arguments are the original `TargetCommit`, original `TargetTree`, and `ExpectedReportSha256`
 (the SHA-256 of the existing host `HYPERV-VERIFY-WET-GATE-V2-DIRECT.json`). Verify that hash
 before submitting the request. This is an explicit read operation, not a retry switch.
@@ -208,11 +208,29 @@ $arguments = @('-TargetCommit', $originalCommit, '-TargetTree', $originalTree,
 Update only the idle, clean HOST operational checkout to the reviewed reader version. Do NOT
 deploy a new harness to the guest, refresh readiness, modify source, remove markers or repin
 the historical attempt to read it. Historical freshness is not execution authorization.
-The reader verifies VM identity, the terminal marker's anchors and the captured stdout hash;
+By default, the reader verifies VM identity, the terminal marker's anchors and the captured stdout hash;
 reads only those two fixed wet artifacts; and returns numeric facts and closed error/reason
 counts. It never reads model artifacts or stderr, starts product/Gradle/Claude, or writes guest
 files. Local outputs are new `FORENSIC-<id>.json` files under the dedicated
 `hyperv-read-wet-forensics-direct` scratch directory. Originals are never overwritten.
+
+If those structured codes cannot explain a failed deterministic V2, append
+`-IncludeGradleDiagnostics` to the argument array. This explicitly enables a bounded read of
+the fixed sibling `wet-v2-<original-commit>.stderr.txt`, ONLY after the original failed marker
+and product stdout have been verified. This file is the no-agent product/Gradle stderr, not
+an agent transcript. No arbitrary log path is accepted. The reader accepts at most 1 MiB of
+strict UTF-8 and exports only a closed map of per-line signature counts, never messages,
+URLs, commands, paths, exception names, or captures. Zero counts mean no recognized signature,
+not proof of absence. Multiple signatures may describe the same failure; they are not a
+root-cause verdict or a count of distinct failures.
+
+Opt-in reports use forensic schema 2 and add `gradle_diagnostics`,
+`gradle_stderr_read_requested: true`, and `hashes.gradle_stderr_sha256` on success.
+`stderr_read` is true after a validated receipt, false before remote dispatch, or null if
+transport cannot establish whether the read occurred. The stderr digest is captured AT READ
+TIME and checked again with the marker/stdout; it is not a historical execution-time digest.
+This read does not run Gradle, repair the attempt, refresh readiness, or authorize a rerun.
+The default schema 1 behavior and its two-file boundary remain unchanged.
 
 The summary distinguishes missing, null, invalid and recorded values. Unrecognized codes map
 to `unknown`; arbitrary error messages/commands/paths are not copied. A schema 1 historical
