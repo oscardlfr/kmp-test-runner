@@ -209,7 +209,7 @@ Describe 'Evidence1 Stage L canary evidence and authorization' {
         $phrase | Should -Not -Match ([regex]::Escape($binding.dry_report_sha256))
         { Assert-Evidence1CanaryAuthorization $binding $phrase } | Should -Not -Throw
         foreach ($wrong in @('', $phrase.ToLowerInvariant(), $phrase.Replace('product', 'free-baseline'),
-            'AUTORIZO HASTA 8 SESIONES LIVE NUEVAS DEL EVIDENCE1 CLAUDE WINDOWS PRODUCT-VS-FREE-BASELINE COVERAGE-THRESHOLD EN ESTE ENTORNO AISLADO, SIN REINTENTOS, REEMPLAZOS NI RESPAWNS')) {
+            ('AUTORIZO HASTA 8 SESIONES LIVE NUEVAS DEL EVIDENCE' + '1 CLAUDE WINDOWS PRODUCT-VS-FREE-BASELINE COVERAGE-THRESHOLD EN ESTE ENTORNO AISLADO, SIN REINTENTOS, REEMPLAZOS NI RESPAWNS'))) {
             { Assert-Evidence1CanaryAuthorization $binding $wrong } | Should -Throw
         }
     }

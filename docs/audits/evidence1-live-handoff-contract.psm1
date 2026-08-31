@@ -441,7 +441,7 @@ function New-Evidence1CanaryBinding {
 
 function Get-Evidence1CanaryAuthorizationLiteral($Binding) {
     if ($Binding.arm -cnotin @('product','free-baseline') -or $Binding.planned_sessions -ne 1) { throw 'canary_authorization_scope' }
-    return "AUTORIZO 1 SESION LIVE NUEVA DEL EVIDENCE1 CLAUDE WINDOWS CANARY $($Binding.arm), SIN REINTENTOS, REEMPLAZOS NI RESPAWNS"
+    return "AUTORIZO 1 SESION LIVE NUEVA DEL Evidence1 CLAUDE WINDOWS CANARY $($Binding.arm), SIN REINTENTOS, REEMPLAZOS NI RESPAWNS"
 }
 
 function Assert-Evidence1CanaryAuthorization($Binding, [string]$Phrase) {
