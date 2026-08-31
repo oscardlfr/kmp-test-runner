@@ -21,6 +21,7 @@ const portableOpsScripts = [
   'docs/audits/evidence1-validation-ops.psm1',
   'docs/audits/evidence1-validation-forensics.psm1',
   'docs/audits/evidence1-hyperv-read-wet-forensics-direct.ps1',
+  'docs/audits/evidence1-hyperv-read-source-inventory-direct.ps1',
   'docs/audits/evidence1-hyperv-place-live-autorun.ps1',
   'docs/audits/evidence1-hyperv-read-live-progress.ps1',
   'docs/audits/evidence1-hyperv-copy-live-artifacts.ps1',
@@ -42,6 +43,7 @@ const elevatedRunnerAllowlist = [
   'evidence1-hyperv-verify-wet-gate-v2-direct.ps1',
   'evidence1-hyperv-verify-canary-dryrun-v3-direct.ps1',
   'evidence1-hyperv-read-wet-forensics-direct.ps1',
+  'evidence1-hyperv-read-source-inventory-direct.ps1',
 ];
 
 const privateHostPattern = new RegExp([

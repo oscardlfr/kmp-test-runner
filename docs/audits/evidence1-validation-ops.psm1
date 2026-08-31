@@ -649,7 +649,9 @@ function Get-E1RuntimeArtifacts([string]$Root) {
                 $null = Resolve-E1Path $entry.FullName
                 $relative = $entry.FullName.Substring($Root.Length + 1).Replace('\','/')
                 if ($entry.PSIsContainer) {
-                    if ($relative -cnotin @('.kmp-test-runner/cache','.kmp-test-runner/reports','.kmp-test-runner/reports/coverage')) { throw 'source_artifacts' }
+                    # cleanupInitScript removes its file, not the containing directory.
+                    # Files below init-scripts remain rejected by Get-E1ArtifactKind.
+                    if ($relative -cnotin @('.kmp-test-runner/cache','.kmp-test-runner/reports','.kmp-test-runner/reports/coverage','.kmp-test-runner/init-scripts')) { throw 'source_artifacts' }
                     $directories += $relative
                     $pending.Enqueue($entry.FullName)
                 } else {

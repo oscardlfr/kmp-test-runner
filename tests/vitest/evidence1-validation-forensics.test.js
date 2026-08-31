@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { readFileSync, mkdtempSync, writeFileSync, rmSync, mkdirSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,6 +28,201 @@ const json = value => `ConvertFrom-E1Json ${q(JSON.stringify(value))}`;
 const reportFixture = () => ({ schema: 1, operation: 'wet-v2', state: 'failed', target_commit: 'a'.repeat(40), target_tree: 'b'.repeat(40), source_commit: '7d45eae4f8720a0c77f507712ba2437ff974b6ed', agent_calls: 0, product_invocations: 1, dry_plan_invocations: 0, hashes: { product_stdout_sha256: 'c'.repeat(64) }, failure_code: 'product_contract', checks: { postflight: false } });
 
 describe.skipIf(!available)('readonly wet-gate forensics', { timeout: 30000 }, () => {
+  it('counts source artifact metadata without reading file contents or exposing names', () => {
+    mkdirSync('C:/kmp-eval/scratch', { recursive: true });
+    const dir = mkdtempSync('C:/kmp-eval/scratch/e1-inventory-');
+    try {
+      const runtime = resolve(dir, '.kmp-test-runner');
+      mkdirSync(resolve(runtime, 'init-scripts'), { recursive: true });
+      mkdirSync(resolve(runtime, 'cache'));
+      mkdirSync(resolve(runtime, 'PRIVATE_DIRECTORY'));
+      writeFileSync(resolve(runtime, 'cache', `model-${'a'.repeat(40)}.json`), 'PRIVATE_CONTENT');
+      writeFileSync(resolve(runtime, 'PRIVATE_FILE.txt'), 'PRIVATE_CONTENT');
+      const result = ps(`& (Get-Module evidence1-validation-forensics) {
+        function Get-Content { throw 'must_not_read_contents' }
+        function Read-E1Json { throw 'must_not_parse_contents' }
+        Get-E1ForensicSourceInventory ${q(dir)} | ConvertTo-Json -Depth 8 -Compress
+      }`);
+      expect(result.counts).toEqual({ model: 1, tasks: 0, report: 0, latest: 0,
+        init_directory: 1, empty_init_directory: 1, residual_init_files: 0,
+        unknown_files: 1, unknown_directories: 1, unsafe_entries: 0 });
+      expect(result.metadata_sha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(JSON.stringify(result)).not.toMatch(/PRIVATE|kmp-eval|timestamp/);
+      expect(readdirSync(resolve(runtime, 'init-scripts'))).toEqual([]);
+      expect(readFileSync(resolve(runtime, 'PRIVATE_FILE.txt'), 'utf8')).toBe('PRIVATE_CONTENT');
+      const second = ps(`$s=Get-E1ForensicSourceInventory ${q(dir)}; Assert-E1ForensicInventory $s; $s | ConvertTo-Json -Depth 8 -Compress`);
+      expect(second).toEqual(result);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('rejects untrusted inventory shape, enum keys, counts and hashes after transport', () => {
+    expect(ps(`$out=@(); foreach($bad in @('key','count','hash','schema')) {
+      $s=New-E1ForensicInventory
+      $s.metadata_sha256='a'*64
+      switch($bad) {
+        key {$s.counts.PRIVATE_SECRET=1}
+        count {$s.counts.model=-1}
+        hash {$s.metadata_sha256=@('a'*64)}
+        schema {$s.schema='1'}
+      }
+      try { Assert-E1ForensicInventory $s; $out+=$false } catch { $out+=($_.Exception.Message -ceq 'forensic_shape') }
+    }; $out | ConvertTo-Json -Compress`)).toEqual([true, true, true, true]);
+  });
+
+  it('refreshes cached enumeration metadata before hashing an unchanged directory', () => {
+    mkdirSync('C:/kmp-eval/scratch', { recursive: true });
+    const dir = mkdtempSync('C:/kmp-eval/scratch/e1-inventory-refresh-');
+    mkdirSync(resolve(dir, '.kmp-test-runner/cache'), { recursive: true });
+    try {
+      const result = ps(`& (Get-Module evidence1-validation-forensics) {
+        param($root)
+        $script:cached=Get-Item -LiteralPath (Join-Path $root '.kmp-test-runner/cache')
+        $old=$script:cached.LastWriteTimeUtc
+        [IO.Directory]::SetLastWriteTimeUtc($script:cached.FullName,$old.AddMinutes(1))
+        $wasStale=($script:cached.LastWriteTimeUtc -eq $old)
+        function Get-ChildItem { param($LiteralPath)
+          if($LiteralPath -eq (Join-Path $root '.kmp-test-runner')) { $script:cached }
+        }
+        $first=Get-E1ForensicSourceInventory $root
+        $script:cached.Refresh()
+        $second=Get-E1ForensicSourceInventory $root
+        [IO.Directory]::SetLastWriteTimeUtc($script:cached.FullName,$old.AddMinutes(2))
+        $changed=Get-E1ForensicSourceInventory $root
+        @{was_stale=$wasStale;hashes_equal=($first.metadata_sha256 -ceq $second.metadata_sha256)
+          real_change_detected=($changed.metadata_sha256 -cne $second.metadata_sha256)} | ConvertTo-Json -Compress
+      } ${q(dir)}`);
+      expect(result).toEqual({ was_stale: true, hashes_equal: true, real_change_detected: true });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('source inventory receiver verifies identity and repository anchors and has no write or executable dispatch', () => {
+    const text = ps('Get-E1ForensicSourceReceiver | ForEach-Object ToString | ConvertTo-Json -Compress');
+    expect(text).toContain('Assert-E1GuestIdentity');
+    expect(text).toContain("'HEAD^{tree}'");
+    expect(text).toContain('7d45eae4f8720a0c77f507712ba2437ff974b6ed');
+    expect(text).toContain('metadata_sha256 -cne');
+    expect(text).not.toMatch(/New-Item|Set-Content|WriteAll|Remove-Item|Start-Process|kmp-test\.js|cli\.mjs/);
+  });
+
+  it('accepts the exact remoting inventory but rejects extra keys and coerced scalars', () => {
+    expect(ps(`$s=New-E1ForensicInventory; $s.metadata_sha256='a'*64
+      $r=[Management.Automation.PSSerializer]::Deserialize([Management.Automation.PSSerializer]::Serialize($s,10))
+      $r.PSComputerName='PRIVATE_HOST'
+      $safe=ConvertTo-E1ForensicInventoryReceipt $r
+      $out=@(($safe.counts.model -eq 0), ($safe.Keys -notcontains 'PSComputerName'))
+      $r.extra='PRIVATE'
+      try {$null=ConvertTo-E1ForensicInventoryReceipt $r; $out+=$false} catch {$out+=$true}
+      foreach($value in @('1',1.5,-1,129,$true,@(1))) {
+        $bad=New-E1ForensicInventory; $bad.metadata_sha256='a'*64; $bad.counts.model=$value
+        try {Assert-E1ForensicInventory $bad; $out+=$false} catch {$out+=($_.Exception.Message -ceq 'forensic_shape')}
+      }; $out | ConvertTo-Json -Compress`)).toEqual(Array(9).fill(true));
+  });
+
+  it('does not descend into unknown directories and identifies residual init files without parsing them', () => {
+    mkdirSync('C:/kmp-eval/scratch', { recursive: true });
+    const dir = mkdtempSync('C:/kmp-eval/scratch/e1-inventory-residual-');
+    try {
+      const runtime = resolve(dir, '.kmp-test-runner');
+      mkdirSync(resolve(runtime, 'init-scripts'), { recursive: true });
+      mkdirSync(resolve(runtime, 'UNKNOWN/raw'), { recursive: true });
+      writeFileSync(resolve(runtime, 'UNKNOWN/raw/PRIVATE.jsonl'), 'PRIVATE_CONTENT');
+      writeFileSync(resolve(runtime, 'init-scripts/PRIVATE.init.gradle'), 'PRIVATE_CONTENT');
+      const result = ps(`Get-E1ForensicSourceInventory ${q(dir)} | ConvertTo-Json -Depth 8 -Compress`);
+      expect(result.counts.residual_init_files).toBe(1);
+      expect(result.counts.empty_init_directory).toBe(0);
+      expect(result.counts.unknown_directories).toBe(1);
+      expect(result.counts.unknown_files).toBe(0);
+      expect(JSON.stringify(result)).not.toContain('PRIVATE');
+      writeFileSync(resolve(runtime, 'init-scripts/SECOND.init.gradle'), 'synthetic');
+      const changed = ps(`Get-E1ForensicSourceInventory ${q(dir)} | ConvertTo-Json -Depth 8 -Compress`);
+      expect(changed.metadata_sha256).not.toBe(result.metadata_sha256);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('limits metadata enumeration and refuses linked files without following them', () => {
+    mkdirSync('C:/kmp-eval/scratch', { recursive: true });
+    const dir = mkdtempSync('C:/kmp-eval/scratch/e1-inventory-bounds-');
+    try {
+      const runtime = resolve(dir, '.kmp-test-runner');
+      mkdirSync(runtime);
+      const result = ps(`$root=${q(dir)}; $runtime=${q(runtime)}
+        $outside=Join-Path $root 'PRIVATE.outside'; [IO.File]::WriteAllText($outside,'PRIVATE_CONTENT')
+        $link=Join-Path $runtime 'linked.txt'; $null=New-Item -ItemType HardLink -Path $link -Target $outside
+        $s=Get-E1ForensicSourceInventory $root
+        $out=@($s.counts.unsafe_entries -eq 1)
+        Remove-Item -LiteralPath $link
+        foreach($i in 1..129){[IO.File]::WriteAllText((Join-Path $runtime "$i.txt"),'synthetic')}
+        try {$null=Get-E1ForensicSourceInventory $root;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'source_artifact_limit')}
+        $out | ConvertTo-Json -Compress`);
+      expect(result).toEqual([true, true]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('stops consuming an unexpected directory at the first excess entry', () => {
+    mkdirSync('C:/kmp-eval/scratch', { recursive: true });
+    const dir = mkdtempSync('C:/kmp-eval/scratch/e1-inventory-stream-');
+    mkdirSync(resolve(dir, '.kmp-test-runner'));
+    try {
+      const result = ps(`& (Get-Module evidence1-validation-forensics) {
+        param($root)
+        $script:consumed=0
+        function Get-ChildItem { param($LiteralPath)
+          foreach($i in 1..10000) {
+            $script:consumed++
+            $item=[pscustomobject]@{FullName=(Join-Path $LiteralPath "$i.txt");PSIsContainer=$false;Attributes=0;Length=0;LastWriteTimeUtc=[datetime]'2020-01-01'}
+            $item | Add-Member -MemberType ScriptMethod -Name Refresh -Value {}
+            $item
+          }
+        }
+        $code='none'
+        try {$null=Get-E1ForensicSourceInventory $root} catch {$code=$_.Exception.Message}
+        @{consumed=$script:consumed;code=$code} | ConvertTo-Json -Compress
+      } ${q(dir)}`);
+      expect(result).toEqual({ consumed: 129, code: 'source_artifact_limit' });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('keeps a complete non-validation receipt when source reader imports fail', () => {
+    const entry = resolve(root, 'docs/audits/evidence1-hyperv-read-source-inventory-direct.ps1');
+    const result = ps(`function Import-Module { throw 'PRIVATE_IMPORT_FAILURE' }
+      $text=& ${q(entry)} -TargetCommit '${'a'.repeat(40)}' -TargetTree '${'b'.repeat(40)}'
+      $text | ConvertFrom-Json | ConvertTo-Json -Depth 8 -Compress`);
+    expect(result).toMatchObject({ schema: 1, operation: 'source-artifact-inventory', state: 'failed',
+      failure_code: 'collector_failed', inventory: null, validation_pass: false, agent_calls: 0,
+      product_invocations: 0, guest_writes: 0, source_file_contents_read: false });
+    expect(JSON.stringify(result)).not.toContain('PRIVATE');
+  });
+
+  it('cannot retain a passing source reader receipt after its report write fails', () => {
+    mkdirSync('C:/kmp-eval/scratch', { recursive: true });
+    const dir = mkdtempSync('C:/kmp-eval/scratch/e1-inventory-write-');
+    const entry = resolve(root, 'docs/audits/evidence1-hyperv-read-source-inventory-direct.ps1');
+    try {
+      const result = ps(`function Import-Module {}
+        function Resolve-E1Path { param($Path)
+          if([IO.Path]::GetFileName($Path) -like 'INVENTORY-*.json'){return Join-Path ${q(dir)} ([IO.Path]::GetFileName($Path))}
+          return ${q(dir)}
+        }
+        $script:writes=0
+        function Write-E1Record { param($Stream,$Record)
+          $script:writes++
+          if($script:writes -eq 2){throw 'PRIVATE_DISK_FAILURE'}
+          & (Get-Module evidence1-validation-ops) {param($s,$r) Write-E1Record $s $r} $Stream $Record
+        }
+        function Invoke-E1ForensicSourceRead {
+          return @{schema=1;operation='source-artifact-inventory';state='passed';failure_code='none';target_commit=$null;target_tree=$null;inventory=$null;hashes=@{};agent_calls=0;product_invocations=0;guest_writes=0;source_file_contents_read=$false;validation_pass=$false}
+        }
+        $text=& ${q(entry)} -TargetCommit '${'a'.repeat(40)}' -TargetTree '${'b'.repeat(40)}'
+        $text | ConvertFrom-Json | ConvertTo-Json -Depth 8 -Compress`);
+      expect(result).toMatchObject({ state: 'failed', validation_pass: false, failure_code: 'collector_failed', agent_calls: 0 });
+      const files = readdirSync(dir);
+      expect(files).toHaveLength(1);
+      const saved = JSON.parse(readFileSync(resolve(dir, files[0]), 'utf8'));
+      expect(saved).toEqual(result);
+      expect(JSON.stringify(result)).not.toContain('PRIVATE');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('projects actual values without losing null/missing/invalid distinctions or emitting free text', () => {
     const result = ps(`Get-E1ForensicProductSummary (${json(env)}) | ConvertTo-Json -Depth 12 -Compress`);
     expect(result.metrics.tests_failed).toEqual({ status: 'recorded', value: 1 });

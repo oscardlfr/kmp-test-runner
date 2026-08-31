@@ -101,6 +101,9 @@ product's model/task cache filenames and versioned/latest coverage Markdown repo
 directories fail closed. Tracked bytes, index entries, commit and tree must remain unchanged.
 No `.gitignore`, Git exclude file or tracked source file is edited to hide generated output.
 V3 accepts the existing allowed inventory from V2 but must leave it unchanged.
+The exact empty `init-scripts` directory left by `cleanupInitScript` is also allowed;
+no files or nested directories inside it are accepted. Interrupted or retained init-scripts
+remain a custody failure, not ordinary cache data.
 
 V2 prepares `JAVA_HOME` and `PATH` in the effective PowerShell Direct process, selecting the
 installed Adoptium JDK 21 as readiness does. It verifies the selected executable with a bounded
@@ -172,6 +175,22 @@ or agent metrics. Schema 1 remains accepted without inventing these new fields o
 historical files. Safe validation rejects extra keys, free text and coerced numeric/enum values.
 
 ### Read an Existing Failed Wet Gate
+
+For `source_artifacts` before a wet attempt, use
+`evidence1-hyperv-read-source-inventory-direct.ps1` through the same elevated client with the
+current guest `TargetCommit`/`TargetTree`. This separate read needs no fresh readiness and must
+run before any repair or new deployment to preserve the failed subject. Update only the idle
+host reader checkout first. It validates VM identity and repository anchors, inspects metadata
+twice, and returns fixed counts plus an opaque metadata hash. It never reads source/cache/report
+contents, descends into unknown directories, or starts product/Gradle/Claude. It writes only a
+new host `hyperv-read-source-inventory-direct/INVENTORY-<id>.json`; no guest files are changed.
+Names, paths, timestamps and free text are not exported. A successful read is explicitly
+`validation_pass: false`: it is not a source-integrity or readiness PASS, and a metadata hash
+is not a content-custody proof. Unknown entries require investigation, never blanket acceptance.
+The collector refreshes enumerated `FileSystemInfo` metadata before hashing: enumeration can
+return a cached directory timestamp even without an intervening write. This preserves the
+strict two-snapshot comparison without sleeps, retries or omitted metadata fields. See
+[Microsoft's LastWriteTimeUtc caching contract](https://learn.microsoft.com/en-us/dotnet/api/system.io.filesysteminfo.lastwritetimeutc).
 
 Use `evidence1-hyperv-read-wet-forensics-direct.ps1` through the same elevated client. Its only
 arguments are the original `TargetCommit`, original `TargetTree`, and `ExpectedReportSha256`
