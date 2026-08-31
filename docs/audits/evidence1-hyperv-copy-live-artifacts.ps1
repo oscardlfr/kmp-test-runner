@@ -12,9 +12,13 @@ $ErrorActionPreference = 'Stop'
 $contractPath = Join-Path $PSScriptRoot 'evidence1-live-run-contract.psm1'
 Import-Module $contractPath -Force
 
-function Fail($Message) {
-  Write-Error "HARD STOP: $Message"
-  exit 1
+function Fail([string]$Code) {
+  $known = @(
+    'path_outside_root','copy_raw_forbidden','vm_not_off','vm_disk_missing','vm_mount_invalid',
+    'vm_volume_missing','canary_copy_scope','canary_copy_hash','canary_custody_invalid','copy_failed'
+  )
+  $script:CopyFailureCode = if ($Code -cin $known) { $Code } else { 'copy_failed' }
+  throw 'copy_failed'
 }
 
 function Resolve-FullPath([string]$Path) {
@@ -25,7 +29,7 @@ function Assert-PathInside([string]$Candidate, [string]$Root, [string]$Label) {
   $candidateFull = Resolve-FullPath $Candidate
   $rootFull = (Resolve-FullPath $Root).TrimEnd('\') + '\'
   if (-not $candidateFull.StartsWith($rootFull, [StringComparison]::OrdinalIgnoreCase)) {
-    Fail "$Label path is outside expected root: $candidateFull"
+    Fail 'path_outside_root'
   }
 }
 
@@ -133,7 +137,7 @@ function Resolve-StageBExit {
 
 function Copy-RunFileMetadataOnly([string]$SourceRoot, [string]$LocalRoot, [string]$RelativePath) {
   if ($RelativePath -match '(^|/)raw(/|$)' -or $RelativePath -match '(^|/)stderr(/|$)') {
-    Fail "refusing to copy raw/stderr run content through metadata-only copier: $RelativePath"
+    Fail 'copy_raw_forbidden'
   }
   $source = Join-Path $SourceRoot ($RelativePath -replace '/', '\')
   $destination = Join-Path $LocalRoot ($RelativePath -replace '/', '\')
@@ -160,25 +164,43 @@ function Get-JsonObjectKeys($Value) {
 Assert-PathInside $OutDir 'C:\kmp-eval\scratch\' 'out dir'
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
-$vm = Get-VM -Name $VMName -ErrorAction Stop
-if ($vm.State -ne 'Off') {
-  Fail "copying live artifacts requires $VMName to be Off, got $($vm.State)"
+$copyReportPath = Join-Path $OutDir 'HYPERV-COPY-LIVE-ARTIFACTS.json'
+$copyInvocationId = [guid]::NewGuid().ToString('D')
+$copyExitCode = 0
+$script:CopyFailureCode = 'copy_failed'
+$currentStage = 'initialize'
+$terminalReport = $null
+$startedReport = [ordered]@{
+  schema = 1
+  invocation_id = $copyInvocationId
+  state = 'started'
+  verdict = 'FAIL'
+  generated_at_utc = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+  expected_run_id = if ($ExpectedRunId) { $ExpectedRunId } else { $null }
+  failure_phase = 'copy'
+  failure_code = 'copy_interrupted'
+  failure_subreason = $null
+  raw_content_read = $false
 }
+Write-Evidence1JsonAtomically -Path $copyReportPath -Value $startedReport
 
-$activeDisk = Get-VMHardDiskDrive -VMName $VMName | Select-Object -First 1
-if (-not $activeDisk -or -not $activeDisk.Path) {
-  Fail "could not resolve active VM disk for $VMName"
-}
-$vhdPath = Resolve-FullPath $activeDisk.Path
-Assert-PathInside $vhdPath 'C:\kmp-eval\hyperv\' 'active VHD'
-
+$vm = $null
+$vhdPath = $null
 $mount = $null
 try {
+  $currentStage = 'hyperv_preflight'
+  $vm = Get-VM -Name $VMName -ErrorAction Stop
+  if ($vm.State -ne 'Off') { Fail 'vm_not_off' }
+
+  $activeDisk = Get-VMHardDiskDrive -VMName $VMName | Select-Object -First 1
+  if (-not $activeDisk -or -not $activeDisk.Path) { Fail 'vm_disk_missing' }
+  $vhdPath = Resolve-FullPath $activeDisk.Path
+  Assert-PathInside $vhdPath 'C:\kmp-eval\hyperv\' 'active VHD'
+
+  $currentStage = 'mount'
   $mount = Mount-VHD -Path $vhdPath -ReadOnly -Passthru
   $image = Get-DiskImage -ImagePath $vhdPath -ErrorAction Stop
-  if ($null -eq $image.Number) {
-    Fail 'mounted disk image did not expose a disk number'
-  }
+  if ($null -eq $image.Number) { Fail 'vm_mount_invalid' }
 
   $partitions = @(Get-Partition -DiskNumber $image.Number -ErrorAction Stop | Where-Object DriveLetter)
   $driveRoot = $null
@@ -189,10 +211,9 @@ try {
       break
     }
   }
-  if (-not $driveRoot) {
-    Fail 'could not find mounted Windows volume in VHD'
-  }
+  if (-not $driveRoot) { Fail 'vm_volume_missing' }
 
+  $currentStage = 'copy_artifacts'
   $guestScratch = Join-Path $driveRoot 'kmp-eval\scratch\agentic-evidence1-claude-2x2-windows-stage-b-readiness-v1'
   $guestOps = Join-Path $driveRoot 'Evidence1Ops'
   $guestHarness = Join-Path $driveRoot 'kmp-eval\agentic-evidence1-claude-2x2-windows-stage-b-readiness-v1'
@@ -343,7 +364,7 @@ try {
                 [ordered]@{
                   journal_id = $journalId
                   file = $eventFile.Name
-                  parse_error = $_.Exception.Message
+                  parse_error = 'invalid_json'
                 }
               }
             }
@@ -414,26 +435,38 @@ try {
   if (Test-Path -LiteralPath $placementPath) {
     $placement = (Read-Evidence1CanaryJson $placementPath).value
     if ($placement.PSObject.Properties['canary']) {
-      if (-not $ExpectedRunId -or $ExpectedRunId -cne $placement.run_id -or -not $stageBExit.valid) { Fail 'canary copy requires exact placement run_id and terminal custody' }
+      if (-not $ExpectedRunId -or $ExpectedRunId -cne $placement.run_id -or -not $stageBExit.valid) { Fail 'canary_copy_scope' }
       $canarySource = Join-Path $guestOps "canary\$ExpectedRunId"
-      $canaryCustody = Get-Evidence1CanaryCustody $canarySource $ExpectedRunId $placement.canary.binding_sha256 $stageBExit.record
+      $currentStage = 'canary_custody'
+      try {
+        $canaryCustody = Get-Evidence1CanaryCustody $canarySource $ExpectedRunId $placement.canary.binding_sha256 $stageBExit.record
+      } catch {
+        Fail 'canary_custody_invalid'
+      }
       $canaryDestination = Join-Path $OutDir "canary\$ExpectedRunId"
       foreach ($name in $canaryCustody.files.Keys) {
         $destination = Join-Path $canaryDestination $name
         if (Test-Path -LiteralPath $destination) {
-          if ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant() -cne $canaryCustody.files[$name]) { Fail 'canary copied custody already exists with different bytes' }
+          if ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant() -cne $canaryCustody.files[$name]) { Fail 'canary_copy_hash' }
         } else {
           New-Item -ItemType Directory -Path $canaryDestination -Force | Out-Null
           Copy-Item -LiteralPath (Join-Path $canarySource $name) -Destination $destination -ErrorAction Stop
-          if ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant() -cne $canaryCustody.files[$name]) { Fail 'canary copied custody hash mismatch' }
+          if ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant() -cne $canaryCustody.files[$name]) { Fail 'canary_copy_hash' }
         }
       }
     }
   }
 
   $report = [ordered]@{
-    verdict = 'PASS'
+    schema = 1
+    invocation_id = $copyInvocationId
+    state = if ($canaryCustody -and -not $canaryCustody.complete) { 'failed' } else { 'passed' }
+    verdict = if ($canaryCustody -and -not $canaryCustody.complete) { 'FAIL' } else { 'PASS' }
     generated_at_utc = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+    expected_run_id = if ($ExpectedRunId) { $ExpectedRunId } else { $null }
+    failure_phase = if ($canaryCustody -and -not $canaryCustody.complete) { 'canary_custody' } else { $null }
+    failure_code = if ($canaryCustody -and -not $canaryCustody.complete) { 'canary_custody_incomplete' } else { $null }
+    failure_subreason = if ($canaryCustody -and -not $canaryCustody.complete) { $canaryCustody.failure_code } else { $null }
     vm_name = $VMName
     vm_state = [string]$vm.State
     vhd_path = $vhdPath
@@ -455,10 +488,36 @@ try {
     note = 'Inventory uses file names, sizes and hashes only. Raw transcript/stderr contents are not read.'
   }
   if ($canaryCustody) { $report.canary = $canaryCustody }
-  $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $OutDir 'HYPERV-COPY-LIVE-ARTIFACTS.json') -Encoding UTF8
-  Write-Host "[hyperv-copy-live-artifacts] PASS: $OutDir"
+  if ($canaryCustody -and -not $canaryCustody.complete) { $copyExitCode = 1 }
+  $terminalReport = $report
+} catch {
+  $copyExitCode = 1
+  $terminalReport = [ordered]@{
+    schema = 1
+    invocation_id = $copyInvocationId
+    state = 'failed'
+    verdict = 'FAIL'
+    generated_at_utc = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+    expected_run_id = if ($ExpectedRunId) { $ExpectedRunId } else { $null }
+    failure_phase = $currentStage
+    failure_code = $script:CopyFailureCode
+    failure_subreason = $null
+    raw_content_read = $false
+  }
 } finally {
   if ($mount) {
     Dismount-VHD -Path $vhdPath -ErrorAction SilentlyContinue
   }
 }
+
+try {
+  Write-Evidence1JsonAtomically -Path $copyReportPath -Value $terminalReport
+} catch {
+  Write-Error 'HARD STOP: copy_report_write_failed'
+  exit 1
+}
+if ($copyExitCode -ne 0) {
+  Write-Error "HARD STOP: $($terminalReport.failure_code)"
+  exit $copyExitCode
+}
+Write-Host "[hyperv-copy-live-artifacts] PASS: $OutDir"
