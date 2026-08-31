@@ -228,7 +228,8 @@ function Read-Evidence1CanaryJson([string]$Path, [int]$MaxBytes = 1048576) {
         }
         $current = [IO.Path]::GetDirectoryName($current)
     }
-    $stream = [IO.File]::Open($full, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    $share = [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
+    $stream = [IO.File]::Open($full, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)
     try {
         if ($stream.Length -gt $MaxBytes) { throw 'canary_json_size' }
         $memory = [IO.MemoryStream]::new()
@@ -321,7 +322,20 @@ function New-Evidence1PendingJournalSnapshot($Previous, [string]$RunId, [string]
     }
 }
 
-function Get-Evidence1CanaryJournalProgress([string]$JournalRoot, [string[]]$BaselineIds, [string]$RunId, $Previous = $null, [datetime]$NowUtc = [datetime]::UtcNow) {
+function Get-Evidence1RetiredJournalSnapshot($Previous, [string]$RunId, [switch]$AllowRetiredAfterProcessExit) {
+    try { $safe = ConvertTo-Evidence1CanaryJournalSnapshot $Previous $RunId }
+    catch { throw 'canary_journal_retirement' }
+    if (-not $safe.journal_id -or -not $safe.available -or $safe.publication_pending -or $safe.event_count -lt 1 -or
+        -not $safe.transition_counts.Contains('planned') -or $safe.transition_counts.planned -ne 1) {
+        throw 'canary_journal_retirement'
+    }
+    if (-not $AllowRetiredAfterProcessExit) { throw 'canary_journal_retiring' }
+    $safe.available = $false
+    return $safe
+}
+
+function Get-Evidence1CanaryJournalProgress([string]$JournalRoot, [string[]]$BaselineIds, [string]$RunId, $Previous = $null,
+    [datetime]$NowUtc = [datetime]::UtcNow, [switch]$AllowRetiredAfterProcessExit) {
     Initialize-Evidence1CanarySupport
     if ($Previous -and $Previous.run_id -cne $RunId) { throw 'canary_journal_run_mismatch' }
     $ids = @(if (Test-Path -LiteralPath $JournalRoot) { Get-ChildItem -LiteralPath $JournalRoot -Directory -Force | ForEach-Object Name })
@@ -330,20 +344,28 @@ function Get-Evidence1CanaryJournalProgress([string]$JournalRoot, [string[]]$Bas
     $bound = if ($Previous) { $Previous.journal_id } else { $null }
     if ($bound -and $new.Count -eq 1 -and $new[0] -cne $bound) { throw 'canary_journal_changed' }
     if ($new.Count -eq 0) {
-        if ($bound) { $Previous.available = $false; return $Previous }
+        if ($bound) { return Get-Evidence1RetiredJournalSnapshot $Previous $RunId -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit }
         return [ordered]@{ run_id = $RunId; journal_id = $null; available = $false; event_count = 0; latest_event = $null; transition_counts = @{}; publication_pending = $false; publication_pending_since_utc = $null }
     }
     $bound = $new[0]
     $id = [guid]::Empty
     if (-not [guid]::TryParseExact($bound, 'D', [ref]$id) -or $bound -cne $id.ToString('D')) { throw 'canary_journal_identity' }
     $eventsPath = Join-Path $JournalRoot "$bound/events"
-    $events = @(if (Test-Path -LiteralPath $eventsPath) { Get-ChildItem -LiteralPath $eventsPath -File -Force | Sort-Object Name })
+    if (-not (Test-Path -LiteralPath $eventsPath)) {
+        if ($Previous -and $Previous.journal_id) { return Get-Evidence1RetiredJournalSnapshot $Previous $RunId -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit }
+        $events = @()
+    } else {
+        $events = @(Get-ChildItem -LiteralPath $eventsPath -File -Force | Sort-Object Name)
+    }
     if ($events.Count -gt 32) { throw 'canary_journal_count' }
     $transitionPattern = '(planned|spawn_started|spawn_completed|spawn_failed|raw_persisted|parsed|evaluated)'
     $temporaryPattern = '^[0-9]{12}-0-' + $transitionPattern + '\.json\.tmp-[a-f0-9]{8}$'
     $temporary = @($events | Where-Object Name -CMatch $temporaryPattern)
     foreach ($event in $events) {
         if ($event.Name -cnotmatch ('^[0-9]+-[0-9]+-' + $transitionPattern + '\.json$') -and $event.Name -cnotmatch $temporaryPattern) { throw 'canary_journal_event' }
+    }
+    if ($Previous -and $Previous.journal_id -and $events.Count -lt $Previous.event_count) {
+        return Get-Evidence1RetiredJournalSnapshot $Previous $RunId -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit
     }
     if ($temporary.Count -gt 1) { throw 'canary_publication_ambiguous' }
     if ($temporary.Count -eq 1) {
@@ -360,6 +382,10 @@ function Get-Evidence1CanaryJournalProgress([string]$JournalRoot, [string[]]$Bas
         $sequence = [int]$Matches[1]; $ordinal = [int]$Matches[2]; $transition = $Matches[3]
         try { $value = (Read-Evidence1CanaryJson $event.FullName 65536).value }
         catch {
+            $readFailure = $_
+            if ($readFailure.Exception -is [IO.FileNotFoundException] -or $readFailure.Exception -is [IO.DirectoryNotFoundException]) {
+                return Get-Evidence1RetiredJournalSnapshot $Previous $RunId -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit
+            }
             # Publication may start between enumeration and reading. Only its exact companion
             # temp name permits a bounded pending observation; persistent links remain rejected.
             $publishing = @(Get-ChildItem -LiteralPath $eventsPath -File -Force | Where-Object { $_.Name -cmatch $temporaryPattern -and $_.Name.StartsWith($event.Name + '.tmp-', [StringComparison]::Ordinal) })
@@ -520,7 +546,7 @@ function Set-Evidence1CanaryFailure($Diagnostics, [string]$Slot, [string]$Phase,
         'canary_validation_changed','canary_process_cleanup','canary_publication_incomplete','canary_journal_unobserved','canary_sdk_changed',
         'canary_journal_event','canary_publication_stalled','canary_journal_ambiguous','canary_path_link','canary_journal_duplicate_transition',
         'canary_journal_cell','canary_journal_changed','canary_journal_run_mismatch','canary_journal_count','canary_publication_ambiguous',
-        'canary_publication_size','canary_journal_planned','canary_json_size','canary_journal_identity','canary_live_exit_nonzero',
+        'canary_publication_size','canary_journal_planned','canary_journal_retiring','canary_journal_retirement','canary_json_size','canary_journal_identity','canary_live_exit_nonzero',
         'canary_terminal_required','canary_terminal_binding','canary_progress_shape','canary_diagnostics_shape')
     $code = Get-E1FailureCode $Failure 'preflight_failed'
     if ($code -ceq 'preflight_failed') { $code = 'unclassified' }
@@ -564,12 +590,37 @@ function Get-Evidence1CanaryCustody([string]$Directory, [string]$RunId, [string]
             if ($data.sha256 -cne $expected[$name]) { throw 'report' }
             $files[$name] = $data.sha256
         }
-        foreach ($phase in @('handoff','wrapper','launcher')) {
+        foreach ($phase in @('handoff','wrapper')) {
             $name = "$phase.claim.json"
             $claim = Read-Evidence1CanaryJson (Join-Path $Directory $name)
             Assert-E1Fields $claim.value @{ schema = 1; run_id = $RunId; binding_sha256 = $BindingSha256; phase = $phase }
             $files[$name] = $claim.sha256
         }
+        $launcherClaimPath = Join-Path $Directory 'launcher.claim.json'
+        if (-not (Test-Path -LiteralPath $launcherClaimPath)) {
+            if (Test-Path -LiteralPath (Join-Path $Directory 'source-custody.json')) { throw 'source_without_launcher' }
+            Assert-E1Fields $TerminalRecord @{ schema = 1; run_id = $RunId; state = 'wrapper_error'; exit_code = 997; exit_code_source = 'wrapper_error' }
+            if ((Get-E1Field $TerminalRecord 'wrapper_error_stage') -cnotin @('prepare_ops_directory','initialize_journal')) { throw 'wrapper_stage' }
+            $diagnostics = ConvertTo-Evidence1CanaryDiagnostics (Get-E1Field $TerminalRecord 'diagnostics')
+            if ($diagnostics.failure_phase -cne 'guest_preflight' -or $null -eq $diagnostics.failures.primary) { throw 'wrapper_diagnostics' }
+            foreach ($name in @('journal-baseline.json','journal.json')) {
+                $path = Join-Path $Directory $name
+                if (Test-Path -LiteralPath $path) {
+                    $data = Read-Evidence1CanaryJson $path
+                    Assert-E1Fields $data.value @{ run_id = $RunId; binding_sha256 = $BindingSha256 }
+                    $files[$name] = $data.sha256
+                }
+            }
+            return [ordered]@{
+                verified = $false; complete = $false; custody_state = 'incomplete_wrapper_preflight'
+                run_id = $RunId; arm = $b.arm; planned_sessions = 1; binding_sha256 = $BindingSha256
+                attempt_consumed = $true; retry_authorized = $false; source_preserved = $false
+                failure_phase = $diagnostics.failure_phase; failure_code = $diagnostics.failure_code; files = $files
+            }
+        }
+        $launcher = Read-Evidence1CanaryJson $launcherClaimPath
+        Assert-E1Fields $launcher.value @{ schema = 1; run_id = $RunId; binding_sha256 = $BindingSha256; phase = 'launcher' }
+        $files['launcher.claim.json'] = $launcher.sha256
         $source = Read-Evidence1CanaryJson (Join-Path $Directory 'source-custody.json')
         Assert-E1Fields $source.value @{ schema = 1; run_id = $RunId; binding_sha256 = $BindingSha256; source_preserved = $true }
         if ($source.value.validation_inventory_before_sha256 -cnotmatch '^[a-f0-9]{64}$' -or
@@ -583,7 +634,11 @@ function Get-Evidence1CanaryCustody([string]$Directory, [string]$RunId, [string]
                 $files[$name] = $data.sha256
             }
         }
-        return [ordered]@{ verified = $true; run_id = $RunId; arm = $b.arm; planned_sessions = 1; binding_sha256 = $BindingSha256; source_preserved = $true; files = $files }
+        return [ordered]@{
+            verified = $true; complete = $true; custody_state = 'complete'; run_id = $RunId; arm = $b.arm
+            planned_sessions = 1; binding_sha256 = $BindingSha256; attempt_consumed = $true
+            retry_authorized = $false; source_preserved = $true; files = $files
+        }
     } catch { throw 'canary_custody_invalid' }
 }
 

@@ -94,6 +94,51 @@ Describe 'Evidence1 canary one-use and journal contracts' {
         $committed.transition_counts.planned | Should -Be 1
     }
 
+    It 'opens bounded JSON snapshots with delete sharing so atomic replacement cannot be blocked' {
+        $definition = (Get-Command Read-Evidence1CanaryJson).ScriptBlock.Ast.Extent.Text
+        $definition | Should -Match '\[IO\.FileShare\]::ReadWrite\s+-bor\s+\[IO\.FileShare\]::Delete'
+    }
+
+    It 'accepts bound journal retirement only after process exit and preserves the last safe snapshot' {
+        $newId = [guid]::NewGuid().ToString()
+        $events = Join-Path $script:CanaryDirectory "$newId/events"
+        New-Item -ItemType Directory -Path $events | Out-Null
+        [IO.File]::WriteAllText((Join-Path $events '000000000000-0-planned.json'), '{"seq":0,"runKind":"scenario","cellOrdinal":0,"transition":"planned","meta":{}}')
+        $previous = Get-Evidence1CanaryJournalProgress $script:CanaryDirectory @() $script:CanaryId
+        Remove-Item -LiteralPath (Join-Path $script:CanaryDirectory $newId) -Recurse
+
+        { Get-Evidence1CanaryJournalProgress $script:CanaryDirectory @() $script:CanaryId $previous } | Should -Throw '*canary_journal_retiring*'
+        $retired = Get-Evidence1CanaryJournalProgress $script:CanaryDirectory @() $script:CanaryId $previous -AllowRetiredAfterProcessExit
+        $retired.available | Should -BeFalse
+        $retired.journal_id | Should -BeExactly $newId
+        $retired.event_count | Should -Be 1
+        $retired.transition_counts.planned | Should -Be 1
+    }
+
+    It 'accepts terminal partial retirement but rejects retirement without a bound safe planned snapshot' {
+        $newId = [guid]::NewGuid().ToString()
+        $events = Join-Path $script:CanaryDirectory "$newId/events"
+        New-Item -ItemType Directory -Path $events | Out-Null
+        [IO.File]::WriteAllText((Join-Path $events '000000000000-0-planned.json'), '{"seq":0,"runKind":"scenario","cellOrdinal":0,"transition":"planned","meta":{}}')
+        [IO.File]::WriteAllText((Join-Path $events '000000000001-0-spawn_started.json'), '{"seq":1,"runKind":"scenario","cellOrdinal":0,"transition":"spawn_started","meta":{}}')
+        $previous = Get-Evidence1CanaryJournalProgress $script:CanaryDirectory @() $script:CanaryId
+        Remove-Item -LiteralPath (Join-Path $events '000000000000-0-planned.json')
+
+        { Get-Evidence1CanaryJournalProgress $script:CanaryDirectory @() $script:CanaryId $previous } | Should -Throw '*canary_journal_retiring*'
+        $retired = Get-Evidence1CanaryJournalProgress $script:CanaryDirectory @() $script:CanaryId $previous -AllowRetiredAfterProcessExit
+        $retired.event_count | Should -Be 2
+        $retired.transition_counts.planned | Should -Be 1
+
+        $unsafe = [ordered]@{ run_id = $script:CanaryId; journal_id = $newId; available = $true; event_count = 0
+            latest_event = $null; transition_counts = @{}; publication_pending = $false; publication_pending_since_utc = $null }
+        { Get-Evidence1CanaryJournalProgress $script:CanaryDirectory @() $script:CanaryId $unsafe -AllowRetiredAfterProcessExit } | Should -Throw '*canary*'
+        try { $null = Get-Evidence1CanaryJournalProgress $script:CanaryDirectory @() $script:CanaryId $unsafe }
+        catch { $_.Exception.Message | Should -BeExactly 'canary_journal_planned' }
+        Remove-Item -LiteralPath (Join-Path $script:CanaryDirectory $newId) -Recurse
+        try { $null = Get-Evidence1CanaryJournalProgress $script:CanaryDirectory @() $script:CanaryId $unsafe }
+        catch { $_.Exception.Message | Should -BeExactly 'canary_journal_retirement' }
+    }
+
     It 'rejects persistent publication windows, unrelated hardlinks, and unknown files' {
         $newId = [guid]::NewGuid().ToString()
         $events = Join-Path $script:CanaryDirectory "$newId/events"
@@ -182,7 +227,10 @@ Describe 'Evidence1 canary launcher runtime failures' {
         Mock Get-Evidence1CanaryJournalProgress {
             $script:JournalCalls++
             if ($script:JournalCalls -gt 1) { $script:FixtureOp.Task.IsCompleted = $true }
-            @{ run_id = 'b48bfb0c-a9ae-4e0e-8d89-56eb1e278090'; journal_id = $(if ($script:JournalCalls -gt 1) { '69cd5780-49fa-4531-960a-e26cbd7fda54' } else { $null }); publication_pending = $false }
+            $journalId = if ($script:JournalCalls -gt 1) { '69cd5780-49fa-4531-960a-e26cbd7fda54' } else { $null }
+            @{ run_id = 'b48bfb0c-a9ae-4e0e-8d89-56eb1e278090'; journal_id = $journalId; available = $null -ne $journalId
+                event_count = $(if ($journalId) { 1 } else { 0 }); latest_event = $(if ($journalId) { '000000000000-0-planned.json' } else { $null })
+                transition_counts = $(if ($journalId) { @{ planned = 1 } } else { @{} }); publication_pending = $false; publication_pending_since_utc = $null }
         }
         Mock New-Evidence1CanarySource { @{ path = $script:FixtureOps; directory = $script:FixtureOps; tree = 'e'*40; before = @{} } }
         Mock Get-E1SourceSnapshot { @{ tree = 'e'*40 } }
@@ -208,6 +256,7 @@ Describe 'Evidence1 canary launcher runtime failures' {
         Should -Invoke Start-E1OwnedProcess -Times 1 -Exactly -ParameterFilter { $Seconds -eq 1800 }
         $script:FixtureWrites['terminal.json'].diagnostics.processes.live.cleanup_ok | Should -BeTrue
         $script:FixtureWrites['terminal.json'].diagnostics.failure_code | Should -BeNullOrEmpty
+        Should -Invoke Get-Evidence1CanaryJournalProgress -Times 1 -Exactly -ParameterFilter { $AllowRetiredAfterProcessExit }
     }
     It 'cancels and joins on a journal failure without replacing it with cleanup or postflight failures' {
         Mock Get-Evidence1CanaryJournalProgress {
@@ -229,6 +278,50 @@ Describe 'Evidence1 canary launcher runtime failures' {
         $record.diagnostics.failures.cleanup.code | Should -BeExactly 'canary_process_cleanup'
         $record.diagnostics.failures.postflight.code | Should -BeExactly 'canary_validation_changed'
         $record.diagnostics.processes.live.exit_code | Should -Be 130
+    }
+
+    It 'bridges only a bounded retirement race when the owned task completes' {
+        $script:JournalCalls = 0
+        $script:RetirementObserved = $false
+        Mock Get-Evidence1CanaryJournalProgress {
+            param($JournalRoot, $BaselineIds, $ExpectedRunId, $Previous, $NowUtc, [switch]$AllowRetiredAfterProcessExit)
+            $script:JournalCalls++
+            if ($script:JournalCalls -eq 1) {
+                return @{ run_id = $RunId; journal_id = $null; available = $false; event_count = 0; latest_event = $null
+                    transition_counts = @{}; publication_pending = $false; publication_pending_since_utc = $null }
+            }
+            if ($script:JournalCalls -eq 2) {
+                return @{ run_id = $RunId; journal_id = '69cd5780-49fa-4531-960a-e26cbd7fda54'; available = $true; event_count = 1
+                    latest_event = '000000000000-0-planned.json'; transition_counts = @{ planned = 1 }
+                    publication_pending = $false; publication_pending_since_utc = $null }
+            }
+            if (-not $AllowRetiredAfterProcessExit) { $script:RetirementObserved = $true; throw 'canary_journal_retiring' }
+            return @{ run_id = $RunId; journal_id = '69cd5780-49fa-4531-960a-e26cbd7fda54'; available = $false; event_count = 1
+                latest_event = '000000000000-0-planned.json'; transition_counts = @{ planned = 1 }
+                publication_pending = $false; publication_pending_since_utc = $null }
+        }
+        Mock Start-Sleep { if ($script:RetirementObserved) { $script:FixtureOp.Task.IsCompleted = $true } }
+
+        Invoke-Evidence1CanaryLaunch | Should -Be 0
+        ($script:FixtureCalls -join ',') | Should -BeExactly 'start,wait'
+        Should -Invoke Get-Evidence1CanaryJournalProgress -Times 1 -Exactly -ParameterFilter { $AllowRetiredAfterProcessExit }
+        Should -Invoke Stop-E1OwnedProcess -Times 0 -Exactly
+    }
+
+    It 'does not accept retirement while the owned task remains active' {
+        $script:JournalCalls = 0
+        Mock Get-Evidence1CanaryJournalProgress {
+            $script:JournalCalls++
+            if ($script:JournalCalls -eq 1) { return @{ run_id = $RunId; journal_id = $null; publication_pending = $false } }
+            if ($script:JournalCalls -eq 2) { return @{ run_id = $RunId; journal_id = '69cd5780-49fa-4531-960a-e26cbd7fda54'; publication_pending = $false } }
+            throw 'canary_journal_retiring'
+        }
+        $script:FixtureResult.ExitCode = 130; $script:FixtureResult.Cancelled = $true
+
+        Invoke-Evidence1CanaryLaunch | Should -Be 997
+        ($script:FixtureCalls -join ',') | Should -BeExactly 'start,stop,wait'
+        Should -Invoke Get-Evidence1CanaryJournalProgress -Times 0 -Exactly -ParameterFilter { $AllowRetiredAfterProcessExit }
+        $script:FixtureWrites['terminal.json'].diagnostics.failure_code | Should -BeExactly 'canary_journal_retiring'
     }
     It 'preserves a source-clone primary failure in custody when terminal persistence also fails' {
         Mock New-Evidence1CanarySource { throw 'canary_source_invalid' }

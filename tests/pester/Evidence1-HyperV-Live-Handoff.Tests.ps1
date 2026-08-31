@@ -297,6 +297,55 @@ Describe 'Evidence1 Stage L canary evidence and authorization' {
         [IO.File]::AppendAllText((Join-Path $p.Directory 'wet.json'), ' ')
         { Get-Evidence1CanaryCustody $p.Directory $p.RunId $p.BindingSha256 $terminal } | Should -Throw '*canary*'
     }
+
+    It 'returns copy-ready incomplete custody for a claimed wrapper preflight failure without authorizing retry' {
+        $ops = Join-Path $TestDrive 'mounted-preflight/Evidence1Ops'
+        $p = Write-CanaryTestBundle (Join-Path $ops 'canary/b48bfb0c-a9ae-4e0e-8d89-56eb1e278090')
+        $b = (Read-Evidence1CanaryBundle @p).binding
+        foreach ($name in $b.scripts.Keys) { Copy-Item (Join-Path $script:AuditRoot $name) (Join-Path $ops $name) }
+        $null = New-Evidence1CanaryClaim $p.Directory $p.RunId $p.BindingSha256 'handoff'
+        $null = New-Evidence1CanaryClaim $p.Directory $p.RunId $p.BindingSha256 'wrapper'
+        Write-Evidence1JsonAtomically (Join-Path $p.Directory 'journal-baseline.json') @{
+            run_id = $p.RunId; binding_sha256 = $p.BindingSha256; journal_ids = @()
+        }
+        $diagnostics = New-Evidence1CanaryDiagnostics
+        try { throw 'canary_journal_baseline' } catch { Set-Evidence1CanaryFailure $diagnostics primary guest_preflight $_ }
+        $terminal = @{
+            schema = 1; run_id = $p.RunId; state = 'wrapper_error'; exit_code = 997; exit_code_source = 'wrapper_error'
+            wrapper_error_stage = 'initialize_journal'; canary = @{ arm = 'product'; planned_sessions = 1; binding_sha256 = $p.BindingSha256 }
+            diagnostics = $diagnostics
+        }
+
+        $custody = Get-Evidence1CanaryCustody $p.Directory $p.RunId $p.BindingSha256 $terminal
+        $custody.verified | Should -BeFalse
+        $custody.complete | Should -BeFalse
+        $custody.custody_state | Should -BeExactly 'incomplete_wrapper_preflight'
+        $custody.attempt_consumed | Should -BeTrue
+        $custody.retry_authorized | Should -BeFalse
+        $custody.source_preserved | Should -BeFalse
+        $custody.failure_phase | Should -BeExactly 'guest_preflight'
+        $custody.failure_code | Should -BeExactly 'canary_journal_baseline'
+        $custody.files.Keys | Should -Contain 'wrapper.claim.json'
+        $custody.files.Keys | Should -Not -Contain 'launcher.claim.json'
+        Test-Path (Join-Path $p.Directory 'wrapper.claim.json') | Should -BeTrue
+    }
+
+    It 'rejects incomplete custody outside the exact claimed wrapper preflight failure shape' {
+        $ops = Join-Path $TestDrive 'mounted-invalid-preflight/Evidence1Ops'
+        $p = Write-CanaryTestBundle (Join-Path $ops 'canary/b48bfb0c-a9ae-4e0e-8d89-56eb1e278090')
+        $b = (Read-Evidence1CanaryBundle @p).binding
+        foreach ($name in $b.scripts.Keys) { Copy-Item (Join-Path $script:AuditRoot $name) (Join-Path $ops $name) }
+        $null = New-Evidence1CanaryClaim $p.Directory $p.RunId $p.BindingSha256 'handoff'
+        $null = New-Evidence1CanaryClaim $p.Directory $p.RunId $p.BindingSha256 'wrapper'
+        $diagnostics = New-Evidence1CanaryDiagnostics
+        try { throw 'canary_live_exit_nonzero' } catch { Set-Evidence1CanaryFailure $diagnostics primary live $_ }
+        $terminal = @{
+            schema = 1; run_id = $p.RunId; state = 'wrapper_error'; exit_code = 997; exit_code_source = 'wrapper_error'
+            wrapper_error_stage = 'start_launcher'; canary = @{ arm = 'product'; planned_sessions = 1; binding_sha256 = $p.BindingSha256 }
+            diagnostics = $diagnostics
+        }
+        { Get-Evidence1CanaryCustody $p.Directory $p.RunId $p.BindingSha256 $terminal } | Should -Throw '*canary*'
+    }
 }
 
 Describe 'Evidence1 live handoff evidence contract' {

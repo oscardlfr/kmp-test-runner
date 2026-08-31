@@ -724,7 +724,17 @@ function Invoke-Evidence1CanaryLaunch {
     $liveOperation = Start-E1OwnedProcess $node $arguments $HarnessDir (Join-Path $sourceContext.directory 'live.stdout.log') (Join-Path $sourceContext.directory 'live.stderr.log') 1800
     while (-not $liveOperation.Task.IsCompleted) {
       $phase = 'journal'
-      $journal = Get-Evidence1CanaryJournalProgress $journalRoot @($baseline.journal_ids) $RunId $journal
+      try {
+        $journal = Get-Evidence1CanaryJournalProgress $journalRoot @($baseline.journal_ids) $RunId $journal
+      } catch {
+        if ($_.Exception.Message -cne 'canary_journal_retiring') { throw }
+        foreach ($attempt in 1..20) {
+          if ($liveOperation.Task.IsCompleted) { break }
+          Start-Sleep -Milliseconds 50
+        }
+        if (-not $liveOperation.Task.IsCompleted) { throw }
+        $journal = Get-Evidence1CanaryJournalProgress $journalRoot @($baseline.journal_ids) $RunId $journal -AllowRetiredAfterProcessExit
+      }
       Write-Evidence1JsonAtomically (Join-Path $directory 'journal.json') $journal
       Start-Sleep -Milliseconds 200
     }
@@ -735,7 +745,9 @@ function Invoke-Evidence1CanaryLaunch {
     if ($live.TimedOut -or $live.Cancelled -or -not $live.CleanupOk) { throw 'canary_process_cleanup' }
     $phase = 'journal'
     $journalPath = Join-Path $directory 'journal.json'
-    $journal = Get-Evidence1CanaryJournalProgress $journalRoot @($baseline.journal_ids) $RunId $journal
+    if (-not ($journal -and $journal.journal_id -and $journal.available -eq $false)) {
+      $journal = Get-Evidence1CanaryJournalProgress $journalRoot @($baseline.journal_ids) $RunId $journal -AllowRetiredAfterProcessExit
+    }
     Write-Evidence1JsonAtomically $journalPath $journal
     if ($journal.publication_pending) { throw 'canary_publication_incomplete' }
     $exitCode = [int]$live.ExitCode
