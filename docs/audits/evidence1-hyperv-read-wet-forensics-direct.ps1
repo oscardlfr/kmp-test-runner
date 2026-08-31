@@ -3,7 +3,8 @@ param(
     [Parameter(Mandatory=$true)][string]$TargetCommit,
     [Parameter(Mandatory=$true)][string]$TargetTree,
     [Parameter(Mandatory=$true)][string]$ExpectedReportSha256,
-    [switch]$IncludeGradleDiagnostics
+    [switch]$IncludeGradleDiagnostics,
+    [string]$WetReportPath = 'C:\kmp-eval\scratch\hyperv-verify-wet-gate-v2-direct\HYPERV-VERIFY-WET-GATE-V2-DIRECT.json'
 )
 $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
@@ -25,7 +26,7 @@ try {
     $phase = 'report-write'
     Write-E1Record $stream $result
     $phase = 'collect'
-    $result = Invoke-E1ForensicRead $TargetCommit $TargetTree $ExpectedReportSha256 -IncludeGradleDiagnostics:$IncludeGradleDiagnostics
+    $result = Invoke-E1ForensicRead $TargetCommit $TargetTree $ExpectedReportSha256 -IncludeGradleDiagnostics:$IncludeGradleDiagnostics -WetReportPath $WetReportPath
     $phase = 'report-write'
     Write-E1Record $stream $result
 } catch {

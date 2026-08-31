@@ -176,6 +176,14 @@ historical files. Safe validation rejects extra keys, free text and coerced nume
 
 ### Read an Existing Failed Wet Gate
 
+When V2 used a versioned `-ReportPath`, supply that same path to the forensic
+entrypoint as `-WetReportPath`, together with its exact `-ExpectedReportSha256`.
+The default remains the historical canonical report. Only JSON files under
+`C:\kmp-eval\scratch\hyperv-verify-wet-gate-v2-direct` are accepted; the subject,
+marker and stdout hash checks remain mandatory. Do not replace the old report
+to make the reader select a newer attempt. This selector changes no guest path,
+executes no product command and does not authorize a retry.
+
 For `source_artifacts` before a wet attempt, use
 `evidence1-hyperv-read-source-inventory-direct.ps1` through the same elevated client with the
 current guest `TargetCommit`/`TargetTree`. This separate read needs no fresh readiness and must
