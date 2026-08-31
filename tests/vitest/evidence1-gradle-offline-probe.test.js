@@ -202,7 +202,7 @@ describe.skipIf(process.platform !== 'win32')('Evidence1 offline cache contract 
 
   it('projects all scope filters of the rejected any-protocol rules without private values', async () => {
     const result = await ps(`$r=& (Get-Module evidence1-gradle-offline-probe) {
-      function Get-NetFirewallRule {[pscustomobject]@{Name='PRIVATE_RULE';DisplayName='PRIVATE_TEXT';Enabled=$true;Direction='Outbound';Action='Allow';Profile='Public';EnforcementStatus='Full';PolicyAppId='PRIVATE_APP_ID';LocalUserOwner='PRIVATE_OWNER'}}
+      function Get-NetFirewallRule {[pscustomobject]@{Name='PRIVATE_RULE';DisplayName='PRIVATE_TEXT';Enabled=$true;Direction='Outbound';Action='Allow';Profile='Public';EnforcementStatus='Full';PolicyAppId='PRIVATE_APP_ID';Owner='PRIVATE_OWNER'}}
       function Get-NetConnectionProfile {[pscustomobject]@{NetworkCategory='Private'}}
       function Get-NetFirewallApplicationFilter {param([Parameter(ValueFromPipeline)]$InputObject) process {[pscustomobject]@{Program='Any';Package='Any'}}}
       function Get-NetFirewallPortFilter {param([Parameter(ValueFromPipeline)]$InputObject) process {[pscustomobject]@{Protocol='Any';DynamicTarget='Any';LocalPort='Any';RemotePort='Any'}}}
@@ -230,6 +230,21 @@ describe.skipIf(process.platform !== 'win32')('Evidence1 offline cache contract 
       $r.schema=2;$r.operation='gradle-offline-cache-probe';try {$null=ConvertTo-E1OfflineReceipt $r;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'result_shape')}
       $r.operation='gradle-offline-network-audit';$r.network_rule_scope.path='PRIVATE_PATH';try {$null=ConvertTo-E1OfflineReceipt $r;$out+=$false} catch {$out+=($_.Exception.Message -ceq 'result_shape')}
       $out | ConvertTo-Json -Compress`)).toEqual([true, true, true, true]);
+  });
+
+  it('rejects private scope values, unknown keys and oversized rule collections', async () => {
+    expect(await ps(`$enums=Get-E1OfflineScopeEnums; $row=@{}
+      foreach($key in $enums.Keys) {$row[$key]=$enums[$key][0]}
+      $out=@()
+      foreach($key in $enums.Keys) {
+        $bad=$row.Clone();$bad[$key]='PRIVATE_VALUE'
+        try {$null=ConvertTo-E1OfflineRuleScope @{rules=@($bad)};$out+=$false} catch {$out+=($_.Exception.Message -ceq 'result_shape')}
+      }
+      $bad=$row.Clone();$bad.path='PRIVATE_PATH'
+      try {$null=ConvertTo-E1OfflineRuleScope @{rules=@($bad)};$out+=$false} catch {$out+=($_.Exception.Message -ceq 'result_shape')}
+      try {$null=ConvertTo-E1OfflineRuleScope @{rules=@($row)*129};$out+=$false} catch {$out+=($_.Exception.Message -ceq 'result_shape')}
+      try {$null=ConvertTo-E1OfflineRuleScope @{rules='PRIVATE_TEXT'};$out+=$false} catch {$out+=($_.Exception.Message -ceq 'result_shape')}
+      @($out.Count,(@($out | Where-Object {$_ -ne $true}).Count -eq 0)) | ConvertTo-Json -Compress`)).toEqual([22, true]);
   });
 
   it.each(['network_outbound_default', 'none', 'evidence_changed', 'evidence_mismatch', 'json_size'])('audits network without dispatch or writes: %s', async failure => {

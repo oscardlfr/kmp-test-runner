@@ -147,6 +147,97 @@ function Get-E1OfflineSealHash {
     return Get-E1Sha256 ([Text.Encoding]::UTF8.GetBytes(($snapshot | ConvertTo-Json -Depth 6 -Compress)))
 }
 
+function Get-E1OfflineScopeCategory($Value) {
+    $values=@($Value)
+    if($values.Count -eq 0 -or ($values.Count -eq 1 -and [string]::IsNullOrEmpty([string]$values[0]))) {return 'unknown'}
+    if($values.Count -eq 1 -and [string]$values[0] -ieq 'Any') {return 'any'}
+    $loopback=$true
+    foreach($item in $values) {
+        $ip=$null
+        if(-not [Net.IPAddress]::TryParse([string]$item,[ref]$ip) -or -not [Net.IPAddress]::IsLoopback($ip)) {$loopback=$false}
+    }
+    if($loopback) {return 'loopback'}
+    return 'scoped'
+}
+
+function Get-E1OfflineScopeEnums {
+    $scope=@('any','scoped','loopback','unknown')
+    return @{
+        action=@('allow','block'); program=@('any','java','javaw'); profile_match=@('active','inactive','unknown')
+        enforcement=@('full','other','unknown'); dynamic_target=@('any','scoped','unknown')
+        local_address=$scope; remote_address=$scope; local_port=$scope; remote_port=$scope
+        interface_alias=$scope; interface_type=@('any','wired','wireless','remoteaccess','unknown')
+        authentication=@('notrequired','required','noencap','unknown'); encryption=@('notrequired','required','dynamic','unknown')
+        override_block_rules=@('true','false','unknown'); local_user=$scope; remote_user=$scope; remote_machine=$scope
+        local_user_owner=$scope; policy_app_id=$scope
+    }
+}
+
+function ConvertTo-E1OfflineRuleScope($Raw) {
+    Assert-E1Keys $Raw @('rules')
+    $rules=Get-E1Field $Raw 'rules'
+    if($rules -isnot [System.Collections.IList] -or $rules.Count -gt 128) {throw 'result_shape'}
+    $enums=Get-E1OfflineScopeEnums; $safe=@{rules=@()}
+    foreach($rule in $rules) {
+        Assert-E1Keys $rule @($enums.Keys); $row=@{}
+        foreach($key in $enums.Keys) {
+            $value=Get-E1Field $rule $key
+            if($value -isnot [string] -or $value -cnotin $enums[$key]) {throw 'result_shape'}
+            $row[$key]=$value
+        }
+        $safe.rules+=,$row
+    }
+    return $safe
+}
+
+function Get-E1OfflineNetworkRuleScope {
+    $active=@(Get-NetConnectionProfile | ForEach-Object {
+        switch([string]$_.NetworkCategory) {'DomainAuthenticated' {'Domain'} 'Private' {'Private'} 'Public' {'Public'}}
+    })
+    $rules=@(Get-NetFirewallRule -PolicyStore ActiveStore | Where-Object {
+        $_.Enabled.ToString() -eq 'True' -and $_.Direction.ToString() -eq 'Outbound' -and $_.Action.ToString() -in @('Allow','Block')
+    } | Sort-Object Name)
+    $rows=@(); $enums=Get-E1OfflineScopeEnums
+    foreach($rule in $rules) {
+        $app=$rule | Get-NetFirewallApplicationFilter
+        $service=$rule | Get-NetFirewallServiceFilter
+        if(-not ([string]::IsNullOrEmpty([string]$app.Package) -or $app.Package -eq 'Any') -or
+            -not ([string]::IsNullOrEmpty([string]$service.Service) -or $service.Service -eq 'Any')) {continue}
+        $program=switch -Regex ([string]$app.Program) {'^Any$' {'any'} '(?:^|[\\/])java\.exe$' {'java'} '(?:^|[\\/])javaw\.exe$' {'javaw'}}
+        if(-not $program) {continue}
+        $port=$rule | Get-NetFirewallPortFilter
+        if([string]$port.Protocol -ne 'Any') {continue}
+        $address=$rule | Get-NetFirewallAddressFilter
+        $iface=$rule | Get-NetFirewallInterfaceFilter
+        $ifaceType=$rule | Get-NetFirewallInterfaceTypeFilter
+        $security=$rule | Get-NetFirewallSecurityFilter
+        $profiles=@(([string]$rule.Profile).Split(',') | ForEach-Object {$_.Trim()})
+        $profileMatch='unknown'
+        if($active.Count -gt 0 -and @($profiles | Where-Object {$_ -notin @('Any','Domain','Private','Public')}).Count -eq 0) {
+            $profileMatch='inactive'
+            if('Any' -in $profiles -or @($profiles | Where-Object {$_ -in $active}).Count -gt 0) {$profileMatch='active'}
+        }
+        $row=@{action=([string]$rule.Action).ToLowerInvariant();program=$program;profile_match=$profileMatch;enforcement='unknown'}
+        $enforcement=[string](Get-E1Field $rule 'EnforcementStatus')
+        if($enforcement -eq 'Full') {$row.enforcement='full'} elseif($enforcement) {$row.enforcement='other'}
+        foreach($mapping in @(@('local_address',$address.LocalAddress),@('remote_address',$address.RemoteAddress),
+            @('local_port',$port.LocalPort),@('remote_port',$port.RemotePort),@('interface_alias',$iface.InterfaceAlias),
+            @('local_user',$security.LocalUser),@('remote_user',$security.RemoteUser),@('remote_machine',$security.RemoteMachine),
+            @('local_user_owner',(Get-E1Field $rule 'Owner')),@('policy_app_id',(Get-E1Field $rule 'PolicyAppId')),
+            @('dynamic_target',(Get-E1Field $port 'DynamicTarget')))) {
+            $row[$mapping[0]]=Get-E1OfflineScopeCategory $mapping[1]
+        }
+        foreach($mapping in @(@('interface_type',$ifaceType.InterfaceType),@('authentication',$security.Authentication),
+            @('encryption',$security.Encryption),@('override_block_rules',$security.OverrideBlockRules))) {
+            $value=([string]$mapping[1]).ToLowerInvariant()
+            $row[$mapping[0]]=if($value -cin $enums[$mapping[0]]) {$value} else {'unknown'}
+        }
+        $rows+=,$row
+        if($rows.Count -gt 128) {throw 'diagnostic_limit'}
+    }
+    return ConvertTo-E1OfflineRuleScope @{rules=$rows}
+}
+
 function New-E1OfflineReceipt {
     return @{ schema=1; operation='gradle-offline-cache-probe'; state='failed'; failure_code='probe_failed'
         stage='preflight'; conclusion='inconclusive'; agent_calls=0; product_invocations=0; gradle_invocations=0
@@ -158,6 +249,7 @@ function New-E1OfflineReceipt {
 function Invoke-E1OfflineNetworkAuditGuest($Config) {
     $result=New-E1OfflineReceipt
     $result.operation='gradle-offline-network-audit'
+    $result.schema=2; $result.network_rule_scope=$null
     try {
         $identity=Get-CimInstance Win32_ComputerSystem
         $vmId=Get-ItemPropertyValue -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Virtual Machine\Guest\Parameters' -Name VirtualMachineId
@@ -169,6 +261,7 @@ function Invoke-E1OfflineNetworkAuditGuest($Config) {
         $marker=Read-E1ForensicArtifact $path ''
         Assert-E1ForensicMarker $marker.value $Config.Report
         $result.hashes.wet_marker_sha256=$marker.sha256
+        $result.network_rule_scope=Get-E1OfflineNetworkRuleScope
         $result.hashes.network_seal_sha256=Get-E1OfflineSealHash
         $result.checks.network_sealed=$true
         $null=Read-E1ForensicArtifact $path $marker.sha256
@@ -326,14 +419,23 @@ function Invoke-E1OfflineGuest($Config) {
 
 function ConvertTo-E1OfflineReceipt($Raw) {
     $safe=New-E1OfflineReceipt
+    $schema=Get-E1Field $Raw 'schema'
+    if(Test-E1Exact $schema 2) {
+        if((Get-E1Field $Raw 'operation') -cne 'gradle-offline-network-audit') {throw 'result_shape'}
+        $safe.schema=2; $safe.network_rule_scope=$null
+    }
     $keys=@(Get-E1ObjectKeys $Raw | Where-Object { $_ -cnotin @('PSComputerName','RunspaceId','PSShowComputerName') })
     if (@($keys | Where-Object { $_ -cnotin @($safe.Keys) }).Count -or $keys.Count -ne $safe.Count) { throw 'result_shape' }
     $operation=Get-E1Field $Raw 'operation'
     if($operation -cnotin @('gradle-offline-cache-probe','gradle-offline-network-audit')) {throw 'result_shape'}
     $audit=($operation -ceq 'gradle-offline-network-audit')
     $safe.operation=$operation
-    $fixed=@{schema=1;operation=$operation;agent_calls=0;product_invocations=0;validation_pass=$false;firewall_modified=$false;original_home_used_for_gradle=$false}
+    $fixed=@{schema=$safe.schema;operation=$operation;agent_calls=0;product_invocations=0;validation_pass=$false;firewall_modified=$false;original_home_used_for_gradle=$false}
     foreach($key in $fixed.Keys) { if(-not (Test-E1Exact (Get-E1Field $Raw $key) $fixed[$key])) {throw 'result_shape'} }
+    if($safe.schema -eq 2) {
+        $scope=Get-E1Field $Raw 'network_rule_scope'
+        if($null -ne $scope) {$safe.network_rule_scope=ConvertTo-E1OfflineRuleScope $scope}
+    }
     foreach($name in @('state','stage','conclusion','failure_code')) {
         $value=Get-E1Field $Raw $name
         $allowed=switch($name) {
