@@ -270,6 +270,12 @@ try {
     expect(egress).toContain("must_reseal_before_readiness_or_live = $true");
     expect(egress).toContain("-DefaultOutboundAction Allow");
     expect(egress).toContain("Evidence1AuthEgressExpiry");
+    expect(egress).toContain("'accounts.google.com'");
+    expect(egress).toContain("'oauth2.googleapis.com'");
+    expect(egress).toContain('auth_probe_host_count');
+    expect(egress).toContain('auth_probe_success_count');
+    expect(egress).toContain('Invoke-AuthEndpointProbe');
+    expect(egress).toContain('auth endpoint probe failed');
     expect(egress).toContain("-UserId 'SYSTEM' -LogonType ServiceAccount");
     expect(egress).toContain('-StartWhenAvailable');
     expect(egress).toContain("if ($VMName -cne 'Evidence1-Runner')");
@@ -280,6 +286,7 @@ try {
     expect(egress).toContain('auth-egress cleanup could not verify outbound blocking');
     expect(egress).not.toMatch(/command_line|password_value|secret_value/i);
     expect(egress).not.toMatch(/powershell_direct_logon|logon_name\s*=/i);
+    expect(egress).not.toMatch(/response_body|resolved_address/i);
 
     expect(login).toContain("Join-Path $env:USERPROFILE 'Desktop\\Claude Login.cmd'");
     expect(login).not.toMatch(/C:\\Users\\/i);
@@ -293,6 +300,9 @@ try {
 
     expect(vmconnect).toContain("vmconnect.exe");
     expect(vmconnect).toContain("if ($VMName -cne 'Evidence1-Runner')");
+    expect(vmconnect).toContain("Evidence1OpenVmConnect");
+    expect(vmconnect).toContain('-LogonType Interactive');
+    expect(vmconnect).not.toContain('Start-Process -FilePath $vmconnect -ArgumentList');
     expect(vmconnect).not.toMatch(/SendKeys|WScript\.Shell|ClaudeCommand/i);
 
     expect(reseal).toContain("evidence1-stageb-network-seal.ps1");
@@ -302,6 +312,12 @@ try {
     expect(reseal).toContain("Join-Path $PSScriptRoot 'evidence1-stageb-network-seal.ps1'");
     expect(reseal).toContain("if ($VMName -cne 'Evidence1-Runner')");
     expect(reseal).toContain("if ($GuestComputerName -cne 'Evidence1Runner')");
+    expect(reseal).toContain('failure_code');
+    expect(reseal).toContain('auth_process_cleanup_incomplete');
+    expect(reseal).toContain('network_seal_execution_failed');
+    expect(reseal).toContain('network_seal_result_invalid');
+    expect(reseal).toContain('watchdog_cleanup_failed');
+    expect(reseal).not.toContain("error = 'powershell_direct_failed'");
     expect(reseal).not.toMatch(/\[string\]\$NetworkSealSourcePath/);
     expect(reseal).not.toMatch(/powershell_direct_logon|logon_name\s*=/i);
     expect(seal).toContain("-DefaultOutboundAction Block");

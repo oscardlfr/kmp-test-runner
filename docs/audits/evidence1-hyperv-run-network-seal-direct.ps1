@@ -89,48 +89,87 @@ for ($candidateIndex = 0; $candidateIndex -lt $candidates.Count; $candidateIndex
       Invoke-Command -Session $session -ScriptBlock {
         param($GuestNetworkSealScript, $GuestReportPath, $NetworkSealSha256)
         $ErrorActionPreference = 'Stop'
+        $failureCode = 'guest_operation_failed'
+        $remainingAuthProcesses = $null
+        try {
+          $failureCode = 'payload_integrity_failed'
+          $guestSealSha256 = (Get-FileHash -LiteralPath $GuestNetworkSealScript -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($guestSealSha256 -cne $NetworkSealSha256) {
+            throw 'network-seal payload hash mismatch after guest transport'
+          }
 
-        $guestSealSha256 = (Get-FileHash -LiteralPath $GuestNetworkSealScript -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($guestSealSha256 -cne $NetworkSealSha256) {
-          throw 'network-seal payload hash mismatch after guest transport'
-        }
+          $failureCode = 'auth_process_cleanup_incomplete'
+          Stop-ScheduledTask -TaskName 'Evidence1OpenClaudeLogin' -ErrorAction SilentlyContinue
+          Unregister-ScheduledTask -TaskName 'Evidence1OpenClaudeLogin' -Confirm:$false -ErrorAction SilentlyContinue
+          for ($cleanupAttempt = 1; $cleanupAttempt -le 3; $cleanupAttempt++) {
+            foreach ($name in @('msedge','claude','node')) {
+              Get-Process -Name $name -ErrorAction SilentlyContinue |
+                Stop-Process -Force -ErrorAction SilentlyContinue
+            }
+            Start-Sleep -Seconds 1
+            $remainingAuthProcesses = @(Get-Process -Name 'msedge','claude','node' -ErrorAction SilentlyContinue)
+            if ($remainingAuthProcesses.Count -eq 0) { break }
+          }
+          $interactiveTaskPresent = $null -ne (Get-ScheduledTask -TaskName 'Evidence1OpenClaudeLogin' -ErrorAction SilentlyContinue)
+          if ($remainingAuthProcesses.Count -ne 0 -or $interactiveTaskPresent) {
+            throw 'auth process cleanup was incomplete before network reseal'
+          }
 
-        foreach ($name in @('msedge','claude','node')) {
-          Get-Process -Name $name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-        }
-        Start-Sleep -Seconds 2
-        Unregister-ScheduledTask -TaskName 'Evidence1OpenClaudeLogin' -Confirm:$false -ErrorAction SilentlyContinue
+          $failureCode = 'network_seal_execution_failed'
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $GuestNetworkSealScript -ReportPath $GuestReportPath
+          if ($LASTEXITCODE -ne 0) {
+            throw 'network-seal guest script failed'
+          }
 
-        $remainingAuthProcesses = @(Get-Process -Name 'msedge','claude','node' -ErrorAction SilentlyContinue)
-        $interactiveTaskPresent = $null -ne (Get-ScheduledTask -TaskName 'Evidence1OpenClaudeLogin' -ErrorAction SilentlyContinue)
+          $failureCode = 'network_seal_result_invalid'
+          $seal = Get-Content -LiteralPath $GuestReportPath -Raw | ConvertFrom-Json
+          if ($seal.verdict -cne 'PASS' -or $seal.network_mode -cne 'restricted') {
+            throw 'network-seal guest result was not restricted PASS'
+          }
 
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $GuestNetworkSealScript -ReportPath $GuestReportPath
-        if ($LASTEXITCODE -ne 0) {
-          throw 'network-seal guest script failed'
-        }
-        $seal = Get-Content -LiteralPath $GuestReportPath -Raw | ConvertFrom-Json
-        if ($remainingAuthProcesses.Count -ne 0 -or $interactiveTaskPresent) {
-          throw 'auth process cleanup was incomplete before network reseal'
-        }
-        Unregister-ScheduledTask -TaskName 'Evidence1AuthEgressExpiry' -Confirm:$false -ErrorAction SilentlyContinue
-        $watchdogPresent = $null -ne (Get-ScheduledTask -TaskName 'Evidence1AuthEgressExpiry' -ErrorAction SilentlyContinue)
-        if ($watchdogPresent) {
-          throw 'auth-egress expiry watchdog could not be removed after successful reseal'
-        }
-        [ordered]@{
-          verdict = if ($seal.verdict -eq 'PASS' -and $seal.network_mode -eq 'restricted') { 'PASS' } else { 'FAIL' }
-          seal_schema = $seal.schema
-          network_mode = $seal.network_mode
-          profile_count = $seal.profile_count
-          allowed_host_count = $seal.allowed_host_count
-          blocked_probe_count = $seal.blocked_probe_count
-          blocked_probe_success_count = $seal.blocked_probe_success_count
-          stopped_auth_processes = $true
-          remaining_auth_process_count = $remainingAuthProcesses.Count
-          removed_interactive_task = $true
-          removed_egress_watchdog = $true
-          network_seal_sha256 = $guestSealSha256
-          sensitive_content_read = $false
+          $failureCode = 'watchdog_cleanup_failed'
+          Unregister-ScheduledTask -TaskName 'Evidence1AuthEgressExpiry' -Confirm:$false -ErrorAction SilentlyContinue
+          $watchdogPresent = $null -ne (Get-ScheduledTask -TaskName 'Evidence1AuthEgressExpiry' -ErrorAction SilentlyContinue)
+          if ($watchdogPresent) {
+            throw 'auth-egress expiry watchdog could not be removed after successful reseal'
+          }
+
+          [ordered]@{
+            verdict = 'PASS'
+            failure_code = $null
+            seal_schema = $seal.schema
+            network_mode = $seal.network_mode
+            profile_count = $seal.profile_count
+            allowed_host_count = $seal.allowed_host_count
+            blocked_probe_count = $seal.blocked_probe_count
+            blocked_probe_success_count = $seal.blocked_probe_success_count
+            stopped_auth_processes = $true
+            remaining_auth_process_count = $remainingAuthProcesses.Count
+            removed_interactive_task = $true
+            removed_egress_watchdog = $true
+            fail_closed_verified = $true
+            network_seal_sha256 = $guestSealSha256
+            sensitive_content_read = $false
+          }
+        } catch {
+          Set-NetFirewallProfile `
+            -Profile Domain,Private,Public `
+            -Enabled True `
+            -DefaultInboundAction Block `
+            -DefaultOutboundAction Block `
+            -ErrorAction SilentlyContinue
+          $profiles = @(Get-NetFirewallProfile -Profile Domain,Private,Public -ErrorAction SilentlyContinue)
+          $failClosedVerified = $profiles.Count -eq 3 -and @($profiles | Where-Object {
+            $_.Enabled.ToString() -ne 'True' -or $_.DefaultOutboundAction.ToString() -ne 'Block'
+          }).Count -eq 0
+          [ordered]@{
+            verdict = 'FAIL'
+            failure_code = $failureCode
+            network_mode = if ($failClosedVerified) { 'blocked' } else { 'unknown' }
+            remaining_auth_process_count = if ($null -ne $remainingAuthProcesses) { $remainingAuthProcesses.Count } else { $null }
+            fail_closed_verified = $failClosedVerified
+            sensitive_content_read = $false
+          }
         }
       } -ArgumentList $GuestNetworkSealScript, $GuestReportPath, $NetworkSealSha256 -ErrorAction Stop
     } finally {
@@ -149,10 +188,14 @@ for ($candidateIndex = 0; $candidateIndex -lt $candidates.Count; $candidateIndex
       throw 'network-seal job returned no structured result'
     }
     $workingCandidateIndex = $candidateIndex
-    $attempts += [ordered]@{ candidate_index = $candidateIndex; ok = $true; error = $null }
+    $attempts += [ordered]@{
+      candidate_index = $candidateIndex
+      ok = $probe.verdict -eq 'PASS'
+      error = if ($probe.verdict -eq 'PASS') { $null } else { [string]$probe.failure_code }
+    }
     break
   } catch {
-    $attempts += [ordered]@{ candidate_index = $candidateIndex; ok = $false; error = 'powershell_direct_failed' }
+    $attempts += [ordered]@{ candidate_index = $candidateIndex; ok = $false; error = 'powershell_direct_transport_failed' }
   } finally {
     Stop-Job -Job $job -ErrorAction SilentlyContinue
     Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
