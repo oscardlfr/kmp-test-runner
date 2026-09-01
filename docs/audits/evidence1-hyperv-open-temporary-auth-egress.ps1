@@ -11,6 +11,11 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$AuthProbeHosts = @(
+  'claude.com',
+  'accounts.google.com',
+  'oauth2.googleapis.com'
+)
 
 function Fail([string]$Message) {
   Write-Error "HARD STOP: $Message"
@@ -73,13 +78,28 @@ $workingCandidateIndex = $null
 for ($candidateIndex = 0; $candidateIndex -lt $candidates.Count; $candidateIndex++) {
   $logonName = $candidates[$candidateIndex]
   $job = Start-Job -ScriptBlock {
-    param($VmName, $UserName, $SecurePassword, $AuthWindowMinutes)
+    param($VmName, $UserName, $SecurePassword, $AuthWindowMinutes, $AuthProbeHosts)
     $credential = [pscredential]::new($UserName, $SecurePassword)
     Invoke-Command -VMName $VmName -Credential $credential -ScriptBlock {
-      param($AuthWindowMinutes)
+      param($AuthWindowMinutes, $AuthProbeHosts)
       $ErrorActionPreference = 'Stop'
       $egressReady = $false
       try {
+
+        function Invoke-AuthEndpointProbe([string]$HostName) {
+          $curl = Join-Path $env:SystemRoot 'System32\curl.exe'
+          if (-not (Test-Path -LiteralPath $curl -PathType Leaf)) {
+            throw 'auth endpoint probe tool is unavailable'
+          }
+          $previousPreference = $ErrorActionPreference
+          try {
+            $ErrorActionPreference = 'Continue'
+            & $curl -IsS --max-time 12 "https://$HostName" *> $null
+            return [int]$LASTEXITCODE
+          } finally {
+            $ErrorActionPreference = $previousPreference
+          }
+        }
 
         $watchdogTaskName = 'Evidence1AuthEgressExpiry'
         Unregister-ScheduledTask -TaskName $watchdogTaskName -Confirm:$false -ErrorAction SilentlyContinue
@@ -114,11 +134,18 @@ if ($profiles.Count -ne 3 -or $invalid -ne 0) { exit 1 }
         }
 
         New-Item -ItemType Directory -Force -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' | Out-Null
+        $priorQuicAllowed = Get-ItemPropertyValue `
+          -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' `
+          -Name 'QuicAllowed' `
+          -ErrorAction SilentlyContinue
         New-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -Name 'QuicAllowed' -Value 0 -PropertyType DWord -Force | Out-Null
         Set-NetFirewallProfile -Profile Domain,Private,Public -Enabled True -DefaultInboundAction Block -DefaultOutboundAction Allow
         $edgeProcessCount = @(Get-Process -Name 'msedge' -ErrorAction SilentlyContinue).Count
-        Get-Process -Name 'msedge' -ErrorAction SilentlyContinue |
-          Stop-Process -Force -ErrorAction SilentlyContinue
+        $edgeRestartRequired = $priorQuicAllowed -ne 0
+        if ($edgeRestartRequired) {
+          Get-Process -Name 'msedge' -ErrorAction SilentlyContinue |
+            Stop-Process -Force -ErrorAction SilentlyContinue
+        }
 
         $profiles = @(Get-NetFirewallProfile -Profile Domain,Private,Public)
         $valid = $profiles.Count -eq 3 -and @($profiles | Where-Object {
@@ -127,13 +154,24 @@ if ($profiles.Count -ne 3 -or $invalid -ne 0) { exit 1 }
         if (-not $valid) {
           throw 'temporary auth egress profile verification failed'
         }
+
+        $authProbeSuccessCount = 0
+        foreach ($hostName in $AuthProbeHosts) {
+          if ((Invoke-AuthEndpointProbe $hostName) -ne 0) {
+            throw 'auth endpoint probe failed'
+          }
+          $authProbeSuccessCount++
+        }
         $egressReady = $true
         [ordered]@{
           verdict = 'PASS'
           profile_count = $profiles.Count
           outbound_allow_profile_count = @($profiles | Where-Object { $_.DefaultOutboundAction.ToString() -eq 'Allow' }).Count
           quic_allowed_policy = [int](Get-ItemPropertyValue -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -Name 'QuicAllowed')
-          stopped_edge_process_count = $edgeProcessCount
+          stopped_edge_process_count = if ($edgeRestartRequired) { $edgeProcessCount } else { 0 }
+          edge_restart_required = $edgeRestartRequired
+          auth_probe_host_count = $AuthProbeHosts.Count
+          auth_probe_success_count = $authProbeSuccessCount
           watchdog_armed = $true
           watchdog_window_minutes = $AuthWindowMinutes
           temporary_auth_window = $true
@@ -157,8 +195,8 @@ if ($profiles.Count -ne 3 -or $invalid -ne 0) { exit 1 }
           }
         }
       }
-    } -ArgumentList $AuthWindowMinutes -ErrorAction Stop
-  } -ArgumentList $VMName, $logonName, $storedCredential.Password, $AuthWindowMinutes
+    } -ArgumentList $AuthWindowMinutes, $AuthProbeHosts -ErrorAction Stop
+  } -ArgumentList $VMName, $logonName, $storedCredential.Password, $AuthWindowMinutes, $AuthProbeHosts
 
   try {
     if (-not (Wait-Job -Job $job -Timeout $ProbeTimeoutSeconds)) {

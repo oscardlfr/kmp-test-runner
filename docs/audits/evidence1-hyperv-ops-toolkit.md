@@ -147,14 +147,22 @@ interactive login. The allowlisted recovery sequence is:
 1. `evidence1-hyperv-open-temporary-auth-egress.ps1` temporarily changes the guest firewall's
    outbound default to `Allow` and disables Edge QUIC. Before opening egress it arms a SYSTEM
    watchdog that restores outbound blocking after 15 minutes, including after a suspended guest
-   resumes. Its report explicitly marks that readiness and live are forbidden until reseal.
+   resumes. The operation is not ready until privacy-safe HTTPS probes pass for Claude, Google
+   Accounts and Google's OAuth endpoint; only probe counts are persisted. Rearming an already
+   configured window does not terminate an in-progress Edge authentication flow. Its report
+   explicitly marks that readiness and live are forbidden until reseal.
 2. `evidence1-hyperv-open-claude-login-interactive-task.ps1` starts the existing desktop launcher
    in the already logged-on `Evidence1` session. It never reads or enters credentials. The operator
    alone completes the browser authentication.
 3. `evidence1-hyperv-open-vmconnect.ps1` exposes the guest desktop without injecting keys or text.
+   It launches VMConnect through a separate interactive scheduled task so the elevated operations
+   queue remains available while the viewer is open.
 4. After the operator finishes, `evidence1-hyperv-run-network-seal-direct.ps1` stops the temporary
    auth processes, removes the interactive task, deploys the reviewed network-seal script and
-   proves required Claude endpoints are reachable while unrelated destinations are blocked.
+   proves required Claude endpoints are reachable while unrelated destinations are blocked. A
+   rejected reseal records only its closed stage code (payload integrity, auth cleanup, seal
+   execution/result, or watchdog cleanup) and verifies fail-closed firewall state; it never retries
+   a destructive guest operation under alternate credential spellings after transport succeeded.
 5. Regenerate readiness and run one fresh remote-auth canary. Only a passing fresh canary permits
    the separately authorized live handoff.
 
