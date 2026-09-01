@@ -10,7 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readdirSync } from 'node:fs';
 import os from 'node:os';
-import { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, resolveMeasurementScopeOrFail, resolveMaxBudgetUsdOrFail, nullableMetric, resolveHarnessProvenance, verifyExactCommandsSucceeded, writeRunRecordEvidence, buildRunRecord, finalizeAndWriteRecords, finalizeAndWriteMatrixRecords, findBlockingHarnessToolingDirty, isRunsRootDefault, cmdAggregate, validateRunRecordFile, SUBCOMMAND_SHAPES, discardJournalIfRedundant, buildStderrByRunId } from '../../tools/agentic-eval/cli.mjs';
+import { parseArgs, validateSubcommandArgs, validatePrivatePatternsFileOrFail, resolveMeasurementScopeOrFail, resolveMaxBudgetUsdOrFail, nullableMetric, resolveHarnessProvenance, verifySourceRepoForScenario, verifyExactCommandsSucceeded, writeRunRecordEvidence, buildRunRecord, finalizeAndWriteRecords, finalizeAndWriteMatrixRecords, findBlockingHarnessToolingDirty, isRunsRootDefault, cmdAggregate, validateRunRecordFile, SUBCOMMAND_SHAPES, discardJournalIfRedundant, buildStderrByRunId } from '../../tools/agentic-eval/cli.mjs';
 import { computePolicySha256 } from '../../tools/agentic-eval/policy-config.mjs';
 import { buildAcceptedRunAuditSidecar, finalizeAcceptedRunAuditSidecar, acceptedAuditRelativePathFor, crossValidateAcceptedRunAuditAgainstRecord } from '../../tools/agentic-eval/accepted-run-audit.mjs';
 import { canonicalJsonSha256 as canonicalJsonSha256Local } from '../../tools/agentic-eval/canonical-json.mjs';
@@ -480,6 +480,71 @@ describe('resolveHarnessProvenance', () => {
     const third = resolveHarnessProvenance({ fresh: true });
     expect(third).not.toBe(first);
     expect(third).toEqual(first);
+  });
+});
+
+describe('verifySourceRepoForScenario', () => {
+  let sourceRepoDir;
+
+  function git(...args) {
+    const result = spawnSync('git', args, { cwd: sourceRepoDir, encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(0);
+    return result.stdout.trim();
+  }
+
+  function initializeSourceRepo() {
+    sourceRepoDir = mkdtempSync(path.join(os.tmpdir(), 'aec-source-hygiene-'));
+    git('init', '-q');
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'Test');
+    writeFileSync(path.join(sourceRepoDir, 'README.md'), 'fixture\n');
+    git('add', 'README.md');
+    git('commit', '-q', '-m', 'test: initialize source fixture');
+    git('remote', 'add', 'origin', 'https://github.com/example/source-fixture.git');
+    return {
+      project_url: 'git@github.com:example/source-fixture.git',
+      project_commit: git('rev-parse', 'HEAD'),
+    };
+  }
+
+  afterEach(() => {
+    if (sourceRepoDir) rmSync(sourceRepoDir, { recursive: true, force: true });
+    sourceRepoDir = undefined;
+  });
+
+  it('accepts only untracked kmp-test runtime output left by a validation gate', () => {
+    const scenario = initializeSourceRepo();
+    const cacheDir = path.join(sourceRepoDir, '.kmp-test-runner', 'cache');
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(path.join(cacheDir, `model-${'a'.repeat(40)}.json`), '{}\n');
+
+    expect(verifySourceRepoForScenario(sourceRepoDir, scenario)).toEqual({ ok: true, reason: null });
+  });
+
+  it('still rejects unrelated untracked work while omitting owned runtime output from the diagnostic', () => {
+    const scenario = initializeSourceRepo();
+    mkdirSync(path.join(sourceRepoDir, '.kmp-test-runner', 'cache'), { recursive: true });
+    writeFileSync(path.join(sourceRepoDir, '.kmp-test-runner', 'cache', 'tasks.txt'), 'generated\n');
+    writeFileSync(path.join(sourceRepoDir, 'operator-notes.txt'), 'in progress\n');
+
+    const result = verifySourceRepoForScenario(sourceRepoDir, scenario);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain('operator-notes.txt');
+    expect(result.reason).not.toContain('.kmp-test-runner');
+  });
+
+  it('still rejects tracked modifications inside the runtime-named directory', () => {
+    const scenario = initializeSourceRepo();
+    mkdirSync(path.join(sourceRepoDir, '.kmp-test-runner'), { recursive: true });
+    writeFileSync(path.join(sourceRepoDir, '.kmp-test-runner', 'tracked.txt'), 'committed\n');
+    git('add', '.kmp-test-runner/tracked.txt');
+    git('commit', '-q', '-m', 'test: track runtime-named fixture');
+    scenario.project_commit = git('rev-parse', 'HEAD');
+    writeFileSync(path.join(sourceRepoDir, '.kmp-test-runner', 'tracked.txt'), 'modified\n');
+
+    const result = verifySourceRepoForScenario(sourceRepoDir, scenario);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain('.kmp-test-runner/tracked.txt');
   });
 });
 

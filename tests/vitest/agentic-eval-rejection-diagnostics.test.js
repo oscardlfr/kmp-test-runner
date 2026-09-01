@@ -3306,6 +3306,22 @@ describe('rejection diagnostics schema 13 (Evidence1 success-recovery PR B, Sect
     expect(scenarioCommitted.cells[0].outcome_assessment).toEqual(REAL_OUTCOME_ASSESSMENT);
   });
 
+  it('preserves schema 2 mismatch field names in rejected diagnostics without values or prose', () => {
+    const assessment = {
+      ...REAL_OUTCOME_ASSESSMENT,
+      schema: 2,
+      task_outcome_matched: false,
+      task_outcome_reason: 'mismatched',
+      product_e2e_success: false,
+      task_outcome_mismatch_fields: ['threshold'],
+      task_outcome_unexpected_key_count: 0,
+    };
+    const { committed } = buildSchema13([schema8ScenarioRecord({ outcome_assessment: assessment })]);
+    expect(committed.cells[0].outcome_assessment).toEqual(assessment);
+    expect(JSON.stringify(committed.cells[0].outcome_assessment)).not.toContain('expected_value');
+    expect(JSON.stringify(committed.cells[0].outcome_assessment)).not.toContain('observed_value');
+  });
+
   it('every schema-13 cell carries its own outcome_observability_summary object, in both policy modes', () => {
     for (const rec of [schema8NotApplicableRecord(), schema8RequiredRecord()]) {
       const { committed } = buildSchema13([rec]);

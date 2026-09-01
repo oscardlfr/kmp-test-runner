@@ -5945,7 +5945,7 @@ describe('gradeScenarioCondition -- outcome_assessment (neutral scorer, Stage B1
     expect(grade.expectedOutcomeMatched).toBe(true);
     expect(grade.success).toBe(true);
     expect(grade.outcomeAssessment).toBeTruthy();
-    expect(grade.outcomeAssessment.schema).toBe(1);
+    expect(grade.outcomeAssessment.schema).toBe(2);
   });
 
   it('[case 12] legacy success is false for a FreeBaseline-shaped run the neutral scorer credits as correct -- success is never a fair cross-arm headline', () => {
@@ -5954,6 +5954,44 @@ describe('gradeScenarioCondition -- outcome_assessment (neutral scorer, Stage B1
     expect(grade.success).toBe(false);
     expect(grade.outcomeAssessment.task_outcome_matched).toBe(true);
     expect(grade.outcomeAssessment.product_e2e_success).toBeNull();
+  });
+
+  it('reports an empty privacy-safe mismatch diagnostic for an exact neutral claim', () => {
+    const grade = gradeScenarioCondition(
+      buildConditionResult([], SCENARIO_5_CORRECT_ANSWER, { condition: 'no-skill' }),
+      SCENARIO_5,
+    );
+    expect(grade.outcomeAssessment.schema).toBe(2);
+    expect(grade.outcomeAssessment.task_outcome_mismatch_fields).toEqual([]);
+    expect(grade.outcomeAssessment.task_outcome_unexpected_key_count).toBe(0);
+  });
+
+  it('reports only canonical field names when a well-formed neutral claim mismatches ground truth', () => {
+    const wrongClaim = kmpEvalResultText('Result recorded.', {
+      module: ':wrong:module', outcome_kind: 'coverage_threshold_exceeded',
+      total: 5, passed: 3, failed: 2,
+      missed_lines: 22, threshold: 16, modules_contributing: 2,
+    });
+    const grade = gradeScenarioCondition(
+      buildConditionResult([], wrongClaim, { condition: 'no-skill' }),
+      SCENARIO_5,
+    );
+    expect(grade.outcomeAssessment.task_outcome_matched).toBe(false);
+    expect(grade.outcomeAssessment.task_outcome_mismatch_fields).toEqual([
+      'module', 'total', 'passed', 'failed', 'missed_lines', 'threshold', 'modules_contributing',
+    ]);
+    expect(grade.outcomeAssessment.task_outcome_unexpected_key_count).toBe(0);
+  });
+
+  it('does not fabricate mismatch fields when no ground-truth comparison was possible', () => {
+    for (const finalText of [NO_BLOCK_TEXT, MALFORMED_BLOCK_TEXT]) {
+      const grade = gradeScenarioCondition(
+        buildConditionResult([], finalText, { condition: 'no-skill' }),
+        SCENARIO_5,
+      );
+      expect(grade.outcomeAssessment.task_outcome_mismatch_fields).toBeNull();
+      expect(grade.outcomeAssessment.task_outcome_unexpected_key_count).toBeNull();
+    }
   });
 
   // Review-round finding: cases 1-4/9/12 above assert product_e2e_success:null for a

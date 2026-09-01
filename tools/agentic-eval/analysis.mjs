@@ -50,6 +50,7 @@ import {
   PRODUCT_USAGE_MODE_VALUES,
 } from './product-access.mjs';
 import { emptyOutcomeObservabilitySummary } from './coverage-gate-observability.mjs';
+import { TASK_OUTCOME_MISMATCH_FIELD_VALUES } from './outcome-assessment-contract.mjs';
 
 // v1 -> v2 (Section F, agentic-eval-runtime-neutral-records-v1): per-run entries and group
 // summaries both gained agent_runtime/execution_profile/skill_observation/usage reporting fields,
@@ -93,7 +94,12 @@ import { emptyOutcomeObservabilitySummary } from './coverage-gate-observability.
 // timestamps). `success` stays exactly as before -- the strict, Product-only, non-comparable legacy
 // gate; task_outcome_matched/product_e2e_success are the fair, neutral, cross-arm measurements.
 // Never a single composite score -- every dimension stays separately reported.
-export const ANALYSIS_SCHEMA = 7;
+//
+// v7 -> v8 (neutral-claim mismatch observability): schema-2 outcome assessments additionally
+// expose only canonical mismatching FIELD NAMES and an unexpected-key COUNT. Per-run output keeps
+// both values separate; summaries publish a closed field-count map and count distribution. No
+// expected/observed values, final-answer prose, commands, paths, or transcript content are read.
+export const ANALYSIS_SCHEMA = 8;
 
 /** Closed vocabulary for `failure_class` -- exactly one per run, resolved by classifyFailure's own
  * documented precedence. `success` is not a "failure" in the literal sense; it is included so every
@@ -469,6 +475,13 @@ export function analyzeRunRecord(record, sidecar) {
   const outcomeAssessment = isNeutralOutcomeRecord ? (record.outcome_assessment ?? null) : null;
   const task_outcome_matched = isNeutralOutcomeRecord ? (outcomeAssessment?.task_outcome_matched ?? null) : expected_outcome_matched;
   const answer_protocol_matched = isNeutralOutcomeRecord ? (outcomeAssessment?.answer_protocol_matched ?? null) : final_answer_consistent;
+  const hasOutcomeMismatchDiagnostics = outcomeAssessment?.schema >= 2;
+  const task_outcome_mismatch_fields = hasOutcomeMismatchDiagnostics
+    ? outcomeAssessment.task_outcome_mismatch_fields
+    : null;
+  const task_outcome_unexpected_key_count = hasOutcomeMismatchDiagnostics
+    ? outcomeAssessment.task_outcome_unexpected_key_count
+    : null;
   // task_outcome_available_ms (Stage B3 review-round correction): a TIME, never an event index --
   // first_useful_signal_event's own contract is specifically correlated to a real user.tool_result
   // event (cli.mjs/accepted-run-audit.mjs); a claim-only FreeBaseline run has no such event at all,
@@ -545,6 +558,8 @@ export function analyzeRunRecord(record, sidecar) {
       expected_outcome_matched,
       final_answer_consistent,
       task_outcome_matched,
+      task_outcome_mismatch_fields,
+      task_outcome_unexpected_key_count,
       answer_protocol_matched,
       task_outcome_available_ms,
       provider_evidence_kind,
@@ -702,6 +717,12 @@ function buildGroupSummary(groupKey, entries, record) {
   const evidenceWellFormedCount = entries.filter((e) => e.terminal_authoritative_evidence_well_formed === true).length;
   const outcomeMatchedCount = entries.filter((e) => e.expected_outcome_matched === true).length;
   const taskOutcomeMatchedCount = entries.filter((e) => e.task_outcome_matched === true).length;
+  const taskOutcomeMismatchFieldCounts = Object.fromEntries(TASK_OUTCOME_MISMATCH_FIELD_VALUES.map((field) => [field, 0]));
+  for (const entry of entries) {
+    for (const field of stringArrayOrEmpty(entry.task_outcome_mismatch_fields)) {
+      if (field in taskOutcomeMismatchFieldCounts) taskOutcomeMismatchFieldCounts[field] += 1;
+    }
+  }
   const answerProtocolMatchedCount = entries.filter((e) => e.answer_protocol_matched === true).length;
   // Section 9.14: "Product E2E rate solo en Product" -- product_e2e_success is already null for
   // every non-Product entry by the neutral scorer's own construction (Section 9.5), so excluding
@@ -765,6 +786,8 @@ function buildGroupSummary(groupKey, entries, record) {
     expected_outcome_matched_rate: rate(outcomeMatchedCount, total),
     task_outcome_matched_count: taskOutcomeMatchedCount,
     task_outcome_matched_rate: rate(taskOutcomeMatchedCount, total),
+    task_outcome_mismatch_field_counts: taskOutcomeMismatchFieldCounts,
+    task_outcome_unexpected_key_count_distribution: buildDistribution(entries.map((e) => e.task_outcome_unexpected_key_count ?? null)),
     task_outcome_available_ms_distribution: buildDistribution(entries.map((e) => e.task_outcome_available_ms)),
     provider_evidence_kind_distribution: buildDistribution(entries.map((e) => e.provider_evidence_kind)),
     provider_evidence_status_distribution: buildDistribution(entries.map((e) => e.provider_evidence_status)),

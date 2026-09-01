@@ -1845,6 +1845,22 @@ describe('accepted sidecar schema 10 (Evidence1 success-recovery PR B, Section 9
     expect(sidecar.outcome_assessment).toEqual(REAL_OUTCOME_ASSESSMENT);
   });
 
+  it('preserves outcome_assessment schema 2 mismatch diagnostics verbatim without materializing values', () => {
+    const assessment = {
+      ...REAL_OUTCOME_ASSESSMENT,
+      schema: 2,
+      task_outcome_matched: false,
+      task_outcome_reason: 'mismatched',
+      product_e2e_success: false,
+      task_outcome_mismatch_fields: ['module', 'missed_lines'],
+      task_outcome_unexpected_key_count: 0,
+    };
+    const sidecar = buildFor(schema8PolicyRequiredRecord({ outcome_assessment: assessment }));
+    expect(sidecar.outcome_assessment).toEqual(assessment);
+    expect(JSON.stringify(sidecar.outcome_assessment)).not.toContain('expected_value');
+    expect(JSON.stringify(sidecar.outcome_assessment)).not.toContain('observed_value');
+  });
+
   it('every schema:10 sidecar carries its own outcome_observability_summary object, in both policy modes', () => {
     for (const record of [schema8PolicyRequiredRecord(), schema8NotApplicableRecord()]) {
       const sidecar = buildFor(record);

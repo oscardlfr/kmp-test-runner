@@ -1969,6 +1969,47 @@ describe('schema v8 (Evidence1 success-recovery PR B, Section 9.4/9.5) -- outcom
     expect(validateRun(v8ScenarioBase())).toEqual({ errors: [], warnings: [] });
   });
 
+  it('accepts outcome_assessment schema 2 while preserving schema 1 historical records', () => {
+    const matchedV2 = {
+      ...v8ScenarioBase().outcome_assessment,
+      schema: 2,
+      task_outcome_mismatch_fields: [],
+      task_outcome_unexpected_key_count: 0,
+    };
+    expect(validateRun(v8ScenarioBase({ outcome_assessment: matchedV2 }))).toEqual({ errors: [], warnings: [] });
+    expect(validateRun(v8ScenarioBase())).toEqual({ errors: [], warnings: [] });
+  });
+
+  it('requires a non-empty closed mismatch field list only for a compared mismatch', () => {
+    const base = {
+      ...v8ScenarioBase().outcome_assessment,
+      schema: 2,
+      task_outcome_matched: false,
+      task_outcome_reason: 'mismatched',
+      task_outcome_mismatch_fields: ['module', 'missed_lines'],
+      task_outcome_unexpected_key_count: 0,
+    };
+    expect(validateRun(v8ScenarioBase({ outcome_assessment: base }))).toEqual({ errors: [], warnings: [] });
+
+    for (const fields of [[], ['unknown'], ['module', 'module']]) {
+      const invalid = v8ScenarioBase({ outcome_assessment: { ...base, task_outcome_mismatch_fields: fields } });
+      expect(validateRun(invalid).errors.some((e) => e.field === 'outcome_assessment.task_outcome_mismatch_fields')).toBe(true);
+    }
+  });
+
+  it('uses null diagnostics when the neutral comparison was unavailable', () => {
+    const unavailable = {
+      ...v8ScenarioBase().outcome_assessment,
+      schema: 2,
+      task_outcome_matched: null,
+      task_outcome_reason: 'claim-missing',
+      answer_protocol_matched: false,
+      task_outcome_mismatch_fields: null,
+      task_outcome_unexpected_key_count: null,
+    };
+    expect(validateRun(v8ScenarioBase({ outcome_assessment: unavailable }))).toEqual({ errors: [], warnings: [] });
+  });
+
   // Requirement 1 (Section 9.11): run schema 8 exige exactamente outcome_assessment.
   it('schema:8 scenario record REJECTS a null outcome_assessment', () => {
     const run = v8ScenarioBase({ outcome_assessment: null });
