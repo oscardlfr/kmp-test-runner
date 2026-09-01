@@ -217,19 +217,27 @@ function Initialize-Evidence1CanarySupport {
     Import-Module (Join-Path $PSScriptRoot 'evidence1-live-handoff-contract.psm1') -ErrorAction Stop
 }
 
-function Read-Evidence1CanaryJson([string]$Path, [int]$MaxBytes = 1048576) {
+function Read-Evidence1CanaryJson([string]$Path, [int]$MaxBytes = 1048576, [switch]$AllowMissingLeaf) {
     Initialize-Evidence1CanarySupport
     $full = [IO.Path]::GetFullPath($Path)
     $current = $full
     while ($current) {
         if (Test-Path -LiteralPath $current) {
-            $item = Get-Item -LiteralPath $current -Force
+            try { $item = Get-Item -LiteralPath $current -Force }
+            catch [Management.Automation.ItemNotFoundException] {
+                if ($AllowMissingLeaf -and $current -ceq $full) { return $null }
+                throw
+            }
             if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or (Get-E1Field $item 'LinkType') -eq 'HardLink') { throw 'canary_path_link' }
         }
         $current = [IO.Path]::GetDirectoryName($current)
     }
     $share = [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
-    $stream = [IO.File]::Open($full, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)
+    try { $stream = [IO.File]::Open($full, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share) }
+    catch [IO.FileNotFoundException] {
+        if ($AllowMissingLeaf) { return $null }
+        throw
+    }
     try {
         if ($stream.Length -gt $MaxBytes) { throw 'canary_json_size' }
         $memory = [IO.MemoryStream]::new()
@@ -330,22 +338,6 @@ function Test-Evidence1JournalPathDisappearance($Failure) {
         $exception = $exception.InnerException
     }
     return $false
-}
-
-function Test-Evidence1JournalSnapshotLeafDisappearance($Failure, [string]$Path) {
-    $sawFileNotFound = $false
-    $sawItemNotFound = $false
-    $exception = $Failure.Exception
-    for ($i = 0; $exception -and $i -lt 8; $i++) {
-        if ($exception -is [IO.DirectoryNotFoundException]) { return $false }
-        if ($exception -is [IO.FileNotFoundException]) { $sawFileNotFound = $true }
-        if ($exception -is [Management.Automation.ItemNotFoundException]) { $sawItemNotFound = $true }
-        $exception = $exception.InnerException
-    }
-    if ($sawFileNotFound) { return $true }
-    if (-not $sawItemNotFound) { return $false }
-    $parent = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Path))
-    return Test-Path -LiteralPath $parent -PathType Container
 }
 
 function Resolve-Evidence1JournalPathDisappearance($Failure, $Previous, [string]$RunId,
@@ -600,10 +592,8 @@ function ConvertTo-Evidence1CanaryJournalSnapshot($Raw, [string]$RunId) {
 
 function Read-Evidence1CanaryJournalSnapshot([string]$Path, [string]$RunId, $Previous = $null) {
     Initialize-Evidence1CanarySupport
-    try {
-        $file = Read-Evidence1CanaryJson $Path
-    } catch {
-        if (-not (Test-Evidence1JournalSnapshotLeafDisappearance $_ $Path)) { throw }
+    $file = Read-Evidence1CanaryJson $Path -AllowMissingLeaf
+    if ($null -eq $file) {
         if ($null -eq $Previous) { return $null }
         return ConvertTo-Evidence1CanaryJournalSnapshot $Previous $RunId
     }

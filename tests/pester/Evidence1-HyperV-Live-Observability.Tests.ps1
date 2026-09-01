@@ -114,6 +114,7 @@ Describe 'Evidence1 canary one-use and journal contracts' {
         $path = Join-Path $script:CanaryDirectory 'journal.json'
 
         Read-Evidence1CanaryJournalSnapshot $path $script:CanaryId | Should -BeNullOrEmpty
+        { Read-Evidence1CanaryJson $path } | Should -Throw
     }
 
     It 'preserves the last validated wrapper snapshot across an atomic replacement gap' {
@@ -182,6 +183,10 @@ Describe 'Evidence1 canary one-use and journal contracts' {
         $definition | Should -Match 'Read-Evidence1CanaryJournalSnapshot'
         $definition | Should -Not -Match 'Test-Path\s+-LiteralPath\s+\$path'
         $definition | Should -Not -Match 'Read-Evidence1CanaryJson\s+\$path'
+
+        $reader = (Get-Command Read-Evidence1CanaryJournalSnapshot).ScriptBlock.Ast.Extent.Text
+        $reader | Should -Match 'Read-Evidence1CanaryJson\s+\$Path\s+-AllowMissingLeaf'
+        $reader | Should -Not -Match '\bcatch\b'
     }
 
     It 'accepts bound journal retirement only after process exit and preserves the last safe snapshot' {
