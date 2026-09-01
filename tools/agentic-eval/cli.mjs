@@ -3577,7 +3577,19 @@ function verifySourceRepoForScenario(sourceRepoDir, scenario) {
   if (status.error || status.status !== 0) {
     return { ok: false, reason: `could not verify --source-repo-dir's working tree is clean (git status failed in ${sourceRepoDir})` };
   }
-  const dirtyPaths = status.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const dirtyPaths = status.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => {
+      // kmp-test owns this untracked runtime directory. Validation gates may populate it before
+      // an agentic-eval run, while scenario materialization still reads only the pinned commit
+      // object. Keep rejecting tracked edits here and every change outside this exact directory.
+      const untracked = /^\?\? (.+)$/.exec(line);
+      if (!untracked) return true;
+      const relativePath = untracked[1].replaceAll('\\', '/');
+      return relativePath !== '.kmp-test-runner/' && !relativePath.startsWith('.kmp-test-runner/');
+    });
   if (dirtyPaths.length > 0) {
     return { ok: false, reason: `--source-repo-dir has uncommitted local modifications -- refusing as a courtesy to your own in-progress work there (materialization always reads the pinned commit object regardless, so this is optional hygiene, not a scenario-correctness protection): ${dirtyPaths.join(', ')}` };
   }
