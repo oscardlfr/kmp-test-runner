@@ -85,16 +85,16 @@ for ($candidateIndex = 0; $candidateIndex -lt $candidates.Count; $candidateIndex
     $session = $null
     $transportStage = 'credential_materialization_failed'
     try {
-      [ordered]@{ record_type = 'transport_stage'; stage = $transportStage }
+      [pscustomobject][ordered]@{ record_type = 'transport_stage'; stage = $transportStage }
       $credential = [pscredential]::new($UserName, $SecurePassword)
       $transportStage = 'session_open_failed'
-      [ordered]@{ record_type = 'transport_stage'; stage = $transportStage }
+      [pscustomobject][ordered]@{ record_type = 'transport_stage'; stage = $transportStage }
       $session = New-PSSession -VMName $VmName -Credential $credential -ErrorAction Stop
       $transportStage = 'payload_copy_failed'
-      [ordered]@{ record_type = 'transport_stage'; stage = $transportStage }
+      [pscustomobject][ordered]@{ record_type = 'transport_stage'; stage = $transportStage }
       Copy-Item -LiteralPath $NetworkSealSourcePath -Destination $GuestNetworkSealScript -ToSession $session -Force -ErrorAction Stop
       $transportStage = 'guest_invoke_failed'
-      [ordered]@{ record_type = 'transport_stage'; stage = $transportStage }
+      [pscustomobject][ordered]@{ record_type = 'transport_stage'; stage = $transportStage }
       Invoke-Command -Session $session -ScriptBlock {
         param($GuestNetworkSealScript, $GuestReportPath, $NetworkSealSha256)
         $ErrorActionPreference = 'Stop'
@@ -143,7 +143,7 @@ for ($candidateIndex = 0; $candidateIndex -lt $candidates.Count; $candidateIndex
             throw 'auth-egress expiry watchdog could not be removed after successful reseal'
           }
 
-          [ordered]@{
+          [pscustomobject][ordered]@{
             verdict = 'PASS'
             failure_code = $null
             seal_schema = $seal.schema
@@ -171,7 +171,7 @@ for ($candidateIndex = 0; $candidateIndex -lt $candidates.Count; $candidateIndex
           $failClosedVerified = $profiles.Count -eq 3 -and @($profiles | Where-Object {
             $_.Enabled.ToString() -ne 'True' -or $_.DefaultOutboundAction.ToString() -ne 'Block'
           }).Count -eq 0
-          [ordered]@{
+          [pscustomobject][ordered]@{
             verdict = 'FAIL'
             failure_code = $failureCode
             network_mode = if ($failClosedVerified) { 'blocked' } else { 'unknown' }
@@ -182,7 +182,7 @@ for ($candidateIndex = 0; $candidateIndex -lt $candidates.Count; $candidateIndex
         }
       } -ArgumentList $GuestNetworkSealScript, $GuestReportPath, $NetworkSealSha256 -ErrorAction Stop
     } catch {
-      [ordered]@{
+      [pscustomobject][ordered]@{
         verdict = 'FAIL'
         failure_code = $transportStage
         transport_hresult = [int]$_.Exception.HResult
