@@ -332,6 +332,22 @@ function Test-Evidence1JournalPathDisappearance($Failure) {
     return $false
 }
 
+function Test-Evidence1JournalSnapshotLeafDisappearance($Failure, [string]$Path) {
+    $sawFileNotFound = $false
+    $sawItemNotFound = $false
+    $exception = $Failure.Exception
+    for ($i = 0; $exception -and $i -lt 8; $i++) {
+        if ($exception -is [IO.DirectoryNotFoundException]) { return $false }
+        if ($exception -is [IO.FileNotFoundException]) { $sawFileNotFound = $true }
+        if ($exception -is [Management.Automation.ItemNotFoundException]) { $sawItemNotFound = $true }
+        $exception = $exception.InnerException
+    }
+    if ($sawFileNotFound) { return $true }
+    if (-not $sawItemNotFound) { return $false }
+    $parent = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Path))
+    return Test-Path -LiteralPath $parent -PathType Container
+}
+
 function Resolve-Evidence1JournalPathDisappearance($Failure, $Previous, [string]$RunId,
     [switch]$AllowRetiredAfterProcessExit, [switch]$AllowRetiredAfterTerminalJournal) {
     if (-not (Test-Evidence1JournalPathDisappearance $Failure)) { throw $Failure }
@@ -587,7 +603,7 @@ function Read-Evidence1CanaryJournalSnapshot([string]$Path, [string]$RunId, $Pre
     try {
         $file = Read-Evidence1CanaryJson $Path
     } catch {
-        if (-not (Test-Evidence1JournalPathDisappearance $_)) { throw }
+        if (-not (Test-Evidence1JournalSnapshotLeafDisappearance $_ $Path)) { throw }
         if ($null -eq $Previous) { return $null }
         return ConvertTo-Evidence1CanaryJournalSnapshot $Previous $RunId
     }

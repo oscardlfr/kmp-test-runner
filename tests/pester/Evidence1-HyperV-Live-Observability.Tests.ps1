@@ -132,6 +132,17 @@ Describe 'Evidence1 canary one-use and journal contracts' {
         $snapshot.transition_counts.planned | Should -Be 1
     }
 
+    It 'rejects a missing wrapper custody directory instead of treating it as file replacement' {
+        $path = Join-Path (Join-Path $script:CanaryDirectory 'missing-parent') 'journal.json'
+        $previous = [ordered]@{
+            run_id = $script:CanaryId; journal_id = '69cd5780-49fa-4531-960a-e26cbd7fda54'; available = $true
+            event_count = 1; latest_event = '000000000000-0-planned.json'; transition_counts = @{ planned = 1 }
+            publication_pending = $false; publication_pending_since_utc = $null
+        }
+
+        { Read-Evidence1CanaryJournalSnapshot $path $script:CanaryId $previous } | Should -Throw
+    }
+
     It 'recovers on the next wrapper heartbeat after an atomic replacement gap' {
         $path = Join-Path $script:CanaryDirectory 'journal.json'
         Read-Evidence1CanaryJournalSnapshot $path $script:CanaryId | Should -BeNullOrEmpty
