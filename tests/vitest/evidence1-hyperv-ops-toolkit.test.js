@@ -136,6 +136,100 @@ try {
     });
   }, 25_000);
 
+  it.skipIf(process.platform !== 'win32')('starts the real live wrapper when the newest journal has no events yet', () => {
+    const wrapper = rel(resolve(root, 'docs/audits/evidence1-stageb-live-wrapper.ps1')).replaceAll("'", "''");
+    const script = `
+$ErrorActionPreference = 'Stop'
+$fixture = Join-Path $env:TEMP ('e1-empty-live-journal-' + [guid]::NewGuid().ToString('N'))
+$ops = Join-Path $fixture 'ops'
+$harness = Join-Path $fixture 'harness'
+$events = Join-Path $harness 'tools\\runs\\agentic-eval-journal\\empty-journal\\events'
+$launcher = Join-Path $fixture 'launcher.ps1'
+$runId = [guid]::NewGuid().ToString('D')
+try {
+  New-Item -ItemType Directory -Force -Path $ops,$events | Out-Null
+  @'
+param([string]$RunId, [string]$TerminalRecordPath)
+$record = [ordered]@{
+  schema = 1
+  run_id = $RunId
+  state = 'exited'
+  ts_utc = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+  exit_code = 0
+  exit_code_source = 'launcher_record'
+}
+[IO.File]::WriteAllText($TerminalRecordPath, ($record | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+exit 0
+'@ | Set-Content -LiteralPath $launcher -Encoding UTF8
+  & '${wrapper}' -RunId $runId -LauncherPath $launcher -OpsDir $ops -HarnessDir $harness -HeartbeatSeconds 1 -StopTimeoutMilliseconds 5000
+  $wrapperExit = $LASTEXITCODE
+  $terminal = Get-Content -LiteralPath (Join-Path $ops 'STAGE-B-live.exit.json') -Raw | ConvertFrom-Json
+  $status = Get-Content -LiteralPath (Join-Path $ops 'STAGE-B-live.status.json') -Raw | ConvertFrom-Json
+  [ordered]@{
+    wrapper_exit = $wrapperExit
+    terminal_state = $terminal.state
+    terminal_exit = $terminal.exit_code
+    wrapper_error_stage = $terminal.wrapper_error_stage
+    journal_event_count = $status.journal.event_count
+  } | ConvertTo-Json -Compress
+} finally {
+  Remove-Item -LiteralPath $fixture -Recurse -Force -ErrorAction SilentlyContinue
+}
+`;
+    const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
+      encoding: 'utf8',
+      timeout: 30_000,
+    });
+    expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+    expect(JSON.parse(result.stdout.trim())).toEqual({
+      wrapper_exit: 0,
+      terminal_state: 'exited',
+      terminal_exit: 0,
+      wrapper_error_stage: null,
+      journal_event_count: 0,
+    });
+  }, 35_000);
+
+  it.skipIf(process.platform !== 'win32')('validates standard-matrix shutdown custody without accepting canary downgrade', () => {
+    const contract = rel(resolve(root, 'docs/audits/evidence1-live-run-contract.psm1')).replaceAll("'", "''");
+    const script = `
+$ErrorActionPreference = 'Stop'
+Import-Module '${contract}' -Force
+$runId = [guid]::NewGuid().ToString('D')
+$vmName = 'Evidence1-Runner'
+$placement = [pscustomobject][ordered]@{
+  verdict = 'PASS'; schema = 1; generated_at_utc = '2026-09-01T12:00:00.000Z'
+  run_id = $runId; vm_name = $vmName
+  launcher_sha256 = ('a' * 64); wrapper_sha256 = ('b' * 64); contract_sha256 = ('c' * 64)
+  startup_entry_created = $true
+  prior_run_custody = [pscustomobject]@{ state = 'none'; run_id = $null; archived_operational_artifacts = @(); archive_relative_path = $null }
+  replacement_or_respawn_used = $false
+  launch_policy = 'one-shot'
+}
+$handoff = [pscustomobject][ordered]@{
+  schema = 1; state = 'started'; generated_at_utc = '2026-09-01T12:00:01.000Z'
+  vm_name = $vmName; vm_state = 'Running'; target_commit = ('d' * 40); target_tree = ('e' * 40); run_id = $runId
+  prior_run_custody = [pscustomobject]@{ state = 'none'; run_id = $null }
+  failure_kind = ''; hard_power_fallback_used = $false; replacement_or_respawn_used = $false; raw_content_read = $false
+}
+$terminal = [pscustomobject][ordered]@{
+  schema = 1; run_id = $runId; state = 'wrapper_error'; exit_code = 997; exit_code_source = 'wrapper_error'; canary = $null
+}
+$accepted = Assert-Evidence1MatrixShutdownCustody $placement $handoff $terminal $runId $vmName
+$terminal.canary = [pscustomobject]@{ arm = 'product'; planned_sessions = 1; binding_sha256 = ('f' * 64) }
+$downgradeRejected = $false
+try { $null = Assert-Evidence1MatrixShutdownCustody $placement $handoff $terminal $runId $vmName }
+catch { $downgradeRejected = $true }
+[ordered]@{ accepted = $accepted; downgrade_rejected = $downgradeRejected } | ConvertTo-Json -Compress
+`;
+    const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
+      encoding: 'utf8',
+      timeout: 20_000,
+    });
+    expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+    expect(JSON.parse(result.stdout.trim())).toEqual({ accepted: true, downgrade_rejected: true });
+  }, 25_000);
+
   it.skipIf(process.platform !== 'win32')('observes the real atomic journal publisher before and after linkSync without false failure', () => {
     const contract = rel(resolve(root, 'docs/audits/evidence1-live-run-contract.psm1')).replaceAll("'", "''");
     const publisher = pathToFileURL(resolve(root, 'tools/agentic-eval/evidence-io.mjs')).href;
@@ -235,6 +329,7 @@ try {
     expect(preserveCheckpoint).toBeGreaterThan(0);
     expect(initialCheckpoint).toBeGreaterThan(preserveCheckpoint);
     expect(copy).toContain('Test-Evidence1TerminalRecordObject');
+    expect(copy).toContain('Assert-Evidence1MatrixShutdownCustody');
     expect(copy).toContain('New-PSSession -VMName $VMName');
     expect(copy).toContain('$shutdownRequested = $true');
     expect(copy).toContain('$shutdownIntentRecorded = $true');

@@ -675,6 +675,43 @@ function Assert-Evidence1CanaryShutdownCustody($Placement, $Handoff, $TerminalRe
     } catch { throw 'canary_shutdown_custody_invalid' }
 }
 
+function Assert-Evidence1MatrixShutdownCustody($Placement, $Handoff, $TerminalRecord, [string]$RunId, [string]$VMName) {
+    Initialize-Evidence1CanarySupport
+    try {
+        if ($RunId -cnotmatch '^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$' -or
+            $VMName -cnotmatch '^[A-Za-z0-9][A-Za-z0-9-]{0,63}$') { throw 'identity' }
+
+        Assert-E1Keys $Placement @(
+            'verdict','schema','generated_at_utc','run_id','vm_name','launcher_sha256','wrapper_sha256',
+            'contract_sha256','startup_entry_created','prior_run_custody','replacement_or_respawn_used','launch_policy'
+        )
+        Assert-E1Fields $Placement @{
+            verdict = 'PASS'; schema = 1; run_id = $RunId; vm_name = $VMName
+            startup_entry_created = $true; replacement_or_respawn_used = $false
+        }
+        foreach ($name in @('launcher_sha256','wrapper_sha256','contract_sha256')) {
+            if ((Get-E1Field $Placement $name) -cnotmatch '^[a-f0-9]{64}$') { throw 'placement_hash' }
+        }
+
+        Assert-E1Keys $Handoff @(
+            'schema','state','generated_at_utc','vm_name','vm_state','target_commit','target_tree','run_id',
+            'prior_run_custody','failure_kind','hard_power_fallback_used','replacement_or_respawn_used','raw_content_read'
+        )
+        Assert-E1Fields $Handoff @{
+            schema = 1; state = 'started'; vm_name = $VMName; vm_state = 'Running'; run_id = $RunId
+            failure_kind = ''; hard_power_fallback_used = $false
+            replacement_or_respawn_used = $false; raw_content_read = $false
+        }
+        foreach ($name in @('target_commit','target_tree')) {
+            if ((Get-E1Field $Handoff $name) -cnotmatch '^[a-f0-9]{40}$') { throw 'handoff_anchor' }
+        }
+
+        $terminal = Test-Evidence1TerminalRecordObject -Record $TerminalRecord -Source 'powershell_direct_terminal' -ExpectedRunId $RunId
+        if (-not $terminal.valid -or $null -ne (Get-E1Field $terminal.record 'canary')) { throw 'terminal' }
+        return $true
+    } catch { throw 'matrix_shutdown_custody_invalid' }
+}
+
 function Get-Evidence1CanaryCustody([string]$Directory, [string]$RunId, [string]$BindingSha256, $TerminalRecord) {
     Initialize-Evidence1CanarySupport
     try {
@@ -819,4 +856,5 @@ Export-ModuleMember -Function @(
     'Read-Evidence1CanaryJournalSnapshot'
     'ConvertTo-Evidence1CanaryDiagnostics'
     'Assert-Evidence1CanaryShutdownCustody'
+    'Assert-Evidence1MatrixShutdownCustody'
 )

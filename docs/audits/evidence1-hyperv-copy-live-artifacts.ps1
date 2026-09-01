@@ -388,7 +388,11 @@ try {
       $placement = (Read-Evidence1CanaryJson 'C:\kmp-eval\scratch\hyperv-place-live-autorun\HYPERV-PLACE-LIVE-AUTORUN.json').value
       $handoff = (Read-Evidence1CanaryJson 'C:\kmp-eval\scratch\hyperv-start-authorized-live\HYPERV-START-AUTHORIZED-LIVE.json').value
       $runningTerminal = Read-RunningTerminal
-      $null = Assert-Evidence1CanaryShutdownCustody $placement $handoff $runningTerminal $ExpectedRunId $VMName
+      if ($placement.PSObject.Properties['canary']) {
+        $null = Assert-Evidence1CanaryShutdownCustody $placement $handoff $runningTerminal $ExpectedRunId $VMName
+      } else {
+        $null = Assert-Evidence1MatrixShutdownCustody $placement $handoff $runningTerminal $ExpectedRunId $VMName
+      }
     } catch {
       Fail 'vm_shutdown_custody'
     }
