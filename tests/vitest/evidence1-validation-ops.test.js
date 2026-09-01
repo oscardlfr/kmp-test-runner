@@ -722,6 +722,104 @@ describe.skipIf(!hasPowerShell)('Evidence1 validation operations functional cont
       $out | ConvertTo-Json -Compress`))).toEqual([true, true]);
   });
 
+  it('accepts only fail-closed incomplete custody for an exact consumed canary attempt', async () => {
+    const runId = randomUUID();
+    const bindingSha = 'c'.repeat(64);
+    const binding = {
+      schema: 1, run_id: runId, arm: 'product', planned_sessions: 1,
+      target_commit: 'a'.repeat(40), hashes: { readiness_sha256: 'b'.repeat(64) },
+    };
+    const placement = {
+      verdict: 'PASS', vm_name: 'Evidence1-Runner', run_id: runId,
+      generated_at_utc: '2026-08-30T12:02:00.000Z',
+      canary: { binding_sha256: bindingSha, binding },
+    };
+    const handoff = {
+      state: 'started', vm_name: 'Evidence1-Runner', run_id: runId,
+      generated_at_utc: '2026-08-30T12:02:30.000Z', vm_state: 'Running',
+      target_commit: 'a'.repeat(40), target_tree: 'd'.repeat(40), prior_run_custody: null, failure_kind: null,
+      schema: 1, hard_power_fallback_used: false, replacement_or_respawn_used: false, raw_content_read: false,
+      canary: { binding_sha256: bindingSha, binding },
+    };
+    const diagnostics = {
+      schema: 1, failure_phase: 'journal', failure_code: 'canary_progress_shape',
+      failures: { primary: { phase: 'journal', code: 'canary_progress_shape' }, cleanup: null, postflight: null, persistence: null },
+      processes: { dry_plan: null, live: null },
+      checks: { source_preserved: null, custody_written: null, terminal_written: null },
+    };
+    const copy = {
+      schema: 1, invocation_id: '99999999-8888-7777-6666-555555555555',
+      state: 'failed', verdict: 'FAIL', vm_name: 'Evidence1-Runner', expected_run_id: runId,
+      generated_at_utc: '2026-08-30T12:03:00.000Z', raw_content_read: false,
+      failure_phase: 'canary_custody', failure_code: 'canary_custody_incomplete',
+      failure_subreason: 'canary_progress_shape',
+      graceful_shutdown_intent_recorded: true, graceful_shutdown_requested: true,
+      graceful_shutdown_completed: true, hard_power_fallback_used: false,
+      vm_state: 'Off', vhd_path: 'C:\\kmp-eval\\hyperv\\Evidence1-Runner.vhdx', mounted_drive: 'Z:\\',
+      out_dir: 'C:\\kmp-eval\\scratch\\hyperv-copy-live-artifacts', copied: {}, stage_b_exit_text: '997',
+      journal_dirs: [], journal_event_summaries: [], journal_event_copies: [], scenario_files: [], scenario_copies: [],
+      incident_diagnostics: [], rejection_diagnostics: [], local_structured_rejection_details: [], runs_inventory: [],
+      note: 'Inventory uses file names, sizes and hashes only. Raw transcript/stderr contents are not read.',
+      stage_b_exit: {
+        valid: true, source: 'wrapper_terminal', reason: null, exit_code: 997,
+        record: {
+          schema: 1, run_id: runId, state: 'wrapper_error', exit_code: 997, exit_code_source: 'wrapper_error',
+          ts_utc: '2026-08-30T12:02:59.000Z', wrapper_error_type: 'System.InvalidOperationException',
+          wrapper_error_stage: 'monitor_launcher', canary: { arm: 'product', planned_sessions: 1, binding_sha256: bindingSha },
+          diagnostics,
+        },
+      },
+      canary: {
+        verified: false, complete: false, custody_state: 'incomplete_wrapper_monitor',
+        run_id: runId, arm: 'product', planned_sessions: 1,
+        binding_sha256: bindingSha, attempt_consumed: true, retry_authorized: false,
+        source_preserved: false, failure_phase: 'journal', failure_code: 'canary_progress_shape',
+        files: {
+          'binding.json': '1'.repeat(64), 'wet.json': '2'.repeat(64), 'dry.json': '3'.repeat(64),
+          'readiness.json': '4'.repeat(64), 'handoff.claim.json': '5'.repeat(64),
+          'wrapper.claim.json': '6'.repeat(64), 'launcher.claim.json': '7'.repeat(64),
+        },
+      },
+    };
+    const result = await ps(`$r = ${json(evidence.readiness)}; $r.generated_at_utc = '2026-08-30T12:05:00.000Z'
+      $p = ${json(placement)}; $h = ${json(handoff)}; $copy = ${json(copy)}
+      $out = @()
+      try { Assert-E1NoLiveCustody $p $copy $h 'Evidence1-Runner' $r; $out += $true } catch { $out += $false }
+      foreach ($mutation in @('copy_code','attempt','retry','run','subreason','handoff','handoff_raw','handoff_hard_power','handoff_respawn','handoff_binding','handoff_extra','copy_extra','canary_extra','stage_extra','terminal_extra','terminal_exit','terminal_exit_type','planned_type','terminal_binding','diagnostics')) {
+        $candidate = ConvertFrom-E1Json ($copy | ConvertTo-Json -Depth 10 -Compress)
+        $candidateHandoff = ConvertFrom-E1Json ($h | ConvertTo-Json -Depth 10 -Compress)
+        switch ($mutation) {
+          'copy_code' {
+            $candidate.canary.failure_code = 'arbitrary_failure'; $candidate.failure_subreason = 'arbitrary_failure'
+            $candidate.stage_b_exit.record.diagnostics.failure_code = 'arbitrary_failure'
+            $candidate.stage_b_exit.record.diagnostics.failures.primary.code = 'arbitrary_failure'
+          }
+          'attempt' { $candidate.canary.attempt_consumed = $false }
+          'retry' { $candidate.canary.retry_authorized = $true }
+          'run' { $candidate.canary.run_id = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }
+          'subreason' { $candidate.failure_subreason = 'different_failure' }
+          'handoff' { $candidateHandoff = $null }
+          'handoff_raw' { $candidateHandoff.raw_content_read = $true }
+          'handoff_hard_power' { $candidateHandoff.hard_power_fallback_used = $true }
+          'handoff_respawn' { $candidateHandoff.replacement_or_respawn_used = $true }
+          'handoff_binding' { $candidateHandoff.canary.binding.target_commit = ('f' * 40) }
+          'handoff_extra' { $candidateHandoff | Add-Member -NotePropertyName private_note -NotePropertyValue 'sentinel' }
+          'copy_extra' { $candidate | Add-Member -NotePropertyName private_note -NotePropertyValue 'sentinel' }
+          'canary_extra' { $candidate.canary | Add-Member -NotePropertyName private_note -NotePropertyValue 'sentinel' }
+          'stage_extra' { $candidate.stage_b_exit | Add-Member -NotePropertyName private_note -NotePropertyValue 'sentinel' }
+          'terminal_extra' { $candidate.stage_b_exit.record | Add-Member -NotePropertyName private_note -NotePropertyValue 'sentinel' }
+          'terminal_exit' { $candidate.stage_b_exit.record.exit_code = 1 }
+          'terminal_exit_type' { $candidate.stage_b_exit.record.exit_code = '997' }
+          'planned_type' { $candidate.canary.planned_sessions = '1' }
+          'terminal_binding' { $candidate.stage_b_exit.record.canary.binding_sha256 = ('d' * 64) }
+          'diagnostics' { $candidate.stage_b_exit.record.diagnostics.failure_code = 'canary_terminal_binding' }
+        }
+        try { Assert-E1NoLiveCustody $p $candidate $candidateHandoff 'Evidence1-Runner' $r; $out += $false } catch { $out += $true }
+      }
+      $out | ConvertTo-Json -Compress`);
+    expect(result).toEqual([true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true]);
+  });
+
   it('treats owned-tree cleanup failure as terminal failure, never a passing envelope', async () => {
     const dir = mkdtempSync(resolve(tmpdir(), 'e1-validation-cleanup-'));
     try {

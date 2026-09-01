@@ -158,7 +158,9 @@ The command writes a privacy-safe handoff state record under
 `C:\kmp-eval\scratch\hyperv-start-authorized-live`. Treat any state other than `started` as a HARD
 STOP. Do not rerun the command to repair `stopping`, `off`, `armed`, or `failed`; inspect the state
 and preserve custody first. A previous `started` handoff can be superseded only after
-`evidence1-hyperv-copy-live-artifacts.ps1` has copied a valid terminal record for the same run id.
+`evidence1-hyperv-copy-live-artifacts.ps1` has copied terminal custody for the same run id. That
+custody is either a complete passing copy or the exact fail-closed incomplete-wrapper shape;
+neither state authorizes a retry of the consumed arm.
 
 5. Monitor progress without raw access:
 
@@ -181,6 +183,28 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File docs\audits\evidence1-ho
   -ScriptPath docs\audits\evidence1-hyperv-copy-live-artifacts.ps1 `
   -ScriptArgumentsJson '["-ExpectedRunId","<run-guid>"]'
 ```
+
+If the host restarted after a one-cell handoff and readiness later restarted the VM before
+terminal custody was copied, use the same copy operation with `-GracefulShutdown`:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File docs\audits\evidence1-host-elevated-runner-client.ps1 `
+  -ScriptPath docs\audits\evidence1-hyperv-copy-live-artifacts.ps1 `
+  -ScriptArgumentsJson '["-ExpectedRunId","<run-guid>","-GracefulShutdown"]'
+```
+
+This recovery is valid only when the current placement and handoff records identify that exact
+run and PowerShell Direct can read a terminal wrapper or launcher record bound to the same arm,
+single-session plan, and binding hash. The script reads only the two structured terminal JSON
+files; it does not inspect process command lines, raw transcripts, stderr, prompts, or responses.
+Only after that terminal proof does it publish `vm_shutdown_dispatch_pending`, request a normal
+guest shutdown, publish `vm_shutdown_interrupted` after Hyper-V accepts the request, wait for
+`Off`, and follow the existing read-only mount and copy path. Those two checkpoints distinguish
+an interruption before dispatch from one after dispatch without claiming that shutdown completed.
+It never uses `-TurnOff` or another hard-power fallback. A terminal
+`canary_custody_incomplete` report closes the consumed attempt without authorizing a retry;
+arbitrary failed copy reports still block V2 and later live work. Do not rerun an interrupted or
+failed shutdown blindly: preserve its report and inspect the privacy-safe state first.
 
 ## One-Cell Stage L
 

@@ -155,7 +155,7 @@ try {
     }
   });
 
-  it('replaces stale copy reports before Hyper-V access and publishes bounded terminal state', () => {
+  it('preserves prior copy reports before Hyper-V access and publishes bounded terminal state', () => {
     const copy = read('docs/audits/evidence1-hyperv-copy-live-artifacts.ps1');
     const initialReport = copy.indexOf("state = 'started'");
     const hyperVAccess = copy.indexOf('Get-VM -Name $VMName');
@@ -166,6 +166,46 @@ try {
     expect(copy).toContain('Write-Evidence1JsonAtomically -Path $copyReportPath');
     expect(copy).not.toMatch(/Exception\.Message/);
     expect(copy).not.toMatch(/HYPERV-COPY-LIVE-ARTIFACTS\.json'\)\s+-Encoding/);
+    expect(copy).toContain("$existingState -cin @('passed','failed')");
+    expect(copy).toContain("$archiveCode = 'terminal'");
+  });
+
+  it('binds an optional graceful shutdown to exact prior custody without a hard-power fallback', () => {
+    const copy = read('docs/audits/evidence1-hyperv-copy-live-artifacts.ps1');
+    const terminalReader = copy.slice(copy.indexOf('function Read-RunningTerminal'), copy.indexOf('Assert-PathInside $OutDir'));
+    const terminalRead = copy.indexOf('Read-RunningTerminal');
+    const custodyCheck = copy.indexOf('Assert-Evidence1CanaryShutdownCustody');
+    const shutdown = copy.indexOf('Stop-VM -Name $VMName');
+    const intentCheckpoint = copy.indexOf("failure_code = 'vm_shutdown_dispatch_pending'");
+    const acceptedCheckpoint = copy.indexOf("failure_code = 'vm_shutdown_interrupted'");
+    const preserveCheckpoint = copy.indexOf('Preserve-InterruptedCopyCheckpoint $copyReportPath');
+    const initialCheckpoint = copy.indexOf('$startedReport = [ordered]@{');
+    expect(copy).toContain('[switch]$GracefulShutdown');
+    expect(terminalRead).toBeGreaterThan(0);
+    expect(custodyCheck).toBeGreaterThan(terminalRead);
+    expect(intentCheckpoint).toBeGreaterThan(custodyCheck);
+    expect(shutdown).toBeGreaterThan(intentCheckpoint);
+    expect(acceptedCheckpoint).toBeGreaterThan(shutdown);
+    expect(preserveCheckpoint).toBeGreaterThan(0);
+    expect(initialCheckpoint).toBeGreaterThan(preserveCheckpoint);
+    expect(copy).toContain('Test-Evidence1TerminalRecordObject');
+    expect(copy).toContain('New-PSSession -VMName $VMName');
+    expect(copy).toContain('$shutdownRequested = $true');
+    expect(copy).toContain('$shutdownIntentRecorded = $true');
+    expect(copy).toContain('graceful_shutdown_intent_recorded = $shutdownIntentRecorded');
+    expect(copy).toContain('graceful_shutdown_requested = $shutdownRequested');
+    expect(copy).not.toContain('graceful_shutdown_requested = [bool]$GracefulShutdown');
+    expect(copy).toContain("failure_code = 'vm_shutdown_interrupted'");
+    expect(copy).toContain('hard_power_fallback_used = $false');
+    expect(copy).not.toMatch(/Stop-VM[^\r\n]*-TurnOff/);
+    expect(terminalReader).not.toMatch(/CommandLine|stderr\.txt|raw\//i);
+    expect(terminalReader).toContain("schema = $record.schema");
+    expect(terminalReader).toContain("canary = [ordered]@{");
+    expect(terminalReader).not.toContain("$result[$entry.key] = $record");
+    expect(copy).toContain("@('copy_interrupted','vm_shutdown_dispatch_pending','vm_shutdown_interrupted')");
+    expect(copy).toContain("throw 'copy_checkpoint_invalid'");
+    expect(copy).toContain("throw 'copy_checkpoint_collision'");
+    expect(copy).toContain('Move-Item -LiteralPath $Path -Destination $archivePath');
   });
 
   it('uses the script directory as the default elevated-runner trust boundary', () => {

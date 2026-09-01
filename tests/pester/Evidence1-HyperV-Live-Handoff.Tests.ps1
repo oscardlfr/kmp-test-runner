@@ -14,6 +14,51 @@ BeforeAll {
     $script:AttestationPath = 'C:\kmp-eval\measurement-scopes\evidence1-attestation.json'
     $script:Now = [DateTime]::Parse('2026-08-28T12:20:00.000Z').ToUniversalTime()
 
+    function Complete-CanaryCopyFixture($Copy) {
+        $Copy.schema = 1
+        $Copy.invocation_id = '99999999-8888-7777-6666-555555555555'
+        $Copy.graceful_shutdown_intent_recorded = $true
+        $Copy.graceful_shutdown_requested = $true
+        $Copy.graceful_shutdown_completed = $true
+        $Copy.hard_power_fallback_used = $false
+        $Copy.vm_state = 'Off'
+        $Copy.vhd_path = 'C:\kmp-eval\hyperv\Evidence1-Runner.vhdx'
+        $Copy.mounted_drive = 'Z:\'
+        $Copy.out_dir = 'C:\kmp-eval\scratch\hyperv-copy-live-artifacts'
+        $Copy.copied = [ordered]@{}
+        $Copy.stage_b_exit_text = [string]$Copy.stage_b_exit.record.exit_code
+        $Copy.journal_dirs = @()
+        $Copy.journal_event_summaries = @()
+        $Copy.journal_event_copies = @()
+        $Copy.scenario_files = @()
+        $Copy.scenario_copies = @()
+        $Copy.incident_diagnostics = @()
+        $Copy.rejection_diagnostics = @()
+        $Copy.local_structured_rejection_details = @()
+        $Copy.runs_inventory = @()
+        $Copy.note = 'Inventory uses file names, sizes and hashes only. Raw transcript/stderr contents are not read.'
+        $Copy.stage_b_exit.source = 'wrapper_terminal'
+        $Copy.stage_b_exit.reason = $null
+        $Copy.stage_b_exit.exit_code = $Copy.stage_b_exit.record.exit_code
+        $Copy.stage_b_exit.record.ts_utc = '2026-08-28T10:59:00.000Z'
+        $Copy.stage_b_exit.record.wrapper_error_type = 'System.InvalidOperationException'
+        return $Copy
+    }
+
+    function New-CanaryFilesFixture([switch]$Launcher, [switch]$Source) {
+        $files = [ordered]@{
+            'binding.json' = '1' * 64
+            'wet.json' = '2' * 64
+            'dry.json' = '3' * 64
+            'readiness.json' = '4' * 64
+            'handoff.claim.json' = '5' * 64
+            'wrapper.claim.json' = '6' * 64
+        }
+        if ($Launcher) { $files['launcher.claim.json'] = '7' * 64 }
+        if ($Source) { $files['source-custody.json'] = '8' * 64 }
+        return $files
+    }
+
     function New-ReadinessReport {
         [ordered]@{
             verdict = 'PASS'
@@ -532,6 +577,100 @@ Describe 'Evidence1 previous-run custody contract' {
         $actual.run_id | Should -Be $script:PriorRunId
     }
 
+    It 'binds complete canary custody to the exact terminal and rejects private shape drift' {
+        $bindingSha = 'c' * 64
+        $binding = [ordered]@{ schema = 1; run_id = $script:PriorRunId; arm = 'product'; planned_sessions = 1 }
+        $placement = [ordered]@{
+            verdict = 'PASS'; generated_at_utc = '2026-08-28T10:00:00.000Z'
+            vm_name = $script:VMName; run_id = $script:PriorRunId
+            canary = [ordered]@{ binding_sha256 = $bindingSha; binding = $binding }
+        }
+        $diagnostics = [ordered]@{
+            schema = 1; failure_phase = $null; failure_code = $null
+            failures = [ordered]@{ primary = $null; cleanup = $null; postflight = $null; persistence = $null }
+            processes = [ordered]@{ dry_plan = $null; live = $null }
+            checks = [ordered]@{ source_preserved = $true; custody_written = $true; terminal_written = $true }
+        }
+        $copy = [ordered]@{
+            state = 'passed'; verdict = 'PASS'; generated_at_utc = '2026-08-28T11:00:00.000Z'
+            vm_name = $script:VMName; expected_run_id = $script:PriorRunId; raw_content_read = $false
+            failure_phase = $null; failure_code = $null; failure_subreason = $null
+            stage_b_exit = [ordered]@{ valid = $true; record = [ordered]@{
+                schema = 1; run_id = $script:PriorRunId; state = 'exited'; exit_code = 0; exit_code_source = 'launcher_record'
+                wrapper_error_stage = $null; canary = [ordered]@{ arm = 'product'; planned_sessions = 1; binding_sha256 = $bindingSha }
+                diagnostics = $diagnostics
+            } }
+            canary = [ordered]@{
+                verified = $true; complete = $true; custody_state = 'complete'; run_id = $script:PriorRunId
+                arm = 'product'; planned_sessions = 1; binding_sha256 = $bindingSha; attempt_consumed = $true
+                retry_authorized = $false; source_preserved = $true; files = New-CanaryFilesFixture -Launcher -Source
+            }
+        }
+        $copy = Complete-CanaryCopyFixture $copy
+        $copy.stage_b_exit.record.wrapper_error_type = $null
+
+        (Assert-Evidence1PreviousRunCustody $placement $copy $script:VMName).state | Should -Be 'closed'
+
+        $copy.stage_b_exit.record.canary.binding_sha256 = 'd' * 64
+        { Assert-Evidence1PreviousRunCustody $placement $copy $script:VMName } | Should -Throw
+        $copy.stage_b_exit.record.canary.binding_sha256 = $bindingSha
+        $copy.private_note = 'sentinel'
+        { Assert-Evidence1PreviousRunCustody $placement $copy $script:VMName } | Should -Throw
+        $copy.Remove('private_note')
+
+        $copy.raw_content_read = 0
+        { Assert-Evidence1PreviousRunCustody $placement $copy $script:VMName } | Should -Throw
+        $copy.raw_content_read = $false
+
+        $copy.stage_b_exit.record.state = 'running'
+        { Assert-Evidence1PreviousRunCustody $placement $copy $script:VMName } | Should -Throw
+        $copy.stage_b_exit.record.state = 'exited'
+        $copy.stage_b_exit.record.exit_code_source = 'invalid_source'
+        { Assert-Evidence1PreviousRunCustody $placement $copy $script:VMName } | Should -Throw
+        $copy.stage_b_exit.record.exit_code_source = 'launcher_record'
+
+        $copy.canary.files['private.txt'] = 'sensitive-value'
+        { Assert-Evidence1PreviousRunCustody $placement $copy $script:VMName } | Should -Throw
+        $copy.canary.files.Remove('private.txt')
+        $copy.canary.files['binding.json'] = 'not-a-sha256'
+        { Assert-Evidence1PreviousRunCustody $placement $copy $script:VMName } | Should -Throw
+        $copy.canary.files['binding.json'] = '1' * 64
+
+        $launcherCopy = $copy | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+        $launcherCopy.stage_b_exit.source = 'launcher_terminal'
+        $launcherCopy.stage_b_exit.record.PSObject.Properties.Remove('wrapper_error_type')
+        $launcherCopy.stage_b_exit.record.PSObject.Properties.Remove('wrapper_error_stage')
+        (Assert-Evidence1PreviousRunCustody $placement $launcherCopy $script:VMName).state | Should -Be 'closed'
+
+        $legacyShape = $copy | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+        foreach ($name in @(
+            'graceful_shutdown_intent_recorded','graceful_shutdown_requested',
+            'graceful_shutdown_completed','hard_power_fallback_used'
+        )) {
+            $legacyShape.PSObject.Properties.Remove($name)
+        }
+        { Assert-Evidence1PreviousRunCustody $placement $legacyShape $script:VMName } | Should -Throw
+
+        $alreadyOffCopy = $copy | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+        $alreadyOffCopy.graceful_shutdown_intent_recorded = $false
+        $alreadyOffCopy.graceful_shutdown_requested = $false
+        $alreadyOffCopy.graceful_shutdown_completed = $false
+        (Assert-Evidence1PreviousRunCustody $placement $alreadyOffCopy $script:VMName).state | Should -Be 'closed'
+
+        foreach ($mutation in @('state','vm_state','failure','shutdown','reason','missing_source')) {
+            $candidate = $copy | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+            switch ($mutation) {
+                'state' { $candidate.state = 'failed' }
+                'vm_state' { $candidate.vm_state = 'Running' }
+                'failure' { $candidate.failure_code = 'unexpected_failure' }
+                'shutdown' { $candidate.graceful_shutdown_completed = $false }
+                'reason' { $candidate.stage_b_exit.reason = 'free-form sentinel' }
+                'missing_source' { $candidate.canary.files.PSObject.Properties.Remove('source-custody.json') }
+            }
+            { Assert-Evidence1PreviousRunCustody $placement $candidate $script:VMName } | Should -Throw
+        }
+    }
+
     It 'accepts an empty first-run custody state' {
         $actual = Assert-Evidence1PreviousRunCustody `
             -PlacementReport $null `
@@ -591,5 +730,193 @@ Describe 'Evidence1 previous-run custody contract' {
                 -CopyReport $script:Copy `
                 -ExpectedVMName $script:VMName
         } | Should -Throw '*prior copy VM mismatch*'
+    }
+
+    It 'closes an exact fail-closed incomplete canary attempt without authorizing a retry' {
+        $bindingSha = 'c' * 64
+        $binding = [ordered]@{
+            schema = 1; run_id = $script:PriorRunId; arm = 'product'; planned_sessions = 1
+            target_commit = 'a' * 40; hashes = [ordered]@{ readiness_sha256 = 'b' * 64 }
+        }
+        $placement = [ordered]@{
+            verdict = 'PASS'; generated_at_utc = '2026-08-28T10:00:00.000Z'
+            vm_name = $script:VMName; run_id = $script:PriorRunId
+            canary = [ordered]@{ binding_sha256 = $bindingSha; binding = $binding }
+        }
+        $diagnostics = [ordered]@{
+            schema = 1; failure_phase = 'journal'; failure_code = 'canary_progress_shape'
+            failures = [ordered]@{
+                primary = [ordered]@{ phase = 'journal'; code = 'canary_progress_shape' }
+                cleanup = $null; postflight = $null; persistence = $null
+            }
+            processes = [ordered]@{ dry_plan = $null; live = $null }
+            checks = [ordered]@{ source_preserved = $null; custody_written = $null; terminal_written = $null }
+        }
+        $copy = [ordered]@{
+            state = 'failed'; verdict = 'FAIL'; generated_at_utc = '2026-08-28T11:00:00.000Z'
+            vm_name = $script:VMName; expected_run_id = $script:PriorRunId; raw_content_read = $false
+            failure_phase = 'canary_custody'; failure_code = 'canary_custody_incomplete'
+            failure_subreason = 'canary_progress_shape'
+            stage_b_exit = [ordered]@{
+                valid = $true
+                record = [ordered]@{
+                    schema = 1; run_id = $script:PriorRunId; state = 'wrapper_error'; exit_code = 997
+                    exit_code_source = 'wrapper_error'; wrapper_error_stage = 'monitor_launcher'
+                    canary = [ordered]@{ arm = 'product'; planned_sessions = 1; binding_sha256 = $bindingSha }
+                    diagnostics = $diagnostics
+                }
+            }
+            canary = [ordered]@{
+                verified = $false; complete = $false; custody_state = 'incomplete_wrapper_monitor'
+                run_id = $script:PriorRunId; arm = 'product'; planned_sessions = 1; binding_sha256 = $bindingSha
+                attempt_consumed = $true; retry_authorized = $false; source_preserved = $false
+                failure_phase = 'journal'; failure_code = 'canary_progress_shape'; files = New-CanaryFilesFixture -Launcher
+            }
+        }
+        $copy = Complete-CanaryCopyFixture $copy
+
+        $actual = Assert-Evidence1PreviousRunCustody $placement $copy $script:VMName
+
+        $actual.state | Should -Be 'closed'
+        $actual.attempt_status | Should -Be 'failed'
+        $actual.canary_custody | Should -Be 'incomplete'
+
+        $copy.failure_subreason = 'unclassified'
+        $copy.canary.failure_code = 'unclassified'
+        $copy.stage_b_exit.record.diagnostics.failure_code = 'unclassified'
+        $copy.stage_b_exit.record.diagnostics.failures.primary.code = 'unclassified'
+        (Assert-Evidence1PreviousRunCustody $placement $copy $script:VMName).attempt_status | Should -Be 'failed'
+    }
+
+    It 'rejects malformed incomplete canary custody instead of accepting generic failures' {
+        $bindingSha = 'c' * 64
+        $binding = [ordered]@{ schema = 1; run_id = $script:PriorRunId; arm = 'product'; planned_sessions = 1 }
+        $placement = [ordered]@{
+            verdict = 'PASS'; generated_at_utc = '2026-08-28T10:00:00.000Z'
+            vm_name = $script:VMName; run_id = $script:PriorRunId
+            canary = [ordered]@{ binding_sha256 = $bindingSha; binding = $binding }
+        }
+        $diagnostics = [ordered]@{
+            schema = 1; failure_phase = 'journal'; failure_code = 'canary_progress_shape'
+            failures = [ordered]@{ primary = [ordered]@{ phase = 'journal'; code = 'canary_progress_shape' }; cleanup = $null; postflight = $null; persistence = $null }
+            processes = [ordered]@{ dry_plan = $null; live = $null }
+            checks = [ordered]@{ source_preserved = $null; custody_written = $null; terminal_written = $null }
+        }
+        $copy = [ordered]@{
+            state = 'failed'; verdict = 'FAIL'; generated_at_utc = '2026-08-28T11:00:00.000Z'
+            vm_name = $script:VMName; expected_run_id = $script:PriorRunId; raw_content_read = $false
+            failure_phase = 'canary_custody'; failure_code = 'canary_custody_incomplete'; failure_subreason = 'canary_progress_shape'
+            stage_b_exit = [ordered]@{ valid = $true; record = [ordered]@{
+                schema = 1; run_id = $script:PriorRunId; state = 'wrapper_error'; exit_code = 997; exit_code_source = 'wrapper_error'
+                wrapper_error_stage = 'monitor_launcher'; canary = [ordered]@{ arm = 'product'; planned_sessions = 1; binding_sha256 = $bindingSha }
+                diagnostics = $diagnostics
+            } }
+            canary = [ordered]@{
+                verified = $false; complete = $false; custody_state = 'incomplete_wrapper_monitor'; run_id = $script:PriorRunId
+                arm = 'product'; planned_sessions = 1; binding_sha256 = $bindingSha; attempt_consumed = $true
+                retry_authorized = $false; source_preserved = $false; failure_phase = 'journal'
+                failure_code = 'canary_progress_shape'; files = New-CanaryFilesFixture -Launcher
+            }
+        }
+        $copy = Complete-CanaryCopyFixture $copy
+
+        foreach ($mutation in @('arbitrary_code','extra_copy','extra_canary','extra_stage','extra_terminal','terminal_exit','terminal_exit_type','planned_type','diagnostics_schema_type','terminal_binding','diagnostics','placement_binding')) {
+            $candidate = $copy | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+            switch ($mutation) {
+                'arbitrary_code' {
+                    $candidate.canary.failure_code = 'arbitrary_failure'
+                    $candidate.failure_subreason = 'arbitrary_failure'
+                    $candidate.stage_b_exit.record.diagnostics.failure_code = 'arbitrary_failure'
+                    $candidate.stage_b_exit.record.diagnostics.failures.primary.code = 'arbitrary_failure'
+                }
+                'extra_copy' { $candidate | Add-Member -NotePropertyName private_note -NotePropertyValue 'sentinel' }
+                'extra_canary' { $candidate.canary | Add-Member -NotePropertyName private_note -NotePropertyValue 'sentinel' }
+                'extra_stage' { $candidate.stage_b_exit | Add-Member -NotePropertyName private_note -NotePropertyValue 'sentinel' }
+                'extra_terminal' { $candidate.stage_b_exit.record | Add-Member -NotePropertyName private_note -NotePropertyValue 'sentinel' }
+                'terminal_exit' { $candidate.stage_b_exit.record.exit_code = 1 }
+                'terminal_exit_type' { $candidate.stage_b_exit.record.exit_code = '997' }
+                'planned_type' { $candidate.canary.planned_sessions = '1' }
+                'diagnostics_schema_type' { $candidate.stage_b_exit.record.diagnostics.schema = '1' }
+                'terminal_binding' { $candidate.stage_b_exit.record.canary.binding_sha256 = 'd' * 64 }
+                'diagnostics' { $candidate.stage_b_exit.record.diagnostics.failure_code = 'canary_terminal_binding' }
+                'placement_binding' { $placement.canary.binding_sha256 = 'e' * 64 }
+            }
+            { Assert-Evidence1PreviousRunCustody $placement $candidate $script:VMName } | Should -Throw
+            $placement.canary.binding_sha256 = $bindingSha
+        }
+    }
+}
+
+Describe 'Evidence1 offline copy shutdown custody contract' {
+    It 'accepts only the exact consumed run handoff before a graceful shutdown' {
+        $runId = 'b48bfb0c-a9ae-4e0e-8d89-56eb1e278090'
+        $bindingSha = 'c' * 64
+        $binding = [ordered]@{
+            schema = 1; run_id = $runId; arm = 'product'; planned_sessions = 1
+            target_commit = 'a' * 40; hashes = [ordered]@{ readiness_sha256 = 'b' * 64 }
+        }
+        $placement = @{
+            verdict = 'PASS'; run_id = $runId; vm_name = 'Evidence1-Runner'
+            canary = @{ binding_sha256 = $bindingSha; binding = $binding }
+        }
+        $handoff = @{
+            schema = 1; state = 'started'; run_id = $runId; vm_name = 'Evidence1-Runner'
+            generated_at_utc = '2026-08-28T10:01:00.000Z'; vm_state = 'Running'
+            target_commit = 'a' * 40; target_tree = 'd' * 40; prior_run_custody = $null; failure_kind = $null
+            hard_power_fallback_used = $false; replacement_or_respawn_used = $false; raw_content_read = $false
+            canary = @{ binding_sha256 = $bindingSha; binding = ($binding | ConvertTo-Json -Depth 8 | ConvertFrom-Json) }
+        }
+        $terminal = [pscustomobject]@{
+            schema = 1; run_id = $runId; state = 'wrapper_error'; exit_code = 997; exit_code_source = 'wrapper_error'
+            canary = [pscustomobject]@{ arm = 'product'; planned_sessions = 1; binding_sha256 = $bindingSha }
+        }
+
+        Assert-Evidence1CanaryShutdownCustody $placement $handoff $terminal $runId 'Evidence1-Runner' | Should -BeTrue
+    }
+
+    It 'rejects missing or nonterminal evidence, binding drift, another run, or any hard-power fallback' {
+        $runId = 'b48bfb0c-a9ae-4e0e-8d89-56eb1e278090'
+        $bindingSha = 'c' * 64
+        $binding = [ordered]@{
+            schema = 1; run_id = $runId; arm = 'product'; planned_sessions = 1
+            target_commit = 'a' * 40; hashes = [ordered]@{ readiness_sha256 = 'b' * 64 }
+        }
+        $placement = @{
+            verdict = 'PASS'; run_id = $runId; vm_name = 'Evidence1-Runner'
+            canary = @{ binding_sha256 = $bindingSha; binding = $binding }
+        }
+        $handoff = @{
+            schema = 1; state = 'started'; run_id = $runId; vm_name = 'Evidence1-Runner'
+            generated_at_utc = '2026-08-28T10:01:00.000Z'; vm_state = 'Running'
+            target_commit = 'a' * 40; target_tree = 'd' * 40; prior_run_custody = $null; failure_kind = $null
+            hard_power_fallback_used = $false; replacement_or_respawn_used = $false; raw_content_read = $false
+            canary = @{ binding_sha256 = $bindingSha; binding = ($binding | ConvertTo-Json -Depth 8 | ConvertFrom-Json) }
+        }
+        $terminal = [pscustomobject]@{
+            schema = 1; run_id = $runId; state = 'wrapper_error'; exit_code = 997; exit_code_source = 'wrapper_error'
+            canary = [pscustomobject]@{ arm = 'product'; planned_sessions = 1; binding_sha256 = $bindingSha }
+        }
+
+        { Assert-Evidence1CanaryShutdownCustody $placement $handoff $terminal 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' 'Evidence1-Runner' } | Should -Throw
+        $handoff.state = 'stopping'
+        { Assert-Evidence1CanaryShutdownCustody $placement $handoff $terminal $runId 'Evidence1-Runner' } | Should -Throw
+        $handoff.state = 'started'; $handoff.hard_power_fallback_used = $true
+        { Assert-Evidence1CanaryShutdownCustody $placement $handoff $terminal $runId 'Evidence1-Runner' } | Should -Throw
+        $handoff.hard_power_fallback_used = $false
+        { Assert-Evidence1CanaryShutdownCustody $placement $handoff $null $runId 'Evidence1-Runner' } | Should -Throw
+        $placementWithoutCanary = @{ verdict = 'PASS'; run_id = $runId; vm_name = 'Evidence1-Runner' }
+        { Assert-Evidence1CanaryShutdownCustody $placementWithoutCanary $handoff $terminal $runId 'Evidence1-Runner' } | Should -Throw
+        $terminal.state = 'running'
+        { Assert-Evidence1CanaryShutdownCustody $placement $handoff $terminal $runId 'Evidence1-Runner' } | Should -Throw
+        $terminal.state = 'wrapper_error'; $terminal.canary.binding_sha256 = 'd' * 64
+        { Assert-Evidence1CanaryShutdownCustody $placement $handoff $terminal $runId 'Evidence1-Runner' } | Should -Throw
+        $terminal.canary.binding_sha256 = $bindingSha; $handoff.canary.binding_sha256 = 'e' * 64
+        { Assert-Evidence1CanaryShutdownCustody $placement $handoff $terminal $runId 'Evidence1-Runner' } | Should -Throw
+        $handoff.canary.binding_sha256 = $bindingSha; $handoff.canary.binding.target_commit = 'f' * 40
+        { Assert-Evidence1CanaryShutdownCustody $placement $handoff $terminal $runId 'Evidence1-Runner' } | Should -Throw
+        $handoff.canary.binding.target_commit = 'a' * 40; $handoff.private_note = 'sentinel'
+        { Assert-Evidence1CanaryShutdownCustody $placement $handoff $terminal $runId 'Evidence1-Runner' } | Should -Throw
+        $handoff.Remove('private_note'); $handoff.canary.private_note = 'sentinel'
+        { Assert-Evidence1CanaryShutdownCustody $placement $handoff $terminal $runId 'Evidence1-Runner' } | Should -Throw
     }
 }

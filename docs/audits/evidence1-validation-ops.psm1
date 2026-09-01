@@ -640,22 +640,35 @@ function Invoke-E1DryAttempt {
 }
 
 function Assert-E1NoLiveCustody($Placement, $Copy, $Handoff, [string]$VMName, $Readiness) {
-    if ($null -eq $Placement -and $null -eq $Copy -and $null -eq $Handoff) { return }
-    Assert-E1Fields $Placement @{ verdict = 'PASS'; vm_name = $VMName }
-    Assert-E1Fields $Copy @{ verdict = 'PASS'; vm_name = $VMName; raw_content_read = $false }
-    $runId = Get-E1Field $Placement 'run_id'
-    if ($runId -isnot [string] -or $runId -cnotmatch '^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$') { throw 'live_custody' }
-    $exit = Get-E1Field $Copy 'stage_b_exit'
-    Assert-E1Fields $exit @{ valid = $true }
-    $terminal = Get-E1Field $exit 'record'
-    Assert-E1Fields $terminal @{ schema = 1; run_id = $runId }
-    if ((Get-E1Field $terminal 'state') -cnotin @('exited','wrapper_error','terminated_after_launcher_exit') -or
-        (Get-E1Field $terminal 'exit_code_source') -cnotin @('launcher_record','process_exit_code','wrapper_error') -or
-        ((Get-E1Field $terminal 'exit_code') -isnot [int] -and (Get-E1Field $terminal 'exit_code') -isnot [long])) { throw 'live_custody' }
-    if ($null -ne $Handoff) { Assert-E1Fields $Handoff @{ state = 'started'; run_id = $runId; vm_name = $VMName } }
+    Import-Module (Join-Path $PSScriptRoot 'evidence1-live-handoff-contract.psm1') -ErrorAction Stop
+    try { $custody = Assert-Evidence1PreviousRunCustody $Placement $Copy $VMName }
+    catch { throw 'live_custody' }
+    if ($custody.state -ceq 'none') {
+        if ($null -ne $Handoff) { throw 'live_custody' }
+        return
+    }
+    $runId = $custody.run_id
+    if ($null -ne $Handoff) {
+        $handoffSchema = Get-E1Field $Handoff 'schema'
+        if (($handoffSchema -isnot [int] -and $handoffSchema -isnot [long]) -or [long]$handoffSchema -ne 1) { throw 'live_custody' }
+        Assert-E1Fields $Handoff @{ state = 'started'; run_id = $runId; vm_name = $VMName }
+        foreach ($name in @('hard_power_fallback_used','replacement_or_respawn_used','raw_content_read')) {
+            $value = Get-E1Field $Handoff $name
+            if ($value -isnot [bool] -or $value) { throw 'live_custody' }
+        }
+    }
+    $placementHasCanary = if ($Placement -is [Collections.IDictionary]) {
+        $Placement.Contains('canary')
+    } else {
+        $null -ne $Placement.PSObject.Properties['canary']
+    }
+    if ((Get-E1Field $custody 'attempt_status') -ceq 'failed' -or $placementHasCanary) {
+        if ($null -eq $Handoff) { throw 'live_custody' }
+        try { $null = Assert-Evidence1PriorHandoffCustody $Placement $Handoff $runId $VMName }
+        catch { throw 'live_custody' }
+    }
     $copyTime = Get-E1Timestamp (Get-E1Field $Copy 'generated_at_utc')
-    if ($copyTime -lt (Get-E1Timestamp (Get-E1Field $Placement 'generated_at_utc')) -or
-        $copyTime -gt (Get-E1Timestamp (Get-E1Field $Readiness 'generated_at_utc'))) { throw 'live_custody' }
+    if ($copyTime -gt (Get-E1Timestamp (Get-E1Field $Readiness 'generated_at_utc'))) { throw 'live_custody' }
 }
 
 function Assert-E1NoGuestLive([string]$SourceDir) {
