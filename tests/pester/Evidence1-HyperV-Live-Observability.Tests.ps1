@@ -110,6 +110,85 @@ Describe 'Evidence1 canary one-use and journal contracts' {
         $definition | Should -Match '\[IO\.FileShare\]::ReadWrite\s+-bor\s+\[IO\.FileShare\]::Delete'
     }
 
+    It 'treats an absent atomically replaced wrapper snapshot as transient before first publication' {
+        $path = Join-Path $script:CanaryDirectory 'journal.json'
+
+        Read-Evidence1CanaryJournalSnapshot $path $script:CanaryId | Should -BeNullOrEmpty
+        { Read-Evidence1CanaryJson $path } | Should -Throw
+    }
+
+    It 'preserves the last validated wrapper snapshot across an atomic replacement gap' {
+        $path = Join-Path $script:CanaryDirectory 'journal.json'
+        $previous = [ordered]@{
+            run_id = $script:CanaryId; journal_id = '69cd5780-49fa-4531-960a-e26cbd7fda54'; available = $true
+            event_count = 1; latest_event = '000000000000-0-planned.json'; transition_counts = @{ planned = 1 }
+            publication_pending = $false; publication_pending_since_utc = $null
+        }
+
+        $snapshot = Read-Evidence1CanaryJournalSnapshot $path $script:CanaryId $previous
+
+        $snapshot.run_id | Should -BeExactly $script:CanaryId
+        $snapshot.journal_id | Should -BeExactly $previous.journal_id
+        $snapshot.event_count | Should -Be 1
+        $snapshot.transition_counts.planned | Should -Be 1
+    }
+
+    It 'rejects a missing wrapper custody directory instead of treating it as file replacement' {
+        $path = Join-Path (Join-Path $script:CanaryDirectory 'missing-parent') 'journal.json'
+        $previous = [ordered]@{
+            run_id = $script:CanaryId; journal_id = '69cd5780-49fa-4531-960a-e26cbd7fda54'; available = $true
+            event_count = 1; latest_event = '000000000000-0-planned.json'; transition_counts = @{ planned = 1 }
+            publication_pending = $false; publication_pending_since_utc = $null
+        }
+
+        { Read-Evidence1CanaryJournalSnapshot $path $script:CanaryId $previous } | Should -Throw
+    }
+
+    It 'recovers on the next wrapper heartbeat after an atomic replacement gap' {
+        $path = Join-Path $script:CanaryDirectory 'journal.json'
+        Read-Evidence1CanaryJournalSnapshot $path $script:CanaryId | Should -BeNullOrEmpty
+        $published = [ordered]@{
+            run_id = $script:CanaryId; journal_id = '69cd5780-49fa-4531-960a-e26cbd7fda54'; available = $true
+            event_count = 1; latest_event = '000000000000-0-planned.json'; transition_counts = @{ planned = 1 }
+            publication_pending = $false; publication_pending_since_utc = $null
+        }
+        Write-Evidence1JsonAtomically -Path $path -Value $published
+
+        $snapshot = Read-Evidence1CanaryJournalSnapshot $path $script:CanaryId
+
+        $snapshot.event_count | Should -Be 1
+        $snapshot.latest_event | Should -BeExactly '000000000000-0-planned.json'
+    }
+
+    It 'still rejects malformed or cross-run wrapper snapshots' {
+        $path = Join-Path $script:CanaryDirectory 'journal.json'
+        [IO.File]::WriteAllText($path, '{not-json')
+        { Read-Evidence1CanaryJournalSnapshot $path $script:CanaryId } | Should -Throw
+
+        $crossRun = [ordered]@{
+            run_id = ([guid]::NewGuid().ToString('D')); journal_id = '69cd5780-49fa-4531-960a-e26cbd7fda54'; available = $true
+            event_count = 1; latest_event = '000000000000-0-planned.json'; transition_counts = @{ planned = 1 }
+            publication_pending = $false; publication_pending_since_utc = $null
+        }
+        Write-Evidence1JsonAtomically -Path $path -Value $crossRun
+        { Read-Evidence1CanaryJournalSnapshot $path $script:CanaryId } | Should -Throw -ExpectedMessage 'canary_progress_shape'
+    }
+
+    It 'uses one race-safe journal read in the wrapper instead of a check-then-read pair' {
+        $ast = [Management.Automation.Language.Parser]::ParseFile($script:WrapperPath, [ref]$null, [ref]$null)
+        $definition = $ast.Find({ param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-JournalProgress'
+        }, $true).Extent.Text
+
+        $definition | Should -Match 'Read-Evidence1CanaryJournalSnapshot'
+        $definition | Should -Not -Match 'Test-Path\s+-LiteralPath\s+\$path'
+        $definition | Should -Not -Match 'Read-Evidence1CanaryJson\s+\$path'
+
+        $reader = (Get-Command Read-Evidence1CanaryJournalSnapshot).ScriptBlock.Ast.Extent.Text
+        $reader | Should -Match 'Read-Evidence1CanaryJson\s+\$Path\s+-AllowMissingLeaf'
+        $reader | Should -Not -Match '\bcatch\b'
+    }
+
     It 'accepts bound journal retirement only after process exit and preserves the last safe snapshot' {
         $newId = [guid]::NewGuid().ToString()
         $events = Join-Path $script:CanaryDirectory "$newId/events"

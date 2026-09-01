@@ -86,9 +86,9 @@ function Get-JournalProgress {
     if ($canary) {
         $path = Join-Path $canaryDirectory 'journal.json'
         # The launcher is the only journal observer; the wrapper transports its safe snapshot.
-        if (-not $script:CanaryObservationFailed -and (Test-Path -LiteralPath $path)) {
-            $snapshot = ConvertTo-Evidence1CanaryJournalSnapshot (Read-Evidence1CanaryJson $path).value $RunId
-            $script:CanaryJournalSnapshot = $snapshot
+        if (-not $script:CanaryObservationFailed) {
+            $snapshot = Read-Evidence1CanaryJournalSnapshot $path $RunId $script:CanaryJournalSnapshot
+            if ($null -ne $snapshot) { $script:CanaryJournalSnapshot = $snapshot }
         }
         return $script:CanaryJournalSnapshot
     }
