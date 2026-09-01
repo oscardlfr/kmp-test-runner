@@ -82,14 +82,17 @@ for ($candidateIndex = 0; $candidateIndex -lt $candidates.Count; $candidateIndex
   $logonName = $candidates[$candidateIndex]
   $job = Start-Job -ScriptBlock {
     param($VmName, $UserName, $SecurePassword, $NetworkSealSourcePath, $NetworkSealSha256, $GuestNetworkSealScript, $GuestReportPath)
-    $credential = [pscredential]::new($UserName, $SecurePassword)
     $session = $null
-    $transportStage = 'session_open_failed'
+    $transportStage = 'credential_materialization_failed'
     try {
+      [ordered]@{ record_type = 'transport_stage'; stage = $transportStage }
+      $credential = [pscredential]::new($UserName, $SecurePassword)
       $session = New-PSSession -VMName $VmName -Credential $credential -ErrorAction Stop
       $transportStage = 'payload_copy_failed'
+      [ordered]@{ record_type = 'transport_stage'; stage = $transportStage }
       Copy-Item -LiteralPath $NetworkSealSourcePath -Destination $GuestNetworkSealScript -ToSession $session -Force -ErrorAction Stop
       $transportStage = 'guest_invoke_failed'
+      [ordered]@{ record_type = 'transport_stage'; stage = $transportStage }
       Invoke-Command -Session $session -ScriptBlock {
         param($GuestNetworkSealScript, $GuestReportPath, $NetworkSealSha256)
         $ErrorActionPreference = 'Stop'
@@ -191,15 +194,43 @@ for ($candidateIndex = 0; $candidateIndex -lt $candidates.Count; $candidateIndex
     }
   } -ArgumentList $VMName, $logonName, $storedCredential.Password, $NetworkSealSourcePath, $networkSealSha256, $GuestNetworkSealScript, $GuestReportPath
 
+  $workerJobState = $null
+  $workerErrorCount = $null
+  $workerErrorHResult = $null
   try {
     if (-not (Wait-Job -Job $job -Timeout $ProbeTimeoutSeconds)) {
-      $attempts += [ordered]@{ candidate_index = $candidateIndex; ok = $false; error = 'timed_out'; transport_hresult = $null }
+      $childJob = @($job.ChildJobs) | Select-Object -First 1
+      $workerJobState = $job.State.ToString()
+      $workerErrorCount = if ($childJob) { @($childJob.Error).Count } else { 0 }
+      $workerErrorHResult = if ($workerErrorCount -gt 0) { [int]$childJob.Error[-1].Exception.HResult } else { $null }
+      $attempts += [ordered]@{
+        candidate_index = $candidateIndex
+        ok = $false
+        error = 'timed_out'
+        transport_hresult = $null
+        worker_job_state = $workerJobState
+        worker_error_count = $workerErrorCount
+        worker_error_hresult = $workerErrorHResult
+      }
       break
     }
+    $childJob = @($job.ChildJobs) | Select-Object -First 1
+    $workerJobState = $job.State.ToString()
+    $workerErrorCount = if ($childJob) { @($childJob.Error).Count } else { 0 }
+    $workerErrorHResult = if ($workerErrorCount -gt 0) { [int]$childJob.Error[-1].Exception.HResult } else { $null }
     $received = @(Receive-Job -Job $job -ErrorAction SilentlyContinue)
     $probe = @($received | Where-Object { $_ -and $_.PSObject.Properties['verdict'] }) | Select-Object -Last 1
     if (-not $probe) {
-      throw 'network-seal job returned no structured result'
+      $lastStage = @($received | Where-Object {
+        $_ -and $_.PSObject.Properties['record_type'] -and $_.record_type -eq 'transport_stage'
+      }) | Select-Object -Last 1
+      $probe = [pscustomobject]@{
+        verdict = 'FAIL'
+        failure_code = if ($lastStage) { [string]$lastStage.stage } else { 'worker_terminated_before_stage' }
+        transport_hresult = $workerErrorHResult
+        fail_closed_verified = $null
+        sensitive_content_read = $false
+      }
     }
     $probeFailureCode = if ($probe.PSObject.Properties['failure_code']) {
       [string]$probe.failure_code
@@ -214,6 +245,9 @@ for ($candidateIndex = 0; $candidateIndex -lt $candidates.Count; $candidateIndex
       ok = $probe.verdict -eq 'PASS'
       error = if ($probe.verdict -eq 'PASS') { $null } else { $probeFailureCode }
       transport_hresult = if ($probe.PSObject.Properties['transport_hresult']) { [int]$probe.transport_hresult } else { $null }
+      worker_job_state = $workerJobState
+      worker_error_count = $workerErrorCount
+      worker_error_hresult = $workerErrorHResult
     }
     if ($probeFailureCode -eq 'session_open_failed') {
       continue
@@ -225,6 +259,9 @@ for ($candidateIndex = 0; $candidateIndex -lt $candidates.Count; $candidateIndex
       ok = $false
       error = 'host_job_receive_failed'
       transport_hresult = [int]$_.Exception.HResult
+      worker_job_state = $workerJobState
+      worker_error_count = $workerErrorCount
+      worker_error_hresult = $workerErrorHResult
     }
     break
   } finally {

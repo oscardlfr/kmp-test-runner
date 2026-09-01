@@ -330,6 +330,11 @@ try {
     expect(reseal).toContain('transport_hresult');
     expect(reseal).toContain('Receive-Job -Job $job -ErrorAction SilentlyContinue');
     expect(reseal).not.toContain('Receive-Job -Job $job -ErrorAction Stop');
+    expect(reseal).toContain("record_type = 'transport_stage'");
+    expect(reseal).toContain('worker_job_state');
+    expect(reseal).toContain('worker_error_count');
+    expect(reseal).toContain('worker_error_hresult');
+    expect(reseal).not.toMatch(/worker_error_message|job_reason_message/i);
     expect(reseal).not.toMatch(/exception_message|error_message/i);
     expect(reseal).not.toContain("error = 'powershell_direct_failed'");
     expect(reseal).not.toMatch(/\[string\]\$NetworkSealSourcePath/);
