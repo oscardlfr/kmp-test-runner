@@ -87,6 +87,8 @@ for ($candidateIndex = 0; $candidateIndex -lt $candidates.Count; $candidateIndex
     try {
       [ordered]@{ record_type = 'transport_stage'; stage = $transportStage }
       $credential = [pscredential]::new($UserName, $SecurePassword)
+      $transportStage = 'session_open_failed'
+      [ordered]@{ record_type = 'transport_stage'; stage = $transportStage }
       $session = New-PSSession -VMName $VmName -Credential $credential -ErrorAction Stop
       $transportStage = 'payload_copy_failed'
       [ordered]@{ record_type = 'transport_stage'; stage = $transportStage }

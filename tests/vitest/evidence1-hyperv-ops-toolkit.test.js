@@ -331,6 +331,9 @@ try {
     expect(reseal).toContain('Receive-Job -Job $job -ErrorAction SilentlyContinue');
     expect(reseal).not.toContain('Receive-Job -Job $job -ErrorAction Stop');
     expect(reseal).toContain("record_type = 'transport_stage'");
+    expect(reseal).toMatch(
+      /credential_materialization_failed[\s\S]*\[pscredential\]::new[\s\S]*session_open_failed[\s\S]*New-PSSession[\s\S]*payload_copy_failed[\s\S]*Copy-Item[\s\S]*guest_invoke_failed[\s\S]*Invoke-Command/,
+    );
     expect(reseal).toContain('worker_job_state');
     expect(reseal).toContain('worker_error_count');
     expect(reseal).toContain('worker_error_hresult');
