@@ -105,6 +105,37 @@ try {
     expect(snapshot).toMatchObject({ event_count: 0, transition_counts: {} });
   });
 
+  it.skipIf(process.platform !== 'win32')('round-trips worker records as inspectable PSObject properties', () => {
+    const script = `
+$ErrorActionPreference = 'Stop'
+$job = Start-Job {
+  [pscustomobject][ordered]@{ record_type = 'transport_stage'; stage = 'session_open_failed' }
+  [pscustomobject][ordered]@{ verdict = 'FAIL'; failure_code = 'session_open_failed' }
+}
+try {
+  Wait-Job -Job $job | Out-Null
+  $received = @(Receive-Job -Job $job -ErrorAction Stop)
+  [ordered]@{
+    count = $received.Count
+    record_type_property_found = $null -ne $received[0].PSObject.Properties['record_type']
+    verdict_property_found = $null -ne $received[1].PSObject.Properties['verdict']
+  } | ConvertTo-Json -Compress
+} finally {
+  Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+}
+`;
+    const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
+      encoding: 'utf8',
+      timeout: 20_000,
+    });
+    expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+    expect(JSON.parse(result.stdout.trim())).toEqual({
+      count: 2,
+      record_type_property_found: true,
+      verdict_property_found: true,
+    });
+  }, 25_000);
+
   it.skipIf(process.platform !== 'win32')('observes the real atomic journal publisher before and after linkSync without false failure', () => {
     const contract = rel(resolve(root, 'docs/audits/evidence1-live-run-contract.psm1')).replaceAll("'", "''");
     const publisher = pathToFileURL(resolve(root, 'tools/agentic-eval/evidence-io.mjs')).href;
@@ -331,6 +362,12 @@ try {
     expect(reseal).toContain('Receive-Job -Job $job -ErrorAction SilentlyContinue');
     expect(reseal).not.toContain('Receive-Job -Job $job -ErrorAction Stop');
     expect(reseal).toContain("record_type = 'transport_stage'");
+    const workerBlock = reseal.slice(
+      reseal.indexOf('$job = Start-Job'),
+      reseal.indexOf('} -ArgumentList $VMName'),
+    );
+    expect(workerBlock).not.toMatch(/(?<!\[pscustomobject\])\[ordered\]@\{/);
+    expect(workerBlock.match(/\[pscustomobject\]\[ordered\]@\{/g)).toHaveLength(7);
     expect(reseal).toMatch(
       /credential_materialization_failed[\s\S]*\[pscredential\]::new[\s\S]*session_open_failed[\s\S]*New-PSSession[\s\S]*payload_copy_failed[\s\S]*Copy-Item[\s\S]*guest_invoke_failed[\s\S]*Invoke-Command/,
     );
