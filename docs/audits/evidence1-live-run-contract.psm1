@@ -332,22 +332,40 @@ function Test-Evidence1JournalPathDisappearance($Failure) {
     return $false
 }
 
-function Resolve-Evidence1JournalPathDisappearance($Failure, $Previous, [string]$RunId, [switch]$AllowRetiredAfterProcessExit) {
+function Resolve-Evidence1JournalPathDisappearance($Failure, $Previous, [string]$RunId,
+    [switch]$AllowRetiredAfterProcessExit, [switch]$AllowRetiredAfterTerminalJournal) {
     if (-not (Test-Evidence1JournalPathDisappearance $Failure)) { throw $Failure }
     if ($Previous -and $Previous.journal_id) {
-        return Get-Evidence1RetiredJournalSnapshot $Previous $RunId -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit
+        return Get-Evidence1RetiredJournalSnapshot $Previous $RunId `
+            -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit `
+            -AllowRetiredAfterTerminalJournal:$AllowRetiredAfterTerminalJournal
     }
     throw 'canary_journal_retirement'
 }
 
-function Get-Evidence1RetiredJournalSnapshot($Previous, [string]$RunId, [switch]$AllowRetiredAfterProcessExit) {
+function Test-Evidence1TerminalOneCellJournalSnapshot($Snapshot) {
+    if ($Snapshot.publication_pending -or $Snapshot.available -isnot [bool] -or -not $Snapshot.available -or
+        $Snapshot.event_count -ne 6 -or $Snapshot.latest_event -cne '000000000005-0-evaluated.json') { return $false }
+    $expected = @('planned','spawn_started','spawn_completed','raw_persisted','parsed','evaluated')
+    if (@($Snapshot.transition_counts.Keys).Count -ne $expected.Count) { return $false }
+    foreach ($transition in $expected) {
+        if (-not $Snapshot.transition_counts.Contains($transition) -or $Snapshot.transition_counts[$transition] -ne 1) { return $false }
+    }
+    return $true
+}
+
+function Get-Evidence1RetiredJournalSnapshot($Previous, [string]$RunId,
+    [switch]$AllowRetiredAfterProcessExit, [switch]$AllowRetiredAfterTerminalJournal) {
     try { $safe = ConvertTo-Evidence1CanaryJournalSnapshot $Previous $RunId }
     catch { throw 'canary_journal_retirement' }
-    if (-not $safe.journal_id -or -not $safe.available -or $safe.event_count -lt 1 -or
+    if (-not $safe.journal_id -or $safe.event_count -lt 1 -or
         -not $safe.transition_counts.Contains('planned') -or $safe.transition_counts.planned -ne 1) {
         throw 'canary_journal_retirement'
     }
-    if (-not $AllowRetiredAfterProcessExit) { throw 'canary_journal_retiring' }
+    if (-not $AllowRetiredAfterProcessExit -and
+        (-not $AllowRetiredAfterTerminalJournal -or -not (Test-Evidence1TerminalOneCellJournalSnapshot $safe))) {
+        throw 'canary_journal_retiring'
+    }
     $safe.available = $false
     $safe.publication_pending = $false
     $safe.publication_pending_since_utc = $null
@@ -355,17 +373,22 @@ function Get-Evidence1RetiredJournalSnapshot($Previous, [string]$RunId, [switch]
 }
 
 function Get-Evidence1CanaryJournalProgress([string]$JournalRoot, [string[]]$BaselineIds, [string]$RunId, $Previous = $null,
-    [datetime]$NowUtc = [datetime]::UtcNow, [switch]$AllowRetiredAfterProcessExit) {
+    [datetime]$NowUtc = [datetime]::UtcNow, [switch]$AllowRetiredAfterProcessExit,
+    [switch]$AllowRetiredAfterTerminalJournal) {
     Initialize-Evidence1CanarySupport
     if ($Previous -and $Previous.run_id -cne $RunId) { throw 'canary_journal_run_mismatch' }
     try { $ids = @(if (Test-Path -LiteralPath $JournalRoot) { Get-ChildItem -LiteralPath $JournalRoot -Directory -Force | ForEach-Object Name }) }
-    catch { return Resolve-Evidence1JournalPathDisappearance $_ $Previous $RunId -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit }
+    catch { return Resolve-Evidence1JournalPathDisappearance $_ $Previous $RunId `
+        -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit `
+        -AllowRetiredAfterTerminalJournal:$AllowRetiredAfterTerminalJournal }
     $new = @($ids | Where-Object { $_ -cnotin $BaselineIds })
     if ($new.Count -gt 1) { throw 'canary_journal_ambiguous' }
     $bound = if ($Previous) { $Previous.journal_id } else { $null }
     if ($bound -and $new.Count -eq 1 -and $new[0] -cne $bound) { throw 'canary_journal_changed' }
     if ($new.Count -eq 0) {
-        if ($bound) { return Get-Evidence1RetiredJournalSnapshot $Previous $RunId -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit }
+        if ($bound) { return Get-Evidence1RetiredJournalSnapshot $Previous $RunId `
+            -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit `
+            -AllowRetiredAfterTerminalJournal:$AllowRetiredAfterTerminalJournal }
         return [ordered]@{ run_id = $RunId; journal_id = $null; available = $false; event_count = 0; latest_event = $null; transition_counts = @{}; publication_pending = $false; publication_pending_since_utc = $null }
     }
     $bound = $new[0]
@@ -373,11 +396,15 @@ function Get-Evidence1CanaryJournalProgress([string]$JournalRoot, [string[]]$Bas
     if (-not [guid]::TryParseExact($bound, 'D', [ref]$id) -or $bound -cne $id.ToString('D')) { throw 'canary_journal_identity' }
     $eventsPath = Join-Path $JournalRoot "$bound/events"
     if (-not (Test-Path -LiteralPath $eventsPath)) {
-        if ($Previous -and $Previous.journal_id) { return Get-Evidence1RetiredJournalSnapshot $Previous $RunId -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit }
+        if ($Previous -and $Previous.journal_id) { return Get-Evidence1RetiredJournalSnapshot $Previous $RunId `
+            -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit `
+            -AllowRetiredAfterTerminalJournal:$AllowRetiredAfterTerminalJournal }
         $events = @()
     } else {
         try { $events = @(Get-ChildItem -LiteralPath $eventsPath -File -Force | Sort-Object Name) }
-        catch { return Resolve-Evidence1JournalPathDisappearance $_ $Previous $RunId -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit }
+        catch { return Resolve-Evidence1JournalPathDisappearance $_ $Previous $RunId `
+            -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit `
+            -AllowRetiredAfterTerminalJournal:$AllowRetiredAfterTerminalJournal }
     }
     if ($events.Count -gt 32) { throw 'canary_journal_count' }
     $transitionPattern = '(planned|spawn_started|spawn_completed|spawn_failed|raw_persisted|parsed|evaluated)'
@@ -387,7 +414,9 @@ function Get-Evidence1CanaryJournalProgress([string]$JournalRoot, [string[]]$Bas
         if ($event.Name -cnotmatch ('^[0-9]+-[0-9]+-' + $transitionPattern + '\.json$') -and $event.Name -cnotmatch $temporaryPattern) { throw 'canary_journal_event' }
     }
     if ($Previous -and $Previous.journal_id -and $events.Count -lt $Previous.event_count) {
-        return Get-Evidence1RetiredJournalSnapshot $Previous $RunId -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit
+        return Get-Evidence1RetiredJournalSnapshot $Previous $RunId `
+            -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit `
+            -AllowRetiredAfterTerminalJournal:$AllowRetiredAfterTerminalJournal
     }
     if ($temporary.Count -gt 1) { throw 'canary_publication_ambiguous' }
     if ($temporary.Count -eq 1) {
@@ -397,32 +426,51 @@ function Get-Evidence1CanaryJournalProgress([string]$JournalRoot, [string[]]$Bas
             foreach ($event in $events) {
                 if ((Get-E1Field $event 'LinkType') -eq 'HardLink' -and $event.Name -cnotin @($targetName,$temporary[0].Name)) { throw 'canary_path_link' }
             }
-        } catch { return Resolve-Evidence1JournalPathDisappearance $_ $Previous $RunId -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit }
+        } catch { return Resolve-Evidence1JournalPathDisappearance $_ $Previous $RunId `
+            -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit `
+            -AllowRetiredAfterTerminalJournal:$AllowRetiredAfterTerminalJournal }
         return New-Evidence1PendingJournalSnapshot $Previous $RunId $bound $NowUtc
     }
     $counts = [ordered]@{}
+    $expectedSequence = 0
+    $previousTransition = $null
+    $allowedNext = @{
+        '' = @('planned'); planned = @('spawn_started','spawn_failed'); spawn_started = @('spawn_completed')
+        spawn_completed = @('raw_persisted'); raw_persisted = @('parsed'); parsed = @('evaluated')
+        spawn_failed = @(); evaluated = @()
+    }
     foreach ($event in $events) {
         if ($event.Name -cnotmatch '^([0-9]+)-([0-9]+)-(planned|spawn_started|spawn_completed|spawn_failed|raw_persisted|parsed|evaluated)\.json$') { throw 'canary_journal_event' }
         $sequence = [int]$Matches[1]; $ordinal = [int]$Matches[2]; $transition = $Matches[3]
+        $previousKey = $(if ($null -eq $previousTransition) { '' } else { $previousTransition })
+        if ($sequence -ne $expectedSequence -or $transition -cnotin $allowedNext[$previousKey]) { throw 'canary_journal_sequence' }
         try { $value = (Read-Evidence1CanaryJson $event.FullName 65536).value }
         catch {
             $readFailure = $_
             if (Test-Evidence1JournalPathDisappearance $readFailure) {
-                return Resolve-Evidence1JournalPathDisappearance $readFailure $Previous $RunId -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit
+                return Resolve-Evidence1JournalPathDisappearance $readFailure $Previous $RunId `
+                    -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit `
+                    -AllowRetiredAfterTerminalJournal:$AllowRetiredAfterTerminalJournal
             }
             # Publication may start between enumeration and reading. Only its exact companion
             # temp name permits a bounded pending observation; persistent links remain rejected.
             try { $publishing = @(Get-ChildItem -LiteralPath $eventsPath -File -Force | Where-Object { $_.Name -cmatch $temporaryPattern -and $_.Name.StartsWith($event.Name + '.tmp-', [StringComparison]::Ordinal) }) }
-            catch { return Resolve-Evidence1JournalPathDisappearance $_ $Previous $RunId -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit }
+            catch { return Resolve-Evidence1JournalPathDisappearance $_ $Previous $RunId `
+                -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit `
+                -AllowRetiredAfterTerminalJournal:$AllowRetiredAfterTerminalJournal }
             try {
                 if ($publishing.Count -eq 1 -and $publishing[0].Length -le 65536) { return New-Evidence1PendingJournalSnapshot $Previous $RunId $bound $NowUtc }
-            } catch { return Resolve-Evidence1JournalPathDisappearance $_ $Previous $RunId -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit }
+            } catch { return Resolve-Evidence1JournalPathDisappearance $_ $Previous $RunId `
+                -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit `
+                -AllowRetiredAfterTerminalJournal:$AllowRetiredAfterTerminalJournal }
             throw
         }
         if ($ordinal -ne 0 -or -not (Test-E1Exact $value.cellOrdinal 0) -or -not (Test-E1Exact $value.seq $sequence) -or
             $value.runKind -cne 'scenario' -or $value.transition -cne $transition) { throw 'canary_journal_cell' }
         if ($counts.Contains($transition)) { throw 'canary_journal_duplicate_transition' }
         $counts[$transition] = 1
+        $expectedSequence++
+        $previousTransition = $transition
     }
     if ($events.Count -gt 0 -and -not $counts.Contains('planned')) { throw 'canary_journal_planned' }
     return [ordered]@{ run_id = $RunId; journal_id = $bound; available = $true; event_count = $events.Count; latest_event = $(if ($events.Count) { $events[-1].Name } else { $null }); transition_counts = $counts; publication_pending = $false; publication_pending_since_utc = $null }
