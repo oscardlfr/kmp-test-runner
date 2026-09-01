@@ -582,6 +582,18 @@ function ConvertTo-Evidence1CanaryJournalSnapshot($Raw, [string]$RunId) {
     } catch { throw 'canary_progress_shape' }
 }
 
+function Read-Evidence1CanaryJournalSnapshot([string]$Path, [string]$RunId, $Previous = $null) {
+    Initialize-Evidence1CanarySupport
+    try {
+        $file = Read-Evidence1CanaryJson $Path
+    } catch {
+        if (-not (Test-Evidence1JournalPathDisappearance $_)) { throw }
+        if ($null -eq $Previous) { return $null }
+        return ConvertTo-Evidence1CanaryJournalSnapshot $Previous $RunId
+    }
+    return ConvertTo-Evidence1CanaryJournalSnapshot $file.value $RunId
+}
+
 function ConvertTo-Evidence1CanaryDiagnostics($Raw) {
     Initialize-Evidence1CanarySupport
     try {
@@ -798,6 +810,7 @@ Export-ModuleMember -Function @(
     'New-Evidence1CanaryDiagnostics'
     'Set-Evidence1CanaryFailure'
     'ConvertTo-Evidence1CanaryJournalSnapshot'
+    'Read-Evidence1CanaryJournalSnapshot'
     'ConvertTo-Evidence1CanaryDiagnostics'
     'Assert-Evidence1CanaryShutdownCustody'
 )
