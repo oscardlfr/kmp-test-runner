@@ -115,6 +115,44 @@ Describe 'Evidence1 canary one-use and journal contracts' {
         $retired.transition_counts.planned | Should -Be 1
     }
 
+    It 'preserves the last committed snapshot when retirement crosses a pending publication' {
+        $newId = [guid]::NewGuid().ToString()
+        $events = Join-Path $script:CanaryDirectory "$newId/events"
+        New-Item -ItemType Directory -Path $events | Out-Null
+        [IO.File]::WriteAllText((Join-Path $events '000000000000-0-planned.json'), '{"seq":0,"runKind":"scenario","cellOrdinal":0,"transition":"planned","meta":{}}')
+        $committed = Get-Evidence1CanaryJournalProgress $script:CanaryDirectory @() $script:CanaryId
+        $target = Join-Path $events '000000000001-0-spawn_started.json'
+        [IO.File]::WriteAllText(($target + '.tmp-1234abcd'), '{"seq":1,"runKind":"scenario","cellOrdinal":0,"transition":"spawn_started","meta":{}}')
+        $pending = Get-Evidence1CanaryJournalProgress $script:CanaryDirectory @() $script:CanaryId $committed
+        $pending.publication_pending | Should -BeTrue
+        $pending.event_count | Should -Be 1
+        Remove-Item -LiteralPath (Join-Path $script:CanaryDirectory $newId) -Recurse
+
+        { Get-Evidence1CanaryJournalProgress $script:CanaryDirectory @() $script:CanaryId $pending } |
+            Should -Throw -ExpectedMessage 'canary_journal_retiring'
+        $retired = Get-Evidence1CanaryJournalProgress $script:CanaryDirectory @() $script:CanaryId $pending -AllowRetiredAfterProcessExit
+        $retired.available | Should -BeFalse
+        $retired.publication_pending | Should -BeFalse
+        $retired.publication_pending_since_utc | Should -BeNullOrEmpty
+        $retired.event_count | Should -Be 1
+        $retired.transition_counts.planned | Should -Be 1
+    }
+
+    It 'normalizes a bound journal path disappearing during enumeration as retirement' {
+        $previous = [ordered]@{ run_id = $script:CanaryId; journal_id = '69cd5780-49fa-4531-960a-e26cbd7fda54'; available = $true
+            event_count = 1; latest_event = '000000000000-0-planned.json'; transition_counts = @{ planned = 1 }
+            publication_pending = $false; publication_pending_since_utc = $null }
+        InModuleScope evidence1-live-run-contract -Parameters @{ Root = $script:CanaryDirectory; ExpectedRunId = $script:CanaryId; Snapshot = $previous } {
+            Mock Get-ChildItem { throw [Management.Automation.ItemNotFoundException]::new('private journal path disappeared') }
+            { Get-Evidence1CanaryJournalProgress $Root @() $ExpectedRunId $Snapshot } |
+                Should -Throw -ExpectedMessage 'canary_journal_retiring'
+            $retired = Get-Evidence1CanaryJournalProgress $Root @() $ExpectedRunId $Snapshot -AllowRetiredAfterProcessExit
+            $retired.available | Should -BeFalse
+            $retired.event_count | Should -Be 1
+            $retired.transition_counts.planned | Should -Be 1
+        }
+    }
+
     It 'accepts terminal partial retirement but rejects retirement without a bound safe planned snapshot' {
         $newId = [guid]::NewGuid().ToString()
         $events = Join-Path $script:CanaryDirectory "$newId/events"
@@ -170,6 +208,15 @@ Describe 'Evidence1 canary one-use and journal contracts' {
         $diagnostics.failures.postflight.code | Should -BeExactly 'canary_sdk_changed'
         $diagnostics.failures.persistence.code | Should -BeExactly 'unclassified'
         ($diagnostics | ConvertTo-Json -Depth 10) | Should -Not -Match 'private|secret-value|secret.json'
+    }
+
+    It 'classifies an unknown journal observer exception without leaking its message' {
+        $diagnostics = New-Evidence1CanaryDiagnostics
+        try { throw [IO.IOException]::new('failed at C:\private\journal with secret-value') }
+        catch { Set-Evidence1CanaryFailure $diagnostics 'primary' 'journal' $_ }
+        $diagnostics.failure_phase | Should -BeExactly 'journal'
+        $diagnostics.failure_code | Should -BeExactly 'canary_journal_observer'
+        ($diagnostics | ConvertTo-Json -Depth 10) | Should -Not -Match 'private|secret-value|journal with'
     }
 
     It 'rejects unknown fields and raw content in transported canary progress and diagnostics' {
@@ -321,7 +368,7 @@ Describe 'Evidence1 canary launcher runtime failures' {
         Invoke-Evidence1CanaryLaunch | Should -Be 997
         ($script:FixtureCalls -join ',') | Should -BeExactly 'start,stop,wait'
         Should -Invoke Get-Evidence1CanaryJournalProgress -Times 0 -Exactly -ParameterFilter { $AllowRetiredAfterProcessExit }
-        $script:FixtureWrites['terminal.json'].diagnostics.failure_code | Should -BeExactly 'canary_journal_retiring'
+        $script:FixtureWrites['terminal.json'].diagnostics.failure_code | Should -BeExactly 'canary_journal_retirement_stalled'
     }
     It 'preserves a source-clone primary failure in custody when terminal persistence also fails' {
         Mock New-Evidence1CanarySource { throw 'canary_source_invalid' }

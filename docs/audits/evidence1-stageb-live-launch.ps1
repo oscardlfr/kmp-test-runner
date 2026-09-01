@@ -728,11 +728,14 @@ function Invoke-Evidence1CanaryLaunch {
         $journal = Get-Evidence1CanaryJournalProgress $journalRoot @($baseline.journal_ids) $RunId $journal
       } catch {
         if ($_.Exception.Message -cne 'canary_journal_retiring') { throw }
-        foreach ($attempt in 1..20) {
+        # Journal retirement happens after durable evidence promotion but can precede the
+        # parent Node task completing. Give that same owned task a bounded finalization window;
+        # never respawn or replace it.
+        foreach ($attempt in 1..100) {
           if ($liveOperation.Task.IsCompleted) { break }
-          Start-Sleep -Milliseconds 50
+          Start-Sleep -Milliseconds 100
         }
-        if (-not $liveOperation.Task.IsCompleted) { throw }
+        if (-not $liveOperation.Task.IsCompleted) { throw 'canary_journal_retirement_stalled' }
         $journal = Get-Evidence1CanaryJournalProgress $journalRoot @($baseline.journal_ids) $RunId $journal -AllowRetiredAfterProcessExit
       }
       Write-Evidence1JsonAtomically (Join-Path $directory 'journal.json') $journal

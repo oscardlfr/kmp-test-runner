@@ -568,7 +568,8 @@ function Assert-Evidence1IncompleteCanaryDiagnostics {
         'canary_journal_duplicate_transition','canary_journal_cell','canary_journal_changed',
         'canary_journal_run_mismatch','canary_journal_count','canary_publication_ambiguous',
         'canary_publication_size','canary_journal_planned','canary_journal_retiring',
-        'canary_journal_retirement','canary_json_size','canary_journal_identity','canary_live_exit_nonzero',
+        'canary_journal_retirement','canary_journal_retirement_stalled','canary_journal_observer',
+        'canary_json_size','canary_journal_identity','canary_live_exit_nonzero',
         'canary_terminal_required','canary_terminal_binding','canary_progress_shape','canary_diagnostics_shape',
         'unclassified'
     )

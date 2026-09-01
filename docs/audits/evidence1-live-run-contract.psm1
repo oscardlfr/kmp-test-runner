@@ -322,15 +322,35 @@ function New-Evidence1PendingJournalSnapshot($Previous, [string]$RunId, [string]
     }
 }
 
+function Test-Evidence1JournalPathDisappearance($Failure) {
+    $exception = $Failure.Exception
+    for ($i = 0; $exception -and $i -lt 8; $i++) {
+        if ($exception -is [IO.FileNotFoundException] -or $exception -is [IO.DirectoryNotFoundException] -or
+            $exception -is [Management.Automation.ItemNotFoundException]) { return $true }
+        $exception = $exception.InnerException
+    }
+    return $false
+}
+
+function Resolve-Evidence1JournalPathDisappearance($Failure, $Previous, [string]$RunId, [switch]$AllowRetiredAfterProcessExit) {
+    if (-not (Test-Evidence1JournalPathDisappearance $Failure)) { throw $Failure }
+    if ($Previous -and $Previous.journal_id) {
+        return Get-Evidence1RetiredJournalSnapshot $Previous $RunId -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit
+    }
+    throw 'canary_journal_retirement'
+}
+
 function Get-Evidence1RetiredJournalSnapshot($Previous, [string]$RunId, [switch]$AllowRetiredAfterProcessExit) {
     try { $safe = ConvertTo-Evidence1CanaryJournalSnapshot $Previous $RunId }
     catch { throw 'canary_journal_retirement' }
-    if (-not $safe.journal_id -or -not $safe.available -or $safe.publication_pending -or $safe.event_count -lt 1 -or
+    if (-not $safe.journal_id -or -not $safe.available -or $safe.event_count -lt 1 -or
         -not $safe.transition_counts.Contains('planned') -or $safe.transition_counts.planned -ne 1) {
         throw 'canary_journal_retirement'
     }
     if (-not $AllowRetiredAfterProcessExit) { throw 'canary_journal_retiring' }
     $safe.available = $false
+    $safe.publication_pending = $false
+    $safe.publication_pending_since_utc = $null
     return $safe
 }
 
@@ -338,7 +358,8 @@ function Get-Evidence1CanaryJournalProgress([string]$JournalRoot, [string[]]$Bas
     [datetime]$NowUtc = [datetime]::UtcNow, [switch]$AllowRetiredAfterProcessExit) {
     Initialize-Evidence1CanarySupport
     if ($Previous -and $Previous.run_id -cne $RunId) { throw 'canary_journal_run_mismatch' }
-    $ids = @(if (Test-Path -LiteralPath $JournalRoot) { Get-ChildItem -LiteralPath $JournalRoot -Directory -Force | ForEach-Object Name })
+    try { $ids = @(if (Test-Path -LiteralPath $JournalRoot) { Get-ChildItem -LiteralPath $JournalRoot -Directory -Force | ForEach-Object Name }) }
+    catch { return Resolve-Evidence1JournalPathDisappearance $_ $Previous $RunId -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit }
     $new = @($ids | Where-Object { $_ -cnotin $BaselineIds })
     if ($new.Count -gt 1) { throw 'canary_journal_ambiguous' }
     $bound = if ($Previous) { $Previous.journal_id } else { $null }
@@ -355,7 +376,8 @@ function Get-Evidence1CanaryJournalProgress([string]$JournalRoot, [string[]]$Bas
         if ($Previous -and $Previous.journal_id) { return Get-Evidence1RetiredJournalSnapshot $Previous $RunId -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit }
         $events = @()
     } else {
-        $events = @(Get-ChildItem -LiteralPath $eventsPath -File -Force | Sort-Object Name)
+        try { $events = @(Get-ChildItem -LiteralPath $eventsPath -File -Force | Sort-Object Name) }
+        catch { return Resolve-Evidence1JournalPathDisappearance $_ $Previous $RunId -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit }
     }
     if ($events.Count -gt 32) { throw 'canary_journal_count' }
     $transitionPattern = '(planned|spawn_started|spawn_completed|spawn_failed|raw_persisted|parsed|evaluated)'
@@ -369,11 +391,13 @@ function Get-Evidence1CanaryJournalProgress([string]$JournalRoot, [string[]]$Bas
     }
     if ($temporary.Count -gt 1) { throw 'canary_publication_ambiguous' }
     if ($temporary.Count -eq 1) {
-        if ($temporary[0].Length -gt 65536) { throw 'canary_publication_size' }
-        $targetName = $temporary[0].Name -creplace '\.tmp-[a-f0-9]{8}$', ''
-        foreach ($event in $events) {
-            if ((Get-E1Field $event 'LinkType') -eq 'HardLink' -and $event.Name -cnotin @($targetName,$temporary[0].Name)) { throw 'canary_path_link' }
-        }
+        try {
+            if ($temporary[0].Length -gt 65536) { throw 'canary_publication_size' }
+            $targetName = $temporary[0].Name -creplace '\.tmp-[a-f0-9]{8}$', ''
+            foreach ($event in $events) {
+                if ((Get-E1Field $event 'LinkType') -eq 'HardLink' -and $event.Name -cnotin @($targetName,$temporary[0].Name)) { throw 'canary_path_link' }
+            }
+        } catch { return Resolve-Evidence1JournalPathDisappearance $_ $Previous $RunId -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit }
         return New-Evidence1PendingJournalSnapshot $Previous $RunId $bound $NowUtc
     }
     $counts = [ordered]@{}
@@ -383,13 +407,16 @@ function Get-Evidence1CanaryJournalProgress([string]$JournalRoot, [string[]]$Bas
         try { $value = (Read-Evidence1CanaryJson $event.FullName 65536).value }
         catch {
             $readFailure = $_
-            if ($readFailure.Exception -is [IO.FileNotFoundException] -or $readFailure.Exception -is [IO.DirectoryNotFoundException]) {
-                return Get-Evidence1RetiredJournalSnapshot $Previous $RunId -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit
+            if (Test-Evidence1JournalPathDisappearance $readFailure) {
+                return Resolve-Evidence1JournalPathDisappearance $readFailure $Previous $RunId -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit
             }
             # Publication may start between enumeration and reading. Only its exact companion
             # temp name permits a bounded pending observation; persistent links remain rejected.
-            $publishing = @(Get-ChildItem -LiteralPath $eventsPath -File -Force | Where-Object { $_.Name -cmatch $temporaryPattern -and $_.Name.StartsWith($event.Name + '.tmp-', [StringComparison]::Ordinal) })
-            if ($publishing.Count -eq 1 -and $publishing[0].Length -le 65536) { return New-Evidence1PendingJournalSnapshot $Previous $RunId $bound $NowUtc }
+            try { $publishing = @(Get-ChildItem -LiteralPath $eventsPath -File -Force | Where-Object { $_.Name -cmatch $temporaryPattern -and $_.Name.StartsWith($event.Name + '.tmp-', [StringComparison]::Ordinal) }) }
+            catch { return Resolve-Evidence1JournalPathDisappearance $_ $Previous $RunId -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit }
+            try {
+                if ($publishing.Count -eq 1 -and $publishing[0].Length -le 65536) { return New-Evidence1PendingJournalSnapshot $Previous $RunId $bound $NowUtc }
+            } catch { return Resolve-Evidence1JournalPathDisappearance $_ $Previous $RunId -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit }
             throw
         }
         if ($ordinal -ne 0 -or -not (Test-E1Exact $value.cellOrdinal 0) -or -not (Test-E1Exact $value.seq $sequence) -or
@@ -549,10 +576,11 @@ function Set-Evidence1CanaryFailure($Diagnostics, [string]$Slot, [string]$Phase,
         'canary_validation_changed','canary_process_cleanup','canary_publication_incomplete','canary_journal_unobserved','canary_sdk_changed',
         'canary_journal_event','canary_publication_stalled','canary_journal_ambiguous','canary_path_link','canary_journal_duplicate_transition',
         'canary_journal_cell','canary_journal_changed','canary_journal_run_mismatch','canary_journal_count','canary_publication_ambiguous',
-        'canary_publication_size','canary_journal_planned','canary_journal_retiring','canary_journal_retirement','canary_json_size','canary_journal_identity','canary_live_exit_nonzero',
+        'canary_publication_size','canary_journal_planned','canary_journal_retiring','canary_journal_retirement','canary_journal_retirement_stalled',
+        'canary_journal_observer','canary_json_size','canary_journal_identity','canary_live_exit_nonzero',
         'canary_terminal_required','canary_terminal_binding','canary_progress_shape','canary_diagnostics_shape')
     $code = Get-E1FailureCode $Failure 'preflight_failed'
-    if ($code -ceq 'preflight_failed') { $code = 'unclassified' }
+    if ($code -ceq 'preflight_failed') { $code = $(if ($Phase -ceq 'journal') { 'canary_journal_observer' } else { 'unclassified' }) }
     $exception = $Failure.Exception
     for ($i = 0; $exception -and $i -lt 8; $i++) {
         if ($exception.Message -cin $known) { $code = $exception.Message; break }

@@ -781,11 +781,13 @@ Describe 'Evidence1 previous-run custody contract' {
         $actual.attempt_status | Should -Be 'failed'
         $actual.canary_custody | Should -Be 'incomplete'
 
-        $copy.failure_subreason = 'unclassified'
-        $copy.canary.failure_code = 'unclassified'
-        $copy.stage_b_exit.record.diagnostics.failure_code = 'unclassified'
-        $copy.stage_b_exit.record.diagnostics.failures.primary.code = 'unclassified'
-        (Assert-Evidence1PreviousRunCustody $placement $copy $script:VMName).attempt_status | Should -Be 'failed'
+        foreach ($code in @('unclassified','canary_journal_observer','canary_journal_retirement_stalled')) {
+            $copy.failure_subreason = $code
+            $copy.canary.failure_code = $code
+            $copy.stage_b_exit.record.diagnostics.failure_code = $code
+            $copy.stage_b_exit.record.diagnostics.failures.primary.code = $code
+            (Assert-Evidence1PreviousRunCustody $placement $copy $script:VMName).attempt_status | Should -Be 'failed'
+        }
     }
 
     It 'rejects malformed incomplete canary custody instead of accepting generic failures' {
