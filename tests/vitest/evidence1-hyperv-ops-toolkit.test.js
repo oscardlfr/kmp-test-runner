@@ -25,6 +25,11 @@ const portableOpsScripts = [
   'docs/audits/evidence1-hyperv-read-source-inventory-direct.ps1',
   'docs/audits/evidence1-hyperv-probe-gradle-offline-direct.ps1',
   'docs/audits/evidence1-hyperv-provision-gradle-cache-direct.ps1',
+  'docs/audits/evidence1-hyperv-open-temporary-auth-egress.ps1',
+  'docs/audits/evidence1-hyperv-open-claude-login-interactive-task.ps1',
+  'docs/audits/evidence1-hyperv-open-vmconnect.ps1',
+  'docs/audits/evidence1-hyperv-run-network-seal-direct.ps1',
+  'docs/audits/evidence1-stageb-network-seal.ps1',
   'docs/audits/evidence1-cache-provision-host.psm1',
   'docs/audits/evidence1-hyperv-place-live-autorun.ps1',
   'docs/audits/evidence1-hyperv-read-live-progress.ps1',
@@ -50,6 +55,10 @@ const elevatedRunnerAllowlist = [
   'evidence1-hyperv-read-source-inventory-direct.ps1',
   'evidence1-hyperv-probe-gradle-offline-direct.ps1',
   'evidence1-hyperv-provision-gradle-cache-direct.ps1',
+  'evidence1-hyperv-open-temporary-auth-egress.ps1',
+  'evidence1-hyperv-open-claude-login-interactive-task.ps1',
+  'evidence1-hyperv-open-vmconnect.ps1',
+  'evidence1-hyperv-run-network-seal-direct.ps1',
 ];
 
 const privateHostPattern = new RegExp([
@@ -241,7 +250,6 @@ try {
 
     for (const deliberatelyExcluded of [
       'evidence1-hyperv-create-runner-vm.ps1',
-      'evidence1-hyperv-open-vmconnect.ps1',
       'evidence1-hyperv-place-live-autorun.ps1',
       'evidence1-hyperv-restore-checkpoint.ps1',
       'evidence1-hyperv-restart-vmms-if-safe.ps1',
@@ -249,6 +257,59 @@ try {
     ]) {
       expect(entries).not.toContain(deliberatelyExcluded);
     }
+  });
+
+  it('keeps interactive auth recovery bounded, privacy-safe, and reversible', () => {
+    const egress = read('docs/audits/evidence1-hyperv-open-temporary-auth-egress.ps1');
+    const login = read('docs/audits/evidence1-hyperv-open-claude-login-interactive-task.ps1');
+    const vmconnect = read('docs/audits/evidence1-hyperv-open-vmconnect.ps1');
+    const reseal = read('docs/audits/evidence1-hyperv-run-network-seal-direct.ps1');
+    const seal = read('docs/audits/evidence1-stageb-network-seal.ps1');
+
+    expect(egress).toContain("temporary_auth_window = $true");
+    expect(egress).toContain("must_reseal_before_readiness_or_live = $true");
+    expect(egress).toContain("-DefaultOutboundAction Allow");
+    expect(egress).toContain("Evidence1AuthEgressExpiry");
+    expect(egress).toContain("-UserId 'SYSTEM' -LogonType ServiceAccount");
+    expect(egress).toContain('-StartWhenAvailable');
+    expect(egress).toContain("if ($VMName -cne 'Evidence1-Runner')");
+    expect(egress).toContain("if ($GuestComputerName -cne 'Evidence1Runner')");
+    expect(egress).toContain("if ($GuestCredentialPath -cne 'C:\\kmp-eval\\scratch\\hyperv-create-runner\\Evidence1-Runner.guest-credential.clixml')");
+    expect(egress).toContain("if ($simpleUser -cne 'Evidence1')");
+    expect(egress.indexOf('Register-ScheduledTask')).toBeLessThan(egress.indexOf('-DefaultOutboundAction Allow'));
+    expect(egress).toContain('auth-egress cleanup could not verify outbound blocking');
+    expect(egress).not.toMatch(/command_line|password_value|secret_value/i);
+    expect(egress).not.toMatch(/powershell_direct_logon|logon_name\s*=/i);
+
+    expect(login).toContain("C:\\Users\\Evidence1\\Desktop\\Claude Login.cmd");
+    expect(login).toContain("if ($VMName -cne 'Evidence1-Runner')");
+    expect(login).toContain("if ($GuestComputerName -cne 'Evidence1Runner')");
+    expect(login).toContain("-LogonType Interactive");
+    expect(login).toContain("operator_login_required = $true");
+    expect(login).toContain("auth_content_read = $false");
+    expect(login).not.toMatch(/CommandLine|Get-Content[^\r\n]*\.claude/i);
+    expect(login).not.toMatch(/powershell_direct_logon|logon_name\s*=/i);
+
+    expect(vmconnect).toContain("vmconnect.exe");
+    expect(vmconnect).toContain("if ($VMName -cne 'Evidence1-Runner')");
+    expect(vmconnect).not.toMatch(/SendKeys|WScript\.Shell|ClaudeCommand/i);
+
+    expect(reseal).toContain("evidence1-stageb-network-seal.ps1");
+    expect(reseal).toContain("stopped_auth_processes = $true");
+    expect(reseal).toContain("Unregister-ScheduledTask");
+    expect(reseal).toContain("remaining_auth_process_count");
+    expect(reseal).toContain("Join-Path $PSScriptRoot 'evidence1-stageb-network-seal.ps1'");
+    expect(reseal).toContain("if ($VMName -cne 'Evidence1-Runner')");
+    expect(reseal).toContain("if ($GuestComputerName -cne 'Evidence1Runner')");
+    expect(reseal).not.toMatch(/\[string\]\$NetworkSealSourcePath/);
+    expect(reseal).not.toMatch(/powershell_direct_logon|logon_name\s*=/i);
+    expect(seal).toContain("-DefaultOutboundAction Block");
+    expect(seal).toContain("network_mode = 'restricted'");
+    expect(seal).toContain('finally {');
+    expect(seal).toContain('$sealCompleted = $true');
+    expect(seal).toContain('$DeadlineSeconds = 300');
+    expect(seal).not.toMatch(/allow DNS (UDP|TCP)/);
+    expect(seal).not.toContain('output_first_line');
   });
 
   it('documents the no-live boundary for the host toolkit', () => {
@@ -369,7 +430,7 @@ foreach ($path in @(${fileList})) {
 }
 if ($hadError) { exit 1 }
 `;
-    const parsed = spawnSync('pwsh', ['-NoProfile', '-Command', script], {
+    const parsed = spawnSync('powershell.exe', ['-NoProfile', '-Command', script], {
       encoding: 'utf8',
       timeout: 30_000,
     });
