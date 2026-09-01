@@ -328,6 +328,8 @@ try {
     expect(reseal).toContain('payload_copy_failed');
     expect(reseal).toContain('guest_invoke_failed');
     expect(reseal).toContain('transport_hresult');
+    expect(reseal).toContain('Receive-Job -Job $job -ErrorAction SilentlyContinue');
+    expect(reseal).not.toContain('Receive-Job -Job $job -ErrorAction Stop');
     expect(reseal).not.toMatch(/exception_message|error_message/i);
     expect(reseal).not.toContain("error = 'powershell_direct_failed'");
     expect(reseal).not.toMatch(/\[string\]\$NetworkSealSourcePath/);

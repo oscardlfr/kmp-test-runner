@@ -196,7 +196,7 @@ for ($candidateIndex = 0; $candidateIndex -lt $candidates.Count; $candidateIndex
       $attempts += [ordered]@{ candidate_index = $candidateIndex; ok = $false; error = 'timed_out'; transport_hresult = $null }
       break
     }
-    $received = @(Receive-Job -Job $job -ErrorAction Stop)
+    $received = @(Receive-Job -Job $job -ErrorAction SilentlyContinue)
     $probe = @($received | Where-Object { $_ -and $_.PSObject.Properties['verdict'] }) | Select-Object -Last 1
     if (-not $probe) {
       throw 'network-seal job returned no structured result'
