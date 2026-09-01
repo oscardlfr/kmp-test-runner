@@ -205,6 +205,10 @@ It never uses `-TurnOff` or another hard-power fallback. A terminal
 `canary_custody_incomplete` report closes the consumed attempt without authorizing a retry;
 arbitrary failed copy reports still block V2 and later live work. Do not rerun an interrupted or
 failed shutdown blindly: preserve its report and inspect the privacy-safe state first.
+Pre-schema copy reports are archival input only. The copy script preserves one historical PASS
+shape when its keys are exact, the VM and terminal are closed, and `raw_content_read` is exactly
+`false`; its archive identity is the report SHA-256. It is never accepted as custody for a new
+canary and every other legacy shape remains a HARD STOP.
 
 ## One-Cell Stage L
 

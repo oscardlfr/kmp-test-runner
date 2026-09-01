@@ -168,6 +168,12 @@ try {
     expect(copy).not.toMatch(/HYPERV-COPY-LIVE-ARTIFACTS\.json'\)\s+-Encoding/);
     expect(copy).toContain("$existingState -cin @('passed','failed')");
     expect(copy).toContain("$archiveCode = 'terminal'");
+    expect(copy).toContain('$historicalTerminalKeys = @(');
+    expect(copy).toContain('$matchesHistoricalTerminal');
+    expect(copy).toContain("$archiveIdentity = 'legacy-' +");
+    expect(copy).toContain('Get-FileHash -Algorithm SHA256 -LiteralPath $Path');
+    expect(copy).toContain("[string]$existing.vm_state -cne 'Off'");
+    expect(copy).toContain('$existing.raw_content_read -isnot [bool]');
   });
 
   it('binds an optional graceful shutdown to exact prior custody without a hard-power fallback', () => {

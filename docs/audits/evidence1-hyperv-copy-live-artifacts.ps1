@@ -171,9 +171,47 @@ function Preserve-InterruptedCopyCheckpoint([string]$Path) {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
   try { $existing = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop }
   catch { throw 'copy_checkpoint_invalid' }
-  $existingState = [string]$existing.state
+
+  $historicalTerminalKeys = @(
+    'verdict','generated_at_utc','vm_name','vm_state','vhd_path','mounted_drive','out_dir',
+    'copied','stage_b_exit','stage_b_exit_text','journal_dirs','journal_event_summaries',
+    'journal_event_copies','scenario_files','scenario_copies','incident_diagnostics',
+    'rejection_diagnostics','local_structured_rejection_details','runs_inventory',
+    'raw_content_read','note'
+  )
+  $actualKeys = @(Get-JsonObjectKeys $existing)
+  $matchesHistoricalTerminal = $actualKeys.Count -eq $historicalTerminalKeys.Count -and
+    @($actualKeys | Where-Object { $_ -cnotin $historicalTerminalKeys }).Count -eq 0
   $archiveCode = $null
-  if ($existingState -cin @('passed','failed')) {
+  $archiveIdentity = $null
+
+  if ($matchesHistoricalTerminal) {
+    $stageExitKeys = @(Get-JsonObjectKeys $existing.stage_b_exit)
+    $terminal = Test-Evidence1TerminalRecordObject `
+      -Record $existing.stage_b_exit.record `
+      -Source ([string]$existing.stage_b_exit.source) `
+      -ExpectedRunId ([string]$existing.stage_b_exit.record.run_id)
+    $generatedAtValid = ($existing.generated_at_utc -is [DateTime] -and
+        $existing.generated_at_utc.Kind -eq [DateTimeKind]::Utc) -or
+      ($existing.generated_at_utc -is [string] -and
+        $existing.generated_at_utc -cmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$')
+    if ([string]$existing.verdict -cne 'PASS' -or
+        -not $generatedAtValid -or
+        [string]$existing.vm_name -cne $VMName -or [string]$existing.vm_state -cne 'Off' -or
+        $existing.raw_content_read -isnot [bool] -or $existing.raw_content_read -or
+        $stageExitKeys.Count -ne 5 -or
+        @($stageExitKeys | Where-Object { $_ -cnotin @('valid','source','reason','exit_code','record') }).Count -ne 0 -or
+        $existing.stage_b_exit.valid -isnot [bool] -or -not $existing.stage_b_exit.valid -or
+        $null -ne $existing.stage_b_exit.reason -or -not $terminal.valid -or
+        [int]$existing.stage_b_exit.exit_code -ne [int]$terminal.exit_code -or
+        [string]$existing.stage_b_exit_text -cne [string]$terminal.exit_code) {
+      throw 'copy_checkpoint_invalid'
+    }
+    $archiveCode = 'terminal'
+    $archiveIdentity = 'legacy-' + (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
+  } else {
+    $existingState = [string]$existing.state
+    if ($existingState -cin @('passed','failed')) {
     if (($existing.schema -isnot [int] -and $existing.schema -isnot [long]) -or [long]$existing.schema -ne 1 -or
         $existing.raw_content_read -isnot [bool] -or $existing.raw_content_read -or
         ($existingState -ceq 'passed' -and [string]$existing.verdict -cne 'PASS') -or
@@ -181,51 +219,52 @@ function Preserve-InterruptedCopyCheckpoint([string]$Path) {
       throw 'copy_checkpoint_invalid'
     }
     $archiveCode = 'terminal'
-  } elseif ($existingState -cne 'started') {
-    throw 'copy_checkpoint_invalid'
-  }
+    } elseif ($existingState -cne 'started') {
+      throw 'copy_checkpoint_invalid'
+    }
 
-  if ($existingState -ceq 'started') {
-    $code = [string]$existing.failure_code
-    if ($code -cnotin @('copy_interrupted','vm_shutdown_dispatch_pending','vm_shutdown_interrupted')) {
-      throw 'copy_checkpoint_invalid'
-    }
-    $archiveCode = $code
-    $baseKeys = @(
-      'schema','invocation_id','state','verdict','generated_at_utc','expected_run_id',
-      'failure_phase','failure_code','failure_subreason','graceful_shutdown_intent_recorded',
-      'graceful_shutdown_requested','graceful_shutdown_completed','raw_content_read'
-    )
-    $expectedKeys = if ($code -ceq 'copy_interrupted') { $baseKeys } else { @($baseKeys + 'hard_power_fallback_used') }
-    $actualKeys = @(Get-JsonObjectKeys $existing)
-    if ($actualKeys.Count -ne $expectedKeys.Count -or
-        @($actualKeys | Where-Object { $_ -cnotin $expectedKeys }).Count -ne 0 -or
-        ($existing.schema -isnot [int] -and $existing.schema -isnot [long]) -or [long]$existing.schema -ne 1 -or
-        [string]$existing.verdict -cne 'FAIL' -or [string]$existing.expected_run_id -cne $ExpectedRunId -or
-        $existing.raw_content_read -isnot [bool] -or $existing.raw_content_read -or
-        $existing.graceful_shutdown_intent_recorded -isnot [bool] -or
-        $existing.graceful_shutdown_requested -isnot [bool] -or
-        $existing.graceful_shutdown_completed -isnot [bool] -or $existing.graceful_shutdown_completed) {
-      throw 'copy_checkpoint_invalid'
-    }
-    if ($code -ceq 'copy_interrupted') {
-      if ($existing.graceful_shutdown_intent_recorded -or $existing.graceful_shutdown_requested) { throw 'copy_checkpoint_invalid' }
-    } else {
-      if (-not $existing.graceful_shutdown_intent_recorded -or
-          ($code -ceq 'vm_shutdown_dispatch_pending' -and $existing.graceful_shutdown_requested) -or
-          ($code -ceq 'vm_shutdown_interrupted' -and -not $existing.graceful_shutdown_requested) -or
-          $existing.hard_power_fallback_used -isnot [bool] -or $existing.hard_power_fallback_used) {
+    if ($existingState -ceq 'started') {
+      $code = [string]$existing.failure_code
+      if ($code -cnotin @('copy_interrupted','vm_shutdown_dispatch_pending','vm_shutdown_interrupted')) {
         throw 'copy_checkpoint_invalid'
       }
+      $archiveCode = $code
+      $baseKeys = @(
+        'schema','invocation_id','state','verdict','generated_at_utc','expected_run_id',
+        'failure_phase','failure_code','failure_subreason','graceful_shutdown_intent_recorded',
+        'graceful_shutdown_requested','graceful_shutdown_completed','raw_content_read'
+      )
+      $expectedKeys = if ($code -ceq 'copy_interrupted') { $baseKeys } else { @($baseKeys + 'hard_power_fallback_used') }
+      if ($actualKeys.Count -ne $expectedKeys.Count -or
+          @($actualKeys | Where-Object { $_ -cnotin $expectedKeys }).Count -ne 0 -or
+          ($existing.schema -isnot [int] -and $existing.schema -isnot [long]) -or [long]$existing.schema -ne 1 -or
+          [string]$existing.verdict -cne 'FAIL' -or [string]$existing.expected_run_id -cne $ExpectedRunId -or
+          $existing.raw_content_read -isnot [bool] -or $existing.raw_content_read -or
+          $existing.graceful_shutdown_intent_recorded -isnot [bool] -or
+          $existing.graceful_shutdown_requested -isnot [bool] -or
+          $existing.graceful_shutdown_completed -isnot [bool] -or $existing.graceful_shutdown_completed) {
+        throw 'copy_checkpoint_invalid'
+      }
+      if ($code -ceq 'copy_interrupted') {
+        if ($existing.graceful_shutdown_intent_recorded -or $existing.graceful_shutdown_requested) { throw 'copy_checkpoint_invalid' }
+      } else {
+        if (-not $existing.graceful_shutdown_intent_recorded -or
+            ($code -ceq 'vm_shutdown_dispatch_pending' -and $existing.graceful_shutdown_requested) -or
+            ($code -ceq 'vm_shutdown_interrupted' -and -not $existing.graceful_shutdown_requested) -or
+            $existing.hard_power_fallback_used -isnot [bool] -or $existing.hard_power_fallback_used) {
+          throw 'copy_checkpoint_invalid'
+        }
+      }
     }
-  }
-  $previousInvocation = [guid]::Empty
-  if (-not [guid]::TryParseExact([string]$existing.invocation_id, 'D', [ref]$previousInvocation)) {
-    throw 'copy_checkpoint_invalid'
+    $previousInvocation = [guid]::Empty
+    if (-not [guid]::TryParseExact([string]$existing.invocation_id, 'D', [ref]$previousInvocation)) {
+      throw 'copy_checkpoint_invalid'
+    }
+    $archiveIdentity = $previousInvocation.ToString('D')
   }
 
   $archivePath = Join-Path (Split-Path -Parent $Path) `
-    ('HYPERV-COPY-LIVE-ARTIFACTS.{0}.{1}.checkpoint.json' -f $previousInvocation.ToString('D'), $archiveCode)
+    ('HYPERV-COPY-LIVE-ARTIFACTS.{0}.{1}.checkpoint.json' -f $archiveIdentity, $archiveCode)
   if (Test-Path -LiteralPath $archivePath) { throw 'copy_checkpoint_collision' }
   Move-Item -LiteralPath $Path -Destination $archivePath -ErrorAction Stop
 }
