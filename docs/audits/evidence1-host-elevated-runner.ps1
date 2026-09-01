@@ -22,7 +22,11 @@ $AllowedScripts = @(
   'evidence1-hyperv-read-wet-forensics-direct.ps1',
   'evidence1-hyperv-read-source-inventory-direct.ps1',
   'evidence1-hyperv-probe-gradle-offline-direct.ps1',
-  'evidence1-hyperv-provision-gradle-cache-direct.ps1'
+  'evidence1-hyperv-provision-gradle-cache-direct.ps1',
+  'evidence1-hyperv-open-temporary-auth-egress.ps1',
+  'evidence1-hyperv-open-claude-login-interactive-task.ps1',
+  'evidence1-hyperv-open-vmconnect.ps1',
+  'evidence1-hyperv-run-network-seal-direct.ps1'
 )
 
 function Resolve-FullPath([string]$Path) {

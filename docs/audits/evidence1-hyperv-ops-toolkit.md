@@ -138,6 +138,30 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File docs\audits\evidence1-ho
 The canary record expires after 30 minutes and is invalidated by credential-override environment
 variables. Do not replace this step with an interactive-login artifact or a previous live result.
 
+### Remote-auth recovery
+
+If the local status passes but the remote canary returns `401`, treat the saved OAuth credential as
+expired or revoked. Do not launch live and do not retry the canary before the operator renews the
+interactive login. The allowlisted recovery sequence is:
+
+1. `evidence1-hyperv-open-temporary-auth-egress.ps1` temporarily changes the guest firewall's
+   outbound default to `Allow` and disables Edge QUIC. Before opening egress it arms a SYSTEM
+   watchdog that restores outbound blocking after 15 minutes, including after a suspended guest
+   resumes. Its report explicitly marks that readiness and live are forbidden until reseal.
+2. `evidence1-hyperv-open-claude-login-interactive-task.ps1` starts the existing desktop launcher
+   in the already logged-on `Evidence1` session. It never reads or enters credentials. The operator
+   alone completes the browser authentication.
+3. `evidence1-hyperv-open-vmconnect.ps1` exposes the guest desktop without injecting keys or text.
+4. After the operator finishes, `evidence1-hyperv-run-network-seal-direct.ps1` stops the temporary
+   auth processes, removes the interactive task, deploys the reviewed network-seal script and
+   proves required Claude endpoints are reachable while unrelated destinations are blocked.
+5. Regenerate readiness and run one fresh remote-auth canary. Only a passing fresh canary permits
+   the separately authorized live handoff.
+
+The recovery scripts persist only closed counts, booleans, task state and safe status codes. They
+do not persist browser content, process command lines, resolved addresses, authentication identity,
+tokens or error prose. A failed or interrupted reseal is a HARD STOP.
+
 4. Start the authorized handoff only after readiness PASS, a fresh passing remote-auth canary, and
 a fresh live authorization phrase. The state flow is deliberately singular:
 
