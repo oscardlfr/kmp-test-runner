@@ -83,9 +83,13 @@ for ($candidateIndex = 0; $candidateIndex -lt $candidates.Count; $candidateIndex
   $job = Start-Job -ScriptBlock {
     param($VmName, $UserName, $SecurePassword, $NetworkSealSourcePath, $NetworkSealSha256, $GuestNetworkSealScript, $GuestReportPath)
     $credential = [pscredential]::new($UserName, $SecurePassword)
-    $session = New-PSSession -VMName $VmName -Credential $credential -ErrorAction Stop
+    $session = $null
+    $transportStage = 'session_open_failed'
     try {
+      $session = New-PSSession -VMName $VmName -Credential $credential -ErrorAction Stop
+      $transportStage = 'payload_copy_failed'
       Copy-Item -LiteralPath $NetworkSealSourcePath -Destination $GuestNetworkSealScript -ToSession $session -Force -ErrorAction Stop
+      $transportStage = 'guest_invoke_failed'
       Invoke-Command -Session $session -ScriptBlock {
         param($GuestNetworkSealScript, $GuestReportPath, $NetworkSealSha256)
         $ErrorActionPreference = 'Stop'
@@ -172,30 +176,57 @@ for ($candidateIndex = 0; $candidateIndex -lt $candidates.Count; $candidateIndex
           }
         }
       } -ArgumentList $GuestNetworkSealScript, $GuestReportPath, $NetworkSealSha256 -ErrorAction Stop
+    } catch {
+      [ordered]@{
+        verdict = 'FAIL'
+        failure_code = $transportStage
+        transport_hresult = [int]$_.Exception.HResult
+        fail_closed_verified = $null
+        sensitive_content_read = $false
+      }
     } finally {
-      Remove-PSSession -Session $session -ErrorAction SilentlyContinue
+      if ($session) {
+        Remove-PSSession -Session $session -ErrorAction SilentlyContinue
+      }
     }
   } -ArgumentList $VMName, $logonName, $storedCredential.Password, $NetworkSealSourcePath, $networkSealSha256, $GuestNetworkSealScript, $GuestReportPath
 
   try {
     if (-not (Wait-Job -Job $job -Timeout $ProbeTimeoutSeconds)) {
-      $attempts += [ordered]@{ candidate_index = $candidateIndex; ok = $false; error = 'timed_out' }
-      continue
+      $attempts += [ordered]@{ candidate_index = $candidateIndex; ok = $false; error = 'timed_out'; transport_hresult = $null }
+      break
     }
     $received = @(Receive-Job -Job $job -ErrorAction Stop)
     $probe = @($received | Where-Object { $_ -and $_.PSObject.Properties['verdict'] }) | Select-Object -Last 1
     if (-not $probe) {
       throw 'network-seal job returned no structured result'
     }
-    $workingCandidateIndex = $candidateIndex
+    $probeFailureCode = if ($probe.PSObject.Properties['failure_code']) {
+      [string]$probe.failure_code
+    } else {
+      $null
+    }
+    if ($probeFailureCode -ne 'session_open_failed') {
+      $workingCandidateIndex = $candidateIndex
+    }
     $attempts += [ordered]@{
       candidate_index = $candidateIndex
       ok = $probe.verdict -eq 'PASS'
-      error = if ($probe.verdict -eq 'PASS') { $null } else { [string]$probe.failure_code }
+      error = if ($probe.verdict -eq 'PASS') { $null } else { $probeFailureCode }
+      transport_hresult = if ($probe.PSObject.Properties['transport_hresult']) { [int]$probe.transport_hresult } else { $null }
+    }
+    if ($probeFailureCode -eq 'session_open_failed') {
+      continue
     }
     break
   } catch {
-    $attempts += [ordered]@{ candidate_index = $candidateIndex; ok = $false; error = 'powershell_direct_transport_failed' }
+    $attempts += [ordered]@{
+      candidate_index = $candidateIndex
+      ok = $false
+      error = 'host_job_receive_failed'
+      transport_hresult = [int]$_.Exception.HResult
+    }
+    break
   } finally {
     Stop-Job -Job $job -ErrorAction SilentlyContinue
     Remove-Job -Job $job -Force -ErrorAction SilentlyContinue

@@ -163,6 +163,9 @@ interactive login. The allowlisted recovery sequence is:
    rejected reseal records only its closed stage code (payload integrity, auth cleanup, seal
    execution/result, or watchdog cleanup) and verifies fail-closed firewall state; it never retries
    a destructive guest operation under alternate credential spellings after transport succeeded.
+   Host transport failures are separated into session-open, payload-copy and guest-invoke stages,
+   with only a numeric HRESULT retained. Temporary-egress failures use the same closed-diagnostic
+   approach for watchdog setup, QUIC policy, firewall opening, endpoint probes and fail-closed cleanup.
 5. Regenerate readiness and run one fresh remote-auth canary. Only a passing fresh canary permits
    the separately authorized live handoff.
 
