@@ -56,7 +56,7 @@ function Read-Evidence1TerminalRecord {
     if (@($required | Where-Object { $_ -notin $propertyNames }).Count -gt 0) {
         return [ordered]@{ valid = $false; reason = 'invalid_shape'; exit_code = $null; record = $record }
     }
-    if ($record.schema -ne 1) {
+    if (($record.schema -isnot [int] -and $record.schema -isnot [long]) -or [long]$record.schema -ne 1) {
         return [ordered]@{ valid = $false; reason = 'invalid_schema'; exit_code = $null; record = $record }
     }
     if ($record.run_id -ne $ExpectedRunId) {
@@ -105,7 +105,7 @@ function Test-Evidence1TerminalRecordObject {
     if (@($required | Where-Object { $_ -notin $propertyNames }).Count -gt 0) {
         return [ordered]@{ valid = $false; source = $Source; reason = 'invalid_shape'; exit_code = $null; record = $Record }
     }
-    if ($Record.schema -ne 1) {
+    if (($Record.schema -isnot [int] -and $Record.schema -isnot [long]) -or [long]$Record.schema -ne 1) {
         return [ordered]@{ valid = $false; source = $Source; reason = 'invalid_schema'; exit_code = $null; record = $Record }
     }
     if ($Record.run_id -ne $ExpectedRunId) {
@@ -154,7 +154,7 @@ function Test-Evidence1ProgressRecord {
     if (@($required | Where-Object { $_ -notin $propertyNames }).Count -gt 0) {
         return [ordered]@{ valid = $false; source = $Source; reason = 'invalid_shape'; record = $Record }
     }
-    if ($Record.schema -ne 1) {
+    if (($Record.schema -isnot [int] -and $Record.schema -isnot [long]) -or [long]$Record.schema -ne 1) {
         return [ordered]@{ valid = $false; source = $Source; reason = 'invalid_schema'; record = $Record }
     }
     if ($Record.run_id -ne $ExpectedRunId) {
@@ -470,7 +470,10 @@ function Assert-Evidence1CanaryTerminalBinding($Record, [string]$RunId, [string]
     Initialize-Evidence1CanarySupport
     try {
         Assert-E1Fields $Record @{ run_id = $RunId }
-        Assert-E1Fields (Get-E1Field $Record 'canary') @{ arm = $Arm; planned_sessions = 1; binding_sha256 = $BindingSha256 }
+        $canary = Get-E1Field $Record 'canary'
+        Assert-E1Fields $canary @{ arm = $Arm; binding_sha256 = $BindingSha256 }
+        $planned = Get-E1Field $canary 'planned_sessions'
+        if (($planned -isnot [int] -and $planned -isnot [long]) -or [long]$planned -ne 1) { throw 'planned_sessions' }
     } catch { throw 'canary_terminal_binding' }
 }
 
@@ -563,6 +566,19 @@ function Set-Evidence1CanaryFailure($Diagnostics, [string]$Slot, [string]$Phase,
             break
         }
     }
+}
+
+function Assert-Evidence1CanaryShutdownCustody($Placement, $Handoff, $TerminalRecord, [string]$RunId, [string]$VMName) {
+    Initialize-Evidence1CanarySupport
+    try {
+        if ($RunId -cnotmatch '^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$' -or
+            $VMName -cnotmatch '^[A-Za-z0-9][A-Za-z0-9-]{0,63}$') { throw 'identity' }
+        $binding = Assert-Evidence1PriorHandoffCustody $Placement $Handoff $RunId $VMName
+        $terminal = Test-Evidence1TerminalRecordObject -Record $TerminalRecord -Source 'powershell_direct_terminal' -ExpectedRunId $RunId
+        if (-not $terminal.valid) { throw 'terminal' }
+        Assert-Evidence1CanaryTerminalBinding $terminal.record $RunId $binding.arm $binding.binding_sha256
+        return $true
+    } catch { throw 'canary_shutdown_custody_invalid' }
 }
 
 function Get-Evidence1CanaryCustody([string]$Directory, [string]$RunId, [string]$BindingSha256, $TerminalRecord) {
@@ -707,4 +723,5 @@ Export-ModuleMember -Function @(
     'Set-Evidence1CanaryFailure'
     'ConvertTo-Evidence1CanaryJournalSnapshot'
     'ConvertTo-Evidence1CanaryDiagnostics'
+    'Assert-Evidence1CanaryShutdownCustody'
 )

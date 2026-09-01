@@ -2,8 +2,13 @@
 
 param(
   [string]$VMName = 'Evidence1-Runner',
+  [string]$GuestComputerName = 'Evidence1Runner',
+  [string]$GuestCredentialPath = 'C:\kmp-eval\scratch\hyperv-create-runner\Evidence1-Runner.guest-credential.clixml',
+  [string]$GuestOpsDir = 'C:\Evidence1Ops',
   [string]$OutDir = 'C:\kmp-eval\scratch\hyperv-copy-live-artifacts',
-  [string]$ExpectedRunId = ''
+  [string]$ExpectedRunId = '',
+  [switch]$GracefulShutdown,
+  [ValidateRange(30, 900)][int]$GracefulShutdownTimeoutSeconds = 300
 )
 
 Set-StrictMode -Version Latest
@@ -15,7 +20,8 @@ Import-Module $contractPath -Force
 function Fail([string]$Code) {
   $known = @(
     'path_outside_root','copy_raw_forbidden','vm_not_off','vm_disk_missing','vm_mount_invalid',
-    'vm_volume_missing','canary_copy_scope','canary_copy_hash','canary_custody_invalid','copy_failed'
+    'vm_volume_missing','vm_shutdown_custody','vm_shutdown_failed','canary_copy_scope',
+    'canary_copy_hash','canary_custody_invalid','copy_failed'
   )
   $script:CopyFailureCode = if ($Code -cin $known) { $Code } else { 'copy_failed' }
   throw 'copy_failed'
@@ -161,6 +167,141 @@ function Get-JsonObjectKeys($Value) {
   return @()
 }
 
+function Preserve-InterruptedCopyCheckpoint([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
+  try { $existing = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop }
+  catch { throw 'copy_checkpoint_invalid' }
+  $existingState = [string]$existing.state
+  $archiveCode = $null
+  if ($existingState -cin @('passed','failed')) {
+    if (($existing.schema -isnot [int] -and $existing.schema -isnot [long]) -or [long]$existing.schema -ne 1 -or
+        $existing.raw_content_read -isnot [bool] -or $existing.raw_content_read -or
+        ($existingState -ceq 'passed' -and [string]$existing.verdict -cne 'PASS') -or
+        ($existingState -ceq 'failed' -and [string]$existing.verdict -cne 'FAIL')) {
+      throw 'copy_checkpoint_invalid'
+    }
+    $archiveCode = 'terminal'
+  } elseif ($existingState -cne 'started') {
+    throw 'copy_checkpoint_invalid'
+  }
+
+  if ($existingState -ceq 'started') {
+    $code = [string]$existing.failure_code
+    if ($code -cnotin @('copy_interrupted','vm_shutdown_dispatch_pending','vm_shutdown_interrupted')) {
+      throw 'copy_checkpoint_invalid'
+    }
+    $archiveCode = $code
+    $baseKeys = @(
+      'schema','invocation_id','state','verdict','generated_at_utc','expected_run_id',
+      'failure_phase','failure_code','failure_subreason','graceful_shutdown_intent_recorded',
+      'graceful_shutdown_requested','graceful_shutdown_completed','raw_content_read'
+    )
+    $expectedKeys = if ($code -ceq 'copy_interrupted') { $baseKeys } else { @($baseKeys + 'hard_power_fallback_used') }
+    $actualKeys = @(Get-JsonObjectKeys $existing)
+    if ($actualKeys.Count -ne $expectedKeys.Count -or
+        @($actualKeys | Where-Object { $_ -cnotin $expectedKeys }).Count -ne 0 -or
+        ($existing.schema -isnot [int] -and $existing.schema -isnot [long]) -or [long]$existing.schema -ne 1 -or
+        [string]$existing.verdict -cne 'FAIL' -or [string]$existing.expected_run_id -cne $ExpectedRunId -or
+        $existing.raw_content_read -isnot [bool] -or $existing.raw_content_read -or
+        $existing.graceful_shutdown_intent_recorded -isnot [bool] -or
+        $existing.graceful_shutdown_requested -isnot [bool] -or
+        $existing.graceful_shutdown_completed -isnot [bool] -or $existing.graceful_shutdown_completed) {
+      throw 'copy_checkpoint_invalid'
+    }
+    if ($code -ceq 'copy_interrupted') {
+      if ($existing.graceful_shutdown_intent_recorded -or $existing.graceful_shutdown_requested) { throw 'copy_checkpoint_invalid' }
+    } else {
+      if (-not $existing.graceful_shutdown_intent_recorded -or
+          ($code -ceq 'vm_shutdown_dispatch_pending' -and $existing.graceful_shutdown_requested) -or
+          ($code -ceq 'vm_shutdown_interrupted' -and -not $existing.graceful_shutdown_requested) -or
+          $existing.hard_power_fallback_used -isnot [bool] -or $existing.hard_power_fallback_used) {
+        throw 'copy_checkpoint_invalid'
+      }
+    }
+  }
+  $previousInvocation = [guid]::Empty
+  if (-not [guid]::TryParseExact([string]$existing.invocation_id, 'D', [ref]$previousInvocation)) {
+    throw 'copy_checkpoint_invalid'
+  }
+
+  $archivePath = Join-Path (Split-Path -Parent $Path) `
+    ('HYPERV-COPY-LIVE-ARTIFACTS.{0}.{1}.checkpoint.json' -f $previousInvocation.ToString('D'), $archiveCode)
+  if (Test-Path -LiteralPath $archivePath) { throw 'copy_checkpoint_collision' }
+  Move-Item -LiteralPath $Path -Destination $archivePath -ErrorAction Stop
+}
+
+function Read-RunningTerminal {
+  if ($GuestOpsDir -cne 'C:\Evidence1Ops') { Fail 'vm_shutdown_custody' }
+  Assert-PathInside $GuestCredentialPath 'C:\kmp-eval\scratch\' 'guest credential'
+  if (-not (Test-Path -LiteralPath $GuestCredentialPath -PathType Leaf)) { Fail 'vm_shutdown_custody' }
+
+  $storedCredential = Import-Clixml -LiteralPath $GuestCredentialPath
+  $simpleUser = $storedCredential.UserName
+  $candidates = @(
+    "$GuestComputerName\$simpleUser",
+    "$VMName\$simpleUser",
+    ".\$simpleUser",
+    $simpleUser,
+    "localhost\$simpleUser"
+  )
+  $session = $null
+  foreach ($logonName in $candidates) {
+    try {
+      $credential = [pscredential]::new($logonName, $storedCredential.Password)
+      $session = New-PSSession -VMName $VMName -Credential $credential -ErrorAction Stop
+      break
+    } catch {
+      $session = $null
+    }
+  }
+  if (-not $session) { Fail 'vm_shutdown_custody' }
+
+  try {
+    $records = Invoke-Command -Session $session -ScriptBlock {
+      param($OpsDir)
+      $result = [ordered]@{ wrapper = $null; launcher = $null }
+      foreach ($entry in @(
+        @{ key = 'wrapper'; name = 'STAGE-B-live.exit.json' },
+        @{ key = 'launcher'; name = 'STAGE-B-live.launcher-exit.json' }
+      )) {
+        $path = Join-Path $OpsDir $entry.name
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+          try {
+            $record = Get-Content -LiteralPath $path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+            $canary = $null
+            if ($record.PSObject.Properties['canary']) {
+              $canary = [ordered]@{
+                arm = $record.canary.arm
+                planned_sessions = $record.canary.planned_sessions
+                binding_sha256 = $record.canary.binding_sha256
+              }
+            }
+            $result[$entry.key] = [pscustomobject][ordered]@{
+              schema = $record.schema
+              run_id = $record.run_id
+              state = $record.state
+              exit_code = $record.exit_code
+              exit_code_source = $record.exit_code_source
+              canary = $canary
+            }
+          } catch { $result[$entry.key] = $null }
+        }
+      }
+      [pscustomobject]$result
+    } -ArgumentList $GuestOpsDir
+    $wrapper = Test-Evidence1TerminalRecordObject -Record $records.wrapper -Source 'powershell_direct_terminal' -ExpectedRunId $ExpectedRunId
+    if ($wrapper.valid) { return $wrapper.record }
+    $launcher = Test-Evidence1TerminalRecordObject -Record $records.launcher -Source 'powershell_direct_launcher_terminal' -ExpectedRunId $ExpectedRunId
+    if ($launcher.valid) { return $launcher.record }
+    Fail 'vm_shutdown_custody'
+  } catch {
+    if ($script:CopyFailureCode -cne 'vm_shutdown_custody') { Fail 'vm_shutdown_custody' }
+    throw
+  } finally {
+    Remove-PSSession -Session $session -ErrorAction SilentlyContinue
+  }
+}
+
 Assert-PathInside $OutDir 'C:\kmp-eval\scratch\' 'out dir'
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
@@ -170,6 +311,11 @@ $copyExitCode = 0
 $script:CopyFailureCode = 'copy_failed'
 $currentStage = 'initialize'
 $terminalReport = $null
+try { Preserve-InterruptedCopyCheckpoint $copyReportPath }
+catch {
+  Write-Error 'HARD STOP: copy_checkpoint_preserve_failed'
+  exit 1
+}
 $startedReport = [ordered]@{
   schema = 1
   invocation_id = $copyInvocationId
@@ -180,6 +326,9 @@ $startedReport = [ordered]@{
   failure_phase = 'copy'
   failure_code = 'copy_interrupted'
   failure_subreason = $null
+  graceful_shutdown_intent_recorded = $false
+  graceful_shutdown_requested = $false
+  graceful_shutdown_completed = $false
   raw_content_read = $false
 }
 Write-Evidence1JsonAtomically -Path $copyReportPath -Value $startedReport
@@ -187,10 +336,82 @@ Write-Evidence1JsonAtomically -Path $copyReportPath -Value $startedReport
 $vm = $null
 $vhdPath = $null
 $mount = $null
+$shutdownIntentRecorded = $false
+$shutdownRequested = $false
+$shutdownCompleted = $false
 try {
   $currentStage = 'hyperv_preflight'
   $vm = Get-VM -Name $VMName -ErrorAction Stop
-  if ($vm.State -ne 'Off') { Fail 'vm_not_off' }
+  if ($vm.State -ne 'Off') {
+    if (-not $GracefulShutdown -or $vm.State -ne 'Running') { Fail 'vm_not_off' }
+    $currentStage = 'graceful_shutdown_custody'
+    try {
+      $placement = (Read-Evidence1CanaryJson 'C:\kmp-eval\scratch\hyperv-place-live-autorun\HYPERV-PLACE-LIVE-AUTORUN.json').value
+      $handoff = (Read-Evidence1CanaryJson 'C:\kmp-eval\scratch\hyperv-start-authorized-live\HYPERV-START-AUTHORIZED-LIVE.json').value
+      $runningTerminal = Read-RunningTerminal
+      $null = Assert-Evidence1CanaryShutdownCustody $placement $handoff $runningTerminal $ExpectedRunId $VMName
+    } catch {
+      Fail 'vm_shutdown_custody'
+    }
+
+    $currentStage = 'graceful_shutdown'
+    $stopJob = $null
+    try {
+      $shutdownIntentRecorded = $true
+      $shutdownCheckpoint = [ordered]@{
+        schema = 1
+        invocation_id = $copyInvocationId
+        state = 'started'
+        verdict = 'FAIL'
+        generated_at_utc = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+        expected_run_id = $ExpectedRunId
+        failure_phase = 'graceful_shutdown'
+        failure_code = 'vm_shutdown_dispatch_pending'
+        failure_subreason = $null
+        graceful_shutdown_intent_recorded = $shutdownIntentRecorded
+        graceful_shutdown_requested = $false
+        graceful_shutdown_completed = $false
+        hard_power_fallback_used = $false
+        raw_content_read = $false
+      }
+      Write-Evidence1JsonAtomically -Path $copyReportPath -Value $shutdownCheckpoint
+      $stopJob = Stop-VM -Name $VMName -Confirm:$false -AsJob -ErrorAction Stop
+      $shutdownRequested = $true
+      $shutdownCheckpoint = [ordered]@{
+        schema = 1
+        invocation_id = $copyInvocationId
+        state = 'started'
+        verdict = 'FAIL'
+        generated_at_utc = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+        expected_run_id = $ExpectedRunId
+        failure_phase = 'graceful_shutdown'
+        failure_code = 'vm_shutdown_interrupted'
+        failure_subreason = $null
+        graceful_shutdown_intent_recorded = $shutdownIntentRecorded
+        graceful_shutdown_requested = $shutdownRequested
+        graceful_shutdown_completed = $false
+        hard_power_fallback_used = $false
+        raw_content_read = $false
+      }
+      Write-Evidence1JsonAtomically -Path $copyReportPath -Value $shutdownCheckpoint
+      $completed = Wait-Job -Job $stopJob -Timeout $GracefulShutdownTimeoutSeconds
+      if (-not $completed) { Fail 'vm_shutdown_failed' }
+      Receive-Job -Job $stopJob -ErrorAction Stop | Out-Null
+      $deadline = [DateTime]::UtcNow.AddSeconds(30)
+      do {
+        $vm = Get-VM -Name $VMName -ErrorAction Stop
+        if ($vm.State -eq 'Off') { break }
+        Start-Sleep -Seconds 2
+      } while ([DateTime]::UtcNow -lt $deadline)
+      if ($vm.State -ne 'Off') { Fail 'vm_shutdown_failed' }
+      $shutdownCompleted = $true
+    } catch {
+      if ($script:CopyFailureCode -cne 'vm_shutdown_failed') { Fail 'vm_shutdown_failed' }
+      throw
+    } finally {
+      if ($stopJob) { Remove-Job -Job $stopJob -Force -ErrorAction SilentlyContinue }
+    }
+  }
 
   $activeDisk = Get-VMHardDiskDrive -VMName $VMName | Select-Object -First 1
   if (-not $activeDisk -or -not $activeDisk.Path) { Fail 'vm_disk_missing' }
@@ -467,6 +688,10 @@ try {
     failure_phase = if ($canaryCustody -and -not $canaryCustody.complete) { 'canary_custody' } else { $null }
     failure_code = if ($canaryCustody -and -not $canaryCustody.complete) { 'canary_custody_incomplete' } else { $null }
     failure_subreason = if ($canaryCustody -and -not $canaryCustody.complete) { $canaryCustody.failure_code } else { $null }
+    graceful_shutdown_intent_recorded = $shutdownIntentRecorded
+    graceful_shutdown_requested = $shutdownRequested
+    graceful_shutdown_completed = $shutdownCompleted
+    hard_power_fallback_used = $false
     vm_name = $VMName
     vm_state = [string]$vm.State
     vhd_path = $vhdPath
@@ -502,6 +727,10 @@ try {
     failure_phase = $currentStage
     failure_code = $script:CopyFailureCode
     failure_subreason = $null
+    graceful_shutdown_intent_recorded = $shutdownIntentRecorded
+    graceful_shutdown_requested = $shutdownRequested
+    graceful_shutdown_completed = $shutdownCompleted
+    hard_power_fallback_used = $false
     raw_content_read = $false
   }
 } finally {
