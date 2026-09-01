@@ -276,6 +276,13 @@ try {
     expect(egress).toContain('auth_probe_success_count');
     expect(egress).toContain('Invoke-AuthEndpointProbe');
     expect(egress).toContain('auth endpoint probe failed');
+    expect(egress).toContain('watchdog_setup_failed');
+    expect(egress).toContain('quic_policy_failed');
+    expect(egress).toContain('firewall_open_failed');
+    expect(egress).toContain('auth_endpoint_probe_failed');
+    expect(egress).toContain('fail_closed_cleanup_failed');
+    expect(egress).toContain('transport_hresult');
+    expect(egress).not.toMatch(/exception_message|error_message/i);
     expect(egress).toContain("-UserId 'SYSTEM' -LogonType ServiceAccount");
     expect(egress).toContain('-StartWhenAvailable');
     expect(egress).toContain("if ($VMName -cne 'Evidence1-Runner')");
@@ -317,6 +324,11 @@ try {
     expect(reseal).toContain('network_seal_execution_failed');
     expect(reseal).toContain('network_seal_result_invalid');
     expect(reseal).toContain('watchdog_cleanup_failed');
+    expect(reseal).toContain('session_open_failed');
+    expect(reseal).toContain('payload_copy_failed');
+    expect(reseal).toContain('guest_invoke_failed');
+    expect(reseal).toContain('transport_hresult');
+    expect(reseal).not.toMatch(/exception_message|error_message/i);
     expect(reseal).not.toContain("error = 'powershell_direct_failed'");
     expect(reseal).not.toMatch(/\[string\]\$NetworkSealSourcePath/);
     expect(reseal).not.toMatch(/powershell_direct_logon|logon_name\s*=/i);

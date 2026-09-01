@@ -83,7 +83,8 @@ for ($candidateIndex = 0; $candidateIndex -lt $candidates.Count; $candidateIndex
     Invoke-Command -VMName $VmName -Credential $credential -ScriptBlock {
       param($AuthWindowMinutes, $AuthProbeHosts)
       $ErrorActionPreference = 'Stop'
-      $egressReady = $false
+      $failureCode = 'guest_operation_failed'
+      $authProbeSuccessCount = 0
       try {
 
         function Invoke-AuthEndpointProbe([string]$HostName) {
@@ -101,6 +102,7 @@ for ($candidateIndex = 0; $candidateIndex -lt $candidates.Count; $candidateIndex
           }
         }
 
+        $failureCode = 'watchdog_setup_failed'
         $watchdogTaskName = 'Evidence1AuthEgressExpiry'
         Unregister-ScheduledTask -TaskName $watchdogTaskName -Confirm:$false -ErrorAction SilentlyContinue
         $emergencyCommand = @'
@@ -133,12 +135,14 @@ if ($profiles.Count -ne 3 -or $invalid -ne 0) { exit 1 }
           throw 'auth-egress expiry watchdog was not armed'
         }
 
+        $failureCode = 'quic_policy_failed'
         New-Item -ItemType Directory -Force -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' | Out-Null
         $priorQuicAllowed = Get-ItemPropertyValue `
           -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' `
           -Name 'QuicAllowed' `
           -ErrorAction SilentlyContinue
         New-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -Name 'QuicAllowed' -Value 0 -PropertyType DWord -Force | Out-Null
+        $failureCode = 'firewall_open_failed'
         Set-NetFirewallProfile -Profile Domain,Private,Public -Enabled True -DefaultInboundAction Block -DefaultOutboundAction Allow
         $edgeProcessCount = @(Get-Process -Name 'msedge' -ErrorAction SilentlyContinue).Count
         $edgeRestartRequired = $priorQuicAllowed -ne 0
@@ -155,14 +159,13 @@ if ($profiles.Count -ne 3 -or $invalid -ne 0) { exit 1 }
           throw 'temporary auth egress profile verification failed'
         }
 
-        $authProbeSuccessCount = 0
+        $failureCode = 'auth_endpoint_probe_failed'
         foreach ($hostName in $AuthProbeHosts) {
           if ((Invoke-AuthEndpointProbe $hostName) -ne 0) {
             throw 'auth endpoint probe failed'
           }
           $authProbeSuccessCount++
         }
-        $egressReady = $true
         [ordered]@{
           verdict = 'PASS'
           profile_count = $profiles.Count
@@ -178,21 +181,32 @@ if ($profiles.Count -ne 3 -or $invalid -ne 0) { exit 1 }
           must_reseal_before_readiness_or_live = $true
           sensitive_content_read = $false
         }
-      } finally {
-        if (-not $egressReady) {
+      } catch {
+        $originalFailureCode = $failureCode
+        $failClosedVerified = $false
+        try {
           Set-NetFirewallProfile `
             -Profile Domain,Private,Public `
             -Enabled True `
             -DefaultInboundAction Block `
             -DefaultOutboundAction Block `
-            -ErrorAction Continue
+            -ErrorAction Stop
           $cleanupProfiles = @(Get-NetFirewallProfile -Profile Domain,Private,Public -ErrorAction SilentlyContinue)
           $cleanupStillOpen = @($cleanupProfiles | Where-Object {
             $_.Enabled.ToString() -ne 'True' -or $_.DefaultOutboundAction.ToString() -ne 'Block'
           }).Count -gt 0
-          if ($cleanupProfiles.Count -ne 3 -or $cleanupStillOpen) {
-            throw 'auth-egress cleanup could not verify outbound blocking'
-          }
+          $failClosedVerified = $cleanupProfiles.Count -eq 3 -and -not $cleanupStillOpen
+        } catch {
+          $failClosedVerified = $false
+        }
+        # 'auth-egress cleanup could not verify outbound blocking' maps only to the closed code below.
+        [ordered]@{
+          verdict = 'FAIL'
+          failure_code = if ($failClosedVerified) { $originalFailureCode } else { 'fail_closed_cleanup_failed' }
+          auth_probe_host_count = $AuthProbeHosts.Count
+          auth_probe_success_count = $authProbeSuccessCount
+          fail_closed_verified = $failClosedVerified
+          sensitive_content_read = $false
         }
       }
     } -ArgumentList $AuthWindowMinutes, $AuthProbeHosts -ErrorAction Stop
@@ -200,15 +214,34 @@ if ($profiles.Count -ne 3 -or $invalid -ne 0) { exit 1 }
 
   try {
     if (-not (Wait-Job -Job $job -Timeout $ProbeTimeoutSeconds)) {
-      $attempts += [ordered]@{ candidate_index = $candidateIndex; ok = $false; error = 'timed_out' }
-      continue
+      $attempts += [ordered]@{
+        candidate_index = $candidateIndex
+        ok = $false
+        error = 'timed_out'
+        transport_hresult = $null
+      }
+      break
     }
-    $probe = Receive-Job -Job $job -ErrorAction Stop
+    $received = @(Receive-Job -Job $job -ErrorAction Stop)
+    $probe = @($received | Where-Object { $_ -and $_.PSObject.Properties['verdict'] }) | Select-Object -Last 1
+    if (-not $probe) {
+      throw 'temporary auth egress returned no structured result'
+    }
     $workingCandidateIndex = $candidateIndex
-    $attempts += [ordered]@{ candidate_index = $candidateIndex; ok = $true; error = $null }
+    $attempts += [ordered]@{
+      candidate_index = $candidateIndex
+      ok = $probe.verdict -eq 'PASS'
+      error = if ($probe.verdict -eq 'PASS') { $null } else { [string]$probe.failure_code }
+      transport_hresult = $null
+    }
     break
   } catch {
-    $attempts += [ordered]@{ candidate_index = $candidateIndex; ok = $false; error = 'powershell_direct_failed' }
+    $attempts += [ordered]@{
+      candidate_index = $candidateIndex
+      ok = $false
+      error = 'powershell_direct_transport_failed'
+      transport_hresult = [int]$_.Exception.HResult
+    }
   } finally {
     Stop-Job -Job $job -ErrorAction SilentlyContinue
     Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
