@@ -71,7 +71,7 @@ function ConvertTo-ProcessArgument([string]$Value) {
 
 function Complete-RedirectedStreams {
     foreach ($copy in @($stdoutCopy, $stderrCopy)) {
-        if ($null -ne $copy) { $copy.GetAwaiter().GetResult() }
+        if ($null -ne $copy) { [void]$copy.GetAwaiter().GetResult() }
     }
     foreach ($stream in @($stdoutStream, $stderrStream)) {
         if ($null -ne $stream) { $stream.Dispose() }
@@ -104,11 +104,11 @@ function Get-JournalProgress {
     }
 
     $eventsDir = Join-Path $journal.FullName 'events'
-    $events = if (Test-Path -LiteralPath $eventsDir) {
-        @(Get-ChildItem -LiteralPath $eventsDir -Filter '*.json' -File -Force -ErrorAction SilentlyContinue | Sort-Object Name)
+    $events = @(if (Test-Path -LiteralPath $eventsDir) {
+        Get-ChildItem -LiteralPath $eventsDir -Filter '*.json' -File -Force -ErrorAction SilentlyContinue | Sort-Object Name
     } else {
         @()
-    }
+    })
     $counts = [ordered]@{}
     foreach ($event in $events) {
         if ($event.Name -match '^[0-9]+-[0-9]+-(.+)\.json$') {
