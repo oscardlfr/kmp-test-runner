@@ -281,7 +281,8 @@ try {
     expect(egress).not.toMatch(/command_line|password_value|secret_value/i);
     expect(egress).not.toMatch(/powershell_direct_logon|logon_name\s*=/i);
 
-    expect(login).toContain("C:\\Users\\Evidence1\\Desktop\\Claude Login.cmd");
+    expect(login).toContain("Join-Path $env:USERPROFILE 'Desktop\\Claude Login.cmd'");
+    expect(login).not.toMatch(/C:\\Users\\/i);
     expect(login).toContain("if ($VMName -cne 'Evidence1-Runner')");
     expect(login).toContain("if ($GuestComputerName -cne 'Evidence1Runner')");
     expect(login).toContain("-LogonType Interactive");

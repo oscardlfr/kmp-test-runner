@@ -4,7 +4,6 @@ param(
   [string]$VMName = 'Evidence1-Runner',
   [string]$GuestComputerName = 'Evidence1Runner',
   [string]$GuestCredentialPath = 'C:\kmp-eval\scratch\hyperv-create-runner\Evidence1-Runner.guest-credential.clixml',
-  [string]$GuestLauncherPath = 'C:\Users\Evidence1\Desktop\Claude Login.cmd',
   [string]$TaskName = 'Evidence1OpenClaudeLogin',
   [string]$HostReportPath = 'C:\kmp-eval\scratch\hyperv-open-claude-login-task\HYPERV-OPEN-CLAUDE-LOGIN-TASK.json',
   [int]$ProbeTimeoutSeconds = 45
@@ -41,9 +40,6 @@ if ($GuestComputerName -cne 'Evidence1Runner') {
 if ($GuestCredentialPath -cne 'C:\kmp-eval\scratch\hyperv-create-runner\Evidence1-Runner.guest-credential.clixml') {
   Fail 'guest credential path is fixed to the dedicated Evidence1 credential'
 }
-if ($GuestLauncherPath -cne 'C:\Users\Evidence1\Desktop\Claude Login.cmd') {
-  Fail 'guest launcher path is fixed to the Evidence1 desktop launcher'
-}
 if ($TaskName -cne 'Evidence1OpenClaudeLogin') {
   Fail 'interactive task name is fixed'
 }
@@ -77,13 +73,14 @@ $workingCandidateIndex = $null
 for ($candidateIndex = 0; $candidateIndex -lt $candidates.Count; $candidateIndex++) {
   $logonName = $candidates[$candidateIndex]
   $job = Start-Job -ScriptBlock {
-    param($VmName, $UserName, $SecurePassword, $GuestLauncherPath, $TaskName)
+    param($VmName, $UserName, $SecurePassword, $TaskName)
     $credential = [pscredential]::new($UserName, $SecurePassword)
     Invoke-Command -VMName $VmName -Credential $credential -ScriptBlock {
-      param($GuestLauncherPath, $TaskName)
+      param($TaskName)
       $ErrorActionPreference = 'Stop'
-      if (-not (Test-Path -LiteralPath $GuestLauncherPath -PathType Leaf)) {
-        throw "guest launcher missing: $GuestLauncherPath"
+      $guestLauncherPath = Join-Path $env:USERPROFILE 'Desktop\Claude Login.cmd'
+      if (-not (Test-Path -LiteralPath $guestLauncherPath -PathType Leaf)) {
+        throw 'the dedicated guest Claude launcher is missing'
       }
 
       $interactiveUser = [string](Get-CimInstance Win32_ComputerSystem).UserName
@@ -102,7 +99,7 @@ for ($candidateIndex = 0; $candidateIndex -lt $candidates.Count; $candidateIndex
       $beforeIds = @(Get-Process -ErrorAction SilentlyContinue |
         Where-Object { $_.ProcessName -in @('claude','node','cmd','WindowsTerminal') } |
         Select-Object -ExpandProperty Id)
-      $action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument ('/d /c ""' + $GuestLauncherPath + '""')
+      $action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument ('/d /c ""' + $guestLauncherPath + '""')
       $trigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddMinutes(5))
       $principal = New-ScheduledTaskPrincipal -UserId 'Evidence1' -LogonType Interactive -RunLevel Limited
       Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
@@ -135,8 +132,8 @@ for ($candidateIndex = 0; $candidateIndex -lt $candidates.Count; $candidateIndex
         auth_content_read = $false
         credential_values_logged = $false
       }
-    } -ArgumentList $GuestLauncherPath, $TaskName -ErrorAction Stop
-  } -ArgumentList $VMName, $logonName, $storedCredential.Password, $GuestLauncherPath, $TaskName
+    } -ArgumentList $TaskName -ErrorAction Stop
+  } -ArgumentList $VMName, $logonName, $storedCredential.Password, $TaskName
 
   try {
     if (-not (Wait-Job -Job $job -Timeout $ProbeTimeoutSeconds)) {
