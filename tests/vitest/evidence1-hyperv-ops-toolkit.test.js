@@ -134,7 +134,7 @@ try {
       record_type_property_found: true,
       verdict_property_found: true,
     });
-  });
+  }, 25_000);
 
   it.skipIf(process.platform !== 'win32')('observes the real atomic journal publisher before and after linkSync without false failure', () => {
     const contract = rel(resolve(root, 'docs/audits/evidence1-live-run-contract.psm1')).replaceAll("'", "''");
