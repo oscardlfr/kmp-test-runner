@@ -330,6 +330,43 @@ Describe 'Evidence1 Stage L canary evidence and authorization' {
         Test-Path (Join-Path $p.Directory 'wrapper.claim.json') | Should -BeTrue
     }
 
+    It 'returns copy-ready incomplete custody when wrapper journal transport aborts a claimed launcher' {
+        $ops = Join-Path $TestDrive 'mounted-monitor/Evidence1Ops'
+        $p = Write-CanaryTestBundle (Join-Path $ops 'canary/b48bfb0c-a9ae-4e0e-8d89-56eb1e278090')
+        $b = (Read-Evidence1CanaryBundle @p).binding
+        foreach ($name in $b.scripts.Keys) { Copy-Item (Join-Path $script:AuditRoot $name) (Join-Path $ops $name) }
+        $null = New-Evidence1CanaryClaim $p.Directory $p.RunId $p.BindingSha256 'handoff'
+        $null = New-Evidence1CanaryClaim $p.Directory $p.RunId $p.BindingSha256 'wrapper'
+        $null = New-Evidence1CanaryClaim $p.Directory $p.RunId $p.BindingSha256 'launcher'
+        Write-Evidence1JsonAtomically (Join-Path $p.Directory 'journal-baseline.json') @{
+            run_id = $p.RunId; binding_sha256 = $p.BindingSha256; journal_ids = @()
+        }
+        Write-Evidence1JsonAtomically (Join-Path $p.Directory 'journal.json') @{
+            run_id = $p.RunId; journal_id = [guid]::NewGuid().ToString(); available = $true; event_count = 0
+            latest_event = $null; transition_counts = @{}; publication_pending = $false; publication_pending_since_utc = $null
+        }
+        $diagnostics = New-Evidence1CanaryDiagnostics
+        try { throw 'canary_progress_shape' } catch { Set-Evidence1CanaryFailure $diagnostics primary journal $_ }
+        $terminal = @{
+            schema = 1; run_id = $p.RunId; state = 'wrapper_error'; exit_code = 997; exit_code_source = 'wrapper_error'
+            wrapper_error_stage = 'monitor_launcher'; canary = @{ arm = 'product'; planned_sessions = 1; binding_sha256 = $p.BindingSha256 }
+            diagnostics = $diagnostics
+        }
+
+        $custody = Get-Evidence1CanaryCustody $p.Directory $p.RunId $p.BindingSha256 $terminal
+        $custody.verified | Should -BeFalse
+        $custody.complete | Should -BeFalse
+        $custody.custody_state | Should -BeExactly 'incomplete_wrapper_monitor'
+        $custody.attempt_consumed | Should -BeTrue
+        $custody.retry_authorized | Should -BeFalse
+        $custody.source_preserved | Should -BeFalse
+        $custody.failure_phase | Should -BeExactly 'journal'
+        $custody.failure_code | Should -BeExactly 'canary_progress_shape'
+        $custody.files.Keys | Should -Contain 'launcher.claim.json'
+        $custody.files.Keys | Should -Contain 'journal.json'
+        $custody.files.Keys | Should -Not -Contain 'source-custody.json'
+    }
+
     It 'rejects incomplete custody outside the exact claimed wrapper preflight failure shape' {
         $ops = Join-Path $TestDrive 'mounted-invalid-preflight/Evidence1Ops'
         $p = Write-CanaryTestBundle (Join-Path $ops 'canary/b48bfb0c-a9ae-4e0e-8d89-56eb1e278090')

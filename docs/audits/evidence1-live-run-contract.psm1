@@ -492,7 +492,7 @@ function ConvertTo-Evidence1CanaryJournalSnapshot($Raw, [string]$RunId) {
         if ($Raw.available -isnot [bool] -or $Raw.publication_pending -isnot [bool]) { throw 'boolean' }
         if ($null -ne $Raw.latest_event -and ([string]$Raw.latest_event -cnotmatch '^[0-9]+-0+-(planned|spawn_started|spawn_completed|spawn_failed|raw_persisted|parsed|evaluated)\.json$')) { throw 'event' }
         $counts = [ordered]@{}
-        $keys = if ($Raw.transition_counts -is [Collections.IDictionary]) { @($Raw.transition_counts.Keys) } else { @($Raw.transition_counts.PSObject.Properties.Name) }
+        $keys = @(Get-E1ObjectKeys $Raw.transition_counts)
         foreach ($key in $keys) {
             if ($key -cnotin @('planned','spawn_started','spawn_completed','spawn_failed','raw_persisted','parsed','evaluated') -or -not (Test-E1Exact $Raw.transition_counts.$key 1)) { throw 'transition' }
             $counts[$key] = 1
@@ -621,7 +621,28 @@ function Get-Evidence1CanaryCustody([string]$Directory, [string]$RunId, [string]
         $launcher = Read-Evidence1CanaryJson $launcherClaimPath
         Assert-E1Fields $launcher.value @{ schema = 1; run_id = $RunId; binding_sha256 = $BindingSha256; phase = 'launcher' }
         $files['launcher.claim.json'] = $launcher.sha256
-        $source = Read-Evidence1CanaryJson (Join-Path $Directory 'source-custody.json')
+        $sourcePath = Join-Path $Directory 'source-custody.json'
+        if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+            Assert-E1Fields $TerminalRecord @{ schema = 1; run_id = $RunId; state = 'wrapper_error'; exit_code = 997; exit_code_source = 'wrapper_error' }
+            if ((Get-E1Field $TerminalRecord 'wrapper_error_stage') -cne 'monitor_launcher') { throw 'wrapper_stage' }
+            $diagnostics = ConvertTo-Evidence1CanaryDiagnostics (Get-E1Field $TerminalRecord 'diagnostics')
+            if ($diagnostics.failure_phase -cne 'journal' -or $null -eq $diagnostics.failures.primary) { throw 'wrapper_diagnostics' }
+            foreach ($name in @('journal-baseline.json','journal.json')) {
+                $path = Join-Path $Directory $name
+                if (Test-Path -LiteralPath $path) {
+                    $data = Read-Evidence1CanaryJson $path
+                    Assert-E1Fields $data.value @{ run_id = $RunId }
+                    $files[$name] = $data.sha256
+                }
+            }
+            return [ordered]@{
+                verified = $false; complete = $false; custody_state = 'incomplete_wrapper_monitor'
+                run_id = $RunId; arm = $b.arm; planned_sessions = 1; binding_sha256 = $BindingSha256
+                attempt_consumed = $true; retry_authorized = $false; source_preserved = $false
+                failure_phase = $diagnostics.failure_phase; failure_code = $diagnostics.failure_code; files = $files
+            }
+        }
+        $source = Read-Evidence1CanaryJson $sourcePath
         Assert-E1Fields $source.value @{ schema = 1; run_id = $RunId; binding_sha256 = $BindingSha256; source_preserved = $true }
         if ($source.value.validation_inventory_before_sha256 -cnotmatch '^[a-f0-9]{64}$' -or
             $source.value.validation_inventory_before_sha256 -cne $source.value.validation_inventory_after_sha256) { throw 'source_custody' }

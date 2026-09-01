@@ -63,6 +63,39 @@ const staleCommitPin = ['e5f5974d980faaadda5bd', '48ef53564a08043cdcf'].join('')
 const staleTreePin = ['79fe454c9156775ea2d', '6115cae289132895b91bb'].join('');
 
 describe('Evidence1 Hyper-V ops toolkit', () => {
+  it.skipIf(process.platform !== 'win32')('accepts an empty journal snapshot through the Windows PowerShell 5.1 transport', () => {
+    const contract = rel(resolve(root, 'docs/audits/evidence1-live-run-contract.psm1')).replaceAll("'", "''");
+    const script = `
+$ErrorActionPreference = 'Stop'
+Import-Module '${contract}'
+$runId = 'b48bfb0c-a9ae-4e0e-8d89-56eb1e278090'
+$path = Join-Path $env:TEMP ('e1-empty-journal-' + [guid]::NewGuid().ToString('N') + '.json')
+try {
+  Write-Evidence1JsonAtomically -Path $path -Value ([ordered]@{
+    run_id = $runId
+    journal_id = '69cd5780-49fa-4531-960a-e26cbd7fda54'
+    available = $true
+    event_count = 0
+    latest_event = $null
+    transition_counts = @{}
+    publication_pending = $false
+    publication_pending_since_utc = $null
+  })
+  $raw = (Read-Evidence1CanaryJson $path).value
+  ConvertTo-Evidence1CanaryJournalSnapshot $raw $runId | ConvertTo-Json -Depth 8 -Compress
+} finally {
+  Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+}
+`;
+    const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
+      encoding: 'utf8',
+      timeout: 20_000,
+    });
+    expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+    const snapshot = JSON.parse(result.stdout.trim());
+    expect(snapshot).toMatchObject({ event_count: 0, transition_counts: {} });
+  });
+
   it.skipIf(process.platform !== 'win32')('observes the real atomic journal publisher before and after linkSync without false failure', () => {
     const contract = rel(resolve(root, 'docs/audits/evidence1-live-run-contract.psm1')).replaceAll("'", "''");
     const publisher = pathToFileURL(resolve(root, 'tools/agentic-eval/evidence-io.mjs')).href;
@@ -120,6 +153,19 @@ try {
       expect(source, script).not.toContain(staleCommitPin);
       expect(source, script).not.toContain(staleTreePin);
     }
+  });
+
+  it('replaces stale copy reports before Hyper-V access and publishes bounded terminal state', () => {
+    const copy = read('docs/audits/evidence1-hyperv-copy-live-artifacts.ps1');
+    const initialReport = copy.indexOf("state = 'started'");
+    const hyperVAccess = copy.indexOf('Get-VM -Name $VMName');
+    expect(initialReport).toBeGreaterThan(0);
+    expect(hyperVAccess).toBeGreaterThan(initialReport);
+    expect(copy).toContain("failure_code = 'copy_interrupted'");
+    expect(copy).toContain("'canary_custody_incomplete'");
+    expect(copy).toContain('Write-Evidence1JsonAtomically -Path $copyReportPath');
+    expect(copy).not.toMatch(/Exception\.Message/);
+    expect(copy).not.toMatch(/HYPERV-COPY-LIVE-ARTIFACTS\.json'\)\s+-Encoding/);
   });
 
   it('uses the script directory as the default elevated-runner trust boundary', () => {
