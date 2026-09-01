@@ -28,6 +28,7 @@ import { TEST_TYPE_VALUES, COVERAGE_TOOL_VALUES } from '../../lib/parsers/argv-c
 import { classifyBashCommand, normalizeModuleName } from './command-classify.mjs';
 import { matchModuleFilter } from '../../lib/orchestrators/module-filter.js';
 import { summarizeCoverageGateErrors } from './coverage-gate-observability.mjs';
+import { LATEST_OUTCOME_ASSESSMENT_SCHEMA } from './outcome-assessment-contract.mjs';
 
 /** The fixed, canonical set of check names every gradeScenarioCondition() result's `checks` array
  * must contain -- exactly these 8, no more, no fewer, enforced by schemas.mjs's validateRun() for
@@ -2329,8 +2330,6 @@ function terminalEvidenceDiagnostic(terminal, evidenceWellFormed, scenario, fina
 // checks already selected, never a second, independently-selected "terminal" concept.
 // ---------------------------------------------------------------------------------------------
 
-const OUTCOME_ASSESSMENT_SCHEMA = 1;
-
 /** Reconstructs scenario.expected in the SAME flat shape observedResult/
  * compareKmpEvalResultBlockToObserved already use, so that existing block-vs-shape comparator can
  * be reused verbatim for the ground-truth comparison below -- never a second, independently
@@ -2409,17 +2408,27 @@ function isAnswerProtocolWellFormed(block) {
 function computeTaskOutcome(finalText, scenario) {
   const block = extractKmpEvalResultBlock(finalText);
   if (!block.found) {
-    return { matched: null, reason: 'claim-missing', protocolMatched: false };
+    return { matched: null, reason: 'claim-missing', protocolMatched: false, mismatchFields: null, unexpectedKeyCount: null };
   }
   if (block.ambiguous || block.parsed == null || !isAnswerProtocolWellFormed(block.parsed)) {
-    return { matched: null, reason: 'claim-malformed', protocolMatched: false };
+    return { matched: null, reason: 'claim-malformed', protocolMatched: false, mismatchFields: null, unexpectedKeyCount: null };
   }
   const groundTruth = groundTruthAsObservedResult(scenario);
   if (groundTruth == null) {
-    return { matched: null, reason: 'ground-truth-unavailable', protocolMatched: true };
+    return { matched: null, reason: 'ground-truth-unavailable', protocolMatched: true, mismatchFields: null, unexpectedKeyCount: null };
   }
-  const matches = compareKmpEvalResultBlockToObserved(block.parsed, groundTruth).matches_observed;
-  return { matched: matches, reason: matches ? 'matched' : 'mismatched', protocolMatched: true };
+  const comparison = compareKmpEvalResultBlockToObserved(block.parsed, groundTruth);
+  const mismatchFields = orderedKmpEvalResultFields(new Set([
+    ...comparison.missing_fields,
+    ...comparison.mismatch_fields,
+  ]));
+  return {
+    matched: comparison.matches_observed,
+    reason: comparison.matches_observed ? 'matched' : 'mismatched',
+    protocolMatched: true,
+    mismatchFields,
+    unexpectedKeyCount: comparison.unexpected_key_count,
+  };
 }
 
 /** provider_evidence_kind/provider_evidence_status (Section 9.7). `hasFinalBlock` only matters
@@ -2472,13 +2481,15 @@ function buildOutcomeAssessment(finalText, scenario, terminal, condition) {
   const taskOutcome = computeTaskOutcome(finalText, scenario);
   const providerEvidence = computeProviderEvidence(terminal, taskOutcome.reason !== 'claim-missing');
   return {
-    schema: OUTCOME_ASSESSMENT_SCHEMA,
+    schema: LATEST_OUTCOME_ASSESSMENT_SCHEMA,
     task_outcome_matched: taskOutcome.matched,
     task_outcome_reason: taskOutcome.reason,
     answer_protocol_matched: taskOutcome.protocolMatched,
     provider_evidence_kind: providerEvidence.kind,
     provider_evidence_status: providerEvidence.status,
     product_e2e_success: computeProductE2eSuccess(condition, taskOutcome, providerEvidence),
+    task_outcome_mismatch_fields: taskOutcome.mismatchFields,
+    task_outcome_unexpected_key_count: taskOutcome.unexpectedKeyCount,
   };
 }
 

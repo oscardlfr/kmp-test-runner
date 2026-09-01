@@ -1400,7 +1400,8 @@ fields are still populated (a prompt is always sent, regardless of condition).
 an earlier PR, is not re-documented here). It adds `outcome_assessment` on **every** run_kind —
 a closed object for `run_kind:'scenario'`
 (`{schema, task_outcome_matched, task_outcome_reason, answer_protocol_matched,
-provider_evidence_kind, provider_evidence_status, product_e2e_success}`, computed additively by
+provider_evidence_kind, provider_evidence_status, product_e2e_success,
+task_outcome_mismatch_fields, task_outcome_unexpected_key_count}`, computed additively by
 `graders.mjs`'s `buildOutcomeAssessment`, never aliasing the legacy `expected_outcome_matched`/
 `success` fields it sits alongside), `null` for every other run_kind. Closed enums:
 `task_outcome_reason` (`matched`/`mismatched`/`claim-missing`/`claim-malformed`/
@@ -1412,7 +1413,11 @@ whichever evidence actually exists (a kmp-test envelope, standard Gradle/JUnit o
 — never assuming a kmp-test envelope is the only valid evidence shape. `success`/
 `expected_outcome_matched` remain exactly the strict, Product-only, non-comparable legacy gate
 they always were; `task_outcome_matched`/`product_e2e_success` are the fair, neutral, cross-arm
-measurements.
+measurements. `outcome_assessment.schema:1` remains valid unchanged. New records emit schema 2:
+`task_outcome_mismatch_fields` is a canonically ordered subset of the public result-field names
+(`module`, `outcome_kind`, test counts, and coverage counts), while
+`task_outcome_unexpected_key_count` is only a non-negative count. Both are `null` when the neutral
+comparison could not run. Expected/observed values and final-answer prose are never persisted.
 
 **Runtime/model/execution-profile selection** (`--runtime <id>`, `--execution-profile <id>` — new
 flags on `calibrate`/`smoke`/`run` only, alongside the existing `--model <id>`) resolves against
@@ -1793,7 +1798,7 @@ report coverage-attempt and final-answer comparison fields as `not-recorded`, `n
 according to the field's closed shape; analysis never reinterprets legacy artifacts by replaying
 raw evidence.
 
-**Analysis schema v7 (Evidence1 success-recovery PR B, `ANALYSIS_SCHEMA` is now 7).** For a
+**Analysis schema v7 (Evidence1 success-recovery PR B).** For a
 run-record `schema>=8`, `task_outcome_matched`/`answer_protocol_matched` now read the record's own
 neutral `outcome_assessment` object (see "v8" above) instead of the legacy
 `expected_outcome_matched`/`final_answer_consistent` alias — a deliberate naming COLLISION resolved
@@ -1827,6 +1832,13 @@ pattern); and `result_fingerprint_distinct_count` — the count of distinct fing
 the group (1 means every run agreed; more than 1 means a genuine, structural disagreement was
 observed). Never a single composite score anywhere in this module — every dimension stays its own
 separately-reported field.
+
+**Analysis schema v8 (neutral-claim mismatch observability, `ANALYSIS_SCHEMA` is now 8).** For
+assessment schema 2, per-run output projects the two privacy-safe neutral-comparison diagnostics
+above. Historical assessment-schema-1 rows report both as `null`. Group summaries add a closed
+`task_outcome_mismatch_field_counts` map and
+`task_outcome_unexpected_key_count_distribution`; no values, prose, commands, paths, prompts, or
+transcript content are read or emitted.
 
 **Causality boundary.** These reports intentionally stop at structural facts. A
 `coverage_gate_contract_failures:["threshold"]` value means the observed coverage-gate threshold

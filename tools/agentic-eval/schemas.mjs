@@ -32,8 +32,23 @@ import { classifyExitCode, EXIT } from '../../lib/envelope/exit-codes.js';
 import { canonicalStructuredValue, canonicalJsonSha256 } from './canonical-json.mjs';
 import { REQUIRED_CAPABILITY_KEYS } from './runtimes/contract.mjs';
 import { PRODUCT_ACCESS_MODE_VALUES, isProductAccessModeCompatibleWithSkillCondition } from './product-access.mjs';
+import {
+  OUTCOME_ASSESSMENT_SCHEMA_V1,
+  OUTCOME_ASSESSMENT_SCHEMA_V2,
+  TASK_OUTCOME_REASON_VALUES,
+  PROVIDER_EVIDENCE_KIND_VALUES,
+  PROVIDER_EVIDENCE_STATUS_VALUES,
+  TASK_OUTCOME_MISMATCH_FIELD_VALUES,
+  outcomeAssessmentKeysFor,
+} from './outcome-assessment-contract.mjs';
 
-export { canonicalStructuredValue };
+export {
+  canonicalStructuredValue,
+  TASK_OUTCOME_REASON_VALUES,
+  PROVIDER_EVIDENCE_KIND_VALUES,
+  PROVIDER_EVIDENCE_STATUS_VALUES,
+  TASK_OUTCOME_MISMATCH_FIELD_VALUES,
+};
 
 // Run schema went from a single CURRENT_RUN_SCHEMA equality check to explicit per-version
 // dispatch (SUPPORTED_RUN_SCHEMAS / LATEST_RUN_SCHEMA) -- a real bug found on review: a naive
@@ -164,15 +179,6 @@ const RUN_CANONICAL_FIELDS_V8 = [
 
 // Section 9.5's exact closed vocabularies -- exported so graders.mjs (the sole producer) and this
 // file's own validator can never independently drift on what values are legal.
-export const TASK_OUTCOME_REASON_VALUES = ['matched', 'mismatched', 'claim-missing', 'claim-malformed', 'ground-truth-unavailable'];
-export const PROVIDER_EVIDENCE_KIND_VALUES = ['kmp-test-envelope', 'gradle-junit', 'gradle-coverage', 'mixed-standard-tools', 'claim-only', 'none'];
-export const PROVIDER_EVIDENCE_STATUS_VALUES = ['matched', 'mismatched', 'partial', 'unavailable'];
-const OUTCOME_ASSESSMENT_SCHEMA = 1;
-const OUTCOME_ASSESSMENT_KEYS = [
-  'schema', 'task_outcome_matched', 'task_outcome_reason', 'answer_protocol_matched',
-  'provider_evidence_kind', 'provider_evidence_status', 'product_e2e_success',
-];
-
 // IDs throughout schema v6 use one closed lowercase charset.
 const ID_RE = /^[a-z0-9][a-z0-9-]*$/;
 // Runtime IDs the SCHEMA permits as a structural shape -- a registry (registries.mjs) independently
@@ -731,20 +737,22 @@ function validateTokens(tokens, errors) {
   }
 }
 
-/** Schema v8's neutral scorer verdict (Section 9.5) -- exact closed key set, closed enums for
+/** Schema v8's neutral scorer verdict (Section 9.5) -- versioned exact closed key sets, closed enums for
  * task_outcome_reason/provider_evidence_kind/provider_evidence_status, boolean-or-null for
  * task_outcome_matched/product_e2e_success, plain boolean for answer_protocol_matched, and
  * cross-field coherence between task_outcome_matched and task_outcome_reason (never "matched"/
- * "mismatched" paired with the wrong boolean-or-null counterpart). Called only once `run.
+ * "mismatched" paired with the wrong boolean-or-null counterpart). Assessment schema 2 adds only
+ * canonical mismatch field names and an unexpected-key count; schema 1 remains valid unchanged.
+ * Called only once `run.
  * outcome_assessment` is already confirmed to be a non-null, non-array object by the caller. */
 function validateOutcomeAssessment(obj, errors) {
-  const allowedKeys = new Set(OUTCOME_ASSESSMENT_KEYS);
+  const expectedKeys = outcomeAssessmentKeysFor(obj.schema);
+  const allowedKeys = new Set(expectedKeys ?? []);
   const actualKeys = Object.keys(obj);
-  if (actualKeys.some((k) => !allowedKeys.has(k)) || actualKeys.length !== allowedKeys.size) {
-    errors.push({ field: 'outcome_assessment', message: `must have exactly the keys ${OUTCOME_ASSESSMENT_KEYS.join('/')}, got ${JSON.stringify(actualKeys)}` });
-  }
-  if (obj.schema !== OUTCOME_ASSESSMENT_SCHEMA) {
-    errors.push({ field: 'outcome_assessment.schema', message: `must be exactly ${OUTCOME_ASSESSMENT_SCHEMA}` });
+  if (expectedKeys == null) {
+    errors.push({ field: 'outcome_assessment.schema', message: `must be exactly ${OUTCOME_ASSESSMENT_SCHEMA_V1} or ${OUTCOME_ASSESSMENT_SCHEMA_V2}` });
+  } else if (actualKeys.some((k) => !allowedKeys.has(k)) || actualKeys.length !== allowedKeys.size) {
+    errors.push({ field: 'outcome_assessment', message: `must have exactly the keys ${expectedKeys.join('/')}, got ${JSON.stringify(actualKeys)}` });
   }
   if (obj.task_outcome_matched !== null && typeof obj.task_outcome_matched !== 'boolean') {
     errors.push({ field: 'outcome_assessment.task_outcome_matched', message: 'must be a boolean or null' });
@@ -772,6 +780,36 @@ function validateOutcomeAssessment(obj, errors) {
   }
   if (obj.task_outcome_matched === null && (obj.task_outcome_reason === 'matched' || obj.task_outcome_reason === 'mismatched')) {
     errors.push({ field: 'outcome_assessment.task_outcome_reason', message: 'must not be "matched"/"mismatched" when task_outcome_matched is null' });
+  }
+  if (obj.schema === OUTCOME_ASSESSMENT_SCHEMA_V2) {
+    const mismatchFields = obj.task_outcome_mismatch_fields;
+    const unexpectedKeyCount = obj.task_outcome_unexpected_key_count;
+    if (obj.task_outcome_matched === null) {
+      if (mismatchFields !== null) {
+        errors.push({ field: 'outcome_assessment.task_outcome_mismatch_fields', message: 'must be null when task_outcome_matched is null' });
+      }
+      if (unexpectedKeyCount !== null) {
+        errors.push({ field: 'outcome_assessment.task_outcome_unexpected_key_count', message: 'must be null when task_outcome_matched is null' });
+      }
+    } else {
+      if (!Array.isArray(mismatchFields)) {
+        errors.push({ field: 'outcome_assessment.task_outcome_mismatch_fields', message: 'must be an array when task_outcome_matched is boolean' });
+      } else {
+        const canonical = TASK_OUTCOME_MISMATCH_FIELD_VALUES.filter((field) => mismatchFields.includes(field));
+        const isCanonical = mismatchFields.length === new Set(mismatchFields).size
+          && mismatchFields.every((field) => TASK_OUTCOME_MISMATCH_FIELD_VALUES.includes(field))
+          && JSON.stringify(mismatchFields) === JSON.stringify(canonical);
+        if (!isCanonical || (obj.task_outcome_matched === true && mismatchFields.length !== 0)
+          || (obj.task_outcome_matched === false && mismatchFields.length === 0)) {
+          errors.push({ field: 'outcome_assessment.task_outcome_mismatch_fields', message: 'must be a canonical unique field list, empty only for a matched outcome' });
+        }
+      }
+      if (!Number.isInteger(unexpectedKeyCount) || unexpectedKeyCount < 0) {
+        errors.push({ field: 'outcome_assessment.task_outcome_unexpected_key_count', message: 'must be a non-negative integer when task_outcome_matched is boolean' });
+      } else if (obj.task_outcome_matched === true && unexpectedKeyCount !== 0) {
+        errors.push({ field: 'outcome_assessment.task_outcome_unexpected_key_count', message: 'must be 0 when task_outcome_matched is true' });
+      }
+    }
   }
 }
 

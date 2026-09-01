@@ -1019,6 +1019,8 @@ describe('buildSummary', () => {
       other_bash_command_count: 0,
       product_cli_used: true,
       task_outcome_matched: true,
+      task_outcome_mismatch_fields: null,
+      task_outcome_unexpected_key_count: null,
       answer_protocol_matched: true,
       programmatic_evidence_available: true,
       canonical_final_answer_available: true,
@@ -2061,6 +2063,55 @@ describe('buildSummary -- task_outcome_available_ms_distribution (analysis schem
     const { groups } = buildSummary(pairs);
     expect(groups.length).toBe(1);
     expect(groups[0].task_outcome_available_ms_distribution).toEqual({ '1000': 1, '5000': 1, null: 1 });
+  });
+
+  it('aggregates canonical mismatch field counts and unexpected-key counts without values', () => {
+    const pairs = [
+      pair({ run_id: 'r1' }, { task_outcome_mismatch_fields: ['module', 'missed_lines'], task_outcome_unexpected_key_count: 0 }),
+      pair({ run_id: 'r2' }, { task_outcome_mismatch_fields: ['missed_lines', 'threshold'], task_outcome_unexpected_key_count: 1 }),
+      pair({ run_id: 'r3' }, { task_outcome_mismatch_fields: null, task_outcome_unexpected_key_count: null }),
+    ];
+    const { groups } = buildSummary(pairs);
+    expect(groups[0].task_outcome_mismatch_field_counts).toEqual({
+      module: 1, outcome_kind: 0, total: 0, passed: 0, failed: 0,
+      missed_lines: 2, threshold: 1, modules_contributing: 0,
+    });
+    expect(groups[0].task_outcome_unexpected_key_count_distribution).toEqual({ '0': 1, '1': 1, null: 1 });
+  });
+});
+
+describe('neutral outcome mismatch diagnostics', () => {
+  const MISMATCHED_ASSESSMENT_V2 = Object.freeze({
+    schema: 2,
+    task_outcome_matched: false,
+    task_outcome_reason: 'mismatched',
+    answer_protocol_matched: true,
+    provider_evidence_kind: 'claim-only',
+    provider_evidence_status: 'unavailable',
+    product_e2e_success: null,
+    task_outcome_mismatch_fields: ['module', 'missed_lines'],
+    task_outcome_unexpected_key_count: 0,
+  });
+
+  it('projects schema 2 mismatch diagnostics per run and leaves historical schema 1 diagnostics unavailable', () => {
+    const current = scenarioRecord({ schema: 8, condition: 'no-skill', outcome_assessment: MISMATCHED_ASSESSMENT_V2 });
+    const { ok, entry } = analyzeRunRecord(current, sidecarFor(current, { entries: [] }));
+    expect(ok).toBe(true);
+    expect(entry.task_outcome_mismatch_fields).toEqual(['module', 'missed_lines']);
+    expect(entry.task_outcome_unexpected_key_count).toBe(0);
+
+    const historical = scenarioRecord({
+      schema: 8,
+      condition: 'no-skill',
+      outcome_assessment: {
+        schema: 1, task_outcome_matched: false, task_outcome_reason: 'mismatched',
+        answer_protocol_matched: true, provider_evidence_kind: 'claim-only',
+        provider_evidence_status: 'unavailable', product_e2e_success: null,
+      },
+    });
+    const { entry: historicalEntry } = analyzeRunRecord(historical, sidecarFor(historical, { entries: [] }));
+    expect(historicalEntry.task_outcome_mismatch_fields).toBeNull();
+    expect(historicalEntry.task_outcome_unexpected_key_count).toBeNull();
   });
 });
 
