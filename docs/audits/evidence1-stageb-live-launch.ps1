@@ -722,23 +722,25 @@ function Invoke-Evidence1CanaryLaunch {
     $env:KMP_AGENTIC_EVAL_GRADLE_USER_HOME_SEED_DIR = $GradleUserHomeSeedDir
     $phase = 'live'
     $liveOperation = Start-E1OwnedProcess $node $arguments $HarnessDir (Join-Path $sourceContext.directory 'live.stdout.log') (Join-Path $sourceContext.directory 'live.stderr.log') 1800
+    $journalRetired = $false
     while (-not $liveOperation.Task.IsCompleted) {
       $phase = 'journal'
-      try {
-        $journal = Get-Evidence1CanaryJournalProgress $journalRoot @($baseline.journal_ids) $RunId $journal
-      } catch {
-        if ($_.Exception.Message -cne 'canary_journal_retiring') { throw }
-        # Journal retirement happens after durable evidence promotion but can precede the
-        # parent Node task completing. Give that same owned task a bounded finalization window;
-        # never respawn or replace it.
-        foreach ($attempt in 1..100) {
-          if ($liveOperation.Task.IsCompleted) { break }
-          Start-Sleep -Milliseconds 100
+      if (-not $journalRetired) {
+        try {
+          # Only the exact six-transition evaluated path may retire while the process is active.
+          # Disappearance then means the harness already promoted durable evidence. Keep waiting
+          # for this same owned process under its original timeout; post-promotion cleanup is not
+          # a second execution budget and the absent journal is never polled again.
+          $journal = Get-Evidence1CanaryJournalProgress $journalRoot @($baseline.journal_ids) $RunId $journal -AllowRetiredAfterTerminalJournal
+        } catch {
+          if ($_.Exception.Message -cne 'canary_journal_retiring') { throw }
+          # Retirement before the exact terminal snapshot remains fail-closed. Preserve the
+          # historical closed code so prior custody readers remain compatible.
+          throw 'canary_journal_retirement_stalled'
         }
-        if (-not $liveOperation.Task.IsCompleted) { throw 'canary_journal_retirement_stalled' }
-        $journal = Get-Evidence1CanaryJournalProgress $journalRoot @($baseline.journal_ids) $RunId $journal -AllowRetiredAfterProcessExit
+        Write-Evidence1JsonAtomically (Join-Path $directory 'journal.json') $journal
+        $journalRetired = $journal.journal_id -and $journal.available -eq $false
       }
-      Write-Evidence1JsonAtomically (Join-Path $directory 'journal.json') $journal
       Start-Sleep -Milliseconds 200
     }
     $phase = 'live'
