@@ -534,8 +534,9 @@ Describe 'Evidence1 canary launcher runtime failures' {
         $script:FixtureWrites['terminal.json'].diagnostics.failure_code | Should -BeExactly 'canary_live_exit_nonzero'
     }
 
-    It 'does not accept retirement while the owned task remains active' {
+    It 'waits for the same owned task when a complete journal retires between polls' {
         $script:JournalCalls = 0
+        $script:RetirementObserved = $false
         Mock Get-Evidence1CanaryJournalProgress {
             param($JournalRoot, $BaselineIds, $ExpectedRunId, $Previous, $NowUtc,
                 [switch]$AllowRetiredAfterProcessExit, [switch]$AllowRetiredAfterTerminalJournal)
@@ -546,14 +547,24 @@ Describe 'Evidence1 canary launcher runtime failures' {
                     event_count = 1; latest_event = '000000000000-0-planned.json'; transition_counts = @{ planned = 1 }
                     publication_pending = $false; publication_pending_since_utc = $null }
             }
+            if ($AllowRetiredAfterProcessExit) {
+                return @{ run_id = $RunId; journal_id = '69cd5780-49fa-4531-960a-e26cbd7fda54'; available = $false
+                    event_count = 1; latest_event = '000000000000-0-planned.json'; transition_counts = @{ planned = 1 }
+                    publication_pending = $false; publication_pending_since_utc = $null }
+            }
+            $script:RetirementObserved = $true
             throw 'canary_journal_retiring'
         }
-        $script:FixtureResult.ExitCode = 130; $script:FixtureResult.Cancelled = $true
+        Mock Start-Sleep {
+            if ($script:RetirementObserved) { $script:FixtureOp.Task.IsCompleted = $true }
+        }
 
-        Invoke-Evidence1CanaryLaunch | Should -Be 997
-        ($script:FixtureCalls -join ',') | Should -BeExactly 'start,stop,wait'
-        Should -Invoke Get-Evidence1CanaryJournalProgress -Times 0 -Exactly -ParameterFilter { $AllowRetiredAfterProcessExit }
-        $script:FixtureWrites['terminal.json'].diagnostics.failure_code | Should -BeExactly 'canary_journal_retirement_stalled'
+        Invoke-Evidence1CanaryLaunch | Should -Be 0
+        ($script:FixtureCalls -join ',') | Should -BeExactly 'start,wait'
+        Should -Invoke Stop-E1OwnedProcess -Times 0 -Exactly
+        Should -Invoke Get-Evidence1CanaryJournalProgress -Times 1 -Exactly -ParameterFilter { $AllowRetiredAfterProcessExit }
+        $script:FixtureWrites['journal.json'].available | Should -BeFalse
+        $script:FixtureWrites['terminal.json'].diagnostics.failure_code | Should -BeNullOrEmpty
     }
     It 'preserves a source-clone primary failure in custody when terminal persistence also fails' {
         Mock New-Evidence1CanarySource { throw 'canary_source_invalid' }

@@ -516,9 +516,13 @@ try {
     const stopIndex = handoff.indexOf('Stop-VM -Name $VMName -Confirm:$false -AsJob');
     const placeIndex = handoff.indexOf('Invoke-PlaceLiveAutorun $script:PriorCustody.run_id');
     const startIndex = handoff.indexOf('Start-VM -Name $VMName');
+    const initialStateIndex = handoff.indexOf('$initialState = Get-VMStateName $VMName');
+    const canaryBindingIndex = handoff.indexOf('$script:Canary = New-Evidence1CanaryHostBundle');
     expect(stopIndex).toBeGreaterThan(0);
     expect(placeIndex).toBeGreaterThan(stopIndex);
     expect(startIndex).toBeGreaterThan(placeIndex);
+    expect(initialStateIndex).toBeGreaterThan(0);
+    expect(canaryBindingIndex).toBeGreaterThan(initialStateIndex);
   });
 
   it('refuses to replace an already armed live autorun', () => {
