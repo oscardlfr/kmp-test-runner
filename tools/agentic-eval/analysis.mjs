@@ -99,7 +99,13 @@ import { TASK_OUTCOME_MISMATCH_FIELD_VALUES } from './outcome-assessment-contrac
 // expose only canonical mismatching FIELD NAMES and an unexpected-key COUNT. Per-run output keeps
 // both values separate; summaries publish a closed field-count map and count distribution. No
 // expected/observed values, final-answer prose, commands, paths, or transcript content are read.
-export const ANALYSIS_SCHEMA = 8;
+//
+// v8 -> v9 (privacy-safe metric completion): projects the already-recorded cost, cache/order,
+// intervention, command-result and closed operation-role dimensions; adds parsed-claim availability,
+// field-level correctness and a claim-consistency fingerprint; and reports descriptive statistics
+// (n/min/max/mean/median/sample-stddev) alongside the existing exact distributions. No persisted run
+// or sidecar schema changes: this remains a deterministic offline view over validated evidence.
+export const ANALYSIS_SCHEMA = 9;
 
 /** Closed vocabulary for `failure_class` -- exactly one per run, resolved by classifyFailure's own
  * documented precedence. `success` is not a "failure" in the literal sense; it is included so every
@@ -120,6 +126,25 @@ export const EVIDENCE_QUALITY_VALUES = [
   'product-canonical', 'baseline-verifiable', 'malformed-evidence', 'claim-only', 'no-evidence',
 ];
 
+export const FIELD_CORRECTNESS_VALUES = ['matched', 'mismatched', 'not-applicable', 'not-observed'];
+export const OPERATION_ROLE_VALUES = ['discovery', 'execution', 'support', 'unclassified'];
+
+// Explicitly records the boundary of this analysis-only increment. These three metrics require
+// either a new independent execution protocol or retaining command/payload identity/timestamps the
+// current privacy-safe sidecar deliberately discards. Reporting the gap is more honest than
+// manufacturing a proxy or silently implying coverage.
+export const ANALYSIS_MEASUREMENT_CAPABILITIES = Object.freeze({
+  deterministic_external_oracle: 'not-recorded',
+  command_repetition: 'not-observable',
+  per_operation_timing: 'not-recorded',
+  per_operation_output_bytes: 'not-recorded',
+  non_tool_wall_time: 'not-observable',
+  non_shell_operation_identity: 'not-recorded',
+  final_claim_timing: 'process-completion-upper-bound',
+  claim_fingerprint: 'structural-comparison-only',
+  tool_output_bytes: 'run-total-only',
+});
+
 export { PRODUCT_ACCESS_MODE_VALUES, PRODUCT_USAGE_MODE_VALUES };
 
 const CHECK_EVIDENCE_WELL_FORMED = 'authoritative_evidence_well_formed';
@@ -128,6 +153,12 @@ const CHECK_OUTCOME_MATCHES = 'authoritative_outcome_matches_expected';
 const CHECK_FINAL_ANSWER = 'final_answer_consistent_with_evidence';
 
 const MID_PHASE_VALUES = new Set(['pre-signal', 'produced-signal']);
+const BASH_TOOL_KIND_VALUES = new Set(['kmp-test', 'gradle', 'other-bash']);
+const DISCOVERY_KMP_OPERATIONS = new Set(['describe', 'doctor', 'info']);
+const EXECUTION_KMP_OPERATIONS = new Set(['android', 'benchmark', 'changed', 'coverage', 'parallel']);
+const SUPPORT_KMP_OPERATIONS = new Set(['clean', 'update']);
+const COVERAGE_OUTCOME_FIELDS = new Set(['missed_lines', 'threshold', 'modules_contributing']);
+const TEST_COUNT_FIELDS = new Set(['total', 'passed', 'failed']);
 // A run_id is only ever echoed (per-run entries, or an errors[] entry for an OTHERWISE-validated
 // duplicate) once it matches this closed charset -- mirrors the charset schemas.mjs's own
 // ACCEPTED_AUDIT_RELATIVE_PATH_RE indirectly enforces on any schema-5 scenario record's run_id
@@ -190,20 +221,24 @@ function finalAnswerBlockView(sidecar, finalAnswerConsistent) {
   const block = sidecar?.terminal_evidence?.final_answer_block ?? null;
   if (block != null && typeof block === 'object' && !Array.isArray(block)) {
     return {
+      recorded: true,
       found: typeof block.found === 'boolean' ? block.found : null,
       parsed: typeof block.parsed === 'boolean' ? block.parsed : null,
       matches_observed: typeof block.matches_observed === 'boolean' ? block.matches_observed : null,
       comparison_status: typeof block.comparison_status === 'string' ? block.comparison_status : 'not-recorded',
+      declared_outcome_kind: typeof block.declared_outcome_kind === 'string' ? block.declared_outcome_kind : null,
       mismatch_fields: Array.isArray(block.mismatch_fields) ? block.mismatch_fields.filter((f) => typeof f === 'string') : [],
     };
   }
   // Legacy sidecars (v1-v5) did not carry terminal_evidence.final_answer_block. Preserve a useful
   // boolean for old passing records, but never infer a parsed claim from a failure.
   return {
+    recorded: false,
     found: finalAnswerConsistent === true ? true : null,
     parsed: finalAnswerConsistent === true ? true : null,
     matches_observed: finalAnswerConsistent === true ? true : null,
     comparison_status: 'not-recorded',
+    declared_outcome_kind: null,
     mismatch_fields: [],
   };
 }
@@ -266,6 +301,114 @@ function buildResultFingerprint(sidecar, errors) {
     threshold: Number.isInteger(observed?.threshold) ? observed.threshold : null,
     modules_contributing: Number.isInteger(observed?.modules_contributing) ? observed.modules_contributing : null,
     error_codes: [...new Set((errors ?? []).map((e) => e?.code).filter((code) => typeof code === 'string' && code.length > 0))].sort(),
+  };
+}
+
+function fieldAppliesToDeclaredOutcome(field, declaredOutcomeKind) {
+  if (field === 'module' || field === 'outcome_kind') return true;
+  if (COVERAGE_OUTCOME_FIELDS.has(field)) return declaredOutcomeKind === 'coverage_threshold_exceeded';
+  if (TEST_COUNT_FIELDS.has(field)) return declaredOutcomeKind !== 'no_applicable_tests';
+  return true;
+}
+
+/** Closed field-by-field correctness derived solely from outcome-assessment schema 2's canonical
+ * mismatch names. `not-applicable` describes fields the declared outcome intentionally omits;
+ * `not-observed` is reserved for historical/unevaluable claims. No expected or declared values are
+ * copied into analysis output. */
+function buildTaskFieldCorrectness(outcomeAssessment, finalAnswerBlock) {
+  const result = {};
+  const assessmentAvailable = outcomeAssessment?.schema >= 2
+    && typeof outcomeAssessment.task_outcome_matched === 'boolean'
+    && Array.isArray(outcomeAssessment.task_outcome_mismatch_fields);
+  const mismatchFields = new Set(assessmentAvailable ? outcomeAssessment.task_outcome_mismatch_fields : []);
+  const declaredOutcomeKind = typeof finalAnswerBlock?.declared_outcome_kind === 'string'
+    ? finalAnswerBlock.declared_outcome_kind
+    : null;
+  for (const field of TASK_OUTCOME_MISMATCH_FIELD_VALUES) {
+    if (!assessmentAvailable) result[field] = 'not-observed';
+    else if (mismatchFields.has(field)) result[field] = 'mismatched';
+    else if (declaredOutcomeKind != null && !fieldAppliesToDeclaredOutcome(field, declaredOutcomeKind)) result[field] = 'not-applicable';
+    else result[field] = 'matched';
+  }
+  return result;
+}
+
+/** Privacy-safe consistency signature for both Product and FreeBaseline claims. It intentionally
+ * fingerprints only structural comparison outcomes, never the claim's raw values or prose. */
+function buildClaimFingerprint(outcomeAssessment, finalAnswerBlock, fieldCorrectness) {
+  return {
+    parsed: finalAnswerBlock?.recorded === true
+      ? finalAnswerBlock.parsed === true
+      : null,
+    declared_outcome_kind: typeof finalAnswerBlock?.declared_outcome_kind === 'string'
+      ? finalAnswerBlock.declared_outcome_kind
+      : null,
+    task_outcome_matched: typeof outcomeAssessment?.task_outcome_matched === 'boolean'
+      ? outcomeAssessment.task_outcome_matched
+      : null,
+    mismatch_fields: Array.isArray(outcomeAssessment?.task_outcome_mismatch_fields)
+      ? [...outcomeAssessment.task_outcome_mismatch_fields]
+      : null,
+    unexpected_key_count: Number.isInteger(outcomeAssessment?.task_outcome_unexpected_key_count)
+      ? outcomeAssessment.task_outcome_unexpected_key_count
+      : null,
+    field_correctness: fieldCorrectness,
+  };
+}
+
+function operationRoleFor(toolCall) {
+  if (toolCall?.tool_kind === 'kmp-test') {
+    const operation = toolCall.recognized_operation ?? toolCall.operation;
+    if (DISCOVERY_KMP_OPERATIONS.has(operation)) return 'discovery';
+    if (EXECUTION_KMP_OPERATIONS.has(operation)) return 'execution';
+    if (SUPPORT_KMP_OPERATIONS.has(operation)) return 'support';
+    return 'unclassified';
+  }
+  if (toolCall?.tool_kind === 'gradle') return 'execution';
+  if (toolCall?.tool_kind === 'target-skill' || toolCall?.tool_kind === 'non-target-skill' || toolCall?.tool_kind === 'other-bash') return 'support';
+  return 'unclassified';
+}
+
+function operationLabelFor(toolCall) {
+  if (toolCall?.tool_kind === 'kmp-test') return `product:${toolCall.recognized_operation ?? toolCall.operation ?? 'other'}`;
+  if (toolCall?.tool_kind === 'gradle') return `build-tool:${toolCall.operation ?? 'other'}`;
+  if (toolCall?.tool_kind === 'target-skill') return 'skill:target';
+  if (toolCall?.tool_kind === 'non-target-skill') return 'skill:non-target';
+  if (toolCall?.tool_kind === 'other-bash') return 'shell:other';
+  return 'tool:unexpected';
+}
+
+function privacySafeToolKind(toolKind) {
+  if (toolKind === 'kmp-test') return 'product-cli';
+  if (toolKind === 'gradle') return 'build-tool';
+  if (toolKind === 'other-bash') return 'other-shell';
+  return toolKind;
+}
+
+/** Count-only telemetry from the sidecar's already-sanitized tool_calls[]. Never sees commands,
+ * paths, payloads, timestamps or raw tool output. */
+export function deriveToolTelemetry(sidecar) {
+  const toolCalls = Array.isArray(sidecar?.tool_calls) ? sidecar.tool_calls : null;
+  if (toolCalls == null) return { ok: false, error: 'accepted-run-audit sidecar tool_calls is missing or not an array' };
+  const tool_result_status_counts = { success: 0, error: 0, missing: 0 };
+  const command_result_status_counts = { success: 0, error: 0, missing: 0 };
+  const operation_role_counts = Object.fromEntries(OPERATION_ROLE_VALUES.map((role) => [role, 0]));
+  const tool_kind_counts = {};
+  const operation_counts = {};
+  for (const toolCall of toolCalls) {
+    incrementCount(tool_result_status_counts, toolCall.result_status);
+    if (BASH_TOOL_KIND_VALUES.has(toolCall.tool_kind)) incrementCount(command_result_status_counts, toolCall.result_status);
+    incrementCount(operation_role_counts, operationRoleFor(toolCall));
+    incrementCount(tool_kind_counts, privacySafeToolKind(toolCall.tool_kind));
+    incrementCount(operation_counts, operationLabelFor(toolCall));
+  }
+  return {
+    ok: true,
+    tool_result_status_counts,
+    command_result_status_counts,
+    operation_role_counts,
+    tool_kind_counts,
+    operation_counts,
   };
 }
 
@@ -437,6 +580,8 @@ export function analyzeRunRecord(record, sidecar) {
   if (!skillFields.ok) return { ok: false, error: skillFields.error };
   const productUsage = deriveProductUsage(sidecar);
   if (!productUsage.ok) return { ok: false, error: productUsage.error };
+  const toolTelemetry = deriveToolTelemetry(sidecar);
+  if (!toolTelemetry.ok) return { ok: false, error: toolTelemetry.error };
 
   const checks = record.grading_checks?.value ?? null;
   const evidenceCheck = findCheck(checks, CHECK_EVIDENCE_WELL_FORMED);
@@ -482,6 +627,8 @@ export function analyzeRunRecord(record, sidecar) {
   const task_outcome_unexpected_key_count = hasOutcomeMismatchDiagnostics
     ? outcomeAssessment.task_outcome_unexpected_key_count
     : null;
+  const task_field_correctness = buildTaskFieldCorrectness(outcomeAssessment, finalAnswerBlock);
+  const claim_fingerprint = buildClaimFingerprint(outcomeAssessment, finalAnswerBlock, task_field_correctness);
   // task_outcome_available_ms (Stage B3 review-round correction): a TIME, never an event index --
   // first_useful_signal_event's own contract is specifically correlated to a real user.tool_result
   // event (cli.mjs/accepted-run-audit.mjs); a claim-only FreeBaseline run has no such event at all,
@@ -492,6 +639,12 @@ export function analyzeRunRecord(record, sidecar) {
   // independently-computed metrics (see this field's own dedicated test file section for the full
   // non-fusion rationale).
   const task_outcome_available_ms = task_outcome_matched === true ? record.wall_clock_ms : null;
+  // A parsed claim is factually available at process completion whether it is right or wrong. Keep
+  // this separate from task_outcome_available_ms (historically gated on correctness) and from the
+  // first authoritative product signal, which may precede the final answer substantially.
+  const final_claim_available_ms = finalAnswerBlock.recorded === true && finalAnswerBlock.parsed === true
+    ? record.wall_clock_ms
+    : null;
   const provider_evidence_kind = outcomeAssessment?.provider_evidence_kind ?? null;
   const provider_evidence_status = outcomeAssessment?.provider_evidence_status ?? null;
   const product_e2e_success = outcomeAssessment?.product_e2e_success ?? null;
@@ -560,14 +713,34 @@ export function analyzeRunRecord(record, sidecar) {
       task_outcome_matched,
       task_outcome_mismatch_fields,
       task_outcome_unexpected_key_count,
+      task_field_correctness,
+      claim_fingerprint,
       answer_protocol_matched,
       task_outcome_available_ms,
+      final_claim_available_ms,
       provider_evidence_kind,
       provider_evidence_status,
       product_e2e_success,
       wall_clock_ms: record.wall_clock_ms,
       first_useful_signal_ms: record.first_useful_signal_ms?.value ?? null,
       tool_calls_total: record.tool_calls_total?.value ?? null,
+      shell_commands_total: record.shell_commands_total?.value ?? null,
+      test_invocations_total: record.test_invocations_total?.value ?? null,
+      retries: record.retries?.value ?? null,
+      output_bytes: record.output_bytes?.value ?? null,
+      stream_json_bytes: record.stream_json_bytes?.value ?? null,
+      human_interventions: record.human_interventions?.value ?? null,
+      human_interventions_source: Number.isInteger(record.human_interventions?.value)
+        ? (record.human_interventions.value === 0 ? 'enforced-none' : 'reported')
+        : 'not-recorded',
+      cache_state: record.cache_state ?? null,
+      order_index: Number.isInteger(record.order_index) ? record.order_index : null,
+      repetition_index: Number.isInteger(record.repetition_index) ? record.repetition_index : null,
+      tool_result_status_counts: toolTelemetry.tool_result_status_counts,
+      command_result_status_counts: toolTelemetry.command_result_status_counts,
+      operation_role_counts: toolTelemetry.operation_role_counts,
+      tool_kind_counts: toolTelemetry.tool_kind_counts,
+      operation_counts: toolTelemetry.operation_counts,
       terminated: record.terminated,
       termination_reason: record.termination_reason,
       coverage_target_status: outcomeObservabilitySummary.coverage_target_status,
@@ -632,6 +805,32 @@ function buildDistribution(values) {
   return dist;
 }
 
+function roundStatistic(value) {
+  return Number(value.toFixed(6));
+}
+
+/** Descriptive statistics over observed finite numeric values only. Null/unavailable values never
+ * become zero. Sample stddev is null for n<2 because it is mathematically undefined there. */
+export function summarizeNumericValues(values) {
+  const observed = values.filter((value) => typeof value === 'number' && Number.isFinite(value)).slice().sort((a, b) => a - b);
+  const n = observed.length;
+  if (n === 0) return { n: 0, min: null, max: null, mean: null, median: null, stddev_sample: null };
+  const mean = observed.reduce((sum, value) => sum + value, 0) / n;
+  const middle = Math.floor(n / 2);
+  const median = n % 2 === 0 ? (observed[middle - 1] + observed[middle]) / 2 : observed[middle];
+  const variance = n > 1
+    ? observed.reduce((sum, value) => sum + ((value - mean) ** 2), 0) / (n - 1)
+    : null;
+  return {
+    n,
+    min: observed[0],
+    max: observed[n - 1],
+    mean: roundStatistic(mean),
+    median: roundStatistic(median),
+    stddev_sample: variance == null ? null : roundStatistic(Math.sqrt(variance)),
+  };
+}
+
 /** Compact {source_value: count} map over a group's own entries -- e.g. {"runtime-reported": 4,
  * "not-recorded": 2}. Mirrors buildDistribution's own flat-map shape/rationale, scoped to
  * usage.source specifically (never a raw per-run array). */
@@ -663,6 +862,20 @@ function sumCountMaps(entries, field) {
     }
   }
   return counts;
+}
+
+function buildTaskFieldCorrectnessCounts(entries) {
+  const result = {};
+  for (const field of TASK_OUTCOME_MISMATCH_FIELD_VALUES) {
+    result[field] = Object.fromEntries(FIELD_CORRECTNESS_VALUES.map((status) => [status, 0]));
+  }
+  for (const entry of entries) {
+    for (const field of TASK_OUTCOME_MISMATCH_FIELD_VALUES) {
+      const status = entry.task_field_correctness?.[field] ?? 'not-observed';
+      if (FIELD_CORRECTNESS_VALUES.includes(status)) result[field][status] += 1;
+    }
+  }
+  return result;
 }
 
 function deriveProductUsage(sidecar) {
@@ -787,8 +1000,12 @@ function buildGroupSummary(groupKey, entries, record) {
     task_outcome_matched_count: taskOutcomeMatchedCount,
     task_outcome_matched_rate: rate(taskOutcomeMatchedCount, total),
     task_outcome_mismatch_field_counts: taskOutcomeMismatchFieldCounts,
+    task_field_correctness_counts: buildTaskFieldCorrectnessCounts(entries),
     task_outcome_unexpected_key_count_distribution: buildDistribution(entries.map((e) => e.task_outcome_unexpected_key_count ?? null)),
     task_outcome_available_ms_distribution: buildDistribution(entries.map((e) => e.task_outcome_available_ms)),
+    task_outcome_available_ms_stats: summarizeNumericValues(entries.map((e) => e.task_outcome_available_ms)),
+    final_claim_available_ms_distribution: buildDistribution(entries.map((e) => e.final_claim_available_ms ?? null)),
+    final_claim_available_ms_stats: summarizeNumericValues(entries.map((e) => e.final_claim_available_ms)),
     provider_evidence_kind_distribution: buildDistribution(entries.map((e) => e.provider_evidence_kind)),
     provider_evidence_status_distribution: buildDistribution(entries.map((e) => e.provider_evidence_status)),
     product_e2e_success_count: productE2eSuccessCount,
@@ -798,8 +1015,32 @@ function buildGroupSummary(groupKey, entries, record) {
     // never a single mean/summed number, matching this whole function's own "no composite score"
     // discipline for every other numeric dimension above.
     wall_clock_ms_distribution: buildDistribution(entries.map((e) => e.wall_clock_ms)),
+    wall_clock_ms_stats: summarizeNumericValues(entries.map((e) => e.wall_clock_ms)),
     first_useful_signal_ms_distribution: buildDistribution(entries.map((e) => e.first_useful_signal_ms)),
+    first_useful_signal_ms_stats: summarizeNumericValues(entries.map((e) => e.first_useful_signal_ms)),
     tool_calls_total_distribution: buildDistribution(entries.map((e) => e.tool_calls_total)),
+    tool_calls_total_stats: summarizeNumericValues(entries.map((e) => e.tool_calls_total)),
+    shell_commands_total_distribution: buildDistribution(entries.map((e) => e.shell_commands_total ?? null)),
+    shell_commands_total_stats: summarizeNumericValues(entries.map((e) => e.shell_commands_total)),
+    test_invocations_total_distribution: buildDistribution(entries.map((e) => e.test_invocations_total ?? null)),
+    test_invocations_total_stats: summarizeNumericValues(entries.map((e) => e.test_invocations_total)),
+    retries_distribution: buildDistribution(entries.map((e) => e.retries ?? null)),
+    retries_stats: summarizeNumericValues(entries.map((e) => e.retries)),
+    output_bytes_distribution: buildDistribution(entries.map((e) => e.output_bytes ?? null)),
+    output_bytes_stats: summarizeNumericValues(entries.map((e) => e.output_bytes)),
+    stream_json_bytes_distribution: buildDistribution(entries.map((e) => e.stream_json_bytes ?? null)),
+    stream_json_bytes_stats: summarizeNumericValues(entries.map((e) => e.stream_json_bytes)),
+    human_interventions_distribution: buildDistribution(entries.map((e) => e.human_interventions ?? null)),
+    human_interventions_stats: summarizeNumericValues(entries.map((e) => e.human_interventions)),
+    human_interventions_source_distribution: buildDistribution(entries.map((e) => e.human_interventions_source ?? 'not-recorded')),
+    cache_state_distribution: buildDistribution(entries.map((e) => e.cache_state ?? null)),
+    order_index_distribution: buildDistribution(entries.map((e) => e.order_index ?? null)),
+    repetition_index_distribution: buildDistribution(entries.map((e) => e.repetition_index ?? null)),
+    tool_result_status_counts: sumCountMaps(entries, 'tool_result_status_counts'),
+    command_result_status_counts: sumCountMaps(entries, 'command_result_status_counts'),
+    operation_role_counts: sumCountMaps(entries, 'operation_role_counts'),
+    tool_kind_counts: sumCountMaps(entries, 'tool_kind_counts'),
+    operation_counts: sumCountMaps(entries, 'operation_counts'),
     termination_reason_distribution: buildDistribution(entries.map((e) => e.termination_reason)),
     // coverage_target_status/coverage_report_status (Section 9.9, via the accepted-run-audit
     // sidecar): distributions, like every other closed-vocabulary axis above.
@@ -816,6 +1057,7 @@ function buildGroupSummary(groupKey, entries, record) {
     // means a genuine, structural disagreement was observed. Never a single composite score on its
     // own -- reported alongside every other separate dimension above, never replacing them.
     result_fingerprint_distinct_count: new Set(entries.map((e) => JSON.stringify(e.result_fingerprint))).size,
+    claim_fingerprint_distinct_count: new Set(entries.map((e) => JSON.stringify(e.claim_fingerprint ?? null))).size,
     answer_protocol_matched_count: answerProtocolMatchedCount,
     answer_protocol_matched_rate: rate(answerProtocolMatchedCount, total),
     programmatic_evidence_available_count: programmaticEvidenceAvailableCount,
@@ -864,10 +1106,15 @@ function buildGroupSummary(groupKey, entries, record) {
     // prompt, so a single combined number would misleadingly imply they are.
     usage_source_counts: buildUsageSourceCounts(entries),
     usage_input_distribution: buildDistribution(entries.map((e) => e.usage?.input ?? null)),
+    usage_input_stats: summarizeNumericValues(entries.map((e) => e.usage?.input)),
     usage_cached_input_distribution: buildDistribution(entries.map((e) => e.usage?.cached_input ?? null)),
+    usage_cached_input_stats: summarizeNumericValues(entries.map((e) => e.usage?.cached_input)),
     usage_cache_write_distribution: buildDistribution(entries.map((e) => e.usage?.cache_write ?? null)),
+    usage_cache_write_stats: summarizeNumericValues(entries.map((e) => e.usage?.cache_write)),
     usage_output_distribution: buildDistribution(entries.map((e) => e.usage?.output ?? null)),
+    usage_output_stats: summarizeNumericValues(entries.map((e) => e.usage?.output)),
     usage_reasoning_output_distribution: buildDistribution(entries.map((e) => e.usage?.reasoning_output ?? null)),
+    usage_reasoning_output_stats: summarizeNumericValues(entries.map((e) => e.usage?.reasoning_output)),
   };
 }
 
@@ -916,7 +1163,10 @@ export function buildSummary(pairs) {
   // HARD_PARTITION_FIELDS value would have been the SAME bucket), so this comparator can never
   // return 0 for two genuinely different groups.
   groups.sort((a, b) => codePointCompare(a.__sortKey, b.__sortKey));
-  return { groups: groups.map(({ __sortKey, ...group }) => group) };
+  return {
+    measurement_capabilities: { ...ANALYSIS_MEASUREMENT_CAPABILITIES },
+    groups: groups.map(({ __sortKey, ...group }) => group),
+  };
 }
 
 function codePointCompare(a, b) {
@@ -979,7 +1229,7 @@ export function analyzeRunsDir(runsDir) {
   if (dirStat == null || !dirStat.isDirectory()) {
     return {
       schema: ANALYSIS_SCHEMA, per_run: [],
-      summary: { groups: [], files_seen: 0, files_analyzed: 0, files_excluded_not_applicable: 0, files_excluded_benchmark_ineligible: 0, files_errored: 1 },
+      summary: { measurement_capabilities: { ...ANALYSIS_MEASUREMENT_CAPABILITIES }, groups: [], files_seen: 0, files_analyzed: 0, files_excluded_not_applicable: 0, files_excluded_benchmark_ineligible: 0, files_errored: 1 },
       errors: [{ file_index: null, run_id: null, errors: [{ field: 'runs-dir', message: '--runs-dir must be an existing, readable directory' }] }],
     };
   }
@@ -990,7 +1240,7 @@ export function analyzeRunsDir(runsDir) {
   } catch {
     return {
       schema: ANALYSIS_SCHEMA, per_run: [],
-      summary: { groups: [], files_seen: 0, files_analyzed: 0, files_excluded_not_applicable: 0, files_excluded_benchmark_ineligible: 0, files_errored: 1 },
+      summary: { measurement_capabilities: { ...ANALYSIS_MEASUREMENT_CAPABILITIES }, groups: [], files_seen: 0, files_analyzed: 0, files_excluded_not_applicable: 0, files_excluded_benchmark_ineligible: 0, files_errored: 1 },
       errors: [{ file_index: null, run_id: null, errors: [{ field: 'runs-dir', message: 'could not list --runs-dir' }] }],
     };
   }
@@ -1057,7 +1307,7 @@ export function analyzeRunsDir(runsDir) {
   // batch entirely instead of returning content that failed its own final safety check.
   return {
     schema: ANALYSIS_SCHEMA, per_run: [],
-    summary: { groups: [], files_seen: files.length, files_analyzed: 0, files_excluded_not_applicable: 0, files_excluded_benchmark_ineligible: 0, files_errored: 1 },
+    summary: { measurement_capabilities: { ...ANALYSIS_MEASUREMENT_CAPABILITIES }, groups: [], files_seen: files.length, files_analyzed: 0, files_excluded_not_applicable: 0, files_excluded_benchmark_ineligible: 0, files_errored: 1 },
     errors: [{ file_index: null, run_id: null, errors: [{ field: '(root)', message: 'output failed a final privacy verification and was withheld' }] }],
   };
 }
