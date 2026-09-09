@@ -722,6 +722,57 @@ describe.skipIf(!hasPowerShell)('Evidence1 validation operations functional cont
       $out | ConvertTo-Json -Compress`))).toEqual([true, true]);
   });
 
+  it('accepts only the exact closed pre-start canary failure left after prior custody', async () => {
+    const result = await ps(`$r = ${json(evidence.readiness)}; $r.generated_at_utc = '2026-09-09T20:45:00.000Z'
+      $prior = '11111111-2222-3333-4444-555555555555'
+      $failed = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+      $p = [ordered]@{ verdict='PASS'; generated_at_utc='2026-09-09T20:40:00.000Z'; vm_name='Evidence1-Runner'; run_id=$prior }
+      $copy = [ordered]@{ verdict='PASS'; generated_at_utc='2026-09-09T20:42:00.000Z'; vm_name='Evidence1-Runner'; raw_content_read=$false
+        stage_b_exit=[ordered]@{ valid=$true; record=[ordered]@{ run_id=$prior } } }
+      $hashes = [ordered]@{}
+      foreach ($name in @('readiness_sha256','ledger_sha256','attestation_sha256','attestation_canonical_sha256',
+        'validation_module_sha256','scenario_sha256','product_entry_sha256','execution_profile_sha256','execution_profile_registry_sha256')) {
+        $hashes[$name] = '1' * 64
+      }
+      $scripts = [ordered]@{}
+      foreach ($name in @('evidence1-stageb-live-launch.ps1','evidence1-stageb-live-wrapper.ps1',
+        'evidence1-live-run-contract.psm1','evidence1-live-handoff-contract.psm1','evidence1-validation-ops.psm1')) {
+        $scripts[$name] = '2' * 64
+      }
+      $binding = [ordered]@{ schema=1; run_id=$failed; arm='free-baseline'; target_commit=('a' * 40); target_tree=('b' * 40)
+        source_commit=('c' * 40); campaign_design_id='claude-free-baseline-canary-v1'; scenario_id='coverage-threshold-failure-v2'
+        planned_sessions=1; repeats=1; cell_label='B'; condition='no-skill'; product_access_mode='free-baseline-no-product'
+        execution_profile_id='sandboxed-unrestricted-v1'; seed=20260821; max_budget_usd=2
+        wet_report_sha256=('3' * 64); dry_report_sha256=('4' * 64); plan_sha256=('5' * 64); hashes=$hashes; scripts=$scripts }
+      $h = [ordered]@{ schema=1; state='failed'; generated_at_utc='2026-09-09T20:43:00.000Z'; vm_name='Evidence1-Runner'
+        vm_state='Off'; target_commit=('a' * 40); target_tree=('b' * 40); run_id=$failed
+        prior_run_custody=[ordered]@{ state='closed'; run_id=$prior; privacy_safe=$true }; failure_kind='initial_state'
+        hard_power_fallback_used=$false; replacement_or_respawn_used=$false; raw_content_read=$false
+        canary=[ordered]@{ binding_sha256=('6' * 64); binding=$binding } }
+      $out = @()
+      try { Assert-E1NoLiveCustody $p $copy $h 'Evidence1-Runner' $r; $out += $true } catch { $out += $false }
+      foreach ($mutation in @('state','failure','vm','prior','hard','respawn','raw','same-run','binding-run','binding-extra','handoff-extra','old')) {
+        $candidate = ConvertFrom-E1Json ($h | ConvertTo-Json -Depth 12 -Compress)
+        switch ($mutation) {
+          'state' { $candidate.state = 'started' }
+          'failure' { $candidate.failure_kind = 'placement' }
+          'vm' { $candidate.vm_state = 'Running' }
+          'prior' { $candidate.prior_run_custody.run_id = $failed }
+          'hard' { $candidate.hard_power_fallback_used = $true }
+          'respawn' { $candidate.replacement_or_respawn_used = $true }
+          'raw' { $candidate.raw_content_read = $true }
+          'same-run' { $candidate.run_id = $prior; $candidate.canary.binding.run_id = $prior }
+          'binding-run' { $candidate.canary.binding.run_id = $prior }
+          'binding-extra' { $candidate.canary.binding | Add-Member private_note 'sentinel' }
+          'handoff-extra' { $candidate | Add-Member private_note 'sentinel' }
+          'old' { $candidate.generated_at_utc = '2026-09-09T20:41:00.000Z' }
+        }
+        try { Assert-E1NoLiveCustody $p $copy $candidate 'Evidence1-Runner' $r; $out += $false } catch { $out += $true }
+      }
+      $out | ConvertTo-Json -Compress`);
+    expect(result).toEqual([true, true, true, true, true, true, true, true, true, true, true, true, true]);
+  });
+
   it('accepts only fail-closed incomplete custody for an exact consumed canary attempt', async () => {
     const runId = randomUUID();
     const bindingSha = 'c'.repeat(64);
