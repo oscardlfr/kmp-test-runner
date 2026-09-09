@@ -639,6 +639,75 @@ function Invoke-E1DryAttempt {
     return $result
 }
 
+function Test-E1ClosedPrestartCanaryHandoff($Handoff, $Custody, $Copy, [string]$VMName, $Readiness) {
+    # Historical launchers persisted and bound a canary before checking an already-Off VM.
+    # Accept only that exact pre-start terminal shape after the preceding run has closed custody.
+    try {
+        Assert-E1Keys $Handoff @('schema','state','generated_at_utc','vm_name','vm_state','target_commit','target_tree',
+            'run_id','prior_run_custody','failure_kind','hard_power_fallback_used','replacement_or_respawn_used',
+            'raw_content_read','canary')
+        Assert-E1Fields $Handoff @{
+            schema = 1; state = 'failed'; vm_name = $VMName; vm_state = 'Off'; failure_kind = 'initial_state'
+            hard_power_fallback_used = $false; replacement_or_respawn_used = $false; raw_content_read = $false
+        }
+        $runId = Get-E1Field $Handoff 'run_id'
+        $parsedRunId = [guid]::Empty
+        if ($runId -isnot [string] -or -not [guid]::TryParse($runId, [ref]$parsedRunId) -or
+            $parsedRunId -eq [guid]::Empty -or $runId -ceq (Get-E1Field $Custody 'run_id')) { throw 'live_custody' }
+        $targetCommit = Get-E1Field $Handoff 'target_commit'
+        $targetTree = Get-E1Field $Handoff 'target_tree'
+        if ($targetCommit -cnotmatch '^[a-f0-9]{40}$' -or $targetTree -cnotmatch '^[a-f0-9]{40}$') { throw 'live_custody' }
+
+        $prior = Get-E1Field $Handoff 'prior_run_custody'
+        Assert-E1Keys $prior @('state','run_id','privacy_safe')
+        Assert-E1Fields $prior @{ state = 'closed'; run_id = (Get-E1Field $Custody 'run_id'); privacy_safe = $true }
+        $handoffTime = Get-E1Timestamp (Get-E1Field $Handoff 'generated_at_utc')
+        if ($handoffTime -le (Get-E1Timestamp (Get-E1Field $Copy 'generated_at_utc')) -or
+            $handoffTime -gt (Get-E1Timestamp (Get-E1Field $Readiness 'generated_at_utc'))) { throw 'live_custody' }
+
+        $canary = Get-E1Field $Handoff 'canary'
+        Assert-E1Keys $canary @('binding_sha256','binding')
+        if ((Get-E1Field $canary 'binding_sha256') -cnotmatch '^[a-f0-9]{64}$') { throw 'live_custody' }
+        $binding = Get-E1Field $canary 'binding'
+        Assert-E1Keys $binding @('schema','run_id','arm','target_commit','target_tree','source_commit','campaign_design_id',
+            'scenario_id','planned_sessions','repeats','cell_label','condition','product_access_mode','execution_profile_id',
+            'seed','max_budget_usd','wet_report_sha256','dry_report_sha256','plan_sha256','hashes','scripts')
+        Assert-E1Fields $binding @{
+            schema = 1; run_id = $runId; target_commit = $targetCommit; target_tree = $targetTree
+            scenario_id = 'coverage-threshold-failure-v2'; planned_sessions = 1; repeats = 1
+            execution_profile_id = 'sandboxed-unrestricted-v1'; seed = 20260821; max_budget_usd = 2
+        }
+        if ((Get-E1Field $binding 'source_commit') -cnotmatch '^[a-f0-9]{40}$') { throw 'live_custody' }
+        foreach ($name in @('wet_report_sha256','dry_report_sha256','plan_sha256')) {
+            if ((Get-E1Field $binding $name) -cnotmatch '^[a-f0-9]{64}$') { throw 'live_custody' }
+        }
+        $arm = Get-E1Field $binding 'arm'
+        $armContract = if ($arm -ceq 'product') {
+            @{ campaign_design_id = 'claude-product-canary-v1'; cell_label = 'A'; condition = 'current-skill'; product_access_mode = 'product-assisted' }
+        } elseif ($arm -ceq 'free-baseline') {
+            @{ campaign_design_id = 'claude-free-baseline-canary-v1'; cell_label = 'B'; condition = 'no-skill'; product_access_mode = 'free-baseline-no-product' }
+        } else { throw 'live_custody' }
+        Assert-E1Fields $binding $armContract
+
+        $hashes = Get-E1Field $binding 'hashes'
+        $hashNames = @('readiness_sha256','ledger_sha256','attestation_sha256','attestation_canonical_sha256',
+            'validation_module_sha256','scenario_sha256','product_entry_sha256','execution_profile_sha256',
+            'execution_profile_registry_sha256')
+        Assert-E1Keys $hashes $hashNames
+        foreach ($name in $hashNames) {
+            if ((Get-E1Field $hashes $name) -cnotmatch '^[a-f0-9]{64}$') { throw 'live_custody' }
+        }
+        $scripts = Get-E1Field $binding 'scripts'
+        $scriptNames = @('evidence1-stageb-live-launch.ps1','evidence1-stageb-live-wrapper.ps1',
+            'evidence1-live-run-contract.psm1','evidence1-live-handoff-contract.psm1','evidence1-validation-ops.psm1')
+        Assert-E1Keys $scripts $scriptNames
+        foreach ($name in $scriptNames) {
+            if ((Get-E1Field $scripts $name) -cnotmatch '^[a-f0-9]{64}$') { throw 'live_custody' }
+        }
+        return $true
+    } catch { return $false }
+}
+
 function Assert-E1NoLiveCustody($Placement, $Copy, $Handoff, [string]$VMName, $Readiness) {
     Import-Module (Join-Path $PSScriptRoot 'evidence1-live-handoff-contract.psm1') -ErrorAction Stop
     try { $custody = Assert-Evidence1PreviousRunCustody $Placement $Copy $VMName }
@@ -648,6 +717,9 @@ function Assert-E1NoLiveCustody($Placement, $Copy, $Handoff, [string]$VMName, $R
         return
     }
     $runId = $custody.run_id
+    if ($null -ne $Handoff -and (Test-E1ClosedPrestartCanaryHandoff $Handoff $custody $Copy $VMName $Readiness)) {
+        return
+    }
     if ($null -ne $Handoff) {
         $handoffSchema = Get-E1Field $Handoff 'schema'
         if (($handoffSchema -isnot [int] -and $handoffSchema -isnot [long]) -or [long]$handoffSchema -ne 1) { throw 'live_custody' }
