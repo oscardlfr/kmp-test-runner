@@ -723,9 +723,10 @@ function Invoke-Evidence1CanaryLaunch {
     $phase = 'live'
     $liveOperation = Start-E1OwnedProcess $node $arguments $HarnessDir (Join-Path $sourceContext.directory 'live.stdout.log') (Join-Path $sourceContext.directory 'live.stderr.log') 1800
     $journalRetired = $false
+    $journalRetirementPending = $false
     while (-not $liveOperation.Task.IsCompleted) {
       $phase = 'journal'
-      if (-not $journalRetired) {
+      if (-not $journalRetired -and -not $journalRetirementPending) {
         try {
           # Only the exact six-transition evaluated path may retire while the process is active.
           # Disappearance then means the harness already promoted durable evidence. Keep waiting
@@ -734,9 +735,12 @@ function Invoke-Evidence1CanaryLaunch {
           $journal = Get-Evidence1CanaryJournalProgress $journalRoot @($baseline.journal_ids) $RunId $journal -AllowRetiredAfterTerminalJournal
         } catch {
           if ($_.Exception.Message -cne 'canary_journal_retiring') { throw }
-          # Retirement before the exact terminal snapshot remains fail-closed. Preserve the
-          # historical closed code so prior custody readers remain compatible.
-          throw 'canary_journal_retirement_stalled'
+          # The producer can publish the remaining transitions and retire the directory between
+          # two 200 ms observations. Do not cancel or respawn the same owned process: stop polling
+          # the now-absent journal and let its existing timeout own the bounded wait. Retirement is
+          # accepted only after that exact process exits, through AllowRetiredAfterProcessExit below.
+          $journalRetirementPending = $true
+          continue
         }
         Write-Evidence1JsonAtomically (Join-Path $directory 'journal.json') $journal
         $journalRetired = $journal.journal_id -and $journal.available -eq $false

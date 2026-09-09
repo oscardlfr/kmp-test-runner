@@ -211,6 +211,10 @@ $script:PriorCustody = Assert-Evidence1PreviousRunCustody `
     -PlacementReport $placement `
     -CopyReport $copy `
     -ExpectedVMName $VMName
+$initialState = Get-VMStateName $VMName
+if ($initialState -ne 'Running') {
+    Fail "authorized live handoff requires $VMName to be Running after readiness and auth verification, got $initialState"
+}
 $script:CurrentRunId = if ($CanaryArm) { $CanaryRunId } else { $null }
 
 $existingHandoff = Read-JsonFile $HandoffReportPath 'existing handoff report' -Optional
@@ -237,17 +241,12 @@ if ($CanaryArm) {
         -ExpectedWetReportSha256 $ExpectedWetReportSha256 -ExpectedDryReportSha256 $ExpectedDryReportSha256 -AuthorizationPhrase $LiveAuthorizationPhrase
 }
 
-$phase = 'initial_state'
+$phase = 'validated'
 try {
-    $initialState = Get-VMStateName $VMName
-    if ($initialState -ne 'Running') {
-        Fail "authorized live handoff requires $VMName to be Running after readiness and auth verification, got $initialState"
-    }
     if ($archivePreviousHandoff) {
         Archive-PreviousHandoff $script:PriorCustody.run_id
     }
 
-    $phase = 'validated'
     Write-HandoffState 'validated'
 
     $phase = 'graceful_shutdown'
