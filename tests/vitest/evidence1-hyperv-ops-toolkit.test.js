@@ -505,6 +505,9 @@ try {
     expect(handoff).toContain('Start-VM -Name $VMName');
     expect(handoff).toContain('previous handoff and copied terminal custody run_id mismatch');
     expect(handoff).toContain('Archive-PreviousHandoff');
+    expect(handoff).toContain('Test-E1ClosedPrestartCanaryHandoff');
+    expect(handoff).toContain('$archiveHandoffRunId = [string]$existingHandoff.run_id');
+    expect(handoff).toContain('Archive-PreviousHandoff $archiveHandoffRunId');
     expect(handoff).toContain("$VMName = 'Evidence1-Runner'");
     expect(handoff).toContain('$ReadinessMaxAgeMinutes = 60');
     expect(handoff).toContain('$RemoteAuthMaxAgeMinutes = 30');
