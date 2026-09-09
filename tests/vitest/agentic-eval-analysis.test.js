@@ -23,9 +23,10 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import os from 'node:os';
 import {
-  ANALYSIS_SCHEMA, FAILURE_CLASS_VALUES, PRODUCT_ACCESS_MODE_VALUES, PRODUCT_USAGE_MODE_VALUES, EVIDENCE_QUALITY_VALUES,
+  ANALYSIS_SCHEMA, ANALYSIS_MEASUREMENT_CAPABILITIES, FAILURE_CLASS_VALUES, PRODUCT_ACCESS_MODE_VALUES, PRODUCT_USAGE_MODE_VALUES,
+  EVIDENCE_QUALITY_VALUES, FIELD_CORRECTNESS_VALUES, OPERATION_ROLE_VALUES,
   classifyFailure, deriveSkillRelativeFields,
-  analyzeRunRecord, buildSummary, analyzeRunsDir,
+  deriveToolTelemetry, summarizeNumericValues, analyzeRunRecord, buildSummary, analyzeRunsDir,
 } from '../../tools/agentic-eval/analysis.mjs';
 import { cmdAnalyze } from '../../tools/agentic-eval/cli.mjs';
 import { ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1 } from '../../tools/agentic-eval/accepted-run-audit.mjs';
@@ -2345,5 +2346,159 @@ describe('buildSummary -- Section 9.14 remaining group-level analytics (analysis
       pair({ run_id: 'r2' }, { result_fingerprint: { ...sameFingerprint, failed: 1, passed: 3 } }),
     ];
     expect(buildSummary(nonDeterministicPairs).groups[0].result_fingerprint_distinct_count).toBe(2);
+  });
+});
+
+describe('analysis schema 9 -- privacy-safe metric completion', () => {
+  const MISMATCHED_ASSESSMENT = Object.freeze({
+    schema: 2,
+    task_outcome_matched: false,
+    task_outcome_reason: 'mismatched',
+    answer_protocol_matched: true,
+    provider_evidence_kind: 'claim-only',
+    provider_evidence_status: 'unavailable',
+    product_e2e_success: null,
+    task_outcome_mismatch_fields: ['total', 'passed'],
+    task_outcome_unexpected_key_count: 0,
+  });
+
+  it('publishes the new analysis version and an explicit boundary for metrics this privacy-safe view cannot support', () => {
+    expect(ANALYSIS_SCHEMA).toBe(9);
+    expect(ANALYSIS_MEASUREMENT_CAPABILITIES).toEqual({
+      deterministic_external_oracle: 'not-recorded',
+      command_repetition: 'not-observable',
+      per_operation_timing: 'not-recorded',
+      per_operation_output_bytes: 'not-recorded',
+      non_tool_wall_time: 'not-observable',
+      non_shell_operation_identity: 'not-recorded',
+      final_claim_timing: 'process-completion-upper-bound',
+      claim_fingerprint: 'structural-comparison-only',
+      tool_output_bytes: 'run-total-only',
+    });
+    expect(buildSummary([]).measurement_capabilities).toEqual(ANALYSIS_MEASUREMENT_CAPABILITIES);
+  });
+
+  it('summarizes observed numbers with min/max/mean/median/sample stddev and never coerces unavailable values to zero', () => {
+    expect(summarizeNumericValues([100, null, 300, undefined, Number.NaN])).toEqual({
+      n: 2, min: 100, max: 300, mean: 200, median: 200, stddev_sample: 141.421356,
+    });
+    expect(summarizeNumericValues([7])).toEqual({
+      n: 1, min: 7, max: 7, mean: 7, median: 7, stddev_sample: null,
+    });
+    expect(summarizeNumericValues([null, undefined])).toEqual({
+      n: 0, min: null, max: null, mean: null, median: null, stddev_sample: null,
+    });
+  });
+
+  it('derives command outcomes, operation roles and operation counts without retaining command text or provider binary names', () => {
+    const record = scenarioRecord({
+      schema: 8,
+      condition: 'no-skill',
+      skill_invoked: { value: false, reason: null },
+      skill_invocation_event: null,
+      outcome_assessment: MISMATCHED_ASSESSMENT,
+    });
+    const sidecar = sidecarFor(record, {
+      entries: [
+        bashEntry(0, { kind: 'kmp-test', operation: 'describe', resultStatus: 'success' }),
+        bashEntry(2, { kind: 'kmp-test', operation: 'parallel', resultStatus: 'error' }),
+        bashEntry(4, { kind: 'gradle', operation: 'allowed-task', resultStatus: 'missing' }),
+        bashEntry(6, { kind: 'other-bash', resultStatus: 'success' }),
+      ],
+    });
+    const telemetry = deriveToolTelemetry(sidecar);
+    expect(telemetry).toEqual({
+      ok: true,
+      tool_result_status_counts: { success: 2, error: 1, missing: 1 },
+      command_result_status_counts: { success: 2, error: 1, missing: 1 },
+      operation_role_counts: { discovery: 1, execution: 2, support: 1, unclassified: 0 },
+      tool_kind_counts: { 'product-cli': 2, 'build-tool': 1, 'other-shell': 1 },
+      operation_counts: { 'product:describe': 1, 'product:parallel': 1, 'build-tool:allowed-task': 1, 'shell:other': 1 },
+    });
+    expect(Object.keys(telemetry.operation_role_counts)).toEqual(OPERATION_ROLE_VALUES);
+    const serialized = JSON.stringify(telemetry);
+    expect(serialized).not.toContain('kmp-test');
+    expect(serialized).not.toContain('gradle');
+    expect(serialized).not.toContain(':shared');
+  });
+
+  it('projects cost/cache/order/intervention fields, parsed-claim availability, field correctness and a neutral claim fingerprint', () => {
+    const record = scenarioRecord({
+      schema: 8,
+      condition: 'no-skill',
+      skill_invoked: { value: false, reason: null },
+      skill_invocation_event: null,
+      outcome_assessment: MISMATCHED_ASSESSMENT,
+      wall_clock_ms: 12345,
+      shell_commands_total: { value: 4, reason: null },
+      test_invocations_total: { value: 2, reason: null },
+      retries: { value: 1, reason: null },
+      output_bytes: { value: 2048, reason: null },
+      stream_json_bytes: { value: 8192, reason: null },
+      human_interventions: { value: 0, reason: null },
+      cache_state: 'warm', order_index: 3, repetition_index: 1,
+    });
+    const sidecar = sidecarFor(record, {
+      entries: [bashEntry(0, { kind: 'other-bash' })],
+      terminalAuthoritativeEvent: null,
+      terminalEvidence: {
+        present: false, provider: null, tool_result_event_index: null,
+        evidence_well_formed: false, target_matches_expected: null, outcome_matches_expected: null,
+        malformed: null, parallel_evidence_invalid: null, changed_evidence_invalid: null,
+        observed_result: null,
+        final_answer_block: {
+          found: true, parsed: true, ambiguous: false, matches_observed: null,
+          comparison_status: 'no-observed-result', declared_outcome_kind: 'coverage_threshold_exceeded',
+          observed_outcome_kind: null, missing_fields: [], mismatch_fields: [], unexpected_key_count: 0,
+        },
+      },
+    });
+    const { ok, entry } = analyzeRunRecord(record, sidecar);
+    expect(ok).toBe(true);
+    expect(entry).toMatchObject({
+      shell_commands_total: 4, test_invocations_total: 2, retries: 1,
+      output_bytes: 2048, stream_json_bytes: 8192,
+      human_interventions: 0, human_interventions_source: 'enforced-none',
+      cache_state: 'warm', order_index: 3, repetition_index: 1,
+      task_outcome_available_ms: null, final_claim_available_ms: 12345,
+    });
+    expect(entry.task_field_correctness).toEqual({
+      module: 'matched', outcome_kind: 'matched', total: 'mismatched', passed: 'mismatched',
+      failed: 'matched', missed_lines: 'matched', threshold: 'matched', modules_contributing: 'matched',
+    });
+    expect(Object.values(entry.task_field_correctness).every((status) => FIELD_CORRECTNESS_VALUES.includes(status))).toBe(true);
+    expect(entry.claim_fingerprint).toEqual({
+      parsed: true,
+      declared_outcome_kind: 'coverage_threshold_exceeded',
+      task_outcome_matched: false,
+      mismatch_fields: ['total', 'passed'],
+      unexpected_key_count: 0,
+      field_correctness: entry.task_field_correctness,
+    });
+    expect(JSON.stringify(entry.claim_fingerprint)).not.toMatch(/12345|2048|8192|[A-Za-z]:[\\/]/);
+  });
+
+  it('uses not-applicable for outcome-specific fields and not-observed for historical assessments', () => {
+    const record = scenarioRecord({
+      schema: 8,
+      condition: 'no-skill',
+      skill_invoked: { value: false, reason: null },
+      skill_invocation_event: null,
+      outcome_assessment: { ...MISMATCHED_ASSESSMENT, task_outcome_matched: true, task_outcome_reason: 'matched', task_outcome_mismatch_fields: [] },
+    });
+    const sidecar = sidecarFor(record, {
+      entries: [],
+      terminalEvidence: {
+        final_answer_block: { found: true, parsed: true, declared_outcome_kind: 'no_applicable_tests' },
+      },
+    });
+    const { entry } = analyzeRunRecord(record, sidecar);
+    expect(entry.task_field_correctness.total).toBe('not-applicable');
+    expect(entry.task_field_correctness.threshold).toBe('not-applicable');
+
+    const historical = scenarioRecord({ condition: 'no-skill', skill_invoked: { value: false, reason: null }, skill_invocation_event: null });
+    const historicalEntry = analyzeRunRecord(historical, sidecarFor(historical, { entries: [] })).entry;
+    expect(new Set(Object.values(historicalEntry.task_field_correctness))).toEqual(new Set(['not-observed']));
+    expect(historicalEntry.final_claim_available_ms).toBeNull();
   });
 });
