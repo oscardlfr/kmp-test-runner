@@ -218,19 +218,24 @@ if ($initialState -ne 'Running') {
 $script:CurrentRunId = if ($CanaryArm) { $CanaryRunId } else { $null }
 
 $existingHandoff = Read-JsonFile $HandoffReportPath 'existing handoff report' -Optional
-$archivePreviousHandoff = $false
+$archiveHandoffRunId = $null
 if ($null -ne $existingHandoff) {
     $existingState = [string]$existingHandoff.state
-    if ($existingState -ne 'started') {
+    if ($existingState -eq 'started') {
+        if ($script:PriorCustody.state -ne 'closed') {
+            Fail 'previous started handoff has no copied terminal custody'
+        }
+        if ([string]$existingHandoff.run_id -ne [string]$script:PriorCustody.run_id) {
+            Fail 'previous handoff and copied terminal custody run_id mismatch'
+        }
+        $archiveHandoffRunId = [string]$script:PriorCustody.run_id
+    } elseif ($CanaryArm -and
+        (Test-E1ClosedPrestartCanaryHandoff $existingHandoff $script:PriorCustody $copy $VMName $readiness)) {
+        # Preserve the distinct, consumed pre-start attempt under its own run id before replacement.
+        $archiveHandoffRunId = [string]$existingHandoff.run_id
+    } else {
         Fail "existing live handoff is not terminal: $existingState"
     }
-    if ($script:PriorCustody.state -ne 'closed') {
-        Fail 'previous started handoff has no copied terminal custody'
-    }
-    if ([string]$existingHandoff.run_id -ne [string]$script:PriorCustody.run_id) {
-        Fail 'previous handoff and copied terminal custody run_id mismatch'
-    }
-    $archivePreviousHandoff = $true
 }
 
 if ($CanaryArm) {
@@ -243,8 +248,8 @@ if ($CanaryArm) {
 
 $phase = 'validated'
 try {
-    if ($archivePreviousHandoff) {
-        Archive-PreviousHandoff $script:PriorCustody.run_id
+    if ($archiveHandoffRunId) {
+        Archive-PreviousHandoff $archiveHandoffRunId
     }
 
     Write-HandoffState 'validated'
