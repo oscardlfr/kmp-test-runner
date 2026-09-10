@@ -2,7 +2,7 @@
 
 Windows-specific gotchas for running `kmp-test-runner` and its bundled tools.
 
-## TLS interception — `UNABLE_TO_VERIFY_LEAF_SIGNATURE`
+## TLS interception errors
 
 **Symptom.** On a Windows host behind corporate TLS interception (AV / proxy SSL
 inspection), Node rejects the intercepted certificate because the bundled CA
@@ -51,7 +51,7 @@ Then re-run the command. If you're on Node < 22, upgrade Node (the flag is the
 supported path; manually bundling the corporate root into `NODE_EXTRA_CA_CERTS`
 is a fragile fallback).
 
-## Line endings — bundled shell scripts
+## Bundled shell-script line endings
 
 The repo pins `scripts/**/*.sh` (and `.skills/**/*.sh`) to LF via
 [`.gitattributes`](../.gitattributes). If you clone with `core.autocrlf=true`

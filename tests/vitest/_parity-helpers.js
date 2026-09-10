@@ -38,6 +38,7 @@ export const SUBCOMMAND_TO_ORCHESTRATOR = Object.freeze({
   info:      'lib/orchestrators/info-orchestrator.js',
   describe:  'lib/orchestrators/describe-orchestrator.js',
   update:    'lib/orchestrators/update-orchestrator.js',
+  clean:     'lib/commands/clean.js',
 });
 
 // Flags handled at lib/cli.js global level (before reaching the orchestrator).
@@ -91,6 +92,7 @@ export const ORCHESTRATOR_INTERNAL_LITERALS = Object.freeze({
   info: new Set([]),
   describe: new Set([]),
   update: new Set([]),
+  clean: new Set([]),
 });
 
 // Gradle / external-tool command-line tokens that orchestrators emit as args.
@@ -137,7 +139,7 @@ export function extractFlagsFromHelpText(helpText) {
   return flags;
 }
 
-// Parse all flag references in the README. Returns the set of flag names
+// Parse all flag references in a Markdown reference. Returns the set of flag names
 // documented in:
 //   1. Any markdown table row whose column 1 starts with a backtick-flag
 //      (e.g. `| `--xxx` | default | description |`).

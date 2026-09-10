@@ -10,20 +10,19 @@ the whole loop from user request to verified diagnosis or fix.
 
 This is no longer a proposal without an implementation. A working harness
 exists at [`tools/agentic-eval/`](../tools/agentic-eval/), and accepted
-Claude Code evidence produced under its strict command policy is committed
-under `tools/runs/`. What remains unpublished is a headline: no number from
-this methodology has been promoted to the README, and the acceptance
-criteria below still gate that promotion. Treat this document as the
+Claude Code evidence produced under its versioned execution policies is
+committed under `tools/runs/`. What remains unpublished is a
+**benchmark-eligible headline**: the README includes the explicitly
+non-benchmark Evidence1 canary summary, while the acceptance criteria below
+still gate any causal or general performance claim. Treat this document as the
 methodology of record for a harness that runs, not as a sketch for one that
 might.
 
-[`README.md`](../README.md)'s "Agentic usage — token-cost rationale"
-section links to this document and states plainly that no agentic
-benchmark results are published yet. Nothing in the README depends on any
-number in this document, and that stays true regardless of how this
-document's internal structure evolves -- as long as it continues to exist
-at this path and continues to describe a methodology whose results are not
-promoted to the README.
+[`README.md`](../README.md)'s evaluation section links to this document's
+current operational guidance. It publishes only the explicitly non-benchmark
+Evidence1 canary summary; detailed values and limitations live in
+[`metrics.md`](metrics.md). No benchmark-eligible agentic headline is currently
+published.
 
 ## What this measures
 
@@ -117,12 +116,12 @@ A stronger causal claim requires, at minimum, all of the following:
 
 Until those hold, the honest wording is "observed contrast", not "effect".
 
-The focused pilots in this program run four repetitions per condition. Four
-repetitions are an **intervention signal** -- enough to notice that
-something changed and to decide whether a larger measurement is worth
-funding. They are not a demonstrated effect, they do not support a
-confidence interval anyone should act on, and no report may present them as
-one.
+The repetition count is fixed by each preregistered campaign design; historical
+pilots, full matrices, and one-shot canaries deliberately use different `n`.
+Small repeated samples are an **intervention signal** -- enough to notice that
+something changed and decide whether a larger measurement is worth funding.
+They are not a demonstrated effect, they do not support a confidence interval
+anyone should act on, and no report may present them as one.
 
 An observed difference between two runtimes is an observed cross-runtime
 difference, and it stays exclusively descriptive. It is not this contrast, and it is not a causal
@@ -211,9 +210,10 @@ Analysis therefore records two separate layers:
 skill and product CLI are both part of the treatment. `product-visible-no-skill`
 means the skill is absent but the product may still be discoverable in the
 workspace. It is useful for measuring discoverability without guidance, but it
-is **not** a no-product baseline. `free-baseline-no-product` is reserved for the
-future baseline where the agent can see only the target repository and standard
-toolchain. `contaminated-baseline` is reserved for any supposed free baseline
+is **not** a no-product baseline. `free-baseline-no-product` is the implemented
+isolated baseline where the agent can see only the target repository and
+standard toolchain; the environment must pass the product-access preflight
+before a live run. `contaminated-baseline` is reserved for any supposed free baseline
 where product files, commands, docs, or generated artifacts are discoverable.
 
 `run --campaign-design claude-2x2-williams-v1 --dry-run` makes this contract
@@ -255,7 +255,7 @@ tool use and from mixed sessions. This lets reports say, for example, "the
 programmatic product outcome matched but the final answer protocol failed"
 without converting that into "the product failed."
 
-In analysis schema v5, `success` remains the full harness success criterion:
+In analysis schema v9, `success` remains the full harness success criterion:
 correct target, correct expected outcome, usable evidence, and final answer
 consistency. It must not be used alone as the product-quality metric. The
 product-specific diagnostic fields are:
@@ -465,7 +465,7 @@ Start small and expand only after the harness is boring.
 
 | Scenario | What it tests | Notes |
 |----------|---------------|-------|
-| Unit failure | Basic KMP test failure diagnosis | Stable, cheap, candidate early scenario — the actual first committed pilot (2026-07-17) used KaMPKit's success-path and no-test-diagnostic scenarios instead, for public-repo verifiability (see Current status); a genuine test-failure scenario remains pending |
+| Unit failure | Basic KMP test failure diagnosis | Implemented as `deterministic-unit-test-failure`; accepted records exist in the committed scenario corpus |
 | Multi-module changed test | Whether the agent scopes the right modules | Good fit for `kmp-test changed` |
 | Coverage threshold failure | Whether the agent can find missed lines without reading large Kover output | Exercises the largest token-cost gap |
 | JDK/AGP mismatch | Whether the agent recognizes environment preflight signals | Useful for failure-code branching |
@@ -479,9 +479,10 @@ Each scenario should have a known expected outcome and a deterministic
 verification command. Avoid tasks whose success depends on network state,
 flaky devices, or broad refactors.
 
-Platform-specific rows (iOS, macOS) and the private-project row are
-placeholders until the required hardware and approval exist — do not run
-them speculatively.
+The corpus has accepted runs on macOS hosts, but that is not proof that native
+iOS/macOS target scenarios were executed. The platform-specific target rows and
+the private-project row remain gated by hardware and explicit approval; do not
+run them speculatively.
 
 ## Evidence and privacy policy
 
@@ -524,42 +525,30 @@ The execution profile records what the agent was permitted to run and what
 contained it while it ran. It is an axis in its own right, not a property of
 the runtime and not a property of the skill condition.
 
-### `strict-policy-v1` -- what the harness's own records were measured under
+### `strict-policy-v1` -- policy-hook profile
 
-Every committed accepted scenario record produced by the current agentic-eval
-harness so far ran under its strict command policy: a pre-tool hook evaluates
-each shell attempt, allows or denies it against a closed allowlist, and every
-attempt is accounted for per attempt. That is a real environment with real
-external validity limits, and it is the environment those records describe.
-It is not a claim about how an unconstrained agent behaves.
+In this profile a pre-tool hook evaluates each shell attempt, allows or denies
+it against a closed allowlist, and accounts for every attempt. Historical
+strict-policy records describe that environment and its external-validity
+limits; they are not evidence about an unrestricted agent. Newer Evidence1
+records use the separate externally contained profile below.
 
 The scope of that sentence is exactly the harness's own accepted scenario
 records. It does not extend to the v1 pilot or the v2 benchmark below, which
 predate the harness, were not produced by it, and carry no execution-profile
 identity at all.
 
-### `sandboxed-unrestricted-v1` -- proposed, not implemented
+### `sandboxed-unrestricted-v1` -- implemented, externally contained
 
-The plan in
-[`docs/audits/agentic-eval-claude-codex-v1-plan.md`](audits/agentic-eval-claude-codex-v1-plan.md)
-proposes a second profile that removes the harness command allowlist in order
-to measure the missing comparison arm. It does not exist. No run has used it,
-no record carries it, and nothing in this document authorizes running one.
+This registered profile removes the harness command allowlist only when a
+reviewed external containment boundary is attested. The Claude Code adapter
+supports it, the registry requires `isolation_kind: external-sandbox`,
+restricted network, a non-null attestation, correlated structured results, and
+skill-state evidence. Evidence1 Product/FreeBaseline canaries use this profile.
+Registration and a valid attestation do not authorize a live run; operator
+authorization remains a separate gate.
 
-The runtime-neutral-records PR (`agent_runtime`/`execution_profile`/
-`skill_observation`/`usage` groups, schema v6 -- see "The schema v6 groups"
-below) reserves `sandboxed-unrestricted-v1` as a closed `execution_profile.id`
-enum VALUE in `schemas.mjs`, so a future record CAN validly carry it once one
-exists. That is a schema-level reservation only: `execution-profiles/
-registry.json` registers exactly one entry, `strict-policy-v1`, and
-`resolveSelection()` fails closed on `--execution-profile
-sandboxed-unrestricted-v1` today exactly like any other unregistered id. No
-registry entry, no isolation implementation, and no adapter capability
-targets it -- everything below this point remains "proposed, not
-implemented" in the real-world sense; only the schema's own closed
-vocabulary changed.
-
-If it is ever built, removing the allowlist is only admissible inside an
+Removing the allowlist is admissible only inside an
 external containment boundary, because the policy hook was never an operating
 system or filesystem sandbox and a runtime's own workspace flag is defense in
 depth rather than a substitute. The stated prerequisites are:
@@ -584,9 +573,9 @@ value: they are never fabricated as allow decisions and never counted as zero
 denials from a policy that did not run. A missing attempt is a failure under
 either profile.
 
-Results from the two profiles are separate partitions. The unrestricted arm,
-if it ever exists, supplies a comparison that strict-policy evidence cannot
-supply on its own; it does not retroactively reinterpret or rewrite the
+Results from the two profiles are separate partitions. The unrestricted arm
+supplies a comparison that strict-policy evidence cannot supply on its own; it
+does not retroactively reinterpret or rewrite the
 strict-policy results already committed.
 
 ## Registry relationship
@@ -638,13 +627,11 @@ schema version, validated by
 [`tools/agentic-eval/schemas.mjs`](../tools/agentic-eval/schemas.mjs), stored
 under `tools/runs/`.
 
-At the time of writing, `LATEST_RUN_SCHEMA` is `6` and
-`SUPPORTED_RUN_SCHEMAS` is `[1, 2, 3, 4, 5, 6]`: every historical record keeps
-validating under the schema version it declared, and new records are stamped
-with the latest. Accepted scenario records carry an accepted-audit sidecar,
-whose own supported schemas are `[1, 2, 3]` -- a schema-v5 record accepts
-only sidecar schema 1 or 2, a schema-v6 record accepts only sidecar schema 3
-(see "The schema v6 groups" below).
+At the time of writing, `LATEST_RUN_SCHEMA` is `8` with supported run schemas
+`1` through `8`; accepted-audit sidecars support schemas `1` through `10`, with
+`10` current. Every historical record keeps validating under the schema version
+it declared, and new records are stamped with the latest. The validators are
+the authority for the exact run-to-sidecar compatibility matrix.
 
 Those records already cover the fields the sketch called for -- condition,
 scenario, model requested and resolved, repo/project commits, timestamps,
@@ -695,15 +682,11 @@ never inferred from `claude_code_version` or hook/policy fields. A metric
 absent from an older record renders as `not recorded`, never zero, exactly
 as this document has always required.
 
-This PR is schema/registry/reporting scope only: the runtime/execution-
-profile registries reserve `codex-cli` / `sandboxed-unrestricted-v1` as
-closed schema enum VALUES (so a future record can validly carry either), but
-register no such entry, no adapter, and no isolation implementation -- see
-"`sandboxed-unrestricted-v1` -- proposed, not implemented" above, which
-still applies in full. A real non-Claude adapter, a real
-`sandboxed-unrestricted-v1` isolation implementation, and this harness's own
-no-policy-hooks execution mode remain future PRs' scope, not authorized or
-implemented here.
+The profile axis has since advanced beyond the original schema-v6 patch:
+`sandboxed-unrestricted-v1` is registered and implemented for Claude Code with
+external-attestation requirements. `codex-cli` remains schema-reserved but is
+not registered in this branch; its separate validation must not be reported as
+implemented until adapter, registry, tests, and sanitized evidence land.
 
 ### Recommendation
 
@@ -816,9 +799,12 @@ and the raw evidence has been checked for privacy.
   runtime's structured transcript, enforces per-attempt command accounting,
   grades named checks, and writes schema-validated records with accepted-run
   audit sidecars under `tools/runs/`. Later dated canary campaigns extended
-  that evidence on Windows and macOS. All of it was produced under one
-  runtime (`claude-code`) and one execution profile (`strict-policy-v1`), on
-  one model profile per campaign, and it is scoped to exactly that partition.
+  that evidence on Windows and macOS. The earlier campaigns used
+  `strict-policy-v1`; the Evidence1 product/free canary used
+  `sandboxed-unrestricted-v1` with mandatory external-isolation attestation.
+  All current records use the `claude-code` runtime and remain partitioned by
+  execution profile, model profile, campaign, and the other hard provenance
+  fields.
   Schema v6 (see "The schema v6 groups" above) now records that same
   partition structurally on every new record instead of leaving it implicit
   in which harness produced the file -- it does not change what was measured
@@ -836,13 +822,11 @@ and the raw evidence has been checked for privacy.
   and the committed evidence corpus described under Registry relationship.
   No `tools/runs/agentic-usage-registry.jsonl` exists in this repo, and none
   is planned.
-- Nothing in [`README.md`](../README.md) currently depends on any number in
-  this document, the pilot, or the v2 benchmark — it only links here and
-  states that no agentic benchmark results are published yet. That sentence
-  is now stale in the narrow sense that two rounds of evidence exist, but
-  neither round's own Interpretation section claims its evidence is solid
-  enough to promote to a README headline yet; that stays a deliberate,
-  explicit deferral, not an oversight.
+- [`README.md`](../README.md) publishes a small descriptive Evidence1 canary
+  summary (outcomes and wall-clock distributions) and links here for the
+  methodology and caveats. It does not publish a benchmark-eligible agentic
+  headline or reuse the historical pilot/v2 values as current claims; that
+  remains a deliberate deferral, not an oversight.
 - Future docs-alignment or measurement work should reference this document
   rather than re-deriving the methodology inline. If the methodology
   changes, update it here first, then update whatever links to it.

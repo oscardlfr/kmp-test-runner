@@ -1,198 +1,185 @@
-# kmp-test-runner
+# kmp-test-runner repository guide
 
-> Parallel test runner for Kotlin Multiplatform and Android Gradle projects with an agent-friendly JSON envelope. npm CLI + Gradle plugin + shell installers. MIT.
+> Operational rules for humans and coding agents. Product principles live in `PRODUCT.md`, current work in `BACKLOG.md`, released history in `CHANGELOG.md`, and user-facing usage in `README.md`.
 
-## Repo state (2026-05-01)
+## Current release pins
 
-- npm: `kmp-test-runner@0.14.0` (Trusted Publisher OIDC; auto-publishes on push to `main`)
-- Gradle plugin: `io.github.oscardlfr.kmp-test-runner:0.14.0` (GitHub Packages; auto-publishes on push to `main`)
-- GitHub Releases: `v0.14.0` (linux.tar.gz + windows.zip; auto-tagged from `package.json` version on push to `main`)
-- All 3 shapes share the same source-of-truth version (`package.json`), bumped together per release.
+- npm: `kmp-test-runner@0.14.0`
+- Gradle plugin: `io.github.oscardlfr.kmp-test-runner:0.14.0`
+- GitHub Releases: `v0.14.0`
+- `package.json` is the version source of truth; `node tools/sync-versions.js` updates the other release pins.
 
-### v0.7.0 surface (iOS / macOS support + Gradle plugin testType + macOS CI smoke + README v0.7 surface)
+Historical v0.6/v0.7 implementation notes and the v0.8 Node-orchestration migration remain available in [`CHANGELOG.md`](CHANGELOG.md) and the completed sections of [`BACKLOG.md`](BACKLOG.md). They are history, not current operating instructions.
 
-- **Phase 1 — project-model iOS / macOS source-set + task fields.** `lib/project-model.js` `sourceSetNames` grows from 12 → 18 entries (+`iosX64Test` / `iosArm64Test` / `iosSimulatorArm64Test` / `macosTest` / `macosX64Test` / `macosArm64Test`). `resolveTasksFor` returns 2 new fields: `iosTestTask` (candidates `iosSimulatorArm64Test` → `iosX64Test` → `iosArm64Test` → `iosTest`) and `macosTestTask` (candidates `macosArm64Test` → `macosX64Test` → `macosTest`). Both are independent of `unitTestTask` — KMP modules with `jvmTest + iosSimulatorArm64Test` still pick `jvmTest` for unit tests; iOS surfaces only via `iosTestTask`. Sh + ps1 readers grow `pm_get_ios_test_task` / `pm_get_macos_test_task` and `Get-PmIosTestTask` / `Get-PmMacosTestTask` (mirrors v0.6 Bug 3 webTestTask shape). New CI fixture `tests/fixtures/kmp-with-ios/` with 3 modules (`:ios-only`, `:macos-only`, `:kmp-multi`)
-- **Phase 2 — wrapper iOS / macOS dispatch.** `scripts/{sh,ps1}/run-parallel-coverage-suite.{sh,ps1}` accept new `--test-type ios|macos` values. Per-module lookup via the project model selects the right gradle task; fallback to `iosSimulatorArm64Test` / `macosArm64Test` (most-portable defaults) when the model is absent. New `SKIP_IOS_MODULES` / `SKIP_MACOS_MODULES` env vars mirror the existing skip-list shape. PowerShell ValidateSet extended; bash case statements grow new arms. Configuration banner reflects new platform names: `Test Type: ios (per-module iosTestTask)` / `macos (per-module macosTestTask, host-native)`. macOS dispatches host-natively (no simulator boot orchestration); iOS leans on Gradle's built-in simulator boot since AGP/KMP 1.9+. Legacy filesystem walker (`_module_has_test_sources_fs` + ps1 candidates list) extends from 9 → 18 directories so iOS-only modules without an umbrella `iosTest/` still register as testable when the model JSON is absent
-- **Phase 3 — Gradle plugin `testType` property + macOS CI smoke job.** `KmpTestRunnerExtension.testType: String = ""` (empty default = wrapper auto-detect; preserves existing behavior). When set, `parallelTests` / `changedTests` / `coverageTask` propagate `--test-type <value>` to the bundled wrapper. New `gradle-plugin-test-ios` CI job runs the existing TestKit suite on `macos-latest` (informational by default; promote to required in branch protection when v0.7 line stabilises). Catches mac-specific build/test regressions (BSD vs GNU shell tooling, JDK locator differences, gradle daemon quirks)
-- **Phase 4 — README v0.7.0 surface (surgical update).** New "Platforms supported" table covering JVM/Desktop, Android (unit + instrumented), iOS, macOS, JS/Wasm with per-target gradle task names + where each runs. New "Multi-platform test dispatch" section explains the candidate chain `iosSimulatorArm64Test → iosX64Test → iosArm64Test → iosTest` and the macOS analogue, per-platform notes, fallback behavior, env-var skip docs. Flag reference table grows `--test-type <type>` row + new env-var sub-table (SKIP_IOS_MODULES / SKIP_MACOS_MODULES / PARENT_ONLY_MODULES). Gradle plugin DSL example bumps to `version "0.7.0"` and shows the new `testType` property. "What's new" leads with v0.7.0
-- **BACKLOG addition.** "Buildable cross-platform E2E fixture project" — captures the largest known testing-debt item (synthetic Kotlin Multiplatform fixture with iosX64() + iosSimulatorArm64() + macosArm64() + jvm() + js() + android targets, plus a CI matrix workflow that runs `kmp-test parallel --test-type {ios,macos,...}` against it on macos-latest). Risk + cost + ship-when criteria documented for v0.7.x / v0.8
+## Repository layout
 
-### v0.6.2 surface (no-summary discrimination + README v0.6.x light pass)
+- `bin/kmp-test.js` — npm executable entry point.
+- `lib/cli.js` and `lib/commands/` — CLI parsing and subcommand dispatch.
+- `lib/orchestrators/` — current orchestration for parallel, coverage, changed, Android, benchmark, info, describe, and update flows.
+- `lib/project/`, `lib/parsers/`, and `lib/envelope/` — project discovery, report parsing, typed diagnostics, and JSON-envelope construction.
+- `lib/runners/` and `scripts/{sh,ps1}/` — dispatch compatibility layer and thin direct-invocation launchers.
+- `scripts/install.{sh,ps1}`, `scripts/uninstall.{sh,ps1}`, and `scripts/build-artifact.sh` — installers and release-archive construction.
+- `gradle-plugin/` — Gradle plugin, extension, bundled runtime extraction, five public tasks, and TestKit suite.
+- `tests/vitest/`, `tests/bats/`, `tests/pester/`, `tests/installer/`, and `tests/skill-scripts/` — executable verification surfaces.
+- `tools/local-ci/` — reproducible Linux-container plus native-Windows pre-push gate.
+- `tools/agentic-eval/` and `docs/audits/` — evaluation harness, operational evidence, and historical audits; privacy and authorization rules apply.
+- `.github/workflows/` — path-aware CI, manual macOS validation, protected release fast-forward, and publishers.
 
-- **Gap 1.1**: `errors[].code = "no_test_modules"` discriminator on the parse-gap fallback envelope. `applyErrorCodeDiscriminators` matches the wrapper's literal `[ERROR] No modules found matching filter:` line (stdout) and pushes `{ code: 'no_test_modules' }` on `state.errors`. `sawAnything` check already suppresses `no_summary` when any discriminated code fires, so no double-emit. Wide-smoke 2026-04-30 ALL-phase validated 5/5 expected wild hits: DroidconKotlin, KMedia, NYTimes-KMP, Nav3Guide-scenes, kmp-production-sample-master (all `no_summary` → `no_test_modules`)
-- **Gap 1.2**: `state.skipped: [{module, reason}]` array on the JSON envelope. New `parseSkippedModules` helper matches the canonical `[SKIP] <module> (<reason>)` shape against stdout+stderr (handles both discovery-time skips on stderr and test-task-time skips on stdout); deduplicates by `module|reason` key. Surfaced via `parsed.skipped` through `parseScriptOutput` / `buildJsonReport` / `envErrorJson` / `buildDryRunReport` for envelope-shape consistency
-- **Gap 1.3**: regression-guard tests lock the discriminate-or-fallback contract. +4 vitest verifying that each of `task_not_found` / `unsupported_class_version` / `instrumented_setup_failed` / `no_test_modules` preempts the generic `no_summary` fallback. Test-only change; locks the behavior so a future refactor of the `sawAnything` chain can't regress
-- **README**: light pass — adds "What's new in v0.6.x" section + JDK precedence chain doc + `--java-home` / `--no-jdk-autoselect` / `--no-coverage` flag table rows + JDK catalogue row in `kmp-test doctor` example. Pre-v0.7 full revamp deferred. Hits ~9 v0.6.x features in 1-line bullets
+## Git and CI
 
-### v0.6.1 surface (precision pass)
+The repository has two long-lived branches:
 
-- **Gap 1**: `errors[].code = "no_summary"` discriminator on parse-gap fallback so agents can branch on this case
-- **Gap 2**: Multi-JDK auto-select via `lib/jdk-catalogue.js` — when project requires a different JDK than host default, scans common install locations (Adoptium / Zulu / Microsoft / Semeru / BellSoft on Win; `/Library/Java/JavaVirtualMachines/` on macOS; `/usr/lib/jvm` + `/opt/{java,jdk}` on Linux) and injects `JAVA_HOME` + prepended `PATH` into the gradle subprocess. New flags `--java-home <path>` / `--no-jdk-autoselect`. `kmp-test doctor` surfaces "JDK catalogue" check row
-- **Gap 3**: `analyzeModule` resolves `alias(libs.plugins.<X>)` via `gradle/libs.versions.toml` parsing (table-form `{ id = "...", ... }` + string-form `"id:version"`); suffix heuristic fallback for namespaced aliases (e.g. `libs.plugins.nowinandroid.android.application` → `com.android.application`)
-- **Gap 4**: Per-module convention-plugin coverage detection — `parseBuildLogicPluginDescriptors` walks `build-logic/<X>/build.gradle.kts` for `gradlePlugin { plugins { register("<key>") { id = ...; implementationClass = "<Class>" } } }` blocks; class-name heuristic `/Jacoco|Kover/i` decides `addsCoverage`. Only modules that APPLY a coverage-adding convention plugin inherit `coveragePlugin`. Backwards-compat: when descriptors empty (pure `Plugin<Project>` setups), falls through to v0.6.0 broad inheritance via `buildLogicHints`
-- v0.6.1 wide-smoke validation: 17 projects, 4 gaps validated live (Gap 1 hits 5+ projects with `no_summary`, Gap 2 7+ auto-selects, Gap 3 + 4 work end-to-end on nowinandroid + nav3-recipes)
+- `develop` is the integration trunk. All normal PRs target it.
+- `main` contains released commits. It is fast-forwarded from `develop` only by the protected `Release` workflow.
 
-## Layout
+Never push directly to `develop`, never push `main` by hand, and never open a `develop → main` PR. Use a topic branch and squash-merge through a PR to `develop`.
 
-- `bin/kmp-test.js` — npm CLI entry point (Node ESM)
-- `lib/cli.js` — CLI subcommand dispatch logic
-- `scripts/sh/` + `scripts/ps1/` — shell/PowerShell scripts that the CLI dispatches to
-- `scripts/install.{sh,ps1}` + `scripts/uninstall.{sh,ps1}` — user installers (POSIX + PowerShell, `--archive` / `-LocalArchive` flag for E2E test injection)
-- `scripts/build-artifact.sh` — extracts publish-release.yml build logic for local CI E2E testing
-- `gradle-plugin/` — Gradle plugin shape (`KmpTestRunnerPlugin` + `KmpTestRunnerExtension` + 5 task classes; Kover auto-detect)
-- `tests/unit/` (vitest) + `tests/bats/` + `tests/pester/` + `tests/installer/` (E2E install/uninstall; Linux+Windows matrix)
-- `.github/workflows/` — `ci.yml` (8 jobs: build x2, secrets-scan, gradle-plugin-test, installer-e2e x2, decouple-audit, bundle-size), `commit-lint.yml` (Conventional Commits enforcement on PR titles, squash-merge mode), `publish-release.yml` (tag `v*` trigger), `publish-npm.yml` (auto on push to `main` + `workflow_dispatch` fallback) + `publish-gradle.yml` (workflow_dispatch)
-- `BACKLOG.md` — current and queued tasks; check this first
-- `.coderabbit.yaml` — CodeRabbit review config; `auto_review.base_branches` adds `develop` so PRs get auto-reviewed (guarded by `tests/vitest/coderabbit-config.test.js`)
-- `tools/local-ci/` — Docker Linux + native Windows pre-push gate; see `docs/testing/local-ci.md`
+The authoritative required contexts are stored in [`.github/required-checks.json`](.github/required-checks.json):
 
-## CRITICAL — Gitflow with develop + auto-publish on main
+1. `Commit Lint`
+2. `build (ubuntu-latest)`
+3. `build (windows-latest)`
+4. `bundle-size`
+5. `decouple-audit`
+6. `gradle-plugin-test`
+7. `installer-e2e (ubuntu-latest)`
+8. `installer-e2e (windows-latest)`
+9. `secrets-scan`
+10. `skills-validate`
 
-Two long-lived branches:
-- **`develop`** — integration branch where features land
-- **`main`** — only contains released versions; **every push to main is a release**
+`tools/validate-required-checks.mjs` validates the manifest schema and checks protected-branch drift when the required GitHub App credentials are available. When a required context changes, update the workflow, manifest, and branch/ruleset configuration together.
 
-**Never push directly to `develop`, and never push `main` by hand.** `develop` is the integration trunk; `main` fast-forwards to follow it (see "Release workflow"). Branch protection on `develop` requires:
-- PR (no direct push, no force push, no delete)
-- All 10 CI checks green: `build (ubuntu-latest)`, `build (windows-latest)`, `secrets-scan`, `gradle-plugin-test`, `installer-e2e (ubuntu-latest)`, `installer-e2e (windows-latest)`, `commit-lint / Commit Lint` (job renamed from `🔤 Commit Lint` in v0.4.x — see `commit-lint.yml` for context), `decouple-audit` (added 2026-05-12 from PR #209), `bundle-size` (added 2026-05-12 from PR #216), `skills-validate` (added 2026-05-16 from PR #230)
-- Linear history (squash/rebase only)
+### PR workflow and CI cost discipline
 
-`main` is **never** the target of a PR, and **no human can push it** (owner included). It is protected by a **ruleset** (same 10 required checks + linear history + no force-push) whose **only bypass actor is the release-bot GitHub App**. The `Release` workflow mints a short-lived App token and fast-forwards `main` with it. The same-SHA FF inherits the checks already green on `develop`.
+Code-changing PRs start as drafts. Finish the implementation and review pass locally, run:
 
-> **Adding a new required check:** when a new workflow lands (e.g. v0.3.7's `commit-lint`), branch protection must be updated manually via `Settings → Branches → Edit rule` to add the check name (matches the workflow's `jobs.<id>.name`) to the required-status-checks list. Do this once per branch (`main` and `develop`).
-
-### Conventional Commits (PR titles)
-
-PR titles MUST conform to Conventional Commits v1.0.0 (enforced by `.github/workflows/commit-lint.yml`). Format: `<type>[scope][!]: <description>`. Description starts lowercase, no trailing period, ≤72 chars. Valid types: `feat,fix,docs,style,refactor,perf,test,build,ci,chore,revert,release`. Because branch protection enforces squash-merge AND the repo's `squash_merge_commit_title` is set to `PR_TITLE`, the PR title is the authoritative squash subject — so only the PR title is validated (it becomes the squash commit message). **Keep that repo setting at `PR_TITLE`.** With `COMMIT_OR_PR_TITLE` (GitHub's default), a single-commit PR squashes using the *commit* subject instead — so a non-Conventional-Commits commit subject leaks onto `develop`/`main` and fails the **push-event** commit-lint even when the PR title was compliant (this bit PR #285: PR-event green on the fixed title, push-event red on the landed commit subject). Examples: `feat(cli): add --dry-run flag`, `fix(installer): handle PS7 redirect headers`, `release: v0.3.7`.
-
-### Daily workflow (feature → develop)
-
-**Local-first cost gate:** code-changing PRs start as drafts. Consolidate implementation and
-review fixes locally, then run `pwsh -NoProfile -File tools/local-ci/run.ps1 -Lane All` before
-the final candidate push and `gh pr ready`. Draft pushes intentionally skip hosted CI; marking
-the PR ready triggers the full matrix. GitHub Actions confirms the final candidate and must not
-be used as an iterative debugger. If another change is required, return the PR to draft first,
-fix and revalidate locally, then mark it ready again.
-
-**Review-round discipline:** a confirmed review finding is not a reason to push immediately.
-Collect the full review pass, reproduce every finding locally, fix the underlying bug class,
-run focused RED/GREEN tests, and perform one fresh adversarial review of the resulting diff.
-Only after the complete local gate passes should you make one consolidated candidate push and
-mark the PR ready. If hosted-only feedback finds another defect, convert the PR back to draft
-before pushing the consolidated correction. Never spend successive hosted runs discovering
-failures covered by `tools/local-ci/`.
-
-```bash
-git checkout develop && git pull
-git checkout -b feature/<slug>
-# edit
-git commit -m "type(scope): summary"
-git push -u origin feature/<slug>
-gh pr create --draft --base develop --title "..." --body "..."
-# finish review fixes locally, then run the full local gate
+```powershell
 pwsh -NoProfile -File tools/local-ci/run.ps1 -Lane All
-gh pr ready
-# wait for the single final hosted CI run
-gh pr merge <num> --squash --delete-branch
-git checkout develop && git pull
 ```
 
-### Release workflow (fast-forward `main` from `develop`)
+Then push the consolidated candidate and mark the PR ready. GitHub Actions is the final hosted confirmation, not an iterative debugger. If another implementation correction is required, return the PR to draft before pushing it.
 
-`main` is a pointer that fast-forwards to `develop` at release time and carries the version tags. There is **no `develop → main` PR** and **no `release/*` branch**: a direct develop→main PR falsely conflicts (the develop↔main merge-base is ancient — main was historically built from squash commits), and GitHub has no fast-forward merge button, so `main` is advanced by the `Release` workflow's true FF push. When `develop` is ready to release:
+`.github/workflows/ci.yml` classifies the diff:
 
-1. **Prep PR to `develop`** (normal feature-style PR): bump `package.json` `version`, run `node tools/sync-versions.js` (no flag = apply; propagates to the 6 targets: `gradle-plugin/build.gradle.kts`, README DSL sample, 3 `CLAUDE.md` lines, `.claude-plugin/plugin.json`), retitle `CHANGELOG.md` `[Unreleased]` → `[X.Y.Z] — <date>`. Title `chore(release): prepare vX.Y.Z`. Merge on green.
-2. **Dispatch the `Release` workflow** (`Actions → Release (fast-forward main from develop) → Run`, input the version). It mints a release-bot App token, guards (input matches develop's `package.json`; `main` is an ancestor of `develop`; tag absent), then `git push origin develop:main` (FF) as the App.
-3. The FF push to `main` fires the cascade automatically (unchanged):
-    - `auto-tag.yml` — creates `vX.Y.Z` tag from `package.json` (if missing) → `workflow_call` → `publish-release.yml` (`linux.tar.gz` + `windows.zip` + GitHub Release)
-    - `publish-npm.yml` — `npm publish` (skipped if version already on registry)
-    - `publish-gradle.yml` — GitHub Packages (idempotent — no-op if the version is already published)
-4. **No sync step.** `main` and `develop` are now the same commit (FF, identical SHAs); the next cycle just continues on `develop`.
+- source, workflow, package, Gradle-plugin, and general test changes run the full Linux/Windows matrix;
+- agentic-eval-only changes run the focused agentic-eval suite;
+- documentation-only changes skip the heavy jobs and use the status sentinel for required heavy contexts;
+- `secrets-scan` remains unconditional;
+- macOS jobs run only through the manually dispatched `macOS Validation` workflow.
 
-> **One-time setup** (done when this model landed): a dedicated **release-bot GitHub App** (Contents + Workflows: write) installed on the repo, with secrets `RELEASE_APP_ID` + `RELEASE_APP_PRIVATE_KEY`; `main` migrated to a **ruleset** whose sole bypass actor is that App (humans, owner included, cannot push `main`); `main` aligned as an ancestor of `develop`. An App token (not `GITHUB_TOKEN`) is required because GitHub's anti-recursion guard suppresses downstream workflow triggers for `GITHUB_TOKEN` pushes. The legacy `release/*` + `git read-tree` recipe (used through v0.14.0) is retired.
+PR titles follow Conventional Commits: `<type>[scope][!]: <description>`. The description starts lowercase and has no trailing period. GitHub is configured to use the PR title as the squash subject, and `Commit Lint` validates that title.
 
-### Idempotency
-
-All publish workflows are no-ops when their version already exists in the target registry. Re-pushing the same version to main = nothing happens. Bumping version + pushing = full release pipeline.
-
-### Manual dispatch
-
-Each publish workflow keeps `workflow_dispatch:` as a fallback (e.g. for re-publish after a registry outage). Use sparingly — the auto-flow is canonical.
-
-## Versioning
-
-- `package.json` `version` is the source of truth for what `kmp-test --version` reports
-- The Git tag (`vX.Y.Z`) MUST match `package.json` version BEFORE tagging — otherwise installer reports wrong version (W31.5c historical bug — caught now by `installer-e2e` regression test)
-- npm registry version stays in sync with `package.json`: `publish-npm.yml` auto-publishes on push to `main` (Trusted Publisher OIDC, `--provenance`) on changes to `package.json`/`bin`/`lib`/`scripts`; idempotent (no-op if the version already exists). Verified 2026-06-10: `npm view kmp-test-runner version` == `package.json` (`0.14.0`). `workflow_dispatch` remains as a manual fallback.
-
-## Architecture decisions worth knowing
-
-- **No arch suffix on artifacts** — Node.js arch-agnostic; single `linux.tar.gz` + `windows.zip` per release
-- **Wrapper directory** — release archives MUST contain `kmp-test-runner-${VER}/` at top level (installer extraction depends on it; W31.5c v0.3.0 historical bug caught here)
-- **`package.json` MUST be in artifact** — `cli.js` reads version via `path.join(__dirname, '..', 'package.json')` (v0.3.2 historical bug caught here)
-- **Redirect URL primary, API fallback** for download in install scripts — avoids 60/hr unauthenticated `api.github.com` rate limit
-- **HKCU PATH only on Windows** — never `Machine` (would require admin)
-- **Pester via `shell: pwsh`** — Pester 5.x pre-installed on windows-latest, no `Install-Module` needed
-- **`GH_TOKEN` env var** in publish-release.yml — `gh` CLI canonical (NOT `GITHUB_TOKEN`, which is unreliable fallback)
-- **Decouple from L0**: a fixed set of patterns must stay 0-hits across committed text (the maintainer's private toolkit identifiers, home-directory paths, IDE project directory names, and any private library composite project name). Do not inline the private identifiers anywhere in the repo — keep them in private memory only. Exception: `SKIP_DESKTOP_MODULES`, `SKIP_ANDROID_MODULES`, `PARENT_ONLY_MODULES` are documented consumer-config API (shipped v0.1.0) and excluded from the audit. **Enforced by `tools/decouple-audit.mjs`** (CI-required job `decouple-audit`); the script is the canonical PRIVATE_PATTERNS registry — extend it there when a new private identifier shows up.
-- **Keep README clean — no "What's new in vX" sections.** Version-history bullets, release notes, and per-version highlight blocks belong in `CHANGELOG.md` only. The README must read as if the project were timeless: what it does, how to install it, how to use it. We are still pre-v1, the README is short and punchy, and accumulating "What's new in v0.7.0 / v0.8.0 / ..." subsections turns it into release-notes scaffolding. **This rule has been re-applied twice** — once during a v0.7 README pass and again during v0.8.1. Do NOT add or restore such sections, even if a fresh-session prompt seems to ask for it. If a prompt says "add a What's new section", treat it as an instruction to update CHANGELOG.md instead and call out the diff to the user.
-- **README metric ratios must never hybridize projects.** Any published `A:C` (or similar) ratio in the README MUST take its numerator and denominator from the SAME project / capture — never mix one project's `A` with another's `C`. Before publishing a metric, verify each cell traces to the same `tools/runs/<feature>/` capture (or the same per-project aggregate row); audit with `grep -nE "(cross-project|→ C-large|cross-bucket)" README.md`. A deliberate cross-project comparison MUST be labelled inline (`(cross-project — A from X, C from Y)`). Surfaced when v0.10.0's headline combined a large project's `A` with a small project's `C` and read as a within-project ratio; v0.10.1 re-measured to honest within-project numbers. See memory `feedback_release_clean_cut_pattern`.
-- **Milestone decisions belong to the user.** Claude sessions must NEVER create v0.11 or higher milestones, NEVER move items to v1.0, and NEVER drop tasks unilaterally — even when a constraint (breaking change, behavior shift, missing dependency) seems to argue for it. On blockers: ASK with `AskUserQuestion`. The user assigns work to v0.9 / v0.10 / future minors per their judgement. Tasks with agentic OR human utility get DONE — the question is only WHICH minor. See memory `feedback_release_milestone_decisions.md`.
-- **CI macOS minutes are precious — keep mac jobs minimal.** GitHub Actions charges macOS minutes at 10× Linux. Per-PR matrix keeps only `build (macos-latest)` (vitest, ~30s) + `installer-e2e (macos-latest)` (~20s). `gradle-plugin-test-ios` + `bats-macos` move to `workflow_dispatch` only. iOS / TestKit / heavy mac validation runs manually on a secondary machine, NOT in CI. The "Buildable cross-platform E2E fixture" v0.9 entry must NOT add a mac CI matrix. See memory `feedback_ci_minutes_minimal_macos.md`.
-
-## Active milestones
-
-> Live milestone view. Detailed entries in `BACKLOG.md` ROADMAP — these are pointers.
-
-- **v0.9 + v0.10** — ✅ RELEASED (v0.9.0 2026-05-09, v0.10.0 2026-05-19). Historical buckets in `BACKLOG.md` ROADMAP.
-- **v0.11.x–v0.14.0** — ✅ RELEASED. Current published version is **v0.14.0** (2026-06-10). Shipped as discrete PRs (e.g. Groovy DSL support #275, `--capture-on-fail` for `kmp-test android` #278, dry-run race parity #312, doc coherence #314), not new milestone buckets.
-- **Now (post-v0.12, on `develop`, unreleased)** — the post-v0.12 close-session queue has shipped to `develop`: `--capture-on-fail` on `parallel --test-type androidInstrumented` (#282), `parseTestCounts`↔gradle-exit-code reconciliation (#283), `.gitattributes` LF-pin on `scripts/**/*.sh` + stale-install hint (#284), and a CI-usage README section + Windows TLS troubleshooting doc + cross-project metric-labelling rule (#285). The adjacent "parallel `setup_failed`/`individual_total`" item was DROPPED as a misdiagnosis (#283). Remaining in `BACKLOG.md` "📋 QUEUED follow-ups": configurable output root (`--output-dir` / `KMP_TEST_OUTPUT_DIR`, the substantial one — own session) + deferred polish (`--skip-tests` report-header label, `tools/measure-token-cost.js` sharp edges). README / tools-usage audit ✅ (#279).
-- **Next milestone** — requires explicit user direction. No autonomous milestone scoping (see "Architecture decisions").
-
-## Test strategy
-
-- **Unit (vitest)**: `tests/unit/` — pure Node logic, ≥80% line coverage on `bin/kmp-test.js`
-- **Shell (bats)**: `tests/bats/` — sh script behaviors + `tests/installer/install.bats` (8 syntax/safety + 5 E2E with `--archive` flag)
-- **PowerShell (Pester v5)**: `tests/pester/` + `tests/installer/Install.Tests.ps1` (6 syntax + 4 E2E with `-LocalArchive` param, `-Tag E2E`)
-- **Gradle (TestKit)**: `gradle-plugin/src/test/kotlin/` — 9 tests (3 GradleRunner project tests + parameterized `CrossShapeParityTest`); uses local Maven repo approach (`withPluginClasspath()` is broken for Gradle plugins, do NOT use it)
-- **E2E installer**: `installer-e2e` job in `ci.yml` (matrix ubuntu+windows) builds artifact via `scripts/build-artifact.sh`, runs install scripts with `--archive`/`-LocalArchive` flag, asserts `kmp-test --version` matches `package.json`, runs uninstall, verifies clean removal
-
-## Common commands
+### Daily workflow
 
 ```bash
-# Run all tests
-npm test                                    # vitest
-npx bats tests/bats/ tests/installer/       # bats (Linux/macOS)
-# Pester runs in CI on windows-latest
+git checkout develop
+git pull origin develop
+git checkout -b feature/<slug>
+# edit and run focused tests
+git commit -m "type(scope): summary"
+git push -u origin feature/<slug>
+gh pr create --draft --base develop --title "type(scope): summary" --body-file <file>
+# complete review and the full local gate
+gh pr ready
+# wait for all contexts from .github/required-checks.json
+gh pr merge <number> --squash --delete-branch
+git checkout develop
+git pull origin develop
+```
 
-# Lint shell scripts
+## Release workflow
+
+`main` is a release pointer that fast-forwards to an already-validated `develop` commit. There is no release branch and no release PR to `main`.
+
+1. Land a normal preparation PR on `develop`: bump `package.json`, run `node tools/sync-versions.js`, and promote the `CHANGELOG.md` `[Unreleased]` section to `[X.Y.Z] — <date>`.
+2. Dispatch **Release (fast-forward main from develop)** with version `X.Y.Z`.
+3. `.github/workflows/release.yml` validates that the input equals `develop`'s package version, `main` is an ancestor of `develop`, the tag does not exist, and every required context is green on the exact `develop` SHA.
+4. A short-lived release-bot GitHub App token fast-forwards `main`. Humans, including the owner, do not bypass this rule.
+5. The `main` push triggers the release cascade:
+   - `auto-tag.yml` creates `vX.Y.Z` and calls `publish-release.yml` for archives, checksums, and the GitHub Release;
+   - `publish-npm.yml` publishes through npm Trusted Publisher OIDC when npm-shape paths changed;
+   - `publish-gradle.yml` publishes to GitHub Packages when Gradle-plugin paths changed.
+6. Do not merge `main` back into `develop`; after a true fast-forward they already reference the same commit.
+
+The npm publisher skips an existing registry version. The Gradle publisher treats an authoritative HTTP 409/already-exists response as a successful no-op. The top-level release workflow and tag creation fail closed when `vX.Y.Z` already exists. Manual publisher dispatch is a guarded recovery path, not the normal release flow.
+
+## Versioning invariants
+
+- `package.json#version` is the source of truth.
+- `node tools/sync-versions.js` applies the version to `gradle-plugin/build.gradle.kts`, the README plugin sample, the three release-pin lines above, and `.claude-plugin/plugin.json`.
+- `node tools/sync-versions.js --check` is verification-only and runs in CI.
+- The Git tag, package metadata, Gradle plugin, and installer-visible `kmp-test --version` must agree before publishing.
+- Release archives contain a top-level `kmp-test-runner-${VER}/` directory and include `package.json`; installers depend on both invariants.
+- Release artifacts are architecture-independent Node distributions: one Linux/macOS tarball and one Windows zip, each with SHA-256 checksum.
+
+## Architecture rules
+
+### Logic in Node, compatibility at the edges
+
+Module discovery, Gradle dispatch, parallelism, output parsing, JDK/Android SDK resolution, coverage aggregation, and JSON-envelope construction belong in `lib/`. Shell and PowerShell wrappers are compatibility launchers. Do not add new orchestration logic to both shell dialects.
+
+When a wrapper must change, keep its sibling surface and direct-invocation behavior in parity. Preserve the existing thin-launcher size tests. The Gradle plugin extracts the bundled Node runtime files and invokes the same Node runner; it does not maintain an independent shell implementation of product behavior.
+
+### Public contracts
+
+- The `--json` envelope is an API. Additive fields are preferred; renames and removals require an explicit compatibility decision and migration note.
+- Error conditions that agents must branch on use typed `errors[].code` values and consistent exit-code classification.
+- Configuration files, environment variables, and Gradle extension properties documented as public API remain backward compatible unless a release explicitly changes the contract.
+- iOS and macOS execution requires a macOS host and must fail with `platform_unsupported` elsewhere.
+- Cancellation, timeout, missing-toolchain, missing-device, and report-unavailable cases must not become false passes.
+
+### Privacy and repository independence
+
+`node tools/decouple-audit.mjs` always scans committed text for public private-data shapes such as real device serials and user-home paths. Optional private patterns are loaded from `KMP_PRIVATE_PATTERNS_FILE` or a gitignored `tools/.private-patterns.json`; `KMP_PRIVATE_SCAN_REQUIRED=1` fails closed if that source is missing. Never inline private identifiers into source, tests, docs, or CI configuration.
+
+The shipped skip variables (`SKIP_DESKTOP_MODULES`, `SKIP_ANDROID_MODULES`, `SKIP_IOS_MODULES`, `SKIP_MACOS_MODULES`, and `PARENT_ONLY_MODULES`) are consumer configuration, not private-project coupling.
+
+Agentic-eval evidence has stricter rules: authorization is explicit, paid live sessions are bounded, raw prompts/transcripts and credentials are not committed, and public evidence must pass the harness privacy and integrity gates.
+
+### Documentation discipline
+
+- Keep the README timeless: installation, usage, value, verified examples, and links to deeper guides. Version-by-version history belongs in `CHANGELOG.md`.
+- Every published metric must identify its evidence, date, tokenizer/measurement method, and limitations. Ratios must use numerator and denominator from the same project and capture unless an inline label explicitly says cross-project.
+- Do not present historical plans or audit proposals as implemented behavior. Label them historical/partial and link to current implementation or backlog status.
+- Record real implementation gaps in `BACKLOG.md`; do not invent a milestone, drop an item, or change its priority without user direction.
+- Do not publish volatile test counts as durable project contracts.
+
+### CI and macOS cost
+
+Keep the required per-PR matrix on Linux and Windows. macOS validation is opt-in through `.github/workflows/macos-validation.yml`, which contains the macOS Vitest, installer, Bash 3.2, and Gradle-plugin jobs. Do not add recurring or per-PR macOS spend without an explicit product decision.
+
+## Verification strategy
+
+- **Vitest:** Node implementation, CLI contracts, schemas, parity, workflow static checks, and tooling.
+- **Bats:** POSIX launchers, installer behavior, and skill scripts.
+- **Pester:** Windows launchers, installer behavior, Evidence1 PowerShell surfaces, and skill scripts.
+- **Gradle TestKit:** plugin application, extension/task contracts, bundled runtime extraction, and TaskAction behavior.
+- **Installer E2E:** build an archive, install it, verify the packaged version and CLI, uninstall it, and confirm cleanup.
+- **Wide-smoke/manual validation:** representative public projects and platform-specific behavior that cannot be reproduced in ordinary CI.
+
+Useful focused commands:
+
+```bash
+npm test
+npm run test:coverage
+npx bats tests/bats/ tests/installer/ tests/skill-scripts/
 npm run shellcheck
-
-# Build artifact locally (same logic as publish-release.yml)
-bash scripts/build-artifact.sh 0.3.4 dist/
-
-# Test installer E2E locally
-bash scripts/install.sh --version 0.3.4 --prefix /tmp/kmp-test-prefix \
-  --archive dist/kmp-test-runner-0.3.4-linux.tar.gz
-/tmp/kmp-test-prefix/lib/bin/kmp-test.js --version
-/tmp/kmp-test-prefix/lib/bin/kmp-test.js --help
-
-# Build Gradle plugin
+node tools/check-line-endings.mjs
+node tools/check-executable-fixtures.mjs
+node tools/decouple-audit.mjs
+node tools/check-bundle-size.mjs
+node tools/sync-versions.js --check
 cd gradle-plugin && ./gradlew test
 ```
 
-## Known limitations / out of scope (deferred)
+On Windows, the final code gate is `pwsh -NoProfile -File tools/local-ci/run.ps1 -Lane All`. Do not substitute passing focused tests for that final gate.
 
-- Maven Central publish — deferred to v0.4.0 (Gradle plugin only on GitHub Packages currently)
-- iOS/macOS targets in TestKit — needs Mac hardware
-- L0 consumption migration — separate work in `private-toolkit` repo (the L0 toolkit project that originally housed these scripts)
+## Before declaring work complete
 
-## When you (Claude) work in this repo
-
-1. **Read `BACKLOG.md` first** — it lists current and queued tasks
-2. **Always start a feature branch** (gitflow protected — server-side enforced)
-3. **For tests**: do NOT weaken or remove existing tests to make new code pass. If a test fails, fix the production code, not the test
-4. **For new install/CI logic**: add E2E coverage that catches the bug class (we have 5 bats E2E + 4 Pester E2E as a baseline; v0.3.0/0.3.2/0.3.3 historical bugs are the regression-test rubric)
-5. **Commit message format**: Conventional Commits (`feat(scope): ...`, `fix(scope): ...`, `test(scope): ...`, `docs(scope): ...`)
-6. **After PR**: wait for all 9 CI checks green before merge; squash merge; delete branch; pull main
-7. **For releases**: bump `package.json` `version` BEFORE tagging; run `installer-e2e` mentally — does the tag match `package.json`?
+1. Read `BACKLOG.md` and the relevant implementation before editing.
+2. Preserve unrelated user changes and stay within assigned files/worktree.
+3. Add or update proportional tests; never weaken an existing assertion merely to make CI green.
+4. Run focused checks, review the diff adversarially, then run the full local gate for code changes.
+5. Verify documentation statements against the current implementation and workflows.
+6. Use a Conventional Commit PR title and wait for every context in `.github/required-checks.json`.
+7. For a release, prepare `develop` first and use the guarded fast-forward workflow; never tag or push `main` manually.

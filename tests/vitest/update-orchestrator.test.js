@@ -222,6 +222,24 @@ describe('runUpdate install path', () => {
 });
 
 describe('runUpdate failure modes', () => {
+  it('--dry-run is rejected before any release probe or installer spawn', async () => {
+    const spawn = vi.fn();
+    const fetchImpl = vi.fn();
+    const { envelope, exitCode } = await runUpdate({
+      args: ['--dry-run'],
+      spawn,
+      fetchImpl,
+    });
+
+    expect(exitCode).toBe(2);
+    expect(envelope.errors).toContainEqual(expect.objectContaining({
+      code: 'unknown_flag',
+      flag: '--dry-run',
+    }));
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
   it('release resolution fails → exit 3 + errors[].code:"release_resolve_failed"', async () => {
     const spawn = makeSpawnStub();
     const fetchImpl = makeFetchStub({ redirect: 'error', api: 'error' });
@@ -283,6 +301,18 @@ describe('parseArgs', () => {
 
   it('--prefix takes value', () => {
     expect(parseArgs(['--prefix', '/tmp/kmp']).prefix).toBe('/tmp/kmp');
+  });
+
+  it('accepts the shared --project-root pair without treating it as unknown', () => {
+    expect(parseArgs(['--project-root', '/tmp/project']).errors).toEqual([]);
+  });
+
+  it('rejects unknown options instead of silently dropping them', () => {
+    expect(parseArgs(['--dry-run']).errors).toContainEqual({
+      code: 'unknown_flag',
+      flag: '--dry-run',
+      message: '--dry-run: unknown flag',
+    });
   });
 });
 

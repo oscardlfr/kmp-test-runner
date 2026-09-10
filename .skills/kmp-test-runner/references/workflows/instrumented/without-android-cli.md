@@ -126,7 +126,7 @@ There is no adb equivalent of `android describe`. Use `kmp-test describe --json`
 
 ### `--auto-retry` + `--clear-data`
 
-`--auto-retry` re-dispatches instrumented tasks that ran but failed (runtime failures only, not configuration-time aborts). One retry per task. `--clear-data` adds `adb shell pm clear <pkg>` before each retry; implies `--auto-retry`. Useful for flaky tests that share device state across runs (saved auth, cached web responses, dirty database). The `android:{}` block does not surface a separate retries[] field on this subcommand; on `kmp-test parallel --test-type androidInstrumented` the per-leg `parallel.legs[i].retries[]` array carries the per-task retry record.
+`--auto-retry` re-dispatches instrumented tasks that ran but failed (runtime failures only, not configuration-time aborts). One retry per task. When both flags are present, `--clear-data` adds `adb shell pm clear <pkg>` before that retry; `--clear-data` alone does not enable a retry. Useful for flaky tests that share device state across runs (saved auth, cached web responses, dirty database). The `android:{}` block does not surface a separate retries[] field on this subcommand; on `kmp-test parallel --test-type androidInstrumented` the per-leg `parallel.legs[i].retries[]` array carries the per-task retry record.
 
 ### `--device-task` auto-resolution
 

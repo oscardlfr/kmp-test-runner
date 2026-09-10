@@ -46,13 +46,13 @@ Defaults grounded in `lib/cli.js` SUBCOMMAND_HELP (the canonical source). Full p
 | Flag | Default | Notes |
 |------|---------|-------|
 | `--json` | off | Mandatory for agent consumption. Without it the CLI prints human-readable text. |
-| `--test-type <type>` | auto-detect | One of `all` / `common` / `androidUnit` / `androidInstrumented` / `desktop` / `ios` / `macos` / `jvm` / `js` / `wasm`. Auto picks `common` for KMP-desktop, `androidUnit` otherwise. |
+| `--test-type <type>` | auto-detect | One of `all` / `common` / `androidUnit` / `androidInstrumented` / `desktop` / `ios` / `macos` / `jvm` / `js` / `wasm`. Auto picks `common` for KMP-desktop, `androidUnit` otherwise. `all` has a specific platform-aware expansion documented under Edge cases; it is not shorthand for every value in this list. |
 | `--module-filter <glob>` | `*` | Glob, comma-separated. Narrow dispatch (e.g. `"core-*"`, `":feature:auth,:feature:profile"`). |
 | `--test-filter <pattern>` | none | Filter to a single class or method. JVM legs use `gradle --tests` (globs OK); Android-instrumented resolves wildcards to FQN by source scan. Combined form `Class#method` works on both. |
 | `--max-workers <N>` | `0` (auto) | Number of parallel gradle workers. `0` lets gradle decide. |
 | `--coverage-tool <tool>` | `auto` | `auto` / `jacoco` / `kover` / `none`. `auto` picks per-module from the project model. |
 | `--no-coverage` | off | Alias for `--coverage-tool none`. Drops coverage aggregation entirely. |
-| `--min-missed-lines <N>` | `0` | Fail (`errors[].code: coverage_threshold_exceeded`, exit 1) if aggregated missed lines exceed `N`. `0` = no gate (default). |
+| `--min-missed-lines <N>` | `0` | For positive `N`, fail with `coverage_threshold_exceeded` (exit 1) if aggregated missed lines exceed the budget, or `coverage_data_unavailable` (exit 3) when the budget cannot be evaluated from reliable data. Combining it with disabled coverage is `coverage_budget_without_coverage` (exit 2). `0` = no gate. |
 | `--exclude-modules <list>` | none | Comma-separated globs to skip entirely (not even probed). |
 | `--exclude-coverage <list>` | none | Comma-separated modules to skip from coverage aggregation only — tests still run. |
 | `--include-untested` | off | Re-include modules auto-skipped because their filesystem path has no `src/*Test*` directory. |
@@ -112,7 +112,7 @@ change scope and the request is ambiguous, ask before running.
 ## Edge cases
 
 - **`--dry-run` vs `--list-only`**: dry-run shows the resolved spawn command (`plan.spawn_args[]`); list-only shows the resolved module set (`modules[]`) the spawn would iterate. Both exit 0 without gradle dispatch. Both can combine with `--isolated` to inspect the isolation shape.
-- **`--test-type all`** dispatches every applicable leg (`common` + `androidUnit` + `desktop` + `ios` + `macos`) sequentially-per-leg / parallel-within-leg. Combine with `--isolated` only when ADB / iOS simulator races aren't a concern — otherwise emits `isolated_runtime_race` (`exit 2`) at parse time.
+- **`--test-type all`** always dispatches `common`, `desktop`, and `androidUnit`, then adds `androidInstrumented` unless `KMP_TEST_SKIP_ADB=1`. On macOS it also adds `ios` and `macos`; Windows and Linux do not. It never includes `js` or `wasm`, which must be requested explicitly. Legs run sequentially, with parallelism inside each leg. `--isolated --test-type all` is rejected as `isolated_runtime_race` (`exit 2`).
 - **`--flavor` on a non-flavored project**: emits `flavor_unused` (`exit 2`) at parse time. On a flavored project, omitting `--flavor` is **not** an error — it dispatches the umbrella task + `flavor_defaulted_umbrella` warning (see "Product flavors" above).
 - **Filter narrows to zero modules**: `--module-filter "nonexistent-*"` produces `errors[].code: no_test_modules` with `caused_by_filter: true` and `exit 2`. Compare with the same code at project-wide scope (no filter, project genuinely has no test modules) which sets `caused_by_filter: false` and `exit 3`.
 - **JDK toolchain mismatch with `--ignore-jdk-mismatch`**: the gate downgrades to a `WARN` stderr line; tests then run under the host default and likely fail with `unsupported_class_version` on the actual task. Prefer fixing the JDK (catalogue auto-select, `--java-home`, `~/.kmp-test/config.json java_home`) over bypassing.

@@ -135,7 +135,7 @@ checkout already existed as a real, verifiable git clone (`git remote -v` confir
 public GitHub remote) at a known-good commit — `b3a7784fb969a8558b88c80674c8b596944cdab7`
 ("Bump the minor group with 14 updates (#358)") — that a prior session had already
 validated end-to-end (see
-[`tools/runs/token-cost-validation-windows-2026-07-17.md`](../token-cost-validation-windows-2026-07-17.md)).
+[`tools/runs/token-cost-validation-windows-2026-07-17.md`](token-cost-validation-windows-2026-07-17.md)).
 Two other candidate public projects (DroidconKotlin, a clean natural `no_test_modules`
 repro with zero test source; PeopleInSpace) were considered and dropped for this specific
 pilot: neither local copy is a real git clone (both are zip-extracted GitHub snapshots

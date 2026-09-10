@@ -6,7 +6,10 @@
 
 ## ROADMAP (locked 2026-05-05 — user-decided buckets)
 
-> **Status (2026-06-07):** the v0.9 + v0.10 buckets below are ✅ **RELEASED** and kept for traceability (not open work). Current published version is **v0.12.0** — v0.11.x + v0.12.0 shipped as discrete PRs, not new milestone buckets. The live near-term queue is "📋 QUEUED follow-ups" further down.
+> **Status (2026-09-10):** the historical milestone buckets below are retained for traceability and
+> are not open work. Current published version is **v0.14.0**. The live near-term queue is
+> "📋 QUEUED follow-ups" further down; dated completion narratives do not override that queue or
+> `CHANGELOG.md` as the source of shipped behavior.
 >
 > Milestone view of the v0.9 / v0.10 buckets (now released — see Status above). Order within each milestone was **load-bearing**: features land FIRST, validation gates next, token-cost re-measurement after that, README refresh LAST (right before tagging the release). This applied uniformly to v0.9 and v0.10. Detailed entries below; search by title.
 >
@@ -92,9 +95,26 @@
 ### 🅿️ PARKED — promote on user trigger
 
 - **Maven Central publish for the Gradle plugin** — needs Sonatype account. Promote when account exists.
+- **Skill/plugin marketplace listing** — the reusable skill and Claude Code plugin are shipped in-repo, but no marketplace distribution is currently available. Promote only after selecting and validating the target marketplace, packaging contract, publishing credentials, and maintenance process.
 - **VitePress/MkDocs docs site** — promote when README exceeds 1500 lines (today: 716).
 
 ### 📋 QUEUED follow-ups (next sessions)
+
+- **Repair multi-project token-measurement configuration and capture identity** —
+  `tools/measure-token-cost.js` exposes a per-project `moduleFilter` path through
+  `resolveProjectOpts()`, but `validateProjectEntry()` currently discards that field while parsing
+  the project-list JSON. The multi-project output directory is also date-derived, so two captures
+  on the same day can target the same location. Fix both before the next public-matrix refresh:
+  preserve and validate `moduleFilter`, add a collision-resistant/operator-selectable capture id,
+  and cover both behaviors with focused tests. This is measurement-tooling debt, not a claim that
+  the published runner lacks module filtering.
+
+- **Add explicit Android-device selection to `kmp-test benchmark`** — the Android and parallel
+  instrumented paths accept `--device <serial>`, but the benchmark parser currently rejects that
+  flag and calls `resolveAdbDevice()` without a preferred serial. With multiple connected devices,
+  the benchmark leg can only fail with `multiple_adb_devices`; it cannot apply the remediation that
+  the shared error catalogue recommends. Implement parser/help/Gradle-task propagation, bind
+  `ANDROID_SERIAL`, and add multi-device regression coverage before documenting parity.
 
 - ✅ **Agentic-eval multi-runtime foundation v1 — Claude-side phases 1-4 SHIPPED** (2026-08-20,
   `feature/agentic-eval-isolated-unrestricted-profile-v1`; earlier phases already on `develop` as

@@ -103,37 +103,45 @@ Exit codes 124+ are reserved for OS-level signals; the orchestrator never emits 
 | Code | Subcommand | Exit | Description |
 |---|---|---|---|
 | `lock_held` | any | 3 | another `kmp-test` process holds `<project>/.kmp-test-runner.lock`; pass `--force` to bypass when sure |
+| `lock_write_error` | any | 3 | the runner could not create its project lock file; inspect permissions, read-only filesystems, and antivirus/file-lock interference |
 | `no_gradlew` | any | 3 | no `gradlew` / `gradlew.bat` in `--project-root` |
 | `missing_shell` | any | 3 | `pwsh`/`powershell` (Windows) or `bash` (Unix) not on `PATH` |
+| `jdk_mismatch` | runner-backed commands | 3 | no selected or discovered JDK satisfies the project requirement; use `--java-home`, install a compatible JDK, or deliberately diagnose with `--ignore-jdk-mismatch` |
+| `platform_unsupported` | parallel | 3 | the selected test type cannot run on this host; currently emitted for iOS/macOS selection outside macOS |
 | `no_test_modules` | parallel, changed | 2 \| 3 | no modules match the leg's test-type or `--module-filter`. `errors[].caused_by_filter:true` → CONFIG_ERROR (user filter mismatch); `:false` → ENV_ERROR (project genuinely empty) |
 | `module_failed` | parallel, android | 1 | a gradle task failed. `errors[].setup_failed:true` when no JUnit XML evidence exists (compile-time / runner-setup failure) — discriminates from "tests ran and one failed". On `kmp-test android --capture-on-fail` or `parallel --test-type androidInstrumented --capture-on-fail`, the entry additionally carries `screenshot_file` / `ui_hierarchy_file` (device captures) and `capture_error` when adb couldn't oblige |
 | `spawn_error` | any | 1 \| 3 | a child process errored at the spawn layer and never ran to completion (e.g. `ERR_CHILD_PROCESS_STDIO_MAXBUFFER` when output exceeds `KMP_GRADLE_MAXBUFFER_MB`, default 64 MB). Orchestrator-level (gradle child; android/benchmark, exit 1): `errors[].errno` carries the Node error code — discriminates from `module_failed` ("gradle ran, tests failed"). Dispatcher-level (the wrapper itself failed to spawn; exit 3): env-error envelope, sibling of `missing_shell` |
-| `instrumented_setup_failed` | android, parallel(`androidInstrumented`), benchmark | 3 | adb has no devices when one was required (`--device <serial>` mismatch, or implicit need) |
+| `instrumented_setup_failed` | android, parallel(`androidInstrumented`), benchmark | 3 | adb has no usable device when one was required. An explicit `--device <serial>` mismatch applies to `android` and parallel instrumented runs; benchmark does not yet expose that selector |
 | `device_offline` | android, parallel(`androidInstrumented`), benchmark | 3 | a device is present in `adb devices` but its state is `offline` — reconnect USB or restart adb |
 | `device_unauthorized` | android, parallel(`androidInstrumented`), benchmark | 3 | a device is present but not authorized for USB debugging — accept the RSA prompt on the device |
-| `multiple_adb_devices` | android, parallel(`androidInstrumented`), benchmark | 3 | multiple usable adb devices without `--device <serial>` — pass `--device` to eliminate ambiguity |
+| `multiple_adb_devices` | android, parallel(`androidInstrumented`), benchmark | 3 | multiple usable adb devices are present. Pass `--device <serial>` to `android` or parallel instrumented runs; benchmark currently fails closed until explicit device selection is implemented |
 | `flavor_unused` | parallel(`androidInstrumented`/`all`) | 2 | `--flavor <name>` supplied but no discovered module declares `productFlavors {}`; orchestrator early-exits before any gradle dispatch |
 | `isolated_runtime_race` | parallel | 2 | `--isolated` combined with a test-type that hits a shared runtime resource (`ios` simulator, `androidInstrumented` without `--device`, or `all`) |
 | `coverage_threshold_exceeded` | parallel(`--min-missed-lines`), coverage | 1 | aggregated (unfiltered) `coverage.missed_lines` exceeds the threshold. `--min-missed-lines` never removes coverage data — it only decides this gate and narrows the *markdown report's* per-class detail section; `coverage.missed_lines` / `modules_contributing` / `module_buckets` always reflect the complete project even when this error fires |
 | `coverage_data_unavailable` | parallel(`--min-missed-lines`), coverage | 3 | a positive coverage budget could not be evaluated — the run can never silently exit 0 in this state. Carries `threshold:number` and a closed `reason` enum: `no-contributing-data` (zero modules contributed any coverage data), `target-not-detected` (a module `parallel` actually dispatched for tests carries no coverage plugin at all), `target-no-xml` / `target-parse-error` (a dispatched module's coverage XML is missing / failed to parse), `report-dispatch-failed` (the jacoco/kover report task itself exited non-zero this run — never trust possibly-stale XML left on disk from an earlier run), `aggregation-failed` (the in-process aggregation step threw). Never emitted together with `coverage_threshold_exceeded` |
 | `coverage_budget_without_coverage` | parallel(`--min-missed-lines`), coverage | 2 | `--min-missed-lines N>0` was combined with `--no-coverage` / `--coverage-tool none` — a usage contradiction caught before any gradle dispatch or XML read |
 | `git_error` | changed | 3 | a git command failed — repo unreadable, corrupted, or access denied. `errors[].git_command` carries the invoked subcommand (e.g. `rev-parse --is-inside-work-tree`, `status --porcelain`, `diff --cached --name-only`); `errors[].exit_status` the numeric git exit code; `errors[].stderr_summary` the first 300 chars of stderr with CR/LF collapsed to spaces (omitted when empty). This is a **hard** code — `exit_code` is always 3 |
-| `gradle_timeout` | parallel, benchmark | 3 | the gradle spawn process was killed by the `--timeout` deadline (SIGTERM on POSIX; ETIMEDOUT on Windows). **`parallel`** errors carry `module:string`, `task:string`, `timeout_ms:number`. **`benchmark`** errors additionally carry `platform:string` and `log_path:string`. Never retried — a spawn timeout is an infra failure, not a flaky test |
+| `gradle_timeout` | parallel, benchmark | 3 or documented soft 0 | the Gradle process exceeded `--timeout` and was killed. Parallel treats this as an environment failure. Benchmark may retain per-module `gradle_timeout` entries while returning exit 0 when at least one sibling module passed and `--strict-timeouts` was not set; that envelope also carries the `partial_timeout` warning. Timeout is never retried automatically |
 | `task_not_found` | any | 3 | gradle task class missing — usually a plugin not applied to the requested module |
 | `unsupported_class_version` | any | 3 | JDK toolchain mismatch — gradle daemon ran on an older JVM than the test classes target |
+| `unknown_flag` | any | 2 | an option is not accepted by the selected subcommand; carries the rejected `flag` |
 | `invalid_*` | any | 2 | CLI validation failure (e.g. `invalid_flag_value`, `invalid_regex`) — a value-bearing flag was dangling (no value) or otherwise malformed. Carries `flag` and/or `value` when known |
-| `no_project` | describe, any | 3 | no gradle project found at `--project-root` |
+| `no_project` | describe | 2 | `describe` found neither `settings.gradle(.kts)` nor `build.gradle(.kts)` at `--project-root`; this is a command/configuration error, so the exit is 2 |
+| `project_model_failed` | describe | 3 | project-model construction threw while reading or probing the Gradle project |
 | `release_resolve_failed` | update | 3 | `kmp-test update` could not resolve the latest release tag (HEAD redirect + REST API both failed). Carries `probe_errors: [{tier, source, message}]` — per-tier diagnostic (cert / proxy / DNS / rate-limit) |
 | `current_version_unresolvable` | update | 3 | `kmp-test update` could not read its own `package.json` to compare versions |
 | `install_failed` | update | 3 | `kmp-test update` resolved the release but the install script exited non-zero. Carries `install_command` |
 | `clean_failed` | clean | 3 | `kmp-test clean` could not remove one or more targets under `.kmp-test-runner/` (file locks / antivirus contention). The `message` lists the offending paths |
 
-**Soft codes** ride `errors[]` but do **not** affect `exit_code` (they stay at `0`):
+**Soft-code cases** may ride `errors[]` without changing an otherwise successful
+`exit_code`. The condition in the table is part of the contract; the same code
+can be hard outside that condition:
 
 | Code | Subcommand | Description |
 |---|---|---|
 | `no_summary` | any | wrapper output had no recognizable test/build summary line — a parse-gap fallback (e.g. stub scripts in unit tests legitimately exit 0 with this signal) |
 | `no_changed_modules` | changed | working tree clean — no changed modules to test; a legitimate exit-0 outcome. **Only emitted when git probing succeeds and the diff is genuinely empty.** Git command failures produce `git_error` (hard, exit 3) instead |
+| `gradle_timeout` | benchmark | one or more benchmark modules timed out, at least one sibling module passed, and `--strict-timeouts` was not enabled. The timeout entries remain visible for observability and `partial_timeout` also appears in `warnings[]` |
 
 Other codes are reserved for orchestrator-internal use; agents should treat unknown codes as opaque (forward to the user verbatim).
 
@@ -148,15 +156,20 @@ Non-fatal signals. They never change the exit code — an agent can branch on th
 | `flavor_defaulted_umbrella` | parallel (`androidUnit`/`androidInstrumented`) | a flavored project ran without `--flavor`; dispatch fell back to the flavor-agnostic umbrella task (runs every flavor). Carries `candidates` |
 | `no_test_modules_for_leg` | parallel (`all`) | a leg matched no modules, but at least one sibling leg passed — demoted from `no_test_modules` error to a per-leg warning. Carries `test_type` |
 | `no_adb_implies_list_only` | android, info | `--no-adb` / `KMP_TEST_SKIP_ADB` set on the instrumented path; dispatch was skipped and the module set emitted as list-only |
+| `clear_data_no_device` | parallel (`androidInstrumented`/`all`) | `--clear-data` was requested without a connected device, so the best-effort `pm clear` hook was skipped |
 | `partial_timeout` | benchmark | at least one module timed out but others passed; graded exit 0 (override with `--strict-timeouts`) |
+| `benchmark_failed` | parallel (`--benchmark`) | the optional benchmark phase failed or threw after the parallel test workflow; retained as a warning for backward-compatible composition behavior |
 | `config_invalid_field` | any (runner-backed) | a `.kmp-test-runner.json` / user-global config field failed validation and was dropped. Carries `source: "project_local" \| "user_global"` and the per-field message — previously visible only as a stderr `[WARN]` line, invisible to `--json` consumers |
 | `envelope_parse_failed` | parallel, changed, android, benchmark, coverage | the orchestrator's envelope sentinel was present in stdout but its JSON did not parse (truncated/corrupted); results come from the coarser legacy output parser. Carries `reason: "json_parse_failed"` |
+| `json_summary_parse_failed` | android | the legacy Android JSON summary block was present but malformed; the parser fell back to the human module table |
 | `log_write_failed` | android | a per-module log/logcat/errors artifact could not be written (disk full, read-only dir). Carries `path` — the envelope's `log_file`/`logcat_file`/`errors_file` pointer for that module may be a dead link |
 | `junit_xml_oversized` | parallel, changed | a `TEST-*.xml` report exceeded the size cap (default 32 MB; tunable via `KMP_JUNIT_XML_MAX_MB`) and was skipped — `tests.individual_total` undercounts and `test_failures[]` may be incomplete for that task. Carries `module`, `task`, `file`, `size_bytes`, `max_mb` |
 | `test_filter_unsupported` | benchmark | `--test-filter` was set and jvm benchmark legs were skipped (kotlinx-benchmark tasks reject gradle's `--tests` and have no CLI filter; running unfiltered would dispatch the full suite the user narrowed). Per-module detail in `skipped[]`. Carries `platform: "jvm"`, `test_filter`, `skipped_modules`. The android leg still filters via `-P` instrumentation args |
 | `no_coverage_data` | coverage, parallel | no XML coverage data collected from any module — either no plugin is applied or no test run has produced reports yet |
 | `coverage_aggregation_skipped` | coverage | `--coverage-tool none` (or the `--no-coverage` alias) disabled the aggregation step |
 | `coverage_aggregation_drift` | coverage, parallel | the four `module_buckets` (`with_data` + `no_xml` + `parse_errored` + `skipped_by_user`) didn't sum to `modules_with_kover_plugin.length + modules_with_jacoco_plugin.length` — defensive guard against silent model drops. Carries `detected`, `accounted`, `unaccounted` |
+| `coverage_report_dispatch_failed` | parallel | a selected coverage report task failed; existing XML is treated as potentially stale and is not trusted for a budget decision |
+| `coverage_aggregation_failed` | parallel | the in-process aggregation phase threw; the test result remains visible, and an enabled coverage budget separately fails closed with `coverage_data_unavailable` |
 | `coverage_xml_disabled` | coverage, parallel | a jacoco module ran its report but emitted HTML/`.exec` only — no XML (Gradle's default `xml.required=false`). `kmp-test parallel` enables jacoco XML automatically; this fires when `--no-coverage-xml-autofix` was passed (or XML is otherwise absent). Carries `modules` |
 | `coverage_parse_failed` | coverage, parallel | a module's coverage XML failed to read or parse (malformed, truncated, or missing content) — the module lands in `module_buckets.parse_errored` and its data is excluded from the aggregate, never silently folded into a bare `no_coverage_data`. Carries `modules` |
 | `coverage_xml_oversized` | coverage, parallel | a module's coverage XML exceeded the parser's size cap (default 128 MB; tunable via `KMP_COVERAGE_XML_MAX_MB`) and was skipped — a size-cap-specific subset of `coverage_parse_failed`, discriminated so a legitimately huge report (e.g. a large monorepo's Kover XML) is distinguishable from a malformed one. Carries `modules` |

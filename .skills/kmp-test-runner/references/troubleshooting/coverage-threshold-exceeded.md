@@ -29,6 +29,18 @@ Applies to `parallel` (when `--min-missed-lines` is passed) and `coverage`.
 - This error should never co-occur with a contradictory bare `no_coverage_data` warning — if you see both together with `module_buckets.with_data` non-empty, that combination is a bug, not an expected outcome.
 - If `coverage_parse_failed` or `coverage_xml_oversized` also appear in `warnings[]`, the aggregate is *incomplete* — one or more modules' XML couldn't be read, independent of the threshold check. Fix those first; the "real" missed-lines total may be different once every module's XML parses cleanly.
 
+Two neighboring error codes protect the gate before this threshold comparison can happen:
+
+- `coverage_budget_without_coverage` (`exit 2`) means a positive budget was combined with
+  `--no-coverage` or `--coverage-tool none`. Enable coverage or remove the budget.
+- `coverage_data_unavailable` (`exit 3`) means a positive budget had no trustworthy value to
+  compare. Its `reason` identifies no contributing data, an undetected target, missing/invalid
+  target XML, a failed report-task dispatch, or aggregation failure. Generate fresh reports and
+  resolve that cause; do not raise the threshold to bypass absent data.
+
+Neither is a coverage regression, and `coverage_data_unavailable` never co-occurs with
+`coverage_threshold_exceeded` in a correctly formed envelope.
+
 ## Root causes
 
 1. **Real coverage regression**: someone added production code without matching tests. Coverage genuinely dropped. Recovery: write tests for the uncovered code paths.

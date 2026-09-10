@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — reproducible agentic evaluation and isolated Evidence1 canaries
+
+- Added a versioned agentic-evaluation harness with pinned public scenarios, deterministic
+  graders, accepted-run audit sidecars, privacy gates, aggregation, and analysis. The committed
+  full-corpus Claude evidence covers the original six-scenario campaign under both
+  `current-skill` and `no-skill` conditions. The seventh scenario definition,
+  `coverage-threshold-failure-v2`, is the pinned target for the separately authorized Evidence1
+  one-cell canaries. Records remain partitioned by scenario, runtime, model, execution profile,
+  schema, platform, and treatment instead of being pooled into a single score.
+- Added privacy-safe product-usage, task-outcome, coverage-gate, error-contract, and neutral
+  outcome-mismatch diagnostics. Reports expose structured counts and status fields without
+  publishing prompts, responses, commands, private paths, authenticated output, or raw
+  transcripts.
+- Added the registered `sandboxed-unrestricted-v1` execution profile for Claude. It removes the
+  harness command allowlist only inside a separately attested external sandbox with restricted
+  networking; selection, profile hashes, isolation attestation, source pins, and evidence digests
+  are validated fail-closed.
+- Added the Windows Hyper-V Evidence1 operator path for one-cell `product-assisted` and
+  `free-baseline-no-product` canaries, including authentication and network preflights, offline
+  dependency-cache certification, repeatable canary binding, PowerShell Direct observability,
+  crash/race recovery, and terminal evidence custody. These canaries are operational validation,
+  remain `benchmark_eligible:false`, and do not by themselves establish a causal product or
+  performance claim.
+
 ### Added — public agentic usage benchmark v2 (`tools/runs/agentic-usage-benchmark-v2-2026-07-17.md`)
 
 **No behavior change** — docs/evidence only; no `lib/`, `bin/`, `.skills/`, or `tools/*.mjs`-at-top-level

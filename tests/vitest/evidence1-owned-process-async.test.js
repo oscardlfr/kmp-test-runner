@@ -68,7 +68,11 @@ const withTree = (dir, code, seconds, body) => `
     ${captureTree(dir)}
     if ($op.Task.IsCompleted) {throw 'fixture_completed_before_observation'}
     ${body}
-    @{result=$r;processes=${treeStates(0)};before=$before;polls=$polls;same=$same} | ConvertTo-Json -Depth 5 -Compress
+    # Job accounting can reach ActiveProcesses=0 just before retained Process
+    # handles become signalled under heavy parallel test load. Require every
+    # handle to signal within a bounded teardown window instead of racing it
+    # with an immediate zero-time poll.
+    @{result=$r;processes=${treeStates(5000)};before=$before;polls=$polls;same=$same} | ConvertTo-Json -Depth 5 -Compress
   } finally {
     if ($null -ne $op -and -not $op.Task.IsCompleted) {
       Stop-E1OwnedProcess $op

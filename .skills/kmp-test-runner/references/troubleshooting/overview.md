@@ -12,9 +12,15 @@ Branch on `errors[].code` from the JSON envelope. Each linked file (when populat
 | `flavor_unused` | [`flavor-unused.md`](flavor-unused.md) | **shipped (v0.10 #4 PR 2)** |
 | `isolated_runtime_race` | [`isolated-runtime-race.md`](isolated-runtime-race.md) | **shipped (v0.10 #4 PR 2)** |
 | `coverage_threshold_exceeded` | [`coverage-threshold-exceeded.md`](coverage-threshold-exceeded.md) | **shipped (v0.10 #4 PR 2)** |
+| `coverage_budget_without_coverage` / `coverage_data_unavailable` | [`coverage-threshold-exceeded.md`](coverage-threshold-exceeded.md) | covered: contradictory configuration vs unavailable fail-closed gate data |
 | `lock_held` | [`lock-held.md`](lock-held.md) | **shipped (v0.10 #4 PR 3.4)** |
+| `lock_write_error` | [`lock-held.md`](lock-held.md) | lockfile could not be written; exit 3 |
+| `jdk_mismatch` | [`unsupported-class-version.md`](unsupported-class-version.md) | pre-dispatch JDK gate; exit 3 unless explicitly ignored |
+| `platform_unsupported` | [`../workflows/unit-tests.md`](../workflows/unit-tests.md) | Apple test type requested off macOS; exit 3 |
+| `gradle_timeout` / warning `partial_timeout` | [`../cli/exit-codes.md`](../cli/exit-codes.md) | fatal except graded benchmark partial timeout |
 | `no_gradlew` / `missing_shell` | `prerequisites.md` | follow-up release |
 | `invalid_*` | `invalid-args.md` | follow-up release |
+| `unknown_flag` | [`../cli/flags-reference.md`](../cli/flags-reference.md) | unsupported or wrong-subcommand flag; exit 2 |
 | `no_summary` (soft) | [`no-summary.md`](no-summary.md) | **shipped (v0.10 #4 PR 2)** |
 | `no_changed_modules` (soft) | [`no-changed-modules.md`](no-changed-modules.md) | **shipped (v0.10 #4 PR 2)** |
 

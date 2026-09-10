@@ -1,76 +1,77 @@
 <!--
-PR title MUST follow Conventional Commits v1.0.0 (enforced by `commit-lint` CI):
-  <type>(<scope>): <description>
+PR title MUST follow Conventional Commits v1.0.0 (enforced by Commit Lint):
+  <type>[scope][!]: <description>
 
 Examples:
-  feat(cli): add --dry-run flag
-  fix(installer): handle PowerShell 7 redirect headers
-  docs(readme): clarify --module-filter glob syntax
-  release: v0.8.1
+  feat(cli): add a dispatch option
+  fix(installer): preserve the existing user path
+  docs(metrics): clarify benchmark provenance
+  chore(release): prepare vX.Y.Z
 
 Valid types: feat | fix | docs | style | refactor | perf | test | build | ci | chore | revert | release
 Suggested scopes: cli, scripts, gradle-plugin, installer, tools, tests, ci, docs, deps
-Description: starts lowercase, no trailing period, ≤72 chars.
+Description: starts lowercase and has no trailing period. The workflow warns above 72 characters.
+
+Normal PRs target develop. main is advanced only by the protected Release workflow.
 -->
 
 ## Summary
 
-<!-- One paragraph: what does this PR do, and why? Link the issue or BACKLOG entry it closes. -->
+<!-- What does this PR change, why is it needed, and which issue/BACKLOG entry does it address? -->
 
 ## What changed
 
-<!--
-Bulleted list of concrete changes by area. Group by file or module.
+<!-- Group concrete changes by user-visible behavior or implementation area. -->
 
-Example:
-- `lib/cli.js`: add `--my-flag` parsing in `parseCommonArgs`
-- `scripts/sh/run-parallel-coverage-suite.sh`: propagate `--my-flag` to gradle invocation
-- `scripts/ps1/run-parallel-coverage-suite.ps1`: PowerShell sibling (parity)
-- `tests/vitest/cli.test.js`: 4 new cases covering --my-flag dispatch
-- `tests/pester/Invoke-ScriptSmoke.Tests.ps1`: AST splat-parity assertion
--->
-
-## Tests
+## Evidence and tests
 
 <!--
-What test coverage was added/updated? CI must stay green:
-- `build (ubuntu-latest)` + `build (windows-latest)` — vitest
-- `secrets-scan`
-- `gradle-plugin-test`
-- `installer-e2e (ubuntu-latest)` + `installer-e2e (windows-latest)`
-- `Commit Lint`
+List exact commands and outcomes. Do not paste volatile suite totals as durable claims.
+Explain any unchecked item or why executable tests do not apply to a docs-only change.
 
-Per CONTRIBUTING.md: every change needs tests. SH ↔ PS1 parity is enforced.
+The canonical required contexts live in .github/required-checks.json:
+Commit Lint; build (ubuntu-latest); build (windows-latest); bundle-size;
+decouple-audit; gradle-plugin-test; installer-e2e (ubuntu-latest);
+installer-e2e (windows-latest); secrets-scan; skills-validate.
 -->
 
-- [ ] Full local gate (`pwsh -NoProfile -File tools/local-ci/run.ps1 -Lane All`) before ready-for-review
-- [ ] vitest (`npm test`)
-- [ ] bats (`npx bats tests/bats/ tests/installer/`) — if shell scripts touched
-- [ ] Pester — if PS1 scripts touched
-- [ ] Gradle TestKit (`cd gradle-plugin && ./gradlew test`) — if gradle plugin touched
-- [ ] `node tools/sync-versions.js --check` — if version-bumping
+- [ ] Focused tests for the changed behavior
+- [ ] Regression test for each fixed bug class, where applicable
+- [ ] Full local gate (`pwsh -NoProfile -File tools/local-ci/run.ps1 -Lane All`) before ready-for-review, for code changes
+- [ ] Vitest (`npm test` or a focused `npx vitest run ...`)
+- [ ] Bats (`npx bats tests/bats/ tests/installer/ tests/skill-scripts/`) if POSIX surfaces changed
+- [ ] Pester (`Invoke-Pester -Path tests/pester/,tests/installer/,tests/skill-scripts/ -CI`) if Windows surfaces changed
+- [ ] Gradle TestKit (`cd gradle-plugin && ./gradlew test`) if the plugin changed
+- [ ] Version pins (`node tools/sync-versions.js --check`) if release metadata changed
+- [ ] Documentation links, commands, tables, and implementation claims verified if docs changed
+- [ ] Privacy/evidence gates run for agentic-eval or published evidence changes
+
+## Reproduction or test plan
+
+<!--
+Give a reviewer the shortest deterministic path to verify the result. Include prerequisites,
+fixtures/project commit, command, expected exit code, and expected output/artifact shape.
+Use placeholders and sanitized evidence; never include credentials, private paths, real device
+serials, unpublished project identifiers, or raw agent transcripts.
+-->
+
+## Compatibility and risk
+
+<!--
+Call out JSON/schema, CLI, config, Gradle DSL, installer, platform, privacy, release, or
+backward-compatibility impact. State explicitly when there is none.
+-->
 
 ## Out of scope
 
-<!--
-What did you deliberately NOT do in this PR? Helps reviewers stay focused and helps
-future contributors find related work.
+<!-- What related work was deliberately excluded? Link an existing BACKLOG item instead of silently deferring it. -->
 
-Example:
-- Tier 2 of the gradle-config diagnostic (`--gradle-args` passthrough) — deferred to v0.9
-- macOS installer E2E parity — separate work in #XXX
--->
-
-## Test plan
+## Documentation and release notes
 
 <!--
-How did you verify this works end-to-end (beyond the automated tests)? Include exact
-commands so a reviewer can reproduce.
-
-Example:
-1. `npm test` → 806 passing
-2. Built artifact locally: `bash scripts/build-artifact.sh 0.8.1 dist/`
-3. Installed: `bash scripts/install.sh --version 0.8.1 --prefix /tmp/kmp --archive dist/...tar.gz`
-4. Verified: `/tmp/kmp/lib/bin/kmp-test.js --version` → 0.8.1
-5. Ran against a multi-module KMP project: `kmp-test parallel --module-filter ":core-*"` → all green
+- Which user-facing or operator docs changed?
+- Does CHANGELOG.md need an entry?
+- Are any published metrics same-capture, dated, and linked to committed evidence?
+- For a release-preparation PR, did package.json drive node tools/sync-versions.js and was
+  [Unreleased] promoted to the dated version section?
 -->
