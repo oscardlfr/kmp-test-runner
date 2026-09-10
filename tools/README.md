@@ -1,114 +1,65 @@
-# `tools/` — maintainer scripts
+# Maintainer tools
 
-Local-only tooling for the `kmp-test-runner` maintainer. **None of these scripts ship in the published npm artefact** — `tools/` is excluded from `package.json#files`. They exist to drive validation sweeps, token-cost measurement, and version sync against a workspace of real KMP projects sitting next to this repo on disk.
+These scripts validate releases, run cross-project checks, measure output cost, and maintain accepted evaluation evidence. They are repository-maintainer surfaces, not part of the installed `kmp-test` CLI.
 
-## Conventions
+## Required local gate
 
-### `KMP_WORKSPACE` env var
+On Windows, run the Docker Linux plus native Windows gate before making a code-changing PR ready:
 
-Most scripts here iterate over a workspace directory containing N gradle roots side-by-side with `kmp-test-runner/`. Resolution rule:
-
-```
-WORKSPACE = process.env.KMP_WORKSPACE || path.resolve(<repo-root>, '..')
+```powershell
+pwsh -NoProfile -File tools/local-ci/run.ps1 -Lane All
 ```
 
-The fallback assumes the canonical layout:
-```
-<workspace>/
-  ├── kmp-test-runner/        # this repo
-  ├── PeopleInSpace/
-  ├── KaMPKit/
-  └── …
-```
+See [local CI](../docs/testing/local-ci.md) for prerequisites and focused lanes.
 
-If you keep your KMP projects elsewhere, export `KMP_WORKSPACE=/path/to/your/workspace` before running. Each script logs `[NOTICE] WORKSPACE = …` to stderr at startup so you can confirm the resolved path before anything runs.
+## Repository and release checks
 
-### `KMP_TMPDIR` env var
+| Tool | Purpose |
+|---|---|
+| `validate-required-checks.mjs` | Compare workflow/job state with `.github/required-checks.json`. |
+| `validate-plugin.mjs` | Validate the bundled Claude plugin/skill shape. |
+| `sync-versions.js` | Check or propagate the `package.json` version to published shapes/docs. |
+| `release-gate.mjs` | Run release invariants before the release workflow. |
+| `check-bundle-size.mjs` | Enforce package/archive size limits. |
+| `check-line-endings.mjs` | Enforce platform-sensitive line endings. |
+| `check-executable-fixtures.mjs` | Verify executable test fixtures. |
+| `decouple-audit.mjs` | Reject private identifiers and paths from committed public text. |
 
-`tools/macos-validation-gate.mjs` additionally honours `KMP_TMPDIR` for the override that points gradle daemons at a non-default `TMPDIR` (used to fight tight disk situations on the macOS validation machine). Falls back to `${KMP_WORKSPACE}/.tmp`.
+Typical focused checks:
 
-### Privacy
-
-Never commit private project names, home-directory paths, or maintainer-specific volume paths into these scripts or the repo at large. The `decouple-audit.mjs` script enforces this — see below.
-
-## Scripts
-
-### `decouple-audit.mjs`
-Privacy enforcement gate. Walks `git ls-files` and fails on any committed file containing one of the maintainer's private toolkit identifiers (private library composite project name, internal benchmark module names, home-directory paths, etc.). Run before push:
-```
+```sh
+node tools/validate-required-checks.mjs
+node tools/validate-plugin.mjs
+node tools/sync-versions.js --check
 node tools/decouple-audit.mjs
 ```
-Wired into CI as a required check; mirrors the `secrets-scan` job shape.
 
-### `wide-smoke-pass-{7,8,9,10}.mjs`
-Sequential matrix sweeps over ~30 KMP projects. Each pass freezes the matrix at a moment in time so subsequent passes can be diffed bucket-by-bucket. Pass-10 is the current Windows baseline.
-```
-node tools/wide-smoke-pass-10.mjs
-node tools/wide-smoke-pass-10.mjs --reclassify   # re-bucket from saved artefacts
-```
-Per-project artefacts: `.smoke/pass-N/<safe>.{out,err,json,meta.json}` + `WIDE-SMOKE-PASS-N.md` summary.
+## Cross-project validation
 
-### `wide-smoke-pass-9-mac.mjs`
-macOS counterpart to `wide-smoke-pass-9.mjs`. Smaller project set (4 roots that reproduce on Mac). Produces parity-diffable envelopes against the Windows pass-9 baseline.
-```
-node tools/wide-smoke-pass-9-mac.mjs --test-type all
-node tools/wide-smoke-pass-9-mac.mjs --test-type macos
-node tools/wide-smoke-pass-9-mac.mjs --test-type ios
+`wide-smoke-pass-*.mjs`, `wet-audit-v0.9.mjs`, `wet-evidence.mjs`, and `macos-validation-gate.mjs` are dated/targeted maintainership programs. Read the selected file's arguments before running it and always use a pinned project checkout. Where supported, `--project-root` is the current public spelling; do not use the retired `--project` example.
+
+macOS-heavy validation is manually dispatched because hosted macOS minutes are deliberately constrained.
+
+## Token-cost measurement
+
+`measure-token-cost.js` captures and counts selected output surfaces; `measurement-registry.mjs` maintains provenance in `tools/runs/measurement-registry.jsonl`.
+
+```sh
+node tools/measure-token-cost.js --help
 ```
 
-### `macos-validation-gate.mjs`
-Pre-tag macOS validation matrix (45 cells: `{parallel, changed} × 7 --test-type values × 3 projects` + `android × 3 projects`). Four modes: `dry`, `probe`, `scoped`, `full`. Manual-only — not wired into CI per the macOS-cost rule.
-```
-node tools/macos-validation-gate.mjs --mode dry
-node tools/macos-validation-gate.mjs --mode probe
-node tools/macos-validation-gate.mjs --mode scoped
-node tools/macos-validation-gate.mjs --mode full --i-have-20gb-free
-```
+Canonical interpretation and published claims live in [docs/metrics.md](../docs/metrics.md). Method details live in [docs/token-cost-measurement.md](../docs/token-cost-measurement.md).
 
-### `wet-audit-v0.9.mjs`
-Cross-project envelope-shape audit against schema 2. Spawns `kmp-test parallel --json --dry-run` per project and asserts the envelope shape matches the canonical contract.
-```
-node tools/wet-audit-v0.9.mjs
-```
+## Agentic evaluation
 
-### `measure-token-cost.js`
-Approach A/B/C token-cost matrix using Anthropic's `count_tokens` endpoint (or a fallback offline tokenizer). Used to keep the README's token-saving headline numbers honest.
-```
-node tools/measure-token-cost.js --project <path> --feature parallel
-```
-Honours `ANTHROPIC_API_KEY` + `ANTHROPIC_API_KEY_FALLBACK` + `--anthropic-api-key`.
+The harness is implemented, includes accepted public records, and is no longer “foundation tooling only”. Start with:
 
-### `measurement-registry.mjs`
-Append-only token-cost measurement registry — `tools/runs/measurement-registry.jsonl` is the queryable, schema-checked ledger every `measure-token-cost.js` result (past and future) gets recorded into.
-```
-node tools/measurement-registry.mjs validate     # schema + privacy + A:C sanity checks
-node tools/measurement-registry.mjs export-csv   # regenerates the derived, gitignored .csv
-node tools/measurement-registry.mjs summarize    # totals, or --feature <name> for a pivoted table
-```
-See [`docs/token-cost-measurement.md`](../docs/token-cost-measurement.md#measurement-registry) for the schema.
+- [operator documentation](../docs/evaluation/README.md);
+- [technical harness reference](agentic-eval/README.md);
+- [latest Evidence1 canary evidence](runs/agentic-eval-evidence1-product-vs-free-canary-2026-09-10/RESULTS.md).
 
-### `sync-versions.js`
-Keeps `package.json#version` in lockstep with the hardcoded version pins across `gradle-plugin/build.gradle.kts`, `README.md`, `CLAUDE.md`, and `.claude-plugin/plugin.json` (Claude Code plugin manifest). Wired into CI's `secrets-scan` job as a pre-flight.
-```
-node tools/sync-versions.js --check    # exit non-zero on mismatch
-node tools/sync-versions.js            # write fix
-```
+Public `tools/runs/` content includes both historical reports and validated sanitized records. New live output is not automatically committable: validate, sanitize, attach the matching sidecar, and run the privacy gate first.
 
-### `validate-plugin.mjs`
-Claude Code plugin manifest gate. Asserts `.claude-plugin/plugin.json` has the required shape (kebab-case name, semver version matching `package.json`, license matching `package.json`, no PR/bug refs in description, `skills[]` paths resolve to a `<name>/SKILL.md` on disk). Wired into CI's `skills-validate` job (shares the required-check name with `npx skills-ref validate`).
-```
-node tools/validate-plugin.mjs         # exit 0 on pass, 1 on validation failure
-```
+## Evidence retention
 
-### `agentic-eval/`
-Reproducible skill evaluation harness -- proves, technically, whether Claude Code's Skill-matching mechanism invokes `kmp-test-runner` under controlled conditions (no-skill vs. current-skill, isolated via a `--plugin-dir` snapshot + a `PreToolUse` command-policy hook, never prompt instruction). Foundation tooling only -- no benchmark is executed or published by this directory's own code. See [`tools/agentic-eval/README.md`](agentic-eval/README.md) for the full design.
-```
-node tools/agentic-eval/cli.mjs --help
-node tools/agentic-eval/cli.mjs calibrate
-```
-
-## Output directory
-
-All scripts that emit per-project artefacts write under `tools/runs/` or `.smoke/<pass>/` in the repo root. Both are gitignored. Don't `git add` artefacts.
-
-One deliberate exception: `tools/runs/measurement-registry.jsonl` IS tracked — it's the whole point of the registry, an append-only structured ledger, not a regenerable per-project capture. Its derived `.csv` (via `export-csv`) stays gitignored like everything else here.
+Treat dated markdown reports as historical snapshots. Do not rewrite a past campaign to match a newer schema; add a correction note or a new result instead. Never commit raw authenticated transcripts, credentials, VM images/state, custody bundles, or private measurement-scope files.

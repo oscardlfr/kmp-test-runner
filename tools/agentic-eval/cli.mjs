@@ -219,15 +219,15 @@ campaign plan in one invocation. Supported ids: claude-2x2-williams-v1 (policy p
 condition, 16 sessions), claude-product-vs-free-baseline-v1 (product-assisted vs true
 free-baseline/no-product, 8 sessions), claude-product-canary-v1 and claude-free-baseline-canary-v1
 (one session each, only --scenario coverage-threshold-failure-v2). Use --dry-run to inspect a
-canary without runtime execution; registration does not authorize live use. Future live canaries
-use the existing campaign gates and require separate explicit authorization and ops-wrapper
-adaptation (the live wrapper currently requires matrix8). Mutually exclusive with
+canary without runtime execution; registration does not authorize live use. The versioned
+Evidence1 live wrapper supports these one-cell designs when its complete canary contract is
+supplied and separately authorized. Mutually exclusive with
 --execution-profile/--repeats (the design resolves its own profiles and fixes its own repeat count). Requires
 --isolation-attestation-file <path> whenever the design includes sandboxed-unrestricted-v1 cells;
 see tools/agentic-eval/scenario-campaign-plan.mjs and README.md's "Multi-profile campaigns"
 section.
 
-analyze reads ONLY already-committed schema-v5 scenario run records + their validated accepted-
+analyze reads ONLY already-committed supported scenario run records + their validated accepted-
 run-audit sidecars under --runs-dir (never a raw transcript, never a live Claude call) and emits a
 deterministic per-run + summary breakdown across 5 separated axes (activation, post-invocation
 execution, policy interaction, authoritative evidence, final outcome) plus one closed-vocabulary

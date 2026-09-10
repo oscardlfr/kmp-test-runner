@@ -86,6 +86,12 @@ The `kmp-test` CLI shares a common flag surface across subcommands, with per-sub
 
 ## Subcommand-specific (benchmark / info / describe)
 
+### `clean` only
+
+| Flag | Default | Notes |
+|------|---------|-------|
+| `--all` | off | Also purge project-model/task caches in addition to ordinary run artifacts. |
+
 ### `benchmark` only
 
 | Flag | Default | Notes |

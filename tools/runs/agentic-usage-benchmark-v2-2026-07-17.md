@@ -3,7 +3,7 @@
 ## Summary
 
 This is a public-only **controlled comparative benchmark**, the second wave after
-[`tools/runs/agentic-usage-pilot-2026-07-17.md`](../agentic-usage-pilot-2026-07-17.md) (v1). It
+[`tools/runs/agentic-usage-pilot-2026-07-17.md`](agentic-usage-pilot-2026-07-17.md) (v1). It
 compares the same two conditions as v1 — driving Gradle directly (`raw-gradle-no-kmp`) vs.
 preferring the `kmp-test` CLI's `--json` mode (`kmp-test-json`) — across **two public projects**:
 [`touchlab/KaMPKit`](https://github.com/touchlab/KaMPKit) (continuity with v1) and

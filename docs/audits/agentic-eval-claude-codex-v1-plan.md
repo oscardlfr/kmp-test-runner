@@ -1,6 +1,8 @@
 # Agentic-eval multi-runtime foundation v1 plan
 
-> Status: approved direction, implementation not started.
+> Historical status note (2026-09-10): this plan is partially implemented. The runtime
+> abstraction and Claude Code adapter exist; a Codex runtime does not. Use
+> [`docs/evaluation/README.md`](../evaluation/README.md) for current support.
 > Maintainer scope decision: Claude Code and Codex CLI only for v1. GitHub
 > Copilot CLI and Google Antigravity CLI are contract-audited future adapters,
 > not v1 implementations. API-only agents are explicitly out of scope.

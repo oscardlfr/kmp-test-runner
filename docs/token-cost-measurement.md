@@ -97,11 +97,13 @@ private paths, and private module names are not committed.
 These are `cl100k_base` counts from the OSS bucket aggregate. A:C is the median
 of per-project ratios inside each bucket.
 
-| Bucket | A median | C median | A:C median | A:C range |
-|--------|---------:|---------:|-----------:|-----------|
-| small | 24,454 | 338 | 56.6x | 1.3x-102.2x |
-| medium | 427,586 | 4,499 | 90.0x | 84.4x-95.6x |
-| large | 226,291 | 1,839 | 123.1x | single sample |
+| Bucket | Same-capture A:C median | A:C range |
+|--------|------------------------:|-----------|
+| small | 56.6x | 1.3x-102.2x |
+| medium | 90.0x | 84.4x-95.6x |
+| large | 123.1x | single sample: 226,291:1,839 |
+
+The aggregate also publishes independent A and C medians for each bucket. They can come from different projects and must not be divided to reconstruct a ratio; the table above uses the median of per-project, same-capture ratios.
 
 ### `private-large-A` per-feature drill-down
 
@@ -254,9 +256,8 @@ above — zero new API calls) and corrected one mischaracterized row (a
 2026-07-16 KaMPKit capture that had actually recorded a Gradle Android-SDK
 failure, not a real measurement):
 [`token-cost-validation-windows-2026-07-17.md`](../tools/runs/token-cost-validation-windows-2026-07-17.md).
-The registry now covers all 6 features. `private-large-A` remains
-un-re-measured; its `claude-sonnet-5` cross-model refresh is tracked in
-BACKLOG.md as a separate, explicitly-approved future task.
+The registry now covers all 6 features. The configured reference remains
+un-re-measured; any cross-model refresh requires separate, explicit approval.
 
 ## Captured outputs
 

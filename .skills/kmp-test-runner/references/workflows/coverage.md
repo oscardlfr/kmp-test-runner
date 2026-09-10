@@ -4,7 +4,7 @@ Re-aggregate coverage reports (Kover XML / JaCoCo XML) across every module that 
 
 ## Goal
 
-Walk every module's `build/reports/kover/**.xml` / `build/reports/jacoco/**.xml`, merge missed-line counts, render a `coverage-full-report.md` markdown summary, and emit a JSON envelope with the aggregate plus per-plugin module attribution. Optionally gate on a missed-lines threshold.
+Walk every module's `build/reports/kover/**.xml` / `build/reports/jacoco/**.xml`, merge missed-line counts, render a run-scoped markdown summary plus `latest.md`, and emit a JSON envelope with the aggregate plus per-plugin module attribution. Optionally gate on a missed-lines threshold.
 
 ## When to use this workflow
 
@@ -50,7 +50,7 @@ Defaults grounded in `lib/cli.js` SUBCOMMAND_HELP. Full matrix in [`../cli/flags
 | `--coverage-modules <list>` | all modules with a plugin | Comma-separated **exact** module names (no leading `:`, no glob/substring matching) to include in aggregation. Other modules' reports are not read. |
 | `--exclude-coverage <list>` | none | Comma-separated **exact** module names (same matching rules as `--coverage-modules`) to skip from aggregation. Useful for excluding `test-fakes` or `sample` modules by their real names. |
 | `--min-missed-lines <N>` | `0` | Fail (`errors[].code: coverage_threshold_exceeded`, exit 1) if `coverage.missed_lines` — aggregated across the modules selected by `--coverage-modules` / `--exclude-coverage` — exceeds `N`. `0` is "don't gate". The threshold itself never narrows that selected aggregate; it only narrows the markdown report's per-class "Detailed Class Coverage" section. |
-| `--output-file <name>` | `coverage-full-report.md` | Markdown report filename inside `.kmp-test-runner/reports/coverage/`. |
+| `--output-file <path>` | `.kmp-test-runner/reports/coverage/<runId>.md` + `latest.md` | Custom absolute path, or a path resolved against the project root. A custom path disables the `latest.md` alias. |
 | `--skip-tests` | implicit | Accepted for parity with `parallel --skip-tests` (the `coverage` subcommand sets this internally). Silently consumed. |
 | `--java-home <path>` | none | Override JDK location for this run. Skips auto-select. |
 | `--no-jdk-autoselect` | off | Disable JDK catalogue auto-select; use the host's `JAVA_HOME` unmodified. |

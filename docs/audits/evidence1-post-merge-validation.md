@@ -268,10 +268,9 @@ wet-gate failure, or a canary plan with any session count other than one. Do not
 failed wet-gate record, rerun a consumed invocation, or replace an agent session.
 
 Only after V1-V3 pass may Stage L be considered with its separately required authorization.
-The existing eight-session live launcher must not be used as a substitute for a one-cell canary.
-Before any future Stage L launch, verify that its operational launcher explicitly supports the
-registered canary design and enforces the one-session authorization, progress, and custody
-contract. This document does not claim that an eight-session launcher satisfies that contract.
+The launcher's no-canary eight-session branch must not be used as a substitute for a one-cell
+canary. The current versioned canary branch supports the registered one-cell designs only when
+the complete parameter, authorization, progress, and custody contract below is supplied.
 
 ### Stage L One-Cell Handoff
 

@@ -8,7 +8,7 @@
 //   1. Flag matrix audit: orchestrator parseArgs ↔ SUBCOMMAND_HELP text.
 //   2. Envelope JSON schema snapshot: golden-file freeze of each subcommand's
 //      JSON envelope shape (with volatile fields normalized).
-//   3. README ↔ code drift: bidirectional set equality (with allowlist).
+//   3. CLI reference ↔ code drift: bidirectional set equality (with allowlist).
 //   4. Platform-behavior matrix lock-in: pinned candidate-chains for
 //      resolveTasksFor (iOS/macOS/JS/Wasm).
 //
@@ -128,13 +128,13 @@ describe('parity / platform-behavior matrix', () => {
 // Sub-check 3 — README ↔ code drift detection
 // ---------------------------------------------------------------------------
 
-describe('parity / README ↔ code drift', () => {
+describe('parity / CLI reference ↔ code drift', () => {
   const allowlistPath = path.join(REPO_ROOT, 'tests', 'vitest', 'fixtures', 'parity-allowlist.json');
   const allowlist = JSON.parse(readFileSync(allowlistPath, 'utf8'));
   const allowParsedNotInReadme = new Set(allowlist.parsedButNotInReadme || []);
   const allowReadmeNotParsed = new Set(allowlist.readmeButNotParsed || []);
 
-  const readmePath = path.join(REPO_ROOT, 'README.md');
+  const readmePath = path.join(REPO_ROOT, 'docs', 'cli-reference.md');
   const readmeFlags = parseReadmeFlagTable(readmePath);
 
   // Union of flags parsed by any orchestrator OR by cli.js globals.
@@ -144,12 +144,12 @@ describe('parity / README ↔ code drift', () => {
     for (const f of getParsedFlagsForSubcommand(sub)) allParsed.add(f);
   }
 
-  it('every README flag has at least one parser case', () => {
+  it('every CLI reference flag has at least one parser case', () => {
     const orphans = [...readmeFlags].filter(f => !allParsed.has(f) && !allowReadmeNotParsed.has(f));
     expect(orphans).toEqual([]);
   });
 
-  it('every parsed user-facing flag appears in the README', () => {
+  it('every parsed user-facing flag appears in the CLI reference', () => {
     // Filter out gradle-passthrough literals AND every orchestrator's internal
     // literals — these aren't user-facing CLI surface, so they shouldn't be in
     // the README either.
