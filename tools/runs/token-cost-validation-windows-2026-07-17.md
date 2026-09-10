@@ -46,10 +46,10 @@ no API calls:
 
 | Feature | Rows | Source | Original session |
 |---|---:|---|---|
-| `info` | 8 (B+C × 4 tokenizers) | [`cross-model-results-info.txt`](cross-model-results-info.txt) | PR #156, 2026-05-07, v0.9.0 |
-| `describe` | 8 (B+C × 4 tokenizers) | [`cross-model-results-describe.txt`](cross-model-results-describe.txt) | PR #156, 2026-05-07, v0.9.0 |
-| `changed` | 12 (A+B+C × 4 tokenizers) | [`cross-model-results-changed.txt`](cross-model-results-changed.txt) | cl100k: PR #156 (2026-05-07); Anthropic: PR #289 opus-4-8 refresh (2026-06-07, v0.13.0) |
-| `benchmark` | 12 (A+B+C × 4 tokenizers) | [`cross-model-results-benchmark.txt`](cross-model-results-benchmark.txt) | same as `changed` |
+| `info` | 8 (B+C × 4 tokenizers) | [`cross-model-results-info.txt`](../cross-model-results-info.txt) | PR #156, 2026-05-07, v0.9.0 |
+| `describe` | 8 (B+C × 4 tokenizers) | [`cross-model-results-describe.txt`](../cross-model-results-describe.txt) | PR #156, 2026-05-07, v0.9.0 |
+| `changed` | 12 (A+B+C × 4 tokenizers) | [`cross-model-results-changed.txt`](../cross-model-results-changed.txt) | cl100k: PR #156 (2026-05-07); Anthropic: PR #289 opus-4-8 refresh (2026-06-07, v0.13.0) |
+| `benchmark` | 12 (A+B+C × 4 tokenizers) | [`cross-model-results-benchmark.txt`](../cross-model-results-benchmark.txt) | same as `changed` |
 
 All four features' underlying project is the anonymized `private-large-A`
 reference (confirmed via the PR #156 commit message, which is not quoted here

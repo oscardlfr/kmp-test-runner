@@ -7,23 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed — documentation audit and Evidence1 closure
-
-- Replaces the 843-line README with a compact onboarding surface and moves detailed CLI,
-  installation, plugin, metrics, and evaluation material into canonical documents under `docs/`.
-- Publishes six sanitized Evidence1 one-cell canary records plus their accepted-run audit
-  sidecars: three product-assisted and three free-baseline sessions. All are explicitly
-  `benchmark_eligible: false` and reported as descriptive operational evidence.
-- Documents the Evidence1 path from official Windows ISO/Hyper-V prerequisites through
-  V1/V2/V3, authentication, one-session live launch, custody, validation, and analysis. It also
-  records the remaining truth: clean-room VM provisioning is manual and fixed paths/pins are not
-  yet parameterized.
-- Corrects CLI help for JS/Wasm/JVM test-type support, supported analysis schemas, and one-cell
-  live-launch capability; moves the parser/documentation drift test to `docs/cli-reference.md`.
-- Updates contributor, release, product, tools, concurrency, and repository operating docs;
-  archives the historical backlog ledger and removes unrelated inherited KMP app-testing pages.
-- Repairs seven known local links in dated evidence and adds a current documentation index/audit.
-
 ### Added — public agentic usage benchmark v2 (`tools/runs/agentic-usage-benchmark-v2-2026-07-17.md`)
 
 **No behavior change** — docs/evidence only; no `lib/`, `bin/`, `.skills/`, or `tools/*.mjs`-at-top-level
