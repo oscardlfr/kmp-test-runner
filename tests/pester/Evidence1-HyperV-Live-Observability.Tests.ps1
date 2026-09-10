@@ -105,6 +105,35 @@ Describe 'Evidence1 canary one-use and journal contracts' {
         $committed.transition_counts.planned | Should -Be 1
     }
 
+    It 'retries once when atomic hardlink cleanup wins the companion-temp scan race' {
+        $newId = [guid]::NewGuid().ToString()
+        $events = Join-Path $script:CanaryDirectory "$newId/events"
+        New-Item -ItemType Directory -Path $events | Out-Null
+        [IO.File]::WriteAllText((Join-Path $events '000000000000-0-planned.json'), '{}')
+
+        InModuleScope evidence1-live-run-contract -Parameters @{
+            Root = $script:CanaryDirectory
+            ExpectedRunId = $script:CanaryId
+        } {
+            $script:EventReadAttempts = 0
+            Mock Read-Evidence1CanaryJson {
+                $script:EventReadAttempts++
+                if ($script:EventReadAttempts -eq 1) { throw 'canary_path_link' }
+                return @{ value = @{
+                    seq = 0; runKind = 'scenario'; cellOrdinal = 0; transition = 'planned'; meta = @{}
+                } }
+            }
+            Mock Start-Sleep { }
+
+            $progress = Get-Evidence1CanaryJournalProgress $Root @() $ExpectedRunId
+
+            $progress.event_count | Should -Be 1
+            $progress.transition_counts.planned | Should -Be 1
+            Should -Invoke Read-Evidence1CanaryJson -Times 2 -Exactly
+            Should -Invoke Start-Sleep -Times 1 -Exactly -ParameterFilter { $Milliseconds -eq 25 }
+        }
+    }
+
     It 'opens bounded JSON snapshots with delete sharing so atomic replacement cannot be blocked' {
         $definition = (Get-Command Read-Evidence1CanaryJson).ScriptBlock.Ast.Extent.Text
         $definition | Should -Match '\[IO\.FileShare\]::ReadWrite\s+-bor\s+\[IO\.FileShare\]::Delete'
