@@ -471,7 +471,21 @@ function Get-Evidence1CanaryJournalProgress([string]$JournalRoot, [string[]]$Bas
             } catch { return Resolve-Evidence1JournalPathDisappearance $_ $Previous $RunId `
                 -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit `
                 -AllowRetiredAfterTerminalJournal:$AllowRetiredAfterTerminalJournal }
-            throw
+            if ($readFailure.Exception.Message -ceq 'canary_path_link') {
+                # The writer removes the companion temp immediately after publishing its
+                # hardlink. If that cleanup wins the scan above, re-stat the canonical
+                # event once; a persistent or unrelated hardlink still fails closed.
+                Start-Sleep -Milliseconds 25
+                try { $value = (Read-Evidence1CanaryJson $event.FullName 65536).value }
+                catch {
+                    if (Test-Evidence1JournalPathDisappearance $_) {
+                        return Resolve-Evidence1JournalPathDisappearance $_ $Previous $RunId `
+                            -AllowRetiredAfterProcessExit:$AllowRetiredAfterProcessExit `
+                            -AllowRetiredAfterTerminalJournal:$AllowRetiredAfterTerminalJournal
+                    }
+                    throw
+                }
+            } else { throw $readFailure }
         }
         if ($ordinal -ne 0 -or -not (Test-E1Exact $value.cellOrdinal 0) -or -not (Test-E1Exact $value.seq $sequence) -or
             $value.runKind -cne 'scenario' -or $value.transition -cne $transition) { throw 'canary_journal_cell' }
