@@ -16,11 +16,11 @@ Synthetic Gradle / KMP project layouts that the test suite exercises. Each fixtu
 | `fake-gradlew/` | parse-only | Minimal `app` module + stub gradlew used by installer / wrapper smoke tests |
 | `kmp-cross-platform-e2e/` | **buildable** | Every supported KMP target in one module — see below |
 | `kmp-with-benchmark/` | parse-only | Benchmark detection (`bench-android`, `bench-jvm`, `no-bench`) |
-| `kmp-with-ios/` | parse-only | v0.7.0 iOS / macOS source-set walker — 3 modules covering single-target + multi-target shapes |
+| `kmp-with-ios/` | parse-only | iOS / macOS source-set walker — 3 modules covering single-target + multi-target shapes |
 | `kmp-with-js/` | parse-only | JS / Wasm source-set walker (`web-only` JS-IR target + `kmp-multi` JVM+JS combo) |
 | `version-catalog-alias-plugins/` | parse-only | `alias(libs.plugins.X)` resolution against `gradle/libs.versions.toml` |
 
-## `kmp-cross-platform-e2e/` — the buildable cross-platform fixture (v0.9 step 6)
+## `kmp-cross-platform-e2e/` — the buildable cross-platform fixture
 
 A single `:sample` module exercising every supported target in one place:
 
@@ -31,7 +31,7 @@ A single `:sample` module exercising every supported target in one place:
 - `macosArm64()`
 - `androidLibrary { … withHostTestBuilder { } }` (AGP 9 native KMP-Android plugin `com.android.kotlin.multiplatform.library`)
 
-Pinned to Kotlin `2.3.20` + AGP `9.0.1` + Gradle `9.1.0` (matches the maintainer's private KMP repos circa 2026). Per-PR CI does **not** execute iOS/macOS test tasks against this fixture — that's the manual macOS validation gate (v0.9 step 7). Vitest exercises the static parser (`buildProjectModel({ skipProbe: true })`) + the spawn-based `kmp-test describe` envelope.
+Pinned to Kotlin `2.3.20` + AGP `9.0.1` + Gradle `9.1.0`, a compatibility set exercised by this repository's public fixture and validation tooling. Per-PR CI does **not** execute iOS/macOS test tasks against this fixture — that belongs to the manual macOS validation gate. Vitest exercises the static parser (`buildProjectModel({ skipProbe: true })`) plus the spawn-based `kmp-test describe` envelope.
 
 The Gradle wrapper jar (`gradle/wrapper/gradle-wrapper.jar`, ~45 KB) is vendored from `gradle-plugin/gradle/wrapper/` so all Gradle invocations in the repo share the same minor (`9.1.0`).
 

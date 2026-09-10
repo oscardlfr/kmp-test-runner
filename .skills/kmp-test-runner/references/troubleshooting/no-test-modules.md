@@ -76,7 +76,7 @@ kmp-test describe --json | jq '.describe.modules[] | { name, test_tasks }'
 
 ## AGP / JDK quirks
 
-- **KMP `androidLibrary { }` DSL (AGP 9+)** doesn't register `connectedDebugAndroidTest` — modules using the new DSL emit `task_not_found` instead of `no_test_modules` when `--test-type androidInstrumented` is requested. The `--device-task androidConnectedCheck` flag is the workaround.
+- **KMP `androidLibrary { }` DSL (AGP 9+)** uses `androidConnectedCheck` rather than the legacy `connectedDebugAndroidTest` surface. The project-model probe normally auto-detects that task. Use `--device-task androidConnectedCheck` only as an override when a fresh probe cannot resolve the right task.
 - **Composite-build modules** are only discovered when `--include-shared` is set — otherwise they're silently excluded from the project's module set. If the user's working in a shared-libs composite, they likely want `--include-shared`.
 
 ## See also

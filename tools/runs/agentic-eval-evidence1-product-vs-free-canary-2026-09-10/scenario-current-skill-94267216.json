@@ -1,0 +1,293 @@
+{
+  "schema": 8,
+  "run_id": "scenario-current-skill-94267216",
+  "run_kind": "scenario",
+  "benchmark_eligible": false,
+  "scenario_id": "coverage-threshold-failure-v2",
+  "query_id": null,
+  "condition": "current-skill",
+  "product_access_mode": "product-assisted",
+  "skill_source_sha": "2112aed96686ee159f851e00c2efa553e58473fc",
+  "kmp_test_cli_version": "0.14.0",
+  "kmp_test_cli_source_sha": "6056b81f674799eb4066caf7eb5acfc878737177",
+  "resolved_kmp_test_executable_path": "C:\\kmp-eval\\agentic-evidence1-claude-2x2-windows-stage-b-readiness-v1\\bin\\kmp-test.js",
+  "model_requested": "claude-sonnet-5",
+  "model_resolved": "claude-sonnet-5",
+  "session_id_observed": "a212f479-8748-4c1e-b0db-f92f97d6f8f6",
+  "claude_code_version": "2.1.238",
+  "repo_commit": "6056b81f674799eb4066caf7eb5acfc878737177",
+  "project_alias": "nowinandroid",
+  "project_commit": "7d45eae4f8720a0c77f507712ba2437ff974b6ed",
+  "project_url": "https://github.com/android/nowinandroid",
+  "platform": "windows",
+  "family": "coverage",
+  "cache_state": "cold",
+  "daemon_policy": "disabled-via-gradle-user-home-properties",
+  "env_allowlist_profile": "narrow",
+  "seed": 20260821,
+  "order_index": 0,
+  "started_at": "2026-09-10T07:35:50.318Z",
+  "ended_at": "2026-09-10T07:37:46.597Z",
+  "wall_clock_ms": 116279,
+  "skill_available": {
+    "value": true,
+    "reason": null
+  },
+  "skill_invocation_attempted": {
+    "value": true,
+    "reason": null
+  },
+  "skill_invoked": {
+    "value": true,
+    "reason": null
+  },
+  "skill_invocation_event": {
+    "type": "assistant.tool_use.Skill",
+    "index": 4
+  },
+  "success": {
+    "value": true,
+    "reason": null
+  },
+  "expected_outcome_matched": {
+    "value": true,
+    "reason": null
+  },
+  "outcome_assessment": {
+    "schema": 2,
+    "task_outcome_matched": true,
+    "task_outcome_reason": "matched",
+    "answer_protocol_matched": true,
+    "provider_evidence_kind": "kmp-test-envelope",
+    "provider_evidence_status": "matched",
+    "product_e2e_success": true,
+    "task_outcome_mismatch_fields": [],
+    "task_outcome_unexpected_key_count": 0
+  },
+  "first_useful_signal_ms": {
+    "value": 113591.1827,
+    "reason": null
+  },
+  "first_useful_signal_event": {
+    "type": "user.tool_result",
+    "index": 29
+  },
+  "post_signal_ms": {
+    "value": 2691.7018,
+    "reason": null
+  },
+  "post_signal_tool_calls": {
+    "value": 0,
+    "reason": null
+  },
+  "policy_denials_before_first_signal": {
+    "value": null,
+    "reason": "execution-profile-policy-not-applicable"
+  },
+  "policy_denials_after_first_signal": {
+    "value": null,
+    "reason": "execution-profile-policy-not-applicable"
+  },
+  "accepted_audit": {
+    "schema": 10,
+    "relative_path": "audit/scenario-current-skill-94267216.json",
+    "sha256": "f14e60398098b69c009c2f045fdb3c1bfa3186dfec3159fe6da3c1bfb6ac385a"
+  },
+  "agent_runtime": {
+    "runtime_id": "claude-code",
+    "cli_version": "2.1.238",
+    "model_requested": "claude-sonnet-5",
+    "model_resolved": "claude-sonnet-5",
+    "model_vendor_expected": "anthropic",
+    "model_vendor_observed": null
+  },
+  "execution_profile": {
+    "id": "sandboxed-unrestricted-v1",
+    "sha256": "f5ed5ed9be6fdf7f03998c366e3cee3ab06e61783ae7fe510feecf487cb21292",
+    "isolation_kind": "external-sandbox",
+    "isolation_attestation_sha256": "76a5e627639f698f3e567feaa095bfcf5efc4ede015e1b3d2ce0d8aa005c3dc6",
+    "isolation_attestation_required": true,
+    "network_mode": "restricted",
+    "policy_mode": "not_applicable",
+    "required_capabilities": [
+      "structuredTranscript",
+      "correlatedToolResults",
+      "skillStateEvidence"
+    ]
+  },
+  "skill_observation": {
+    "delivery_mode": "runtime-extension",
+    "availability": {
+      "status": "observed-present",
+      "evidence_kind": "runtime-catalog"
+    },
+    "activation": {
+      "status": "confirmed",
+      "evidence_kind": "runtime-explicit-event"
+    },
+    "source_sha": "2112aed96686ee159f851e00c2efa553e58473fc",
+    "treatment_size": {
+      "snapshot_sha256": "8e78aa4fa9334cce62f4fbe9a61d3f8c8d0f42a5d5af0a71c38d9ae141525686",
+      "snapshot_bytes": 236212,
+      "snapshot_file_count": 28,
+      "prompt_sha256": "b0a7f797c18d77878b65c164b7ade9c354a8db73e53f7d238ed73cb2c0d53938",
+      "prompt_bytes": 1636,
+      "absent_reason": null
+    }
+  },
+  "usage": {
+    "source": "runtime-reported",
+    "input": 8,
+    "cached_input": 67400,
+    "cache_write": 31186,
+    "output": 1175,
+    "reasoning_output": null,
+    "attributable_to_skill_load": {
+      "status": "not-recorded",
+      "dimensions": {
+        "input": null,
+        "cached_input": null,
+        "cache_write": null,
+        "output": null,
+        "reasoning_output": null
+      },
+      "unit": null,
+      "reason": "runtime-does-not-report-skill-attribution"
+    }
+  },
+  "tokens": {
+    "input": {
+      "value": 8,
+      "reason": null
+    },
+    "output": {
+      "value": 1175,
+      "reason": null
+    },
+    "cache_read": {
+      "value": 67400,
+      "reason": null
+    },
+    "cache_creation": {
+      "value": 31186,
+      "reason": null
+    }
+  },
+  "tool_calls_total": {
+    "value": 3,
+    "reason": null
+  },
+  "shell_commands_total": {
+    "value": 2,
+    "reason": null
+  },
+  "test_invocations_total": {
+    "value": 1,
+    "reason": null
+  },
+  "retries": {
+    "value": 0,
+    "reason": null
+  },
+  "output_bytes": {
+    "value": 18570,
+    "reason": null
+  },
+  "stream_json_bytes": {
+    "value": 73889,
+    "reason": null
+  },
+  "human_interventions": {
+    "value": 0,
+    "reason": null
+  },
+  "terminated": false,
+  "termination_reason": null,
+  "exit_code": 0,
+  "permission_mode_used": "bypassPermissions",
+  "policy_allowed_gradle_tasks": null,
+  "policy_allowed_kmptest_subcommands": null,
+  "policy_sha256": null,
+  "hook_call_count": null,
+  "hook_deny_count": null,
+  "privacy_status": "public",
+  "raw_capture_committed": false,
+  "raw_capture_location": "tools/runs/agentic-eval-scenario/raw/",
+  "notes": "Scenario run -- benchmark_eligible reflects protocol/integrity completeness, not answer correctness; see grading_checks and success for the actual outcome.",
+  "grading_checks": {
+    "value": [
+      {
+        "name": "no_transcript_structural_issues",
+        "passed": true,
+        "detail": "no structural issues",
+        "evidence_event_indices": []
+      },
+      {
+        "name": "bash_tool_use_present",
+        "passed": true,
+        "detail": "2 policy-allowed command(s) attempted",
+        "evidence_event_indices": [
+          10,
+          23
+        ]
+      },
+      {
+        "name": "tool_result_correlated",
+        "passed": true,
+        "detail": "every relevant tool_use has a correlated tool_result",
+        "evidence_event_indices": []
+      },
+      {
+        "name": "authoritative_evidence_well_formed",
+        "passed": true,
+        "detail": "the terminal attempt produced well-formed evidence",
+        "evidence_event_indices": [
+          29
+        ]
+      },
+      {
+        "name": "authoritative_target_matches_expected",
+        "passed": true,
+        "detail": "terminal attempt targeted the expected module",
+        "evidence_event_indices": [
+          29
+        ]
+      },
+      {
+        "name": "authoritative_outcome_matches_expected",
+        "passed": true,
+        "detail": "terminal attempt outcome matches expected",
+        "evidence_event_indices": [
+          29
+        ]
+      },
+      {
+        "name": "no_provider_contradiction",
+        "passed": true,
+        "detail": "only one provider (or neither) produced evidence -- trivially no contradiction",
+        "evidence_event_indices": [
+          29
+        ]
+      },
+      {
+        "name": "final_answer_consistent_with_evidence",
+        "passed": true,
+        "detail": "the KMP_EVAL_RESULT block exactly matches the facts observed in the terminal attempt's own evidence",
+        "evidence_event_indices": []
+      }
+    ],
+    "reason": null
+  },
+  "repetition_index": 0,
+  "foreign_skill_summary": {
+    "rejected": 0,
+    "confirmed": 0,
+    "incomplete": 0
+  },
+  "ambient_skill_profile": {
+    "count": 16,
+    "scope_id": "0e9a7ee1-f661-43de-b8cc-bf3ee65dc3b1",
+    "fingerprint_hmac": "17002d885a24b5eccf77e262c6eb6f671cc5a65c9571ad18976a188f6c3d0049"
+  },
+  "errors": []
+}

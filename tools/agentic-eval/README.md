@@ -1,18 +1,18 @@
 # tools/agentic-eval — reproducible skill evaluation harness
 
-Reusable tooling that proves, technically, whether Claude Code's Skill-matching mechanism
-invokes the `kmp-test-runner` skill under controlled conditions. This is a **foundation**, not
-a benchmark: no results are published here, and the full corpus is not executed by this PR. See
-[`docs/agentic-usage-measurement.md`](../../docs/agentic-usage-measurement.md) for the broader
-methodology this implements a piece of.
+Reusable tooling for controlled `kmp-test-runner` skill evaluation with Claude Code. The current
+harness includes a validated scenario corpus, structured grading, strict-policy and externally
+attested sandboxed-unrestricted profiles, product-access preflight, multi-profile campaigns,
+privacy-safe accepted-run sidecars, aggregation, and axis-separated analysis. Sanitized live
+evidence is committed under `tools/runs/`; the 2026-09-10 Evidence1 Product/FreeBaseline records are
+an operational canary with `benchmark_eligible:false`, not a benchmark or causal claim. See
+[`docs/agentic-usage-measurement.md`](../../docs/agentic-usage-measurement.md) for methodology and
+[`docs/metrics.md`](../../docs/metrics.md#evidence1-results) for published values and limitations.
 
-**Scope note:** an earlier version of this PR also included six scenario definitions, a grader
-registry, and a natural-trigger corpus-probe path. Two independent review passes found the
-scenario/grader layer incomplete (missing fixtures, non-reproducible mutations, grading via
-broad keyword matching rather than structured evidence) and found several real correctness bugs
-in the foundation layer itself. This PR was narrowed to the foundation only — launcher, policy,
-parser, privacy, schema, lifecycle, and a genuinely-passing calibration/smoke acceptance gate.
-Scenario/grader completeness is tracked as a follow-up (see BACKLOG.md).
+This file preserves implementation history because it explains the security and schema decisions
+behind the harness. Statements scoped to “this PR”, “future”, or an older schema describe the
+historical change being discussed; the current-state paragraph above, the registries, validators,
+and CLI help are authoritative when that history differs from today's implementation.
 
 ## Why this exists
 
@@ -653,20 +653,19 @@ matrix is rejected anyway.
   `changed-module-verification` — the 6th and final scenario, requiring `kmp-test changed`
   specifically as terminal proof — against the same commit and module `nowinandroid-core-common`
   pins, via a pre-run `fixture_setup` mutation instead of being told the module outright). This
-  PR itself adds zero live scenario records — every number in `corpus/scenarios/*.json` is
-  independently re-verified via direct local CLI/Gradle execution (never through the `run` command,
-  and never through a live Claude session). Live `run_kind:"scenario"` records for the two KaMPKit
-  scenarios (and, separately, for `nowinandroid-core-common`) already exist under
-  `tools/runs/agentic-eval-scenario/` from earlier canary work — `deterministic-unit-test-failure`,
-  `coverage-threshold-failure`, and `changed-module-verification` have no live canary run yet.
+  historical PR itself added no live scenario records. The current committed evidence corpus now
+  contains benchmark-eligible runs for all six original scenarios. A seventh definition,
+  `coverage-threshold-failure-v2`, supports the Evidence1 Product/FreeBaseline operational canary;
+  its six committed records are deliberately benchmark-ineligible.
 - **`corpus-probe`** — accepted in the schema as a future `run_kind` value; not produced by
   anything in this PR.
 
 `aggregate.mjs`/`schemas.mjs` refuse to fold any `benchmark_eligible:false` record into a
 publishable aggregate, so nothing produced by `calibrate`/`smoke` (always `false`) can ever be
 miscounted as measurement data. A `benchmark_eligible:true` scenario record is the first evidence
-shape this harness can produce that is eligible for a future publishable aggregate — but this PR
-itself never runs `run` against a live Claude session, so it commits none.
+shape this harness can produce for a publishable aggregate. The current corpus contains both
+eligible scenario matrices and explicitly ineligible operational canaries; reporting must keep
+those strata separate.
 
 ## No committable evidence before every gate passes
 
@@ -1426,26 +1425,26 @@ three closed JSON registries (`runtimes/registry.json`, `models/registry.json`,
 resolves to that registry's own documented default for the axis (model/execution-profile
 resolution is scoped to whichever runtime was already resolved); an unknown, disabled, or
 cross-runtime-incompatible id fails closed with a clear reason before any auth/materialize/spawn
-ever happens — never a fuzzy match, never a silent fallback. Today's registries carry exactly one
-enabled entry per axis (`claude-code` / `claude-sonnet-5` / `strict-policy-v1`), so omitting all
-three flags reproduces the pre-registry default exactly.
+ever happens — never a fuzzy match, never a silent fallback. Today's registries carry one enabled
+runtime and model (`claude-code` / `claude-sonnet-5`) plus two enabled execution profiles:
+`strict-policy-v1` remains the default, while `sandboxed-unrestricted-v1` is selectable only with
+the required external-isolation attestation. Omitting all three flags reproduces the strict-policy
+default.
 
 **Adding a model or execution profile is a registry-only change ONLY when the adapter actually
 supports the new entry's configuration** — every runtime adapter now implements two additional
 gating methods, `supportsModelConfiguration(modelEntry)` and `supportsExecutionProfile(profileEntry)`
 (`runtimes/contract.mjs`'s `ADAPTER_KEYS`), and `buildRegistries`/`resolveSelection` reject any
 ENABLED entry the adapter itself reports `false` for. This closes a real gap: `buildInvocation`
-only ever receives `{prompt, model, settingsPath}`, so a registry could previously describe a
+receives the resolved profile alongside invocation inputs, so a registry entry is accepted only
+when the adapter can enforce its declared capabilities. A registry could previously describe a
 model/profile configuration (e.g. `default_reasoning_mode:"max"`, or a profile requiring a
 sandbox/restricted network/attestation) that was never actually applied, while a resulting record
-still carried it as if it had been. Claude Code's own adapter accepts an additional model only
-when `default_reasoning_mode` is `null` (`model_id` itself is genuinely registry-only — it is
-passed literally to the CLI); it accepts exactly `strict-policy-v1`'s current shape as an
-execution profile and rejects everything else, including a mutation of that same id and
-`sandboxed-unrestricted-v1` — until a later PR adds real runtime-specific implementation for a
-second profile and this adapter is deliberately widened, a differently-isolated profile can
-describe its shape in the JSON registry (`enabled:false`, kept for history/future work) but is
-never selectable.
+still carried it as if it had been. Claude Code accepts a model only when its configured reasoning
+mode is supported, and accepts the exact registered shapes of `strict-policy-v1` and
+`sandboxed-unrestricted-v1`. The latter requires external sandboxing, restricted networking, an
+attestation, structured transcript correlation, and skill-state evidence; a mutated or unsupported
+shape still fails closed.
 `aggregate`/`analyze`/`validate`/`corpus`/`scope` never accept these flags — selection is a
 per-run-command concern, not a reporting one.
 
@@ -1833,7 +1832,7 @@ the group (1 means every run agreed; more than 1 means a genuine, structural dis
 observed). Never a single composite score anywhere in this module — every dimension stays its own
 separately-reported field.
 
-**Analysis schema v8 (neutral-claim mismatch observability, `ANALYSIS_SCHEMA` is now 8).** For
+**Analysis schema v9 (current; includes neutral-claim mismatch observability).** For
 assessment schema 2, per-run output projects the two privacy-safe neutral-comparison diagnostics
 above. Historical assessment-schema-1 rows report both as `null`. Group summaries add a closed
 `task_outcome_mismatch_field_counts` map and
@@ -1846,11 +1845,11 @@ contract differed or was missing; it does not prove the skill, prompt, product, 
 caused that difference. Deciding whether a follow-up PR belongs in the skill protocol, grader,
 scenario, fixture, or provenance layer requires a separate review of the newly visible facts.
 
-**Explicit limitation**: no timing metric is derived or reported anywhere in this command's output
-— the committed schema-v5 sidecars carry event-INDEX ordering only, never per-event wall-clock
-timestamps, so a duration between any two axis boundaries (e.g. "how long was the pre-skill
-delay") cannot be honestly computed from what's on disk today. Only counts and closed-vocabulary
-classifications are ever emitted.
+**Timing boundary**: analysis projects the run-level timing fields recorded by the current schema,
+including `wall_clock_ms`, `first_useful_signal_ms`, and `task_outcome_available_ms`, and may report
+their distributions. Accepted-run sidecars still carry event-INDEX ordering rather than a timestamp
+for every event, so analysis cannot honestly derive intervals between arbitrary event boundaries
+(for example, time spent between two specific tool calls).
 
 ## Measurement scope
 
@@ -2082,15 +2081,13 @@ measurement scope. As with a full campaign dry-run, it does not materialize or v
 clone, run product-access preflight, or prove technical containment. In particular, FreeBaseline's
 planned `free-baseline-no-product` mode is not an observed clean-workspace result.
 
-**Future L1/L2 limitation:** these are real registered one-cell campaigns, so separately authorized
-future execution can reuse the existing matrix runner, source checks, isolation validation,
-product-access preflight, integrity checks, and evidence handling. There is no alternate live
-entry point or bypass flag. Registration and a successful preview do not authorize a live session.
-The ops live wrapper still hardcodes the eight-cell `matrix8` campaign and needs a separate,
-reviewed adaptation before it can safely dispatch either canary. This patch does not claim live
-readiness or execute L1/L2. A single canary is not a balanced comparison: the unchanged benchmark
-eligibility rule excludes it, and its result must not be represented as a completed eight-cell
-campaign or pooled into that campaign.
+**One-cell canary boundary:** these registered campaigns reuse the existing matrix runner, source
+checks, isolation validation, product-access preflight, integrity checks, and evidence handling.
+The Evidence1 Hyper-V live wrappers support explicit `product` and `free-baseline` canary arms;
+there is no alternate evidence path or bypass flag. Registration and a successful preview do not
+authorize a live session. A single canary is not a balanced comparison: the benchmark-eligibility
+rule excludes it, and its result must not be represented as a completed eight-cell campaign or
+pooled into that campaign.
 
 Execution acquires one independent shared-resource bundle (shim/skill-snapshot/Gradle-home/
 settings/env) **per distinct execution profile** the plan uses, never one bundle reused across
@@ -2121,8 +2118,9 @@ runbooks.
 
 ## Explicit limitations
 
-- No full benchmark is executed by this PR; no performance claim is made — `run` itself is never
-  invoked against a live Claude session here, so this PR commits zero scenario-run evidence.
+- The repository now contains benchmark-eligible scenario matrices, but the six Evidence1
+  Product/FreeBaseline canary records are operational evidence only and remain
+  `benchmark_eligible:false`; see `docs/metrics.md` for the non-causal report.
 - Public-project scenarios only; no private project is referenced.
 - `candidate-skill` is schema-supported but not implemented.
 - All 6 originally-sketched scenarios now exist in `corpus/scenarios/`
@@ -2143,10 +2141,7 @@ runbooks.
   `"core:common"`, never `":core:common"`) — both now pinned by a dedicated production-contract
   test (`agentic-eval-graders-production-contract.test.js`) that calls the real
   `changed-orchestrator.js` `runChanged()` directly, not just a hand-authored fixture. Disclosed,
-  out-of-scope finding: `.skills/kmp-test-runner/references/workflows/changed.md`'s own illustrative
-  envelope example is stale on this exact point (shows a `parallel:{}` block and a colon-prefixed
-  `detected_modules` entry neither of which the real envelope carries) — `.skills/**` is untouched
-  by this change; fixing that doc drift is separate follow-up work.
+  The skill's illustrative `changed` envelope has since been corrected to the same shape.
   `coverage-threshold-failure` covers the `coverage_threshold_exceeded` outcome_kind with a
   deliberately minimal, closed contract: it does not add a JaCoCo/Kover-XML evidence-attribution
   mechanism analogous to `junit-evidence.mjs` — a Gradle attempt can only ever corroborate its own
@@ -2183,25 +2178,13 @@ runbooks.
   test-execution intent) stays ambiguous and must ask, per the Decision protocol's existing rule —
   it is never silently routed to either command. The evaluator snapshot pinned by PR #416 includes
   this routing fix; this provenance statement makes no live-efficacy claim.
-- The real end-to-end Claude Code `tool_result.content` shape for a live `kmp-test`/`gradle`
-  invocation is still unconfirmed as of this PR — `graders.mjs`'s envelope extraction is
-  defensively designed for that uncertainty (locates a parseable JSON substring within possibly-
-  noisy content, never a bare whole-string parse) using real stdout captured from direct local CLI
-  execution, but that is not the same thing as having observed a genuine live capture. Confirming
-  it is exactly the job of a future live-validation PR, mirroring #373/#378 relative to #372.
-- **Runtime-neutral records (this PR) is schema/registry/reporting scope only.**
-  `schemas.mjs`'s own closed enums reserve `codex-cli` (as an `agent_runtime.runtime_id` value)
-  and `sandboxed-unrestricted-v1` (as an `execution_profile.id` value) — so a FUTURE record could
-  validly carry either — but neither is registered in `runtimes/registry.json` /
-  `execution-profiles/registry.json` today (both files list exactly one entry each,
-  `claude-code` / `strict-policy-v1`), neither has a concrete adapter
-  (`ADAPTERS_BY_RUNTIME_ID` carries only `claude-code`), and `resolveSelection()` fails closed on
-  either exactly like any other unregistered id — `--runtime codex-cli` /
-  `--execution-profile sandboxed-unrestricted-v1` are rejected today, not silently accepted. A
-  real Codex (or any other non-Claude) adapter, a real `sandboxed-unrestricted-v1` isolation
-  implementation and its own registry entry, and this harness's own no-policy-hooks execution mode
-  are all future PRs' scope, not authorized or implemented here — this PR's own fake-Claude E2E
-  coverage never spawns a real vendor binary or touches the network for any of them.
+- Live accepted Claude Code records and their accepted-audit sidecars have confirmed the real
+  correlated `tool_result.content` path. Raw transcripts remain local; committed evidence retains
+  only the privacy-safe structured projection.
+- **Runtime-neutral records:** `sandboxed-unrestricted-v1` is registered and implemented for
+  Claude Code with mandatory external-isolation attestation. `codex-cli` remains schema-reserved
+  but is not registered in this branch; no Codex support or metric may be claimed here until its
+  adapter, registry entry, tests, and sanitized evidence land.
 - Wildcard support in `--module-filter`/`--test-filter` is out of scope for the policy hook's
   grammar in this PR (a shell could re-expand an unquoted wildcard after the hook approves it) —
   documented as a future grammar extension.
@@ -2214,9 +2197,6 @@ runbooks.
   hook.mjs` treats both identically, and the design is robust either way (a genuine double-fire is
   caught via the shared `anomalies/` tombstone channel, never silently overwritten). Confirming
   precisely which event Claude Code actually dispatches requires a live capture, out of scope here.
-- `docs/agentic-usage-measurement.md` is intentionally not edited by this PR even though its
-  "Registry relationship" section is effectively fulfilled here — cross-linking it is reasonable
-  follow-up, flagged in the PR body.
-- `analyze` (see "Axis-separated analysis" above) never derives or reports a timing metric —
-  committed schema-v5 sidecars carry event-index ordering only, never per-event wall-clock
-  timestamps, so no honest duration exists to compute between any two axis boundaries.
+- `analyze` (see "Axis-separated analysis" above) reports only timing values explicitly recorded
+  at run level. Sidecars retain event-index ordering, not per-event wall-clock timestamps, so no
+  honest duration exists between arbitrary event boundaries.

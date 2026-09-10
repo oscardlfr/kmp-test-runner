@@ -93,7 +93,7 @@ KMP_TEST_SKIP_ADB=1 kmp-test doctor --json
 
 ## AGP / JDK quirks
 
-- **KMP `androidLibrary{}` DSL + AGP 9**: when the device is fine but the dispatch still fails, the surfaced code is `task_not_found`, NOT `instrumented_setup_failed` — the orchestrator dispatched `:<module>:connectedDebugAndroidTest` against a module that only registers `:<module>:androidConnectedCheck`. See [`../task-not-found.md`](../task-not-found.md).
+- **KMP `androidLibrary{}` DSL + AGP 9**: the project-model probe normally detects its `androidConnectedCheck` task automatically. If a fresh probe or a custom task override still selects a nonexistent legacy task, the failure is `task_not_found`, not `instrumented_setup_failed`; use `--device-task androidConnectedCheck` only as the explicit fallback. See [`../task-not-found.md`](../task-not-found.md).
 - **Windows USB-debugging driver**: Samsung's KIES driver sometimes hijacks the USB device claim, causing `offline` or `unauthorized` status to stick. Uninstall the OEM driver; rely on Google's universal ADB driver from `$ANDROID_HOME/extras/google/usb_driver/`.
 - **`emulator` binary not on PATH**: `$ANDROID_HOME/emulator/emulator` must be invoked via absolute path on hosts where the SDK is installed but the emulator dir wasn't appended to PATH. Add the directory to PATH (POSIX: `export PATH="$ANDROID_HOME/emulator:$PATH"`; PowerShell: `$env:PATH = "$env:ANDROID_HOME\emulator;$env:PATH"`) or alias the verb.
 - **Macrobenchmark connected output**: `app/build/outputs/connected_android_test_additional_output/<variant>/` only exists after a SUCCESSFUL instrumented dispatch — irrelevant to the recovery path but useful confirmation that recovery worked when the agent re-checks the directory.

@@ -93,7 +93,7 @@ KMP_TEST_SKIP_ADB=1 kmp-test doctor --json
 
 ## AGP / JDK quirks
 
-- **KMP `androidLibrary{}` DSL + AGP 9**: when the device is fine but the dispatch still fails, the surfaced code is `task_not_found`, NOT `instrumented_setup_failed` — the orchestrator dispatched `:<module>:connectedDebugAndroidTest` against a module that only registers `:<module>:androidConnectedCheck`. See [`../task-not-found.md`](../task-not-found.md).
+- **KMP `androidLibrary{}` DSL + AGP 9**: the project-model probe normally detects its `androidConnectedCheck` task automatically. If a fresh probe or a custom task override still selects a nonexistent legacy task, the failure is `task_not_found`, not `instrumented_setup_failed`; use `--device-task androidConnectedCheck` only as the explicit fallback. See [`../task-not-found.md`](../task-not-found.md).
 - **Windows USB-debugging driver**: Samsung's KIES driver sometimes hijacks the USB device claim, causing `offline` or `unauthorized` status to stick. Uninstall the OEM driver; rely on Google's universal ADB driver from `$ANDROID_HOME/extras/google/usb_driver/`.
 - **Windows PowerShell + `android emulator`**: disabled on PowerShell hosts in CLI 0.7.x — even when the rest of the `android` CLI works, the `emulator` verb returns "unsupported host". Fall back to `$env:ANDROID_HOME\emulator\emulator.exe -avd <AVD>` directly. (`android screen capture` and `android layout` continue to work on PowerShell — only the emulator-lifecycle verbs are blocked.)
 - **Macrobenchmark connected output**: `app/build/outputs/connected_android_test_additional_output/<variant>/` only exists after a SUCCESSFUL instrumented dispatch — irrelevant to the recovery path but useful confirmation that recovery worked when the agent re-checks the directory.

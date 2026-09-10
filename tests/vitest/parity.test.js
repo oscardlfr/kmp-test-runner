@@ -125,16 +125,20 @@ describe('parity / platform-behavior matrix', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Sub-check 3 — README ↔ code drift detection
+// Sub-check 3 — human CLI reference ↔ code drift detection
+//
+// README intentionally carries the common workflows and links to the complete
+// reference. Keep the exhaustive parser-parity gate on docs/cli-reference.md so
+// README can stay readable without weakening documentation coverage.
 // ---------------------------------------------------------------------------
 
-describe('parity / README ↔ code drift', () => {
+describe('parity / CLI reference ↔ code drift', () => {
   const allowlistPath = path.join(REPO_ROOT, 'tests', 'vitest', 'fixtures', 'parity-allowlist.json');
   const allowlist = JSON.parse(readFileSync(allowlistPath, 'utf8'));
   const allowParsedNotInReadme = new Set(allowlist.parsedButNotInReadme || []);
   const allowReadmeNotParsed = new Set(allowlist.readmeButNotParsed || []);
 
-  const readmePath = path.join(REPO_ROOT, 'README.md');
+  const readmePath = path.join(REPO_ROOT, 'docs', 'cli-reference.md');
   const readmeFlags = parseReadmeFlagTable(readmePath);
 
   // Union of flags parsed by any orchestrator OR by cli.js globals.
@@ -144,12 +148,12 @@ describe('parity / README ↔ code drift', () => {
     for (const f of getParsedFlagsForSubcommand(sub)) allParsed.add(f);
   }
 
-  it('every README flag has at least one parser case', () => {
+  it('every CLI-reference flag has at least one parser case', () => {
     const orphans = [...readmeFlags].filter(f => !allParsed.has(f) && !allowReadmeNotParsed.has(f));
     expect(orphans).toEqual([]);
   });
 
-  it('every parsed user-facing flag appears in the README', () => {
+  it('every parsed user-facing flag appears in the CLI reference', () => {
     // Filter out gradle-passthrough literals AND every orchestrator's internal
     // literals — these aren't user-facing CLI surface, so they shouldn't be in
     // the README either.

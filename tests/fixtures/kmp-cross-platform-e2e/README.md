@@ -9,19 +9,22 @@ Synthetic, buildable Kotlin Multiplatform fixture used by `kmp-test-runner` test
 - `macosArm64()` — Apple macOS (Apple Silicon)
 - `androidLibrary { … }` — AGP 9 native KMP-Android plugin (`com.android.kotlin.multiplatform.library`)
 
-## What this fixture proves
+## What this fixture validates
 
-1. The project-model source-set walker (`lib/project-model.js`) detects all per-platform test source sets.
-2. `resolveTasksFor` picks the canonical task per platform: `iosSimulatorArm64Test`, `macosArm64Test`, `jvmTest`, `jsTest`, etc.
-3. The Gradle plugin's TestKit acceptance suite can invoke a real Gradle build against a non-trivial KMP shape.
+1. Vitest verifies that the project-model source-set walker detects every declared platform's test source sets.
+2. Vitest verifies that `resolveTasksFor` selects the expected task names, including `iosSimulatorArm64Test`, `macosArm64Test`, `jvmTest`, and `jsTest`.
+3. The buildable project supports direct Gradle smoke checks and the manual macOS validation gate against a non-trivial KMP shape. The Gradle plugin's TestKit suite uses its own generated projects; it does not execute this fixture.
 
 ## Build-only — no per-PR CI execution
 
 Per-PR CI does **not** run `iosSimulatorArm64Test` or `macosArm64Test` against this fixture. Real iOS/macOS task execution is reserved for the manual macOS validation gate (a separate, opportunistic step). The fixture exists so that:
 
-- `./gradlew :sample:tasks` lists the per-target test tasks.
-- `./gradlew :sample:compileKotlinJvm` / `:sample:compileKotlinJs` succeed on every host.
-- iOS/macOS targets can be **configured** on Windows/Linux even when they cannot be **executed** there.
+- `./gradlew :sample:tasks` can inspect the per-target task surface directly.
+- `./gradlew :sample:compileKotlinJvm` and `:sample:compileKotlinJs` are available as direct smoke
+  entry points on hosts with the compatible JDK and toolchain prerequisites; the repository does
+  not claim a per-host automated matrix for these commands.
+- iOS/macOS targets support configuration-only inspection on non-macOS hosts; native execution
+  remains part of the manual macOS gate.
 
 ## Vendored gradle wrapper
 
@@ -36,4 +39,4 @@ Locked in `gradle/libs.versions.toml`:
 - Gradle `9.1.0` (via the wrapper)
 - compileSdk `36` / minSdk `26`
 
-These match the production pin-set used by the maintainer's private KMP repos circa 2026, so the fixture stays representative without diverging.
+These versions form the repository's public cross-platform compatibility fixture. Update the pins together and re-run the static fixture tests, direct Gradle smoke checks, and manual macOS gate when the supported toolchain advances.

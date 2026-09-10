@@ -179,6 +179,7 @@ describe('changed workflow contract parity (doc/help alignment with verified run
     path.join(SKILL_DIR, 'references', 'workflows', 'unit-tests.md'), 'utf8'
   );
   const readmeDoc = readFileSync(path.join(REPO_ROOT, 'README.md'), 'utf8');
+  const cliReferenceDoc = readFileSync(path.join(REPO_ROOT, 'docs', 'cli-reference.md'), 'utf8');
   const cliSrc = readFileSync(path.join(REPO_ROOT, 'lib', 'cli.js'), 'utf8')
     .replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   const overviewDoc = readFileSync(
@@ -311,14 +312,11 @@ describe('changed workflow contract parity (doc/help alignment with verified run
     }
   });
 
-  it('README.md --module-filter row does not claim it applies to changed', () => {
-    // Second review round split this into a <glob> row (parallel/android/benchmark) and a
-    // <regex> row (describe-only) -- the changed-exclusion clause now lives on the glob row.
-    const row = readmeDoc.split('\n').find((l) => l.includes('--module-filter <glob>'));
-    expect(row).toBeTruthy();
-    const appliesToClause = row.match(/Applies to ([^(|]+)/);
-    expect(appliesToClause).toBeTruthy();
-    expect(appliesToClause[1]).not.toMatch(/`changed`/);
+  it('the consumer docs do not claim --module-filter applies to changed', () => {
+    expect(readmeDoc).toMatch(/`changed` derives its module set from[\s\S]{0,80}does not accept `--module-filter`/);
+    const changedSection = cliReferenceDoc.match(/## `changed`[\s\S]*?(?=\n## `android`)/)?.[0];
+    expect(changedSection).toBeTruthy();
+    expect(changedSection).not.toContain('--module-filter');
   });
 
   it('changed.md and no-changed-modules.md quote the real no_changed_modules message, not an invented one', () => {
@@ -367,24 +365,17 @@ describe('changed workflow contract parity (doc/help alignment with verified run
   // take a glob, describe takes a REAL regex (new RegExp(opts.moduleFilter) at
   // describe-orchestrator.js:254, with an invalid_regex error code on bad patterns).
   // README.md's single conflated row must become two, neither implying the other's syntax.
-  it('README.md splits --module-filter into a glob row (parallel/android/benchmark) and a describe-only regex row, never conflating the two', () => {
-    const globRow = readmeDoc.split('\n').find((l) => l.includes('--module-filter <glob>'));
-    expect(globRow).toBeTruthy();
-    expect(globRow).not.toMatch(/`describe`/);
-    expect(globRow).toMatch(/`parallel`/);
-    expect(globRow).toMatch(/`android`/);
-    expect(globRow).toMatch(/`benchmark`/);
-
-    const regexRow = readmeDoc.split('\n').find((l) => l.includes('--module-filter <regex>') && l.startsWith('|'));
+  it('the CLI reference separates dispatch globs from describe regex syntax', () => {
+    expect(cliReferenceDoc.match(/\| `--module-filter <globs>`/g)?.length).toBe(3);
+    const regexRow = cliReferenceDoc.split('\n').find((l) => l.includes('--module-filter <regex>'));
     expect(regexRow).toBeTruthy();
-    expect(regexRow).toMatch(/real regular expression/i);
-    expect(regexRow).toMatch(/`describe`-only/);
+    expect(regexRow).toMatch(/regular expression/i);
+    expect(readmeDoc).toMatch(/regular expression, unlike the glob syntax used by test-dispatch commands/);
   });
 
-  it('README.md\'s describe section still documents --module-filter as a real regex (preserved, not collapsed into the glob row)', () => {
-    const describeFlagsLine = readmeDoc.split('\n').find((l) => l.startsWith('Flags:') && l.includes('--module-filter'));
-    expect(describeFlagsLine).toBeTruthy();
-    expect(describeFlagsLine).toContain('--module-filter <regex>');
+  it('the README and CLI reference document describe --module-filter as a real regex', () => {
+    expect(readmeDoc).toContain('kmp-test describe --json --module-filter "^:sample-result$"');
+    expect(cliReferenceDoc).toContain('| `--module-filter <regex>`');
   });
 
   // The prior round left 3 residual "changed is based on git diff" claims outside the
@@ -412,13 +403,13 @@ describe('changed workflow contract parity (doc/help alignment with verified run
   // resolve the flag -- listing it among subcommands that "share the auto default" implies
   // it does. Scoped to the specific "Same default across ..." clause, not the whole row,
   // since the row legitimately mentions `info` afterward to clarify the distinction.
-  it('README.md does not list info among the subcommands sharing the auto --coverage-tool default', () => {
-    const row = readmeDoc.split('\n').find((l) => l.startsWith('| `--coverage-tool`') && l.includes('Same default across'));
-    expect(row).toBeTruthy();
-    const sharingClause = row.match(/Same default across ([^—]+)—/);
-    expect(sharingClause).toBeTruthy();
-    expect(sharingClause[1]).not.toMatch(/info/);
-    expect(row).toMatch(/`info` reports the detected tool but does not accept or resolve this flag/);
+  it('the CLI reference documents auto coverage selection only on commands that accept the flag', () => {
+    const rows = cliReferenceDoc.split('\n').filter((l) => l.includes('| `--coverage-tool <tool>`'));
+    expect(rows).toHaveLength(3);
+    for (const row of rows) expect(row).toMatch(/\| `auto` \|/);
+    const infoSection = cliReferenceDoc.match(/### `info`[\s\S]*?(?=\n### `describe`)/)?.[0];
+    expect(infoSection).toBeTruthy();
+    expect(infoSection).not.toContain('--coverage-tool');
   });
 
   // Third review round (Codex audit of PR #415 @ fabfe97): the flags-reference table
@@ -449,11 +440,9 @@ describe('changed workflow contract parity (doc/help alignment with verified run
     expect(regex.test(':sample-result-extra')).toBe(false);
   });
 
-  it('README.md\'s describe section is referenced as "below", matching its actual position in the file', () => {
-    const regexRow = readmeDoc.split('\n').find((l) => l.includes('--module-filter <regex>') && l.startsWith('|'));
-    expect(regexRow).toBeTruthy();
-    expect(regexRow).toMatch(/describe.{0,10}section below/);
-    expect(regexRow).not.toMatch(/describe.{0,10}section above/);
+  it('the README links the exhaustive CLI reference after its concise command summary', () => {
+    expect(readmeDoc).toContain('[CLI reference](docs/cli-reference.md)');
+    expect(cliReferenceDoc).toContain('## `describe`');
   });
 
   it('no-test-modules.md never recommends passing the same parallel glob pattern to describe, and explains describe takes a real regex', () => {

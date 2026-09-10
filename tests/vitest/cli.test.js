@@ -2658,6 +2658,58 @@ describe('main() — --exclude-modules / --include-untested passthrough', () => 
     }
   });
 
+  it('coverage --help documents the managed report tree instead of the legacy root filename', () => {
+    const writes = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk) => { writes.push(String(chunk)); return true; };
+    try {
+      process.argv = ['node', 'kmp-test.js', 'coverage', '--help'];
+      main();
+      const out = writes.join('');
+      expect(out).toMatch(/\.kmp-test-runner\/reports\/coverage\/<runId>\.md/);
+      expect(out).toMatch(/updates latest\.md/);
+      expect(out).not.toMatch(/Default: coverage-full-report\.md/);
+    } finally {
+      process.stdout.write = origWrite;
+    }
+  });
+
+  it('parallel and changed help list every accepted test type', () => {
+    const writes = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk) => { writes.push(String(chunk)); return true; };
+    try {
+      for (const sub of ['parallel', 'changed']) {
+        writes.length = 0;
+        process.argv = ['node', 'kmp-test.js', sub, '--help'];
+        main();
+        const out = writes.join('');
+        for (const value of ['all', 'common', 'jvm', 'desktop', 'android', 'androidUnit',
+          'androidInstrumented', 'ios', 'macos', 'js', 'wasm']) {
+          expect(out).toContain(value);
+        }
+      }
+    } finally {
+      process.stdout.write = origWrite;
+    }
+  });
+
+  it('benchmark --help states that JVM test filtering is unsupported', () => {
+    const writes = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk) => { writes.push(String(chunk)); return true; };
+    try {
+      process.argv = ['node', 'kmp-test.js', 'benchmark', '--help'];
+      main();
+      const out = writes.join('');
+      expect(out).toMatch(/JVM tasks do not support this flag/);
+      expect(out).toContain('test_filter_unsupported');
+      expect(out).not.toMatch(/jvm gradle's --tests handles/);
+    } finally {
+      process.stdout.write = origWrite;
+    }
+  });
+
   it('--test-type help points instrumented-only modules at androidInstrumented', () => {
     // 2026-06-06 discoverability: --help must steer the Compose-UI-only "no
     // reports" case toward the instrumented path.

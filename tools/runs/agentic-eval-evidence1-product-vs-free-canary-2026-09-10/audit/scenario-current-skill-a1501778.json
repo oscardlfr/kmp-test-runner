@@ -1,0 +1,171 @@
+{
+  "schema": 10,
+  "run_id": "scenario-current-skill-a1501778",
+  "run_schema": 8,
+  "run_kind": "scenario",
+  "condition": "current-skill",
+  "scenario_id": "coverage-threshold-failure-v2",
+  "first_useful_signal_event": {
+    "type": "user.tool_result",
+    "index": 27
+  },
+  "terminal_authoritative_event": {
+    "type": "user.tool_result",
+    "index": 27
+  },
+  "tool_calls": [
+    {
+      "ordinal": 0,
+      "tool_use_event_index": 4,
+      "tool_result_event_index": 5,
+      "tool_kind": "target-skill",
+      "operation": null,
+      "plan_only": null,
+      "policy_decision": "not-applicable",
+      "result_status": "success",
+      "phase": "pre-signal",
+      "dispatch_status": "not_applicable",
+      "recognized_operation": null
+    },
+    {
+      "ordinal": 1,
+      "tool_use_event_index": 10,
+      "tool_result_event_index": 16,
+      "tool_kind": "kmp-test",
+      "operation": "other",
+      "plan_only": false,
+      "policy_decision": "not-applicable",
+      "result_status": "success",
+      "phase": "pre-signal",
+      "dispatch_status": "result_correlated_no_policy",
+      "recognized_operation": "describe"
+    },
+    {
+      "ordinal": 2,
+      "tool_use_event_index": 21,
+      "tool_result_event_index": 27,
+      "tool_kind": "kmp-test",
+      "operation": "other",
+      "plan_only": false,
+      "policy_decision": "not-applicable",
+      "result_status": "error",
+      "phase": "produced-signal",
+      "dispatch_status": "result_correlated_no_policy",
+      "recognized_operation": "parallel"
+    }
+  ],
+  "summary": {
+    "tool_calls_total": 3,
+    "shell_commands_total": 2,
+    "post_signal_ms": 4317.4486,
+    "post_signal_tool_calls": 0,
+    "policy_denials_total": null,
+    "policy_denials_before_first_signal": null,
+    "policy_denials_after_first_signal": null,
+    "policy_decisions_missing": null,
+    "pre_dispatch_blocked_total": 0,
+    "dispatch_unaccounted_total": 0
+  },
+  "run_provenance_sha256": "ded583630f1941a91c13e13adf9aac2e9ab28f0e75bdfb71cc3e01b6e7a04c3a",
+  "execution_profile_id": "sandboxed-unrestricted-v1",
+  "policy_mode": "not_applicable",
+  "isolation_attestation_sha256": "7a3a1afe0038c3e2e15b05f94d55cb3ad98d73afb4408eed6ce4405277a8218d",
+  "terminal_evidence": {
+    "present": true,
+    "provider": "kmp-test",
+    "tool_result_event_index": 27,
+    "evidence_well_formed": true,
+    "target_matches_expected": true,
+    "outcome_matches_expected": true,
+    "malformed": false,
+    "parallel_evidence_invalid": false,
+    "changed_evidence_invalid": false,
+    "observed_result": {
+      "outcome_kind": "coverage_threshold_exceeded",
+      "module_matches_expected": true,
+      "total": 4,
+      "passed": 4,
+      "failed": 0,
+      "missed_lines": 23,
+      "threshold": 15,
+      "modules_contributing": 1
+    },
+    "final_answer_block": {
+      "found": true,
+      "parsed": true,
+      "ambiguous": false,
+      "matches_observed": true,
+      "comparison_status": "matched",
+      "declared_outcome_kind": "coverage_threshold_exceeded",
+      "observed_outcome_kind": "coverage_threshold_exceeded",
+      "missing_fields": [],
+      "mismatch_fields": [],
+      "unexpected_key_count": 0
+    },
+    "coverage_gate_diagnostic": "matched",
+    "coverage_gate_attempts": [
+      {
+        "tool_call_ordinal": 2,
+        "recognized_operation": "parallel",
+        "terminal_authoritative": true,
+        "canonicalization_status": "canonical",
+        "canonicalization_reason": "canonical",
+        "threshold_relation": "matches",
+        "tests_contract": "matches",
+        "coverage_contract": "matches",
+        "error_contract": "matches",
+        "exit_code_contract": "matches",
+        "error_count": 1,
+        "error_code_buckets": {
+          "coverage_threshold_exceeded": 1,
+          "module_failed": 0,
+          "gradle_timeout": 0,
+          "no_test_modules": 0,
+          "environment_other": 0,
+          "configuration": 0,
+          "other": 0
+        },
+        "target_matches_expected": true,
+        "observed_outcome_kind": "coverage_threshold_exceeded",
+        "outcome_matches_expected": true
+      }
+    ]
+  },
+  "outcome_assessment": {
+    "schema": 2,
+    "task_outcome_matched": true,
+    "task_outcome_reason": "matched",
+    "answer_protocol_matched": true,
+    "provider_evidence_kind": "kmp-test-envelope",
+    "provider_evidence_status": "matched",
+    "product_e2e_success": true,
+    "task_outcome_mismatch_fields": [],
+    "task_outcome_unexpected_key_count": 0
+  },
+  "outcome_observability_summary": {
+    "schema": 1,
+    "flavor_relation": "not-recorded",
+    "test_type_relation": "not-recorded",
+    "coverage_target_status": "with-data",
+    "coverage_report_status": "success",
+    "warning_code_counts": {
+      "no_coverage_data": 0,
+      "coverage_xml_disabled": 0,
+      "coverage_xml_oversized": 0,
+      "coverage_parse_failed": 0,
+      "coverage_aggregation_drift": 0,
+      "coverage_report_write_failed": 0,
+      "coverage_report_dispatch_failed": 0,
+      "coverage_aggregation_failed": 0,
+      "coverage_aggregation_skipped": 0
+    },
+    "module_failed_setup_count": null,
+    "execution_mode_counts": {
+      "fresh": 0,
+      "from-cache": 0,
+      "up-to-date": 0,
+      "no-evidence": 0,
+      "not-recorded": 0
+    }
+  }
+}

@@ -4,7 +4,7 @@ Re-aggregate coverage reports (Kover XML / JaCoCo XML) across every module that 
 
 ## Goal
 
-Walk every module's `build/reports/kover/**.xml` / `build/reports/jacoco/**.xml`, merge missed-line counts, render a `coverage-full-report.md` markdown summary, and emit a JSON envelope with the aggregate plus per-plugin module attribution. Optionally gate on a missed-lines threshold.
+Walk every module's `build/reports/kover/**.xml` / `build/reports/jacoco/**.xml`, merge missed-line counts, render a managed markdown summary under `.kmp-test-runner/reports/coverage/`, and emit a JSON envelope with the aggregate plus per-plugin module attribution. The aggregate is scoped to modules selected by `--coverage-modules` and `--exclude-coverage`. Optionally gate on a missed-lines threshold.
 
 ## When to use this workflow
 
@@ -34,7 +34,7 @@ That command:
 1. Probes the project for modules with a coverage plugin (Kover or JaCoCo) — rebuilds the project model fresh each run (no whole-model cache); the nested gradle-tasks discovery probe has its own separate cache file and only spawns `gradlew tasks --all --quiet` on a cache miss.
 2. Reads existing `build/reports/kover/**.xml` / `build/reports/jacoco/**.xml` — pure file reads, no gradle. (A separate, best-effort, cached module-discovery probe — `gradlew tasks --all --quiet` — may run first on a cold cache; it never generates or regenerates coverage XML.)
 3. Walks XMLs via the bundled Node parser (`lib/parsers/coverage-xml.js`) to merge per-module + total line counts — pure Node, in-process, no Python interpreter required on the host.
-4. Renders the markdown report at `.kmp-test-runner/reports/coverage/latest.md` (or wherever `--output-file` points).
+4. Renders the immutable markdown report at `.kmp-test-runner/reports/coverage/<runId>.md` and refreshes `.kmp-test-runner/reports/coverage/latest.md` (or writes only the explicit custom `--output-file` path).
 5. Emits a JSON envelope with the aggregate.
 
 Internally `coverage` never dispatches per-module report-generation tasks — no `koverXmlReport` / `koverHtmlReport` / `jacocoTestReport` gradle invocation, ever. It only reads whatever XML already exists on disk. The only gradle process `coverage` can trigger is an unrelated, cached, best-effort module-discovery probe (`gradlew tasks --all --quiet`, via `buildProjectModel`) used for plugin/module detection — not report generation.
@@ -49,8 +49,8 @@ Defaults grounded in `lib/cli.js` SUBCOMMAND_HELP. Full matrix in [`../cli/flags
 | `--coverage-tool <tool>` | `auto` | `auto` / `jacoco` / `kover` / `none`. `auto` picks per-module from the project model. `none` short-circuits the whole workflow to a no-op envelope. |
 | `--coverage-modules <list>` | all modules with a plugin | Comma-separated **exact** module names (no leading `:`, no glob/substring matching) to include in aggregation. Other modules' reports are not read. |
 | `--exclude-coverage <list>` | none | Comma-separated **exact** module names (same matching rules as `--coverage-modules`) to skip from aggregation. Useful for excluding `test-fakes` or `sample` modules by their real names. |
-| `--min-missed-lines <N>` | `0` | Fail (`errors[].code: coverage_threshold_exceeded`, exit 1) if `coverage.missed_lines` — aggregated across the modules selected by `--coverage-modules` / `--exclude-coverage` — exceeds `N`. `0` is "don't gate". The threshold itself never narrows that selected aggregate; it only narrows the markdown report's per-class "Detailed Class Coverage" section. |
-| `--output-file <name>` | `coverage-full-report.md` | Markdown report filename inside `.kmp-test-runner/reports/coverage/`. |
+| `--min-missed-lines <N>` | `0` | For positive `N`, fail with `coverage_threshold_exceeded` (exit 1) if `coverage.missed_lines` exceeds the budget, or fail closed with `coverage_data_unavailable` (exit 3) if reliable data is absent. Combining the gate with disabled coverage is `coverage_budget_without_coverage` (exit 2). `0` is "don't gate". The threshold never narrows the selected aggregate; it only narrows the markdown report's per-class detail section. |
+| `--output-file <path>` | managed run path | Absolute paths are used verbatim; relative paths resolve against `--project-root`. When omitted (or set to the historic sentinel `coverage-full-report.md`), writes `.kmp-test-runner/reports/coverage/<runId>.md` and refreshes `latest.md`. A custom path produces only that file, without a `latest.md` alias. |
 | `--skip-tests` | implicit | Accepted for parity with `parallel --skip-tests` (the `coverage` subcommand sets this internally). Silently consumed. |
 | `--java-home <path>` | none | Override JDK location for this run. Skips auto-select. |
 | `--no-jdk-autoselect` | off | Disable JDK catalogue auto-select; use the host's `JAVA_HOME` unmodified. |
@@ -95,10 +95,10 @@ If the XML doesn't exist (tests never ran, or `--skip-tests` was passed without 
 
 ## Edge cases
 
-- **No modules have a coverage plugin**: emits `errors[].code: no_test_modules` (loose match — same code as the test-side variant) with `caused_by_filter: false` and `exit 3`. Suggest the user check whether the project actually uses Kover or JaCoCo at all.
+- **No modules have a coverage plugin**: without a positive gate, emits the `no_coverage_data` warning and keeps the normal aggregation outcome. With `--min-missed-lines N` where `N > 0`, the budget fails closed as `coverage_data_unavailable` (`reason: no-contributing-data`, exit 3). Check whether the project actually applies Kover or JaCoCo.
 - **`--coverage-tool kover` but the project has only JaCoCo modules**: forces every included module's XML lookup to use Kover-shaped paths regardless of its real plugin — those modules find nothing there and land in `module_buckets.no_xml` (never a gradle failure; `coverage` cannot produce `task_not_found`, since it never dispatches a named task). Recovery: use `--coverage-tool auto` (or `jacoco`).
 - **`--min-missed-lines 0` with any missed lines**: exit 0 — `0` disables the gate entirely (`coverage-orchestrator.js`'s `gateThreshold > 0` check is false for `0`), no matter how many lines are missed. `errors[].code: coverage_threshold_exceeded` never fires for a `0` threshold; that code's realistic trigger is a low-but-positive `N` — see [`coverage-threshold-exceeded.md`](../troubleshooting/coverage-threshold-exceeded.md).
-- **74 MB Kover XML / HTML on a 70-module project**: the underlying tasks succeed cleanly but the markdown report can be ~10 K LOC. The `--json` envelope stays compact regardless — the heavy raw artefacts only matter if the agent reads `build/reports/**` directly (which it should NOT — defeats the whole reduction promise). See README "token cost" section for the 77,114× reduction headline. (The parser's own size cap defaults to 128 MB — comfortably above this real-world case; see the next bullet for what happens past that cap.)
+- **Very large composite coverage reports**: the compact `--json` envelope avoids loading raw XML/HTML or a long markdown report into agent context. Published reduction figures are workload- and capture-specific, not a universal multiplier; use the methodology and caveats in [`docs/metrics.md`](https://github.com/oscardlfr/kmp-test-runner/blob/main/docs/metrics.md) instead of quoting a stress-case headline. The XML parser size cap defaults to 128 MB; see the next bullet for behavior beyond that cap.
 - **A module's coverage XML fails to parse, or exceeds the parser's size cap**: the module lands in `module_buckets.parse_errored` and fires a discriminated `coverage_parse_failed` (malformed/unreadable XML) or `coverage_xml_oversized` (over `KMP_COVERAGE_XML_MAX_MB`, default 128 MB) warning — never silently folded into a bare `no_coverage_data`. Other modules' data is unaffected; only the failing module's contribution is excluded from the aggregate.
 - **`--exclude-coverage "core-fakes,sample-demo"` combined with `--coverage-modules "core-network,core-fakes"`**: include first (`--coverage-modules`), then exclude — both lists are exact, comma-separated names (no glob/substring matching). A module in both lists ends up excluded.
 - **Re-running after a clean test pass**: `coverage` re-reads the existing XML — fast (~5-15 s for a medium project) since it never dispatches report-generation or test tasks (only, conditionally, the cached discovery probe above). If `build/reports/` is empty, affected modules land in `module_buckets.no_xml`; run `kmp-test parallel` (or gradle directly) first to produce fresh reports.
@@ -136,15 +136,16 @@ If the XML doesn't exist (tests never ran, or `--skip-tests` was passed without 
 `exit_code: 0` here means coverage was aggregated successfully. A non-zero exit can come from:
 
 - `1` — `--min-missed-lines` gate fired (`errors[].code: coverage_threshold_exceeded`).
-- `2` — invalid args (`--coverage-tool xyzzy`).
-- `3` — environment problem (no `gradlew`, JDK mismatch, no modules have a coverage plugin).
+- `2` — invalid args (`--coverage-tool xyzzy`) or a positive coverage budget combined with disabled coverage (`coverage_budget_without_coverage`).
+- `3` — environment problem (no `gradlew`, JDK mismatch) or a positive budget whose data is unavailable (`coverage_data_unavailable`).
 
 ## Troubleshooting
 
 Branch on `errors[].code`:
 
 - `coverage_threshold_exceeded` → [`../troubleshooting/coverage-threshold-exceeded.md`](../troubleshooting/coverage-threshold-exceeded.md)
-- `no_test_modules` → [`../troubleshooting/no-test-modules.md`](../troubleshooting/no-test-modules.md) (rare on `coverage` — only when no module has a coverage plugin)
+- `coverage_budget_without_coverage` / `coverage_data_unavailable` → [`../troubleshooting/coverage-threshold-exceeded.md`](../troubleshooting/coverage-threshold-exceeded.md) (configuration contradiction vs fail-closed unavailable data)
+- `no_coverage_data` warning → inspect `coverage.module_buckets` and generate fresh XML with `kmp-test parallel`
 - `unsupported_class_version` → [`../troubleshooting/unsupported-class-version.md`](../troubleshooting/unsupported-class-version.md)
 
 ## See also

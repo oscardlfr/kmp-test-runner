@@ -1,6 +1,9 @@
-# Concurrency model — kmp-test-runner
+# Concurrency model
 
-> Status: **Tier 1 shipped** in v0.3.8 (2026-04-26). **Tier 2 collision matrix shipped** in v0.8.1. **Tier 3 (`--isolated`) shipped** in v0.9 (2026-05-05) — opt-in `--project-cache-dir <tmp>` injection for true parallel multi-agent fan-out.
+`kmp-test` protects runner-owned artifacts with a project-scoped advisory lock and unique run IDs.
+For intentional concurrent execution, isolated Gradle project-cache directories provide a second,
+explicit layer. This document describes the current behavior; release history belongs in
+[`CHANGELOG.md`](../CHANGELOG.md).
 
 ## When this matters
 
@@ -14,7 +17,7 @@ If your runs target *different* project roots, none of this applies — you're a
 
 > **Same-host coordination only.** The lockfile is filesystem-local. Cross-host coordination (CI agents on different runners reading shared blob storage) needs a real lock manager — out of scope.
 
-## What v0.3.8 fixes (Tier 1)
+## Project lock
 
 ### Advisory lockfile
 
@@ -23,8 +26,11 @@ On every spawning subcommand (`parallel`, `changed`, `android`, `benchmark`, `co
 1. Reads `<project>/.kmp-test-runner.lock` if it exists.
 2. **No lock found** → writes its own (`{schema:1, pid, start_time, subcommand, project_root, version}` JSON), proceeds.
 3. **Lock found, holder PID alive** → refuses with exit code `3` (`ENV_ERROR`). Stderr prints PID + age + subcommand. `--json` mode emits `errors[].code = "lock_held"`.
-4. **Lock found, holder PID dead** (e.g. previous run was killed `-9`) → reclaims silently and proceeds.
-5. **Lock found but unparseable** → reclaims silently and proceeds.
+4. **Lock found, holder PID dead** (for example, a killed process) → reclaims and proceeds.
+5. **Lock predates the current boot or is older than four hours** → treats it as stale even if the
+   PID has been recycled, then reclaims it.
+6. **Lock found but unparseable** → performs a short grace re-read for an in-flight writer, then
+   reclaims only if it remains invalid.
 
 Cleanup is automatic on:
 
@@ -68,34 +74,35 @@ kmp-test parallel --dry-run  # no lock acquired, prints the resolved plan and ex
 
 ### Run-id naming
 
-Every run computes a run-id of the form `YYYYMMDD-HHMMSS-PID6` (zero-padded last 6 digits of PID) and uses it to name:
+Every run computes a unique run ID and uses it to namespace persistent output:
 
-| File                                                | Default                                       | v0.3.8 versioned form                                |
-|-----------------------------------------------------|-----------------------------------------------|------------------------------------------------------|
-| Coverage report (parallel/coverage)                 | `<project>/coverage-full-report.md`           | `<project>/coverage-full-report-<run-id>.md`         |
-| Benchmark report                                    | `<project>/benchmark-report.md`               | `<project>/benchmark-report-<run-id>.md`             |
-| Gradle parallel-test temp log                       | `${TMPDIR}/gradle-parallel-tests-<ts>.log`    | `${TMPDIR}/gradle-parallel-tests-<run-id>.log`       |
+| Artifact | Current default |
+|---|---|
+| Coverage report | `<project>/.kmp-test-runner/reports/coverage/<runId>.md` |
+| Latest coverage alias | `<project>/.kmp-test-runner/reports/coverage/latest.md` |
+| Benchmark logs | `<project>/.kmp-test-runner/logs/benchmark/<runId>/<module>-<platform>.log` |
+| Android logs/captures | `<project>/.kmp-test-runner/logs/android/<runId>/...` |
+| Isolated Gradle project cache | `<project>/.kmp-test-runner/cache-isolated/<runId>/` |
 
-The legacy stable filenames are kept as a "last finished run" mirror copy so existing consumers keep working — last writer wins, no corruption from interleaved writes.
+`latest.md` is intentionally last-writer-wins; the run-ID report remains independently addressable.
 
-## Tier 2 — collision matrix (v0.8.1)
+## Collision matrix
 
 The full subcommand × resource × outcome matrix. Each shared resource has a documented collision behaviour and the tier that mitigates it.
 
 | Subcommand | Resource | Collision behaviour | Mitigation status |
 |---|---|---|---|
-| `parallel` / `coverage` | `coverage-full-report.md` (mirror copy) | last-writer wins on the stable name; per-run `coverage-full-report-<run-id>.md` preserved alongside | **Tier 1** (v0.3.8 — versioned filenames) |
-| `parallel` / `coverage` | `coverage-full-report-<run-id>.md` (versioned) | unique run-id segment — never collides | **Tier 1** (v0.3.8) |
-| `benchmark` | `benchmark-report.md` (mirror copy) | last-writer wins on the stable name; per-run `benchmark-report-<run-id>.md` preserved alongside | **Tier 1** (v0.3.8) |
-| `benchmark` | `benchmark-report-<run-id>.md` (versioned) | unique run-id segment — never collides | **Tier 1** (v0.3.8) |
-| `parallel` / `coverage` | `${TMPDIR}/gradle-parallel-tests-<run-id>.log` | unique run-id segment — never collides | **Tier 1** (v0.3.8) |
+| `parallel` / `coverage` | `reports/coverage/latest.md` | last finished report wins; the per-run report remains preserved | unique run IDs + stable alias |
+| `parallel` / `coverage` | `reports/coverage/<runId>.md` | unique run-ID path | unique run IDs |
+| `benchmark` | `logs/benchmark/<runId>/...` | unique run-ID directory with per-module/platform logs | unique run IDs |
+| `android` | `logs/android/<runId>/...` | unique run-ID directory; module names namespace captures | unique run IDs |
 | `android` | single attached device (`emulator-5554` etc.) | both runs share the device — instrumented tests interleave on-device, last-writer wins on `connectedAndroidTest` HTML report | inherent for single-device hosts; multi-device fan-out via `--device <serial>` per run |
 | `changed` | `git status` / `git diff` snapshot | each run computes the changed-module set independently — modules diverge if files change between snapshots | inherent race — agents should snapshot files before parallel runs |
-| `*` | `.gradle/` daemon + build cache | Gradle serialises internally on the configuration cache lock — *correct* (no corruption) but *slow* under contention | **Tier 3** (`--isolated` injects `--project-cache-dir <tmp>` — v0.9) |
-| `*` | `.kmp-test-runner.lock` (advisory) | second invocation refused with exit `3` + `errors[].code = "lock_held"`; `--force` overrides | **Tier 1** (v0.3.8); `--isolated-no-lock` opts out (Tier 3 — v0.9) |
+| `*` | `.gradle/` project cache | Gradle serializes internally; correct but potentially slow under contention | `--isolated` selects a distinct project cache |
+| `*` | `.kmp-test-runner.lock` (advisory) | second invocation refused with exit `3` + `errors[].code = "lock_held"`; `--force` displaces it | default project lock; `--isolated-no-lock` or a user-supplied isolated cache opts out |
 | `*` | `<project>/.kmp-test-runner/` config-derived defaults | read-only; multiple runs read independently | not applicable — read-only |
 
-## Tier 3 — `--isolated` (v0.9)
+## Isolated Gradle project caches
 
 Even with Tier 1 lockfile, two runs targeting the same project share Gradle's daemon + per-project `.gradle/` (configuration cache, build outputs). Gradle's own lockfile makes this *correct* (no corruption) but *slow* (second run waits). `--isolated` injects `--project-cache-dir <tmp>` into every gradle spawn, giving each run its own cache dir. Slower (no warm cache) but truly parallel-safe. Ideal for CI multi-agent fan-out where you'd rather burn CPU than serialize.
 
@@ -105,8 +112,12 @@ Even with Tier 1 lockfile, two runs targeting the same project share Gradle's da
 |---|---|
 | `--isolated` | Inject `--project-cache-dir <project>/.kmp-test-runner/cache-isolated/<runId>` into every gradle spawn. The runId dir is auto-removed after the run. |
 | `--isolated-cache-dir <path>` | Use `<path>` instead of the default. Implies `--isolated`. The dir is treated as user-owned — it is **never** auto-removed. Useful for CI tmpfs / RAM-disk pinning. |
-| `--isolated-no-lock` | Bypass the Tier 1 advisory lockfile (`.kmp-test-runner.lock`). Required for true concurrent fan-out — without it, the lock still serializes runs. |
+| `--isolated-no-lock` | Bypass the advisory lockfile. Pair with the default per-run `--isolated` cache for intentional concurrent fan-out. |
 | `KMP_TEST_KEEP_ISOLATED=1` (env) | Skip cleanup of auto-generated dirs. Debug aid — preserve the cache for inspection. |
+
+A user-supplied `--isolated-cache-dir <path>` also bypasses the project lock because the caller has
+explicitly selected a private Gradle project cache. The caller is then responsible for ensuring two
+runs do not reuse the same supplied directory.
 
 ### Envelope
 
@@ -169,8 +180,9 @@ The lockfile JSON schema:
   "start_time": "2026-04-26T13:42:11.123Z",
   "subcommand": "parallel",
   "project_root": "C:\\path\\to\\project",
-  "version": "0.3.8"
+  "version": "0.14.0"
 }
 ```
 
-Stable in `schema: 1` for v0.3.x. Future shape changes will bump the schema number — readers should refuse unknown schemas instead of misinterpreting them.
+The current lockfile contract is `schema: 1`. Readers should refuse unknown schema versions instead
+of guessing their meaning.

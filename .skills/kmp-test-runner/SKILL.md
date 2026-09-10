@@ -154,13 +154,19 @@ Optional, source-checkout only — may not resolve once installed; prefer `kmp-t
 
 Confirm the envelope matches `exit_code`:
 
-1. `0` — success: `errors[]` empty, or only soft codes (`no_summary`, `no_changed_modules`,
-   `gradle_timeout`).
+1. `0` — success: `errors[]` empty, only the always-soft codes (`no_summary`,
+   `no_changed_modules`), or a graded benchmark partial timeout. In that benchmark-only case,
+   at least one module passed, `--strict-timeouts` was not set, `errors[]` may retain per-module
+   `gradle_timeout` entries, and `warnings[]` contains `partial_timeout`.
 2. `1` — a test failed, or a hard error was WS-5-promoted: check `modules[].test_failures[]` and
    `errors[]`.
-3. `2` — CLI usage error: check `errors[].code` (e.g. `no_test_modules` + `caused_by_filter:true`).
-4. `3` — environment error: run `kmp-test doctor --json --project-root .` to localize
-   (`task_not_found`, `no_test_modules`+`caused_by_filter:false`).
+3. `2` — CLI usage error: check `errors[].code` (e.g. `unknown_flag`,
+   `coverage_budget_without_coverage`, or `no_test_modules` + `caused_by_filter:true`).
+4. `3` — environment error: run `kmp-test doctor --json --project-root .`; inspect codes including
+   `no_gradlew`, `missing_shell`, `jdk_mismatch`, `unsupported_class_version`,
+   `platform_unsupported`, `task_not_found`, `lock_held`, `lock_write_error`,
+   `coverage_data_unavailable`, `gradle_timeout`, device/setup codes, and `no_test_modules` +
+   `caused_by_filter:false`.
 
 ## Guidelines
 

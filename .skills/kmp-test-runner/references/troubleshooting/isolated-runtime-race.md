@@ -22,7 +22,7 @@ Applies to `parallel` only. Detected at parse time (no gradle invocation).
 
 - ADB serial ownership: a single device serial can't host two concurrent test runs.
 - iOS simulator booting: `xcrun simctl boot <udid>` is process-global.
-- `--test-type all`: dispatches every leg sequentially; combining with another concurrent `kmp-test` would still serialise the legs through gradle.
+- `--test-type all`: the parser rejects this preset conservatively. Its actual expansion is `common` + `desktop` + `androidUnit`, plus `androidInstrumented` unless `KMP_TEST_SKIP_ADB=1`, and plus `ios` + `macos` only on macOS. It never includes `js` or `wasm`.
 
 The orchestrator picks the safer default — exit 2 + tell the user — over silently sharing the resource and producing flaky / corrupt results.
 
@@ -30,7 +30,7 @@ The orchestrator picks the safer default — exit 2 + tell the user — over sil
 
 1. **`--isolated --test-type androidInstrumented` without `--device`**: ADB serial isn't pinned, so two isolated runs might race for the same device.
 2. **`--isolated --test-type ios`**: iOS simulator is process-global; can't isolate.
-3. **`--isolated --test-type all`**: the orchestrator dispatches every leg, including instrumented + iOS. Catches the same shared-resource problem.
+3. **`--isolated --test-type all`**: rejected before expansion, even on a host/environment where the resulting leg list would omit ADB or Apple legs. Split the preset into the explicit legs you intend to run.
 4. **`--isolated` paired with `parallel --test-type androidInstrumented` even with `--device <serial>` — false positive**: this combination IS safe (the serial pins the device per run) but the v0.9 detector was conservative. Recent versions allow it; if you hit this, verify your `kmp-test` version.
 
 ## Recovery path

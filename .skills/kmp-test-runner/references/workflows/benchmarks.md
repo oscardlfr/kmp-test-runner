@@ -40,6 +40,12 @@ That command:
 4. Dispatches with the profile's per-task timeout (`smoke=300s`, `main=1800s`, `stress=3600s` — see `--timeout`).
 5. Emits a JSON envelope summarising the dispatch.
 
+Timeout grading is benchmark-specific. When at least one module passes and one or more time out,
+the default is `exit_code: 0`, retained per-module `errors[].code: "gradle_timeout"` entries, and
+one `warnings[].code: "partial_timeout"` aggregate. With `--strict-timeouts`, or when no module
+passes, a timeout is an environment error (`exit 3`). Other workflows do not inherit this graded
+exception.
+
 ## Common flags
 
 Defaults grounded in `lib/cli.js` SUBCOMMAND_HELP. Full matrix in [`../cli/flags-reference.md`](../cli/flags-reference.md).
@@ -119,6 +125,7 @@ This is independent of the per-task gradle watchdog. The outer kicks in when the
 
 ## Edge cases
 
+- **Partial benchmark timeout**: if at least one module passes, the default graded result exits 0 while retaining each `gradle_timeout` error for observability and adding a `partial_timeout` warning with `timed_out` / `passed` counts. Use `--strict-timeouts` when any timeout must fail the matrix cell. If zero modules pass, the timeout remains fatal (`exit 3`).
 - **Un-narrowed full suite on a 70-module project**: takes up to 4 h. Agent runs MUST narrow — `--module-filter` + `--config smoke` (jvm), plus `--test-filter` on the android leg. If the user truly wants a full run, escalate the decision before dispatching.
 - **kotlinx-benchmark + JDK 17**: surfaces `errors[].code: unsupported_class_version` because the JMH bytecode generator (`JmhBytecodeGeneratorWorker`) is compiled against JDK 21. Recovery: ensure a JDK 21+ install is in `~/.kmp-test/config.json java_home` or pass `--java-home <jdk21-path>`.
 - **`--platform android` without a connected device**: emits `errors[].code: instrumented_setup_failed` (exit 3) at dispatch. Recovery: check `adb devices`, or use `--platform jvm` to skip the Android leg.

@@ -1,186 +1,169 @@
 # Contributing to kmp-test-runner
 
-Thank you for your interest in contributing! `kmp-test-runner` is a parallel test runner for Kotlin Multiplatform and Android Gradle projects, distributed in three shapes (npm CLI, Gradle plugin, shell installers) — every change keeps all three in lockstep.
+Thank you for contributing. `kmp-test-runner` is a parallel test runner for Kotlin Multiplatform and Android Gradle projects, distributed as an npm CLI, a Gradle plugin, and release archives with shell installers. Released versions of all three distributions stay in lockstep.
 
-## Getting Started
+## Getting started
 
 ```bash
 git clone git@github.com:oscardlfr/kmp-test-runner.git
 cd kmp-test-runner
+npm ci
 
-# Install npm dependencies (CLI + tooling)
-npm install
+# Focused checks available on Linux/macOS
+npm test
+npx bats tests/bats/ tests/installer/ tests/skill-scripts/
+npm run shellcheck
 
-# Verify everything works
-npm test                                       # vitest (183+ tests on lib/cli.js + tools/measure-token-cost.js)
-npx bats tests/bats/ tests/installer/          # bats — POSIX shell scripts + 5 installer E2E tests
-cd gradle-plugin && ./gradlew test && cd ..    # Gradle TestKit — 9 plugin tests
-npm run shellcheck                             # POSIX script lint (must stay 0 warnings)
+# Gradle plugin
+cd gradle-plugin && ./gradlew test && cd ..
 ```
 
-Pester tests run in CI on `windows-latest` (pre-installed via `shell: pwsh`); reproduce locally if you have PowerShell 7+:
+On Windows, run the Pester surfaces with PowerShell 7 and Pester 5:
 
 ```powershell
-Invoke-Pester -Path tests/pester/ -Output Detailed
+Invoke-Pester -Path tests/pester/,tests/installer/,tests/skill-scripts/ -CI
 ```
 
-## Branch Model
+These commands are useful during development. Before a code-changing PR is marked ready, use the complete local gate described under [Local validation](#local-validation).
 
-Gitflow with two long-lived branches:
+## Branch model
+
+The repository has two long-lived branches:
 
 | Branch | Purpose |
-|--------|---------|
-| `main` | Production — every push triggers the v* tag + npm + GitHub Packages + GitHub Release pipeline |
-| `develop` | Integration — feature PRs target here |
-| `feature/*` | New features → merge to develop |
-| `fix/*` | Bug fixes → merge to develop |
-| `chore/*`, `ci/*`, `docs/*` | Non-functional changes → merge to develop |
-| `release/vX.Y.Z` | Version bump + CHANGELOG → PR to develop, then PR develop → main |
+|---|---|
+| `develop` | Integration trunk. Feature, fix, CI, and documentation PRs target this branch. |
+| `main` | Released commits only. It is advanced from `develop` by the protected release workflow, not by PR or manual push. |
 
-Both `main` and `develop` are protected:
+Work on a topic branch, normally named for its intent (`feature/*`, `fix/*`, `docs/*`, `ci/*`, or the configured agent prefix). Never push directly to `develop` and never push `main` by hand.
 
-- PR required (no direct pushes, no force-pushes, no deletions)
-- All 7 required CI checks green: `build (ubuntu-latest)`, `build (windows-latest)`, `secrets-scan`, `gradle-plugin-test`, `installer-e2e (ubuntu-latest)`, `installer-e2e (windows-latest)`, `Commit Lint`
-- Squash/rebase merge only (linear history)
-- `enforce_admins: true` — repo owner included
+The authoritative required-check list is [`.github/required-checks.json`](.github/required-checks.json). It currently contains these 10 contexts:
 
-## Making Changes
+- `Commit Lint`
+- `build (ubuntu-latest)`
+- `build (windows-latest)`
+- `bundle-size`
+- `decouple-audit`
+- `gradle-plugin-test`
+- `installer-e2e (ubuntu-latest)`
+- `installer-e2e (windows-latest)`
+- `secrets-scan`
+- `skills-validate`
+
+Do not duplicate or infer a different required-check count from workflow job counts. The manifest is validated in CI and checked against branch protection on protected-branch pushes.
+
+## Making changes
 
 ### 1. Create a branch
 
 ```bash
-git checkout develop && git pull origin develop
+git checkout develop
+git pull origin develop
 git checkout -b feature/my-change
 ```
 
-### 2. Make your changes
+### 2. Follow the implementation boundaries
 
-Follow the conventions in [`CLAUDE.md`](CLAUDE.md) (the project's instructions for AI coding agents — they double as the human contributor guide):
+The current operating rules live in [`CLAUDE.md`](CLAUDE.md). In particular:
 
-- **Decouple from L0.** Never reference the maintainer's private toolkit identifiers, home-directory paths, IDE project directories, or any private library composite project name in scripts/CI/docs/tests. (See `CLAUDE.md` "Decouple from L0" — these patterns must stay 0-hits across committed text.) Run `node tools/decouple-audit.mjs` locally before pushing; CI enforces the same gate via the `decouple-audit` job.
-- **SH and PS1 must stay in parity.** If you change a `scripts/sh/*.sh`, update the corresponding `scripts/ps1/*.ps1` and vice versa. The 4 `kmp-test` subcommand scripts (`run-parallel-coverage-suite`, `run-changed-modules-tests`, `run-android-tests`, `run-benchmarks`) all have both shells.
-- **Consumer-config env vars are API.** `SKIP_DESKTOP_MODULES`, `SKIP_ANDROID_MODULES`, `PARENT_ONLY_MODULES` are documented public API since v0.1.0 — don't break them.
-- **No `local` keyword outside bash functions.** Causes syntax errors on strict Linux bash.
-- **vitest + Pester for new code paths.** New CLI flags need both `cli.test.js` (vitest, mocked spawnSync) and `Invoke-ScriptSmoke.Tests.ps1` (Pester, AST-driven where possible) regression tests.
-- **Versions stay in sync** between `package.json`, `gradle-plugin/build.gradle.kts`, and the published Git tag — verified by `installer-e2e` in CI.
+- Put orchestration behavior in `lib/` and cover it in `tests/vitest/`. The scripts under `scripts/sh/` and `scripts/ps1/` are compatibility launchers, not the primary implementation.
+- Keep corresponding shell and PowerShell launch surfaces in parity when a compatibility wrapper changes.
+- Treat documented configuration keys and environment variables as public API. Do not silently rename or remove them.
+- Do not weaken existing tests to make a change pass. Fix the production behavior or explicitly document a deliberate contract change.
+- Add regression coverage for the bug class, not only the reported example.
+- Keep version pins synchronized through `node tools/sync-versions.js`; `package.json` is the source of truth.
+- Do not commit private project identifiers, real device serials, user-home paths, credentials, or raw evaluation material. Run the repository privacy audit locally.
 
-### 3. Run checks locally
+### 3. Add proportional verification
 
-On Windows, the canonical pre-push validation is the Docker Linux plus native Windows gate:
+| Area | Primary implementation | Expected verification |
+|---|---|---|
+| CLI and Node orchestration | `bin/`, `lib/commands/`, `lib/orchestrators/`, `lib/parsers/`, `lib/envelope/` | Focused Vitest plus the relevant integration/parity tests |
+| Compatibility launchers | `scripts/sh/`, `scripts/ps1/` | Vitest dispatch/parity tests and Bats/Pester for the affected surface |
+| Gradle plugin | `gradle-plugin/src/main/kotlin/` | Gradle TestKit under `gradle-plugin/src/test/kotlin/`; TaskAction smoke when execution wiring changes |
+| Installers and release archives | `scripts/install.*`, `scripts/uninstall.*`, `scripts/build-artifact.sh` | Bats/Pester installer tests and an archive round trip |
+| Agent skill or plugin | `.skills/`, `.claude-plugin/` | Skill-script tests plus the repository validators |
+| Agentic-eval tooling | `tools/agentic-eval/` | Focused `agentic-eval-*.test.js` suite, schema/integrity gates, and only the explicitly authorized live work |
+| Documentation | Markdown files | Link/command/source verification and rendered-table review; explain when no executable behavior changed |
+| CI and release workflows | `.github/workflows/`, release tools | Workflow-static and release-gate tests plus local syntax/static checks |
+
+Historical regression context belongs in [`CHANGELOG.md`](CHANGELOG.md) and completed [`BACKLOG.md`](BACKLOG.md) entries. Do not copy volatile test totals or old release versions into new instructions.
+
+## Local validation
+
+On Windows, the canonical pre-push validation combines Linux containers with native Windows checks:
 
 ```powershell
 pwsh -NoProfile -File tools/local-ci/run.ps1 -Lane All
 ```
 
-See [`docs/testing/local-ci.md`](docs/testing/local-ci.md) for prerequisites, covered surfaces,
-and focused diagnostic lanes. The commands below remain useful for targeted development.
+See [`docs/testing/local-ci.md`](docs/testing/local-ci.md) for prerequisites, covered surfaces, and diagnostic lanes. Use a focused lane while investigating, but use `-Lane All` for the final code candidate.
+
+Useful focused commands include:
 
 ```bash
-# Quick validation
-npm test                                       # vitest
-npx bats tests/bats/ tests/installer/          # bats (Linux/macOS)
-npm run shellcheck                             # ShellCheck — 0 warnings required
-
-# Full validation (matches CI)
-cd gradle-plugin && ./gradlew test && cd ..    # Gradle TestKit
-bash scripts/build-artifact.sh 0.4.1 dist/     # Local CI E2E artifact build
-bash scripts/install.sh --version 0.4.1 \
-  --prefix /tmp/kmp-test-prefix \
-  --archive dist/kmp-test-runner-0.4.1-linux.tar.gz  # E2E install test
-/tmp/kmp-test-prefix/lib/bin/kmp-test.js --version    # → must print 0.4.1
-
-# Privacy gate
-node tools/decouple-audit.mjs                  # decouple-from-L0 audit
+npm test
+npm run test:coverage
+npx bats tests/bats/ tests/installer/ tests/skill-scripts/
+npm run shellcheck
+node tools/check-line-endings.mjs
+node tools/check-executable-fixtures.mjs
+node tools/decouple-audit.mjs
+node tools/check-bundle-size.mjs
+node tools/sync-versions.js --check
+cd gradle-plugin && ./gradlew test && cd ..
 ```
 
-For maintainer scripts (wide-smoke sweeps, wet-audit, macOS validation gate, token-cost measurement, version sync), see [`tools/README.md`](tools/README.md). Most scripts honour the `KMP_WORKSPACE` env var to point at a workspace of KMP projects sitting next to this repo on disk.
+The local gate covers the executable repository checks that can be reproduced safely. GitHub App branch-protection drift, verified-secret lookup, PR-title status, CodeRabbit, and hosted-runner confirmation remain remote-only. macOS validation is opt-in through `.github/workflows/macos-validation.yml` to control runner cost.
 
-### 4. Commit with Conventional Commits
+## Commit and PR conventions
 
-PR titles MUST conform to [Conventional Commits v1.0.0](https://www.conventionalcommits.org/) — branch protection enforces squash-merge so the PR title becomes the squash commit subject.
+PR titles must conform to [Conventional Commits v1.0.0](https://www.conventionalcommits.org/), because the title becomes the squash commit subject:
 
+```text
+feat(cli): add a dispatch option
+fix(installer): preserve the existing user path
+docs(metrics): clarify benchmark provenance
+test(gradle-plugin): cover node runtime extraction
+chore(release): prepare vX.Y.Z
 ```
-feat(cli): add --dry-run flag
-fix(installer): handle PowerShell 7 redirect headers
-docs(readme): clarify --module-filter glob syntax
-test(bats): add regression for empty SKIP_DESKTOP_MODULES
-chore(ci): bump actions/checkout to v5
-release: v0.4.1
-```
 
-Valid types: `feat | fix | docs | style | refactor | perf | test | build | ci | chore | revert | release`.
+Valid types are `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`, and `release`. The description starts lowercase and has no trailing period. The workflow warns, rather than fails, when the normalized title exceeds 72 characters.
 
-Suggested scopes: `cli`, `scripts`, `gradle-plugin`, `installer`, `tools`, `tests`, `ci`, `docs`, `deps`.
+Target `develop`. Open code-changing PRs as drafts, consolidate implementation and review corrections locally, and run the full local gate before marking the PR ready. The `ready_for_review` event starts the hosted matrix. If another implementation change is required, return the PR to draft, consolidate the correction, and validate locally again.
 
-Rules: description starts lowercase, no trailing period, ≤72 chars (warning at 73+).
+CI is path-aware:
 
-### 5. Open a PR
+- `secrets-scan` always runs.
+- Ready code-changing PRs run the full Linux/Windows matrix.
+- Agentic-eval-only changes run the focused agentic-eval job.
+- Documentation-only changes avoid the heavy jobs; a sentinel reports the required heavy contexts as successful after classifying the diff.
+- Drafts defer required hosted work until ready while still running the draft privacy audit.
 
-Target `develop` (never `main` directly — `main` only accepts release PRs from `develop`).
+Use [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md) to record the change, its verification, and anything intentionally out of scope.
 
-Open code-changing PRs as drafts. Finish review fixes and the full local gate before marking the
-PR ready; `ready_for_review` starts the hosted matrix. Draft pushes retain the security/privacy
-checks but defer the expensive cross-platform jobs.
+## Release process
 
-When the draft is marked ready, CI runs automatically:
-- `build (ubuntu-latest)`, `build (windows-latest)` — npm + vitest
-- `secrets-scan` — TruffleHog
-- `gradle-plugin-test` — Gradle TestKit (9 tests)
-- `installer-e2e (ubuntu-latest)`, `installer-e2e (windows-latest)` — full install/uninstall round-trip with version verification
-- `Commit Lint` — Conventional Commits validation on the PR title
-- `decouple-audit`, `bundle-size`, `skills-validate` — privacy, package-size, and skill/plugin gates
+There is no `develop → main` release PR and no `release/*` branch in the current process.
 
-All 10 are required. macOS validation is manually dispatched to control hosted-runner cost. Merge
-is squash-only.
+1. Prepare a normal PR to `develop`:
+   - bump `package.json`;
+   - run `node tools/sync-versions.js` to update every version pin;
+   - promote `[Unreleased]` in `CHANGELOG.md` to the dated release section;
+   - use a title such as `chore(release): prepare vX.Y.Z`;
+   - pass the local and required hosted checks, then squash-merge.
+2. Manually dispatch **Release (fast-forward main from develop)** with the same version.
+3. `.github/workflows/release.yml` verifies the version, ancestry, missing tag, and all required checks on the exact `develop` SHA, then the release-bot GitHub App fast-forwards `main` to that commit.
+4. The push to `main` triggers:
+   - `auto-tag.yml`, which creates `vX.Y.Z` and calls `publish-release.yml` to build the Linux and Windows archives, checksums, and GitHub Release;
+   - `publish-npm.yml`, which publishes the npm package when its relevant paths changed;
+   - `publish-gradle.yml`, which publishes the Gradle plugin when its relevant paths changed.
+5. No branch-sync merge is needed: a successful fast-forward leaves `main` and `develop` on the same commit.
 
-## What Can You Contribute?
+The npm and Gradle registry publishers handle already-published versions as no-ops. Tag creation and the top-level release dispatch deliberately refuse an existing tag; do not describe the entire release cascade as universally idempotent.
 
-| Area | Examples | Test Required |
-|------|----------|---------------|
-| **CLI flags** | New `kmp-test <subcommand>` flag | vitest (`tests/vitest/cli.test.js` mocked spawnSync) + Pester (PS1 param wiring) |
-| **Subcommand scripts** | New shell logic in `scripts/sh/run-*.sh` + `scripts/ps1/run-*.ps1` | bats (`tests/bats/`) + Pester (`tests/pester/`) — SH and PS1 must stay in parity |
-| **Gradle plugin tasks** | New task class in `gradle-plugin/src/main/kotlin/.../tasks/` | Gradle TestKit (`gradle-plugin/src/test/kotlin/`) — extend `CrossShapeParityTest` if it touches a CLI subcommand |
-| **Installers** | Changes to `scripts/install.{sh,ps1}` / `scripts/uninstall.{sh,ps1}` | bats `tests/installer/install.bats` + Pester `tests/installer/Install.Tests.ps1` (E2E `--archive`/`-LocalArchive` flow) |
-| **Tools** | `tools/measure-token-cost.js` etc. | vitest in `tests/vitest/` |
-| **Docs** | README, `docs/*.md`, `CLAUDE.md` | Render preview locally (charts, tables) before submitting |
-| **CI** | `.github/workflows/*.yml` | Test on a feature branch first; check `gh run list` after push |
-| **Bug fixes** | Any area | Regression test for the bug class (see v0.3.0/v0.3.2/v0.3.3/v0.4.0 historical bugs as the rubric — all have permanent E2E coverage) |
+## Filing issues
 
-### Key Rules
+GitHub templates live under [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/) for bug reports and feature requests. When reporting a CLI failure, include the sanitized `--json` envelope when available. Never attach credentials, private paths, unpublished project names, raw agent transcripts, or unsanitized Evidence1 custody material.
 
-1. **Every change needs tests.** The PR template asks for it; CI enforces it.
-2. **SH and PS1 must stay in parity.** v0.4.0 shipped 4 PowerShell bug fixes that were missing from `run-changed-modules-tests.ps1` / `run-benchmarks.ps1` — bash sibling worked, PowerShell didn't. The Pester test suite added AST-driven splat-parity checks to prevent this regressing.
-3. **Don't weaken existing tests to make new code pass.** If a test fails, fix the production code, not the test.
-4. **For new install/CI logic, add E2E coverage that catches the bug class.** Existing baseline: 5 bats E2E + 4 Pester E2E covering the v0.3.0/0.3.2/0.3.3 historical install bugs (wrapper directory, `package.json` packaging, version mismatch).
-5. **Versions sync across all 3 shapes** — `package.json`, `gradle-plugin/build.gradle.kts`, Git tag. CI's `installer-e2e` verifies `kmp-test --version` matches `package.json` post-install.
-
-## Filing issues + PRs
-
-GitHub-rendered templates are pre-filled when you open a new issue or PR. The raw markdown sources live under `.github/`:
-
-| Template | Path | When to use |
-|---|---|---|
-| Bug report | [`.github/ISSUE_TEMPLATE/bug_report.md`](.github/ISSUE_TEMPLATE/bug_report.md) | Defects in the CLI, Gradle plugin, installers, or shell scripts. Asks for the `--json` envelope when available — paste it verbatim, it carries the full diagnostic state we need for triage. |
-| Feature request | [`.github/ISSUE_TEMPLATE/feature_request.md`](.github/ISSUE_TEMPLATE/feature_request.md) | New flags, subcommands, Gradle DSL properties, or workflow improvements. Sketch the proposed surface (CLI flag, DSL property) so the trade space is concrete. |
-| Pull request | [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md) | Pre-fills the 5 sections we use ad-hoc today: **Summary**, **What changed**, **Tests**, **Out of scope**, **Test plan**. The Conventional Commits format reminder lives at the top of the template. |
-
-The PR template includes a tests checklist that maps to the 7 required CI checks — leaving boxes unchecked is fine for `docs:` and `chore:` PRs that don't touch the relevant area.
-
-## Release Process
-
-Releases are fully automated on push to `main`. The release flow:
-
-1. On `develop`: bump `package.json` `version` and `gradle-plugin/build.gradle.kts` `version` to match. Update `CHANGELOG.md` (rename `[Unreleased]` → `[X.Y.Z]` with date). Commit, push, PR to develop, merge.
-2. Open `release: vX.Y.Z` PR from `develop` → `main`. CI runs the full 7-check matrix.
-3. Squash-merge to `main`. **Three workflows fire automatically:**
-   - `auto-tag.yml` — creates `vX.Y.Z` git tag from `package.json` version
-   - `publish-npm.yml` — `npm publish` (skipped if version already on registry)
-   - `publish-gradle.yml` — publishes to GitHub Packages (skipped if version already there)
-   - `publish-release.yml` (cascaded from auto-tag's tag push via `workflow_call`) — builds `linux.tar.gz` + `windows.zip` and creates the GitHub Release
-4. Sync develop with main (`git checkout develop && git merge main && git push`) so the next cycle starts from a clean base. (If branch protection blocks the merge commit, see `release/v0.4.0-clean` pattern in the v0.4.0 PR for the workaround.)
-
-All publish workflows are idempotent — re-pushing the same version is a no-op.
-
-## Questions?
-
-Open a [GitHub issue](https://github.com/oscardlfr/kmp-test-runner/issues) or check [CLAUDE.md](CLAUDE.md) for the project's working notes.
+Questions can be raised through [GitHub Issues](https://github.com/oscardlfr/kmp-test-runner/issues). For current work and known gaps, consult [`BACKLOG.md`](BACKLOG.md); for released behavior and historical decisions, consult [`CHANGELOG.md`](CHANGELOG.md).
