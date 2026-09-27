@@ -2414,6 +2414,132 @@ describe('runParallel', () => {
     expect(envelope.errors[0].code).toBe('multiple_adb_devices');
   });
 
+  // --test-type all adds androidInstrumented automatically (legsForAll) --
+  // the user never asked for Android specifically. An adb problem there
+  // should narrow the run (skip that one leg, warn, let the others decide
+  // the exit code), not abort the whole run the way an EXPLICIT
+  // --test-type androidInstrumented request still does (see the two tests
+  // immediately above -- both stay exit 3, unchanged).
+  describe('--test-type all: an adb problem on the implicit androidInstrumented leg narrows the run instead of aborting it', () => {
+    it('pure JVM project, no adb devices at all -> exit 0, instrumented_leg_skipped warning, no adb error', async () => {
+      const dir = makeProject([
+        { name: 'shared', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      ]);
+      const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n' });
+      const { envelope, exitCode } = await runParallel({
+        projectRoot: dir,
+        args: ['--test-type', 'all'],
+        spawn,
+        adbProbe: () => [],
+        log: () => {},
+        runCoverageInjection: makeRunCoverageStub(),
+      });
+
+      expect(exitCode).toBe(0);
+      expect(envelope.errors).toEqual([]);
+      expect(envelope.warnings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ code: 'instrumented_leg_skipped', reason: 'instrumented_setup_failed' }),
+        ]),
+      );
+    });
+
+    it('a project WITH an instrumented module, no adb devices -> the other legs still dispatch, only a warning (no adb error)', async () => {
+      const dir = makeProject([
+        { name: 'shared', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+        { name: 'app',
+          sourceSets: ['androidInstrumentedTest'],
+          build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+      ]);
+      const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n' });
+      const { envelope, exitCode } = await runParallel({
+        projectRoot: dir,
+        args: ['--test-type', 'all'],
+        spawn,
+        adbProbe: () => [],
+        log: () => {},
+        runCoverageInjection: makeRunCoverageStub(),
+      });
+
+      expect(exitCode).toBe(0);
+      expect(envelope.errors.find(e =>
+        ['instrumented_setup_failed', 'device_offline', 'device_unauthorized', 'multiple_adb_devices'].includes(e.code),
+      )).toBeUndefined();
+      expect(envelope.warnings.find(w => w.code === 'instrumented_leg_skipped')).toBeDefined();
+      // The gradle leg loop actually ran for the non-Android legs -- not just
+      // an early return before any dispatch.
+      expect(spawn.calls.length).toBeGreaterThan(0);
+    });
+
+    it('exactly one usable device -> the instrumented leg still runs, no warning', async () => {
+      const dir = makeProject([
+        { name: 'app',
+          sourceSets: ['androidInstrumentedTest'],
+          build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+      ]);
+      const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n> Task :app:connectedDebugAndroidTest\n' });
+      const { envelope, exitCode } = await runParallel({
+        projectRoot: dir,
+        args: ['--test-type', 'all'],
+        spawn,
+        adbProbe: () => [{ serial: 'emulator-5554', type: 'emulator', model: 'SDK', state: 'device' }],
+        log: () => {},
+        runCoverageInjection: makeRunCoverageStub(),
+      });
+
+      expect(exitCode).toBe(0);
+      expect(envelope.warnings.find(w => w.code === 'instrumented_leg_skipped')).toBeUndefined();
+      const types = envelope.parallel.legs.map(l => l.test_type);
+      expect(types).toContain('androidInstrumented');
+    });
+
+    it('two usable devices, no --device -> proceeds without pinning one (no multiple_adb_devices error, instrumented leg still attempted)', async () => {
+      const dir = makeProject([
+        { name: 'app',
+          sourceSets: ['androidInstrumentedTest'],
+          build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+      ]);
+      const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n> Task :app:connectedDebugAndroidTest\n' });
+      const { envelope, exitCode } = await runParallel({
+        projectRoot: dir,
+        args: ['--test-type', 'all'],
+        spawn,
+        adbProbe: () => [
+          { serial: 'FIRST', type: 'physical', model: 'A', state: 'device' },
+          { serial: 'SECOND', type: 'emulator', model: 'B', state: 'device' },
+        ],
+        log: () => {},
+        runCoverageInjection: makeRunCoverageStub(),
+      });
+
+      expect(exitCode).toBe(0);
+      expect(envelope.errors.find(e => e.code === 'multiple_adb_devices')).toBeUndefined();
+      const types = envelope.parallel.legs.map(l => l.test_type);
+      expect(types).toContain('androidInstrumented');
+    });
+
+    it('explicit --device that matches nothing, under --test-type all -> stays exit 3 (unchanged: the user specifically asked for that device)', async () => {
+      const dir = makeProject([
+        { name: 'app',
+          sourceSets: ['androidInstrumentedTest'],
+          build: 'plugins { id("com.android.application") }\nandroid { namespace = "x" }\n' },
+      ]);
+      const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n' });
+      const { envelope, exitCode } = await runParallel({
+        projectRoot: dir,
+        args: ['--test-type', 'all', '--device', 'NONEXISTENT'],
+        spawn,
+        adbProbe: () => [],
+        log: () => {},
+        runCoverageInjection: makeRunCoverageStub(),
+      });
+
+      expect(exitCode).toBe(3);
+      expect(envelope.errors[0].code).toBe('instrumented_setup_failed');
+      expect(envelope.errors[0].device).toBe('NONEXISTENT');
+    });
+  });
+
   // ---- --capture-on-fail (parallel androidInstrumented leg) ----------------
   // The injected `spawn` serves BOTH gradle dispatch AND the adb capture calls,
   // so this stub discriminates: gradle (gradlew path) → canned FAILED output;
