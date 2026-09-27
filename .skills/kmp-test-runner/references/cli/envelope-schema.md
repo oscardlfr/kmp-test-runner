@@ -177,9 +177,9 @@ This lets agents safely read **either** `errors.length > 0` **or** `exit_code !=
 ```json
 {
   "tool": "auto",
-  "missed_lines": null,
-  "covered_lines": null,
-  "total_lines": null,
+  "missed_lines": 12,
+  "covered_lines": 88,
+  "total_lines": 100,
   "modules_contributing": 1,
   "modules_with_kover_plugin": [":core:network", ":feature:auth"],
   "modules_with_jacoco_plugin": [],
@@ -193,12 +193,14 @@ This lets agents safely read **either** `errors.length > 0` **or** `exit_code !=
 ```
 
 - `tool` — `"auto"` / `"kover"` / `"jacoco"` / `"none"`.
-- `missed_lines` — aggregated count, across the modules `--coverage-modules` / `--exclude-coverage` selected for this run, or `null` when coverage couldn't be aggregated. `--min-missed-lines` never narrows this field within that selected set (it only decides the `coverage_threshold_exceeded` gate and the markdown report's per-class detail section).
+- `missed_lines` — aggregated count, across the modules `--coverage-modules` / `--exclude-coverage` selected for this run, or `null` when `modules_contributing` is `0` (no module actually contributed coverage data). `--min-missed-lines` never narrows this field within that selected set (it only decides the `coverage_threshold_exceeded` gate and the markdown report's per-class detail section).
 - `covered_lines` / `total_lines` — same aggregate scope and null-semantics as `missed_lines` (`total_lines` == `covered_lines` + `missed_lines` when non-null). `null` whenever `modules_contributing` is `0` — no coverage plugin contributed data, so there is nothing to report a ratio over.
 - `modules_contributing` — count of modules with real aggregated data. Same unfiltered guarantee as `missed_lines`: a `--min-missed-lines` value that no single class individually crosses does **not** zero this out, and does **not** trigger a false `no_coverage_data` warning.
 - `modules_with_kover_plugin` / `modules_with_jacoco_plugin` — per-module surface so agents see which coverage flavor each module declares.
 - `module_buckets` — per-module accounting on a successful `coverage` / `parallel` run. Each module with a detected coverage plugin lands in exactly one bucket: `with_data` (XML parsed + rows added to aggregation), `no_xml` (XML missing on disk — the most common silent-drop case in CI), `parse_errored` (the coverage-XML parser reported a failure — malformed, unreadable, or oversized XML; see the `coverage_parse_failed` / `coverage_xml_oversized` warning codes for the discriminated reason), or `skipped_by_user` (filtered out by `--exclude-coverage` / `--coverage-modules`). The sum of the four buckets should equal `modules_with_kover_plugin.length + modules_with_jacoco_plugin.length`; when it doesn't, a `coverage_aggregation_drift` entry is pushed to `warnings[]` with `{detected, accounted, unaccounted}` counts. Buckets are empty on `--dry-run` and `--coverage-tool none` for shape parity.
 - Coverage XML parsing is Node-native (`lib/parsers/coverage-xml.js`) — no `python3` (or any interpreter) is required on the host.
+
+**`covered_lines`/`total_lines` scope**: present with `missed_lines`'s null-semantics on every `parallel`/`changed`/`coverage` envelope (including `--dry-run` and CONFIG_ERROR/ENV_ERROR envelopes), **except** `parallel`'s `no_test_modules` (`modules.length === 0`) early-exit, which stays at its fixed 4-key shape. Other subcommands (`android`, `benchmark`, `describe`, `info`, `update`, `clean`, `doctor`) may omit both fields entirely in their own coverage placeholders — treat an absent key as `null`.
 
 ## `parallel.legs[]` shape
 

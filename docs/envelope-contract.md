@@ -89,6 +89,26 @@ Every subcommand emits the same canonical envelope on `--json`. Subcommand-speci
 }
 ```
 
+### `covered_lines` / `total_lines` scope
+
+`covered_lines` / `total_lines` accompany `missed_lines`, with the same null-semantics (`null` exactly
+when `modules_contributing` is `0`), on every envelope `parallel` / `changed` / `coverage` construct
+through the shared envelope builders (`buildJsonReport`'s real aggregate, `buildDryRunReport`,
+`envErrorJson`, `buildInvalidArgsEnvelope`) or their own equivalent literal — including `--dry-run`,
+CONFIG_ERROR/ENV_ERROR envelopes, and `changed`'s `--show-modules-only` short-circuit. The one
+exception is `parallel`'s `modules.length === 0` (`no_test_modules`) early-exit shape: it stays at its
+existing 4 keys (`tool`, `missed_lines`, `modules_with_kover_plugin`, `modules_with_jacoco_plugin`) —
+a fixed contract the agentic-eval grader's `isCoherentNoApplicableTestsCoverageBlock` pins by exact
+shape, deliberately left untouched.
+
+`android` / `benchmark` / `describe` / `info` / `update` / `clean` / `doctor` construct their own
+one-off `coverage:{}` placeholders (they never compute coverage line counts at all) and do **not**
+carry `covered_lines`/`total_lines` — except where they too route through the shared
+`buildDryRunReport`/`envErrorJson`/`buildInvalidArgsEnvelope` builders (e.g. `android --dry-run`,
+`benchmark --dry-run`), which now include the two fields as a side effect of being shared, generic
+infrastructure. A consumer should treat an absent key the same as an explicit `null`, not assume its
+absence means anything else.
+
 ## Exit codes
 
 | Exit | Meaning | Source |

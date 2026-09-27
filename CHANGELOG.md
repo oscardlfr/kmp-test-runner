@@ -36,28 +36,55 @@ soft. Text mode is unaffected (its `stdio:'inherit'` spawn never captures output
 the real PowerShell error is already visible on the user's own terminal). No `schema_version` bump —
 additive discriminated code, same pattern as `coverage_data_unavailable`.
 
+### Changed — `coverage.missed_lines` is `null`, not `0`, when no module contributes coverage data
+
+**Observable behavior change, standalone `kmp-test coverage` only.** Before this change, a project with
+no `kover`/`jacoco` plugin anywhere (or one where the parser found no rows) got
+`coverage.missed_lines: 0` from `runCoverage`'s own aggregate — indistinguishable from "we measured
+zero missed lines," even though nothing was measured at all. `parallel`/`changed`'s equivalent
+"unavailable" path already used `null` for this exact condition; standalone `coverage` did not. Now
+`missed_lines` is `null` whenever `coverage.modules_contributing` is `0`, matching that existing
+convention and closing the exact ambiguity a prior macOS coverage-reporting audit surfaced. No existing
+test asserted `missed_lines === 0` for this scenario, so none needed updating — verified by running the
+full suite before and after this change (both green).
+
 ### Added — explicit `covered_lines` / `total_lines` on the coverage aggregate; `changed`'s no-plugin scenario now under test
 
 **No `schema_version` bump — purely additive.** `coverage.covered_lines` / `coverage.total_lines` join
-the existing `coverage.missed_lines` on every subcommand's aggregate coverage block (`parallel`,
-`changed`, `coverage`). Same aggregate scope as `missed_lines` (the modules `--coverage-modules` /
-`--exclude-coverage` selected for this run, never narrowed by `--min-missed-lines`) and the same
-null-semantics: both are `null` whenever `modules_contributing` is `0`. `total_lines == covered_lines +
-missed_lines` whenever both are non-null. `--dry-run` and `--coverage-tool none` also carry the two new
-fields as `null`, matching the existing `missed_lines` shape.
+the existing `coverage.missed_lines` on `parallel`/`changed`/`coverage`'s coverage block wherever
+`missed_lines` itself already carries this null-semantics — the real aggregate, `--dry-run`,
+CONFIG_ERROR/ENV_ERROR envelopes (shared `buildDryRunReport`/`envErrorJson`/`buildInvalidArgsEnvelope`),
+and `changed`'s `--show-modules-only` short-circuit — except `parallel`'s `no_test_modules`
+(`modules.length === 0`) early-exit, deliberately left at its fixed 4-key shape (pinned by the
+agentic-eval grader's `isCoherentNoApplicableTestsCoverageBlock`). Same aggregate scope as
+`missed_lines` (the modules `--coverage-modules` / `--exclude-coverage` selected for this run, never
+narrowed by `--min-missed-lines`) and the same null-semantics: both are `null` whenever
+`modules_contributing` is `0`, with `total_lines == covered_lines + missed_lines` whenever both are
+non-null. Because `buildDryRunReport`/`envErrorJson`/`buildInvalidArgsEnvelope` are shared, generic
+envelope builders, `android`/`benchmark`'s own `--dry-run`/CONFIG_ERROR/ENV_ERROR envelopes pick up the
+two new (always-null, for those subcommands) fields as a side effect — their own hand-written coverage
+placeholders elsewhere are untouched.
 
 **Regression-locked**: a project with no `kover`/`jacoco` plugin anywhere had no direct test coverage
 for its exact envelope shape on either `parallel` or `changed` before this change — unset
 `--min-missed-lines` emits `no_coverage_data` and exits `0`; `--min-missed-lines N>0` emits
 `coverage_data_unavailable` (`reason: "target-not-detected"`) and exits `3`. Both subcommands are now
 pinned against real `coverage-orchestrator.js` (no stubs), including a discrimination proof that this
-exact assertion set fails against `v0.14.0`.
+exact assertion set fails against `v0.14.0`. A second new test locks the real, non-null data path
+(`covered_lines`/`total_lines` equal to the real aggregation, matching the markdown report's `TOTAL`
+row) — every other test touching these two fields only asserted the null case, so a swapped assignment
+would have passed unnoticed; RED/GREEN-verified against a deliberately swapped assignment.
 
 **Internal fix, no user-visible behavior change**: writing a real (non-stubbed) end-to-end test for
 `changed`'s delegated coverage behavior surfaced that `changed`'s in-process delegation to `parallel`
 silently dropped the caller's injected `spawn` — only `env`/`log` were forwarded. Every real invocation
 already defaults `spawn` to the same `spawnSync`, so production callers were never affected; fixed by
 forwarding `spawn` alongside `env`/`log`.
+
+**Note for future consumer-side work**: any downstream tooling reading `coverage.missed_lines` from
+standalone `kmp-test coverage` and branching on `=== 0` to mean "measured, zero missed lines" must
+switch to checking `modules_contributing > 0` first — the value for "nothing was measured" changed from
+`0` to `null`.
 
 ### Added — public agentic usage benchmark v2 (`tools/runs/agentic-usage-benchmark-v2-2026-07-17.md`)
 
