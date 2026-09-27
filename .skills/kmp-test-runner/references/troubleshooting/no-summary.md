@@ -2,7 +2,7 @@
 
 The orchestrator finished running but the wrapper script's stdout didn't contain a parseable summary block. **Soft code** — does NOT promote `exit_code`. Legitimate exit-0 outcome with structured signal.
 
-> **Not the same as `wrapper_no_output` (hard, exit 3).** The discriminator is stdout, not exit code: `wrapper_no_output` fires only when the wrapper exited non-zero having written *nothing at all* to stdout — it never ran its body far enough to produce anything (the most common cause on Windows: `PSExecutionPolicyPreference=Restricted` rejecting the ps1 before it starts). `no_summary` fires whenever *some* stdout existed but none of it was recognisable — typically a clean exit 0, but also possible with a non-zero exit if the wrapper produced partial output before dying mid-run (see root cause 5 below). See [`envelope-schema.md#errors-discriminated-codes`](../cli/envelope-schema.md#errors-discriminated-codes).
+> **Not the same as `wrapper_no_output` (hard, exit 3).** `wrapper_no_output` fires only when the wrapper exited non-zero having written *nothing at all* to stdout — it never ran its body far enough to produce anything (on Windows, typically PowerShell refusing to load the ps1 even past the `-ExecutionPolicy Bypass` kmp-test's spawn already passes — usually a MachinePolicy/UserPolicy Group Policy, which outranks that Process-scope Bypass). `no_summary` covers every other run where nothing recognisable was parsed: unrecognisable stdout with any exit code (typically exit 0, but also non-zero when the wrapper printed partial output before dying — see root cause 5 below), and empty stdout with exit 0. See [`envelope-schema.md#errors-discriminated-codes`](../cli/envelope-schema.md#errors-discriminated-codes).
 
 ## Symptom
 

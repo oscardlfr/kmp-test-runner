@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Windows-only e2e. Drives the REAL CLI binary (unmocked spawnSync) against
-// a narrow child environment: PSExecutionPolicyPreference=Restricted (the
-// Windows PowerShell 5.1 client default when nothing has explicitly
-// configured a policy) and no PowerShell 7 directory on PATH, so
-// pickWindowsShell() falls back to powershell.exe — the combination that
-// silently blocks the wrapper before this fix.
+// a narrow child environment: no PowerShell 7 directory on PATH, so
+// pickWindowsShell() falls back to Windows PowerShell 5.1 — whose default
+// policy on a client Windows edition is Restricted when nothing has
+// explicitly configured one — plus PSExecutionPolicyPreference=Restricted
+// as a side-effect-free stand-in for that condition. The combination that
+// silently blocked the wrapper before this fix.
 //
 // Pre-fix this produced a soft `no_summary` (exit 1, 0 tests, wrapper never
 // ran). Post-fix the wrapper actually executes and reports the fake
