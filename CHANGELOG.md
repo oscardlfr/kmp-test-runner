@@ -48,6 +48,11 @@ convention and closing the exact ambiguity a prior macOS coverage-reporting audi
 test asserted `missed_lines === 0` for this scenario, so none needed updating — verified by running the
 full suite before and after this change (both green).
 
+**For consumer-side work**: any downstream tooling reading `coverage.missed_lines` from standalone
+`kmp-test coverage` and branching on `=== 0` to mean "measured, zero missed lines" must switch to
+checking `modules_contributing > 0` first — the value for "nothing was measured" changed from `0` to
+`null`.
+
 ### Added — explicit `covered_lines` / `total_lines` on the coverage aggregate; `changed`'s no-plugin scenario now under test
 
 **No `schema_version` bump — purely additive.** `coverage.covered_lines` / `coverage.total_lines` join
@@ -80,11 +85,6 @@ would have passed unnoticed; RED/GREEN-verified against a deliberately swapped a
 silently dropped the caller's injected `spawn` — only `env`/`log` were forwarded. Every real invocation
 already defaults `spawn` to the same `spawnSync`, so production callers were never affected; fixed by
 forwarding `spawn` alongside `env`/`log`.
-
-**Note for future consumer-side work**: any downstream tooling reading `coverage.missed_lines` from
-standalone `kmp-test coverage` and branching on `=== 0` to mean "measured, zero missed lines" must
-switch to checking `modules_contributing > 0` first — the value for "nothing was measured" changed from
-`0` to `null`.
 
 ### Added — public agentic usage benchmark v2 (`tools/runs/agentic-usage-benchmark-v2-2026-07-17.md`)
 
