@@ -2192,6 +2192,51 @@ describe('flavorsFromTasks (Finding #2)', () => {
     expect(flavorsFromTasks(undefined)).toEqual([]);
     expect(flavorsFromTasks([])).toEqual([]);
   });
+
+  // Real `gradlew :module:tasks --all` output, captured 2026-09-27 during the
+  // v0.15.0 pre-release wide-smoke pass. A compound build type
+  // (`create("githubRelease")` in AGP) produces `testGithubReleaseUnitTest`
+  // ALONGSIDE the flat `testReleaseUnitTest` for the same build type -- the
+  // pre-fix regex matched this the same shape as a real flavor and returned
+  // `['github']`. A module with genuine product flavors never exposes the
+  // flat form for a build type it also has a flavor-prefixed task for (see
+  // the two real-flavor fixtures below) -- that's the discriminator this fix
+  // relies on.
+  it('real fixture: confetti androidApp (compound build type "githubRelease", no real flavors) -> []', () => {
+    expect(flavorsFromTasks([
+      'testDebugUnitTest', 'testGithubReleaseUnitTest', 'testReleaseUnitTest',
+    ])).toEqual([]);
+  });
+
+  // Real fixture, NowInAndroid :core:domain -- flavors ("demo"/"prod") are
+  // convention-plugin-applied at the app level and propagate down to this
+  // library module; :core:domain's own build.gradle.kts never declares
+  // productFlavors. Only Debug-variant tasks exist for either flavor (no
+  // Release-flavored unit-test tasks at all in the real probe output) --
+  // this is the case that would falsely fail a "needs both Debug and
+  // Release" alternative rule; the flat-task-coexistence check does not
+  // depend on a Release variant existing at all.
+  it('real fixture: NowInAndroid :core:domain (real convention-applied flavors, Debug-only) -> [demo, prod]', () => {
+    expect(flavorsFromTasks([
+      'testDemoDebugUnitTest', 'testProdDebugUnitTest',
+    ])).toEqual(['demo', 'prod']);
+  });
+
+  // Real fixture, WakeTheCave :app -- flavors declared directly
+  // (`flavorDimensions += "environment"`), same Debug-only shape as above.
+  it('real fixture: WakeTheCave :app (real directly-declared flavors, Debug-only) -> [demo, prod]', () => {
+    expect(flavorsFromTasks([
+      'testDemoDebugUnitTest', 'testProdDebugUnitTest',
+    ])).toEqual(['demo', 'prod']);
+  });
+
+  it('a flat task for a DIFFERENT build type does not suppress a real flavor capture for another', () => {
+    // testReleaseUnitTest (flat, Release) coexists with testDemoDebugUnitTest
+    // (flavored, Debug) -- different build types, so "demo" is still real.
+    expect(flavorsFromTasks([
+      'testReleaseUnitTest', 'testDemoDebugUnitTest',
+    ])).toEqual(['demo']);
+  });
 });
 
 describe('resolveTasksFor — flavors + flavored coverage (Finding #2)', () => {
