@@ -59,7 +59,7 @@ Every subcommand emits the same canonical envelope on `--json`. Subcommand-speci
     "modules_with_kover_plugin": [],
     "modules_with_jacoco_plugin": [],
     "module_buckets": {            // per-module accounting; sum must equal detected-plugin count
-      "with_data": [],             // XML parsed, rows added to aggregation
+      "with_data": [],             // XML found fresh and parsed -- may still hold zero coverable lines; see below
       "no_xml": [],                // XML missing on disk (the common silent-drop case)
       "parse_errored": [],         // coverage-xml.js parser reported errored:true (malformed/missing/oversized XML)
       "skipped_by_user": []        // filtered by --exclude-coverage / --coverage-modules
@@ -108,6 +108,18 @@ carry `covered_lines`/`total_lines` — except where they too route through the 
 `benchmark --dry-run`), which now include the two fields as a side effect of being shared, generic
 infrastructure. A consumer should treat an absent key the same as an explicit `null`, not assume its
 absence means anything else.
+
+### `module_buckets.with_data` vs. `modules_contributing`
+
+`with_data` means the module's coverage XML was found fresh and parsed without error — nothing more. A
+module can land in `with_data` while contributing zero coverable lines: an interface-only module, or a
+report produced by a build that ran the coverage-report task without ever executing a test (e.g. the
+underlying unit-test task failed at setup, so Kover/JaCoCo still emit a structurally valid, empty
+report). That module counts toward `with_data.length` but not toward `modules_contributing`, and the
+aggregate (`missed_lines`/`covered_lines`/`total_lines`) does not include it. A consumer that wants to
+know whether ANY real coverage data exists must read `modules_contributing`, never `with_data.length` —
+the two are not interchangeable, and a project where every `with_data` module happens to be
+zero-coverage-real will show `modules_contributing: 0` alongside a non-empty `with_data` array.
 
 ## Exit codes
 

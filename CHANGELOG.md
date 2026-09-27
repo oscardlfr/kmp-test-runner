@@ -35,6 +35,10 @@ branching on its exit codes — this release has more exit-code and field-semant
   populated the cache once; dispatch itself is unaffected.
 - **`parallel`/`changed --test-type all` no longer hard-fails with no adb device** — see the dedicated
   entry below if you were relying on (or working around) that failure.
+- **Model cache schema 8 → 11**: three bumps landed across this release — build-logic sources (#347),
+  precompiled build-logic scripts (#354), and compound-build-type flavor detection (#525) — each
+  force-invalidating the project-model cache in turn. Warm caches built by 0.14.0 are rebuilt fresh on
+  the first run after upgrading; no action needed beyond that one-time rebuild cost.
 
 ### Fixed — probe-derived flavor detection no longer treats a compound build type as a product flavor
 

@@ -315,7 +315,11 @@
   accepted carve-outs together. This session's evidence: both Linux lanes (Node 24/JDK 17, Node
   18 compatibility) passed cleanly on the final local-ci invocation; the Windows lane completed
   npm ci/line-ending/fixture/audit/Pester checks and halted exactly at the documented
-  `TaskActionTest.kt:62` carve-out (11/16, zero diff confirmed); the `windows-metachar.test.js`
+  `TaskActionTest.kt:62` carve-out (11/16, zero diff confirmed) — recurred 2026-09-28 on PR #525's
+  local-ci run at a different split (2/16: both Gradle-7.6.1-pinned parameterized cases), root-caused
+  to Gradle-daemon-startup contention under the full gate (zero diff in `gradle-plugin/`; an isolated
+  rerun of the same test class passed 16/16 immediately after) rather than re-derived as a new carve-out
+  — same underlying flake, not a reclassification; the `windows-metachar.test.js`
   carve-out (4/4, zero diff confirmed) was independently verified via a direct full-suite vitest
   run on this same machine earlier in the session, not from within that same local-ci invocation.
   **Deliberately out of scope for this PR** (adversarial review caught, none acted on — expanding
