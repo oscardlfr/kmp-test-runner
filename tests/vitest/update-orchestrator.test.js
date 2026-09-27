@@ -301,11 +301,10 @@ describe('buildInstallSpawn', () => {
     }
   });
 
-  // PR-A (audit 2026-09-27, PLAN-B) — same wrapper-blocking bug as
-  // script-dispatcher.js: a Restricted PSExecutionPolicyPreference refuses
-  // to load install.ps1 before it ever runs, so `kmp-test update` silently
-  // fails on a narrow/guest environment. Real-platform-conditional, matching
-  // this describe block's existing convention (this argv branch is
+  // Same wrapper-blocking bug as script-dispatcher.js: a Restricted
+  // PowerShell execution policy refuses to load install.ps1 before it ever
+  // runs, so `kmp-test update` silently fails. Real-platform-conditional,
+  // matching this describe block's existing convention (this argv branch is
   // exercised for real on the windows-latest CI leg).
   it.skipIf(process.platform !== 'win32')(
     'win32 argv carries -ExecutionPolicy Bypass between -NoProfile and -File',

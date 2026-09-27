@@ -1,16 +1,19 @@
 // SPDX-License-Identifier: MIT
-// PR-A (audit 2026-09-27, PLAN-B) — Windows wrapper spawn must pass
-// -ExecutionPolicy Bypass. Pre-fix, script-dispatcher.js spawned
-// `powershell.exe -NoLogo -NoProfile -File <ps1> ...` with no policy
-// override. On a host whose PSExecutionPolicyPreference is Restricted (the
-// Windows 11 client default, inherited verbatim by a narrow/guest process
-// environment that never ran `Set-ExecutionPolicy`), that spawn is refused
-// by PowerShell before the ps1 body ever executes. kmp-test then falls
-// through to the legacy parser against empty stdout and reports a soft
-// `no_summary` (exit 1, 0 tests) in under a second — indistinguishable from
-// "ran fine but produced nothing parseable". Reproduced live against this
-// worktree via repro/run-repro.ps1 + repro/verify-fix.ps1
-// (C:\kmp-eval\scratch\evidence1-audit-20260927\repro\).
+// Windows wrapper spawn must pass -ExecutionPolicy Bypass. Pre-fix,
+// script-dispatcher.js spawned `powershell.exe -NoLogo -NoProfile -File
+// <ps1> ...` with no policy override. When the effective PowerShell
+// execution policy resolves to Restricted — the Windows PowerShell 5.1
+// client default when nothing has explicitly configured a policy, which is
+// what a host reaches whenever PowerShell 7 isn't installed and kmp-test
+// falls back to Windows PowerShell (a restrictive GPO produces the same
+// effect) — that spawn is refused by PowerShell before the ps1 body ever
+// executes. kmp-test then falls through to the legacy parser against empty
+// stdout and reports a soft `no_summary` (exit 1, 0 tests) in under a
+// second — indistinguishable from "ran fine but produced nothing
+// parseable". Reproduced live via repro/run-repro.ps1 + repro/verify-fix.ps1
+// forcing PSExecutionPolicyPreference=Restricted and filtering PowerShell
+// 7's directory out of PATH, as a side-effect-free stand-in for that real
+// condition.
 //
 // isWin is a dispatchScriptCommand parameter (not read from process.platform
 // internally past the default), so these tests simulate win32 argv assembly
@@ -56,7 +59,7 @@ function baseCtx(overrides = {}) {
   };
 }
 
-describe('PR-A — Windows wrapper spawn includes -ExecutionPolicy Bypass', () => {
+describe('Windows wrapper spawn: execution-policy bypass', () => {
   let fixtureRoot = null;
   let stdoutSpy = null;
 
@@ -85,7 +88,7 @@ describe('PR-A — Windows wrapper spawn includes -ExecutionPolicy Bypass', () =
     // dry-run never spawns the wrapper script itself — this is purely an
     // argv-assembly assertion. (pickWindowsShell() DOES still probe `pwsh`
     // via spawnSync before the dry-run short-circuit — a pre-existing,
-    // documented, deliberately-unfixed quirk unrelated to PR-A; see
+    // documented, deliberately-unfixed quirk unrelated to this fix; see
     // BACKLOG.md PR-18. Assert on absence of the wrapper spawn specifically,
     // not on zero spawnSync calls overall.)
     expect(spawnMock.mock.calls.some(([, args]) => Array.isArray(args) && args.includes('-File'))).toBe(false);
@@ -110,17 +113,15 @@ describe('PR-A — Windows wrapper spawn includes -ExecutionPolicy Bypass', () =
   }
 });
 
-// Captured live 2026-09-27 against this worktree's real wrapper script
-// (scripts/ps1/run-parallel-coverage-suite.ps1) under
-// PSExecutionPolicyPreference=Restricted, Windows PowerShell 5.1 (not pwsh
-// 7), Spanish OS locale — see repro/verify-fix.ps1 in
-// C:\kmp-eval\scratch\evidence1-audit-20260927\repro\. Deliberately used
-// instead of a guessed translation: this locale's CategoryInfo names
+// Captured live against a real wrapper script (run-parallel-coverage-suite.ps1)
+// blocked under PSExecutionPolicyPreference=Restricted, Windows PowerShell
+// 5.1 (not pwsh 7), Spanish OS locale. Deliberately used instead of a
+// guessed translation: this locale's CategoryInfo names
 // `ParentContainsErrorRecordException`, NOT `PSSecurityException` as the
 // well-known English message does — the detector must not depend on that
 // specific token.
 const SPANISH_EXECUTION_POLICY_STDERR =
-  'No se puede cargar el archivo C:\\kmp-eval\\windows-wrapper-execution-policy\\scripts\\ps1\\run-parallel-coverage-suite.ps1 \n' +
+  'No se puede cargar el archivo C:\\project\\scripts\\ps1\\run-parallel-coverage-suite.ps1 \n' +
   'porque la ejecución de scripts está deshabilitada en este sistema. Para obtener más información, consulta el tema \n' +
   'about_Execution_Policies en https:/go.microsoft.com/fwlink/?LinkID=135170.\n' +
   '    + CategoryInfo          : SecurityError: (:) [], ParentContainsErrorRecordException\n' +
@@ -134,7 +135,7 @@ const ENGLISH_EXECUTION_POLICY_STDERR =
   '    + CategoryInfo          : SecurityError: (:) [], PSSecurityException\n' +
   '    + FullyQualifiedErrorId : UnauthorizedAccess\n';
 
-describe('PR-A — wrapper_no_output diagnostic (blocked wrapper vs. soft no_summary)', () => {
+describe('wrapper_no_output diagnostic: blocked wrapper vs. soft no_summary', () => {
   let fixtureRoot = null;
   let stdoutSpy = null;
 

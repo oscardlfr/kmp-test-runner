@@ -7,19 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed — Windows wrapper no longer silently blocked by `PSExecutionPolicyPreference=Restricted`
+### Fixed — Windows wrapper no longer silently blocked by a Restricted PowerShell execution policy
 
 **Observable behavior change.** On Windows, `parallel`/`changed`/`android`/`benchmark`/`coverage` and
-`update` spawned `powershell.exe`/`pwsh` with no `-ExecutionPolicy` override. On a host whose
-`PSExecutionPolicyPreference` is `Restricted` — the Windows 11 client default, inherited as-is by any
-process environment that never explicitly ran `Set-ExecutionPolicy` (CI runners, service accounts,
-narrow/guest environments) — PowerShell refused to load the `.ps1` wrapper at all, before a single
-line of it ran. The 5 script-backed subcommands then silently fell through to the legacy output
-parser against completely empty stdout and reported a soft `no_summary` (exit `0` tests, `exit_code
-1`) in under a second — indistinguishable from "ran fine but produced nothing parseable". `kmp-test
-update` failed the same way against `install.ps1`. Both spawns now pass `-ExecutionPolicy Bypass`,
-scoped to that one child process only (a `MachinePolicy`/`UserPolicy` GPO still applies and is
-unaffected).
+`update` spawned `powershell.exe`/`pwsh` with no `-ExecutionPolicy` override. kmp-test prefers `pwsh`
+(PowerShell 7, whose own default execution policy is `RemoteSigned`) and only falls back to Windows
+PowerShell 5.1 when `pwsh` isn't on `PATH` — but Windows PowerShell 5.1's default policy on a client
+Windows edition, when nothing has ever explicitly configured one, is `Restricted` (a restrictive GPO
+produces the same effective policy). In that state PowerShell refused to load the `.ps1` wrapper at
+all, before a single line of it ran. The 5 script-backed subcommands then silently fell through to the
+legacy output parser against completely empty stdout and reported a soft `no_summary` (0 tests,
+`exit_code 1`) in under a second — indistinguishable from "ran fine but produced nothing parseable".
+`kmp-test update` failed the same way against `install.ps1`. Both spawns now pass `-ExecutionPolicy
+Bypass`, scoped to that one child process only (a `MachinePolicy`/`UserPolicy` GPO still applies and
+is unaffected).
 
 **New discriminated code, `errors[].code: "wrapper_no_output"` (`ENV_ERROR`, exit `3`).** In `--json`
 mode, when a script-backed subcommand's wrapper process exits non-zero having written nothing to
