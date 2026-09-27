@@ -52,7 +52,9 @@ Every subcommand emits the same canonical envelope on `--json`. Subcommand-speci
   ],
   "coverage": {
     "tool": "auto",                // | "jacoco" | "kover" | "none"
-    "missed_lines": null,          // always the COMPLETE project total — never narrowed by --min-missed-lines
+    "missed_lines": null,          // always the COMPLETE project total — never narrowed by --min-missed-lines; only meaningful when modules_contributing > 0
+    "covered_lines": null,         // same scope/null-semantics as missed_lines — null whenever modules_contributing is 0
+    "total_lines": null,           // same scope/null-semantics as missed_lines — null whenever modules_contributing is 0
     "modules_contributing": 0,     // count of modules with real aggregated data — also always unfiltered
     "modules_with_kover_plugin": [],
     "modules_with_jacoco_plugin": [],
@@ -87,6 +89,26 @@ Every subcommand emits the same canonical envelope on `--json`. Subcommand-speci
 }
 ```
 
+### `covered_lines` / `total_lines` scope
+
+`covered_lines` / `total_lines` accompany `missed_lines`, with the same null-semantics (`null` exactly
+when `modules_contributing` is `0`), on every envelope `parallel` / `changed` / `coverage` construct
+through the shared envelope builders (`buildJsonReport`'s real aggregate, `buildDryRunReport`,
+`envErrorJson`, `buildInvalidArgsEnvelope`) or their own equivalent literal — including `--dry-run`,
+CONFIG_ERROR/ENV_ERROR envelopes, and `changed`'s `--show-modules-only` short-circuit. The one
+exception is `parallel`'s `modules.length === 0` (`no_test_modules`) early-exit shape: it stays at its
+existing 4 keys (`tool`, `missed_lines`, `modules_with_kover_plugin`, `modules_with_jacoco_plugin`) —
+a fixed contract the agentic-eval grader's `isCoherentNoApplicableTestsCoverageBlock` pins by exact
+shape, deliberately left untouched.
+
+`android` / `benchmark` / `describe` / `info` / `update` / `clean` / `doctor` construct their own
+one-off `coverage:{}` placeholders (they never compute coverage line counts at all) and do **not**
+carry `covered_lines`/`total_lines` — except where they too route through the shared
+`buildDryRunReport`/`envErrorJson`/`buildInvalidArgsEnvelope` builders (e.g. `android --dry-run`,
+`benchmark --dry-run`), which now include the two fields as a side effect of being shared, generic
+infrastructure. A consumer should treat an absent key the same as an explicit `null`, not assume its
+absence means anything else.
+
 ## Exit codes
 
 | Exit | Meaning | Source |
@@ -115,9 +137,9 @@ Exit codes 124+ are reserved for OS-level signals; the orchestrator never emits 
 | `multiple_adb_devices` | android, parallel(`androidInstrumented`), benchmark | 3 | multiple usable adb devices without `--device <serial>` — pass `--device` to eliminate ambiguity |
 | `flavor_unused` | parallel(`androidInstrumented`/`all`) | 2 | `--flavor <name>` supplied but no discovered module declares `productFlavors {}`; orchestrator early-exits before any gradle dispatch |
 | `isolated_runtime_race` | parallel | 2 | `--isolated` combined with a test-type that hits a shared runtime resource (`ios` simulator, `androidInstrumented` without `--device`, or `all`) |
-| `coverage_threshold_exceeded` | parallel(`--min-missed-lines`), coverage | 1 | aggregated (unfiltered) `coverage.missed_lines` exceeds the threshold. `--min-missed-lines` never removes coverage data — it only decides this gate and narrows the *markdown report's* per-class detail section; `coverage.missed_lines` / `modules_contributing` / `module_buckets` always reflect the complete project even when this error fires |
-| `coverage_data_unavailable` | parallel(`--min-missed-lines`), coverage | 3 | a positive coverage budget could not be evaluated — the run can never silently exit 0 in this state. Carries `threshold:number` and a closed `reason` enum: `no-contributing-data` (zero modules contributed any coverage data), `target-not-detected` (a module `parallel` actually dispatched for tests carries no coverage plugin at all), `target-no-xml` / `target-parse-error` (a dispatched module's coverage XML is missing / failed to parse), `report-dispatch-failed` (the jacoco/kover report task itself exited non-zero this run — never trust possibly-stale XML left on disk from an earlier run), `aggregation-failed` (the in-process aggregation step threw). Never emitted together with `coverage_threshold_exceeded` |
-| `coverage_budget_without_coverage` | parallel(`--min-missed-lines`), coverage | 2 | `--min-missed-lines N>0` was combined with `--no-coverage` / `--coverage-tool none` — a usage contradiction caught before any gradle dispatch or XML read |
+| `coverage_threshold_exceeded` | parallel/changed(`--min-missed-lines`), coverage | 1 | aggregated (unfiltered) `coverage.missed_lines` exceeds the threshold. `--min-missed-lines` never removes coverage data — it only decides this gate and narrows the *markdown report's* per-class detail section; `coverage.missed_lines` / `modules_contributing` / `module_buckets` always reflect the complete project even when this error fires |
+| `coverage_data_unavailable` | parallel/changed(`--min-missed-lines`), coverage | 3 | a positive coverage budget could not be evaluated — the run can never silently exit 0 in this state. Carries `threshold:number` and a closed `reason` enum: `no-contributing-data` (zero modules contributed any coverage data), `target-not-detected` (a module `parallel`/`changed` actually dispatched for tests carries no coverage plugin at all), `target-no-xml` / `target-parse-error` (a dispatched module's coverage XML is missing / failed to parse), `report-dispatch-failed` (the jacoco/kover report task itself exited non-zero this run — never trust possibly-stale XML left on disk from an earlier run), `aggregation-failed` (the in-process aggregation step threw). Never emitted together with `coverage_threshold_exceeded`. `changed` inherits this unchanged — it delegates to `parallel` in-process and forwards `errors[]`/`warnings[]` verbatim |
+| `coverage_budget_without_coverage` | parallel/changed(`--min-missed-lines`), coverage | 2 | `--min-missed-lines N>0` was combined with `--no-coverage` / `--coverage-tool none` — a usage contradiction caught before any gradle dispatch or XML read |
 | `git_error` | changed | 3 | a git command failed — repo unreadable, corrupted, or access denied. `errors[].git_command` carries the invoked subcommand (e.g. `rev-parse --is-inside-work-tree`, `status --porcelain`, `diff --cached --name-only`); `errors[].exit_status` the numeric git exit code; `errors[].stderr_summary` the first 300 chars of stderr with CR/LF collapsed to spaces (omitted when empty). This is a **hard** code — `exit_code` is always 3 |
 | `gradle_timeout` | parallel, benchmark | 3 | the gradle spawn process was killed by the `--timeout` deadline (SIGTERM on POSIX; ETIMEDOUT on Windows). **`parallel`** errors carry `module:string`, `task:string`, `timeout_ms:number`. **`benchmark`** errors additionally carry `platform:string` and `log_path:string`. Never retried — a spawn timeout is an infra failure, not a flaky test |
 | `task_not_found` | any | 3 | gradle task class missing — usually a plugin not applied to the requested module |
@@ -155,7 +177,7 @@ Non-fatal signals. They never change the exit code — an agent can branch on th
 | `log_write_failed` | android | a per-module log/logcat/errors artifact could not be written (disk full, read-only dir). Carries `path` — the envelope's `log_file`/`logcat_file`/`errors_file` pointer for that module may be a dead link |
 | `junit_xml_oversized` | parallel, changed | a `TEST-*.xml` report exceeded the size cap (default 32 MB; tunable via `KMP_JUNIT_XML_MAX_MB`) and was skipped — `tests.individual_total` undercounts and `test_failures[]` may be incomplete for that task. Carries `module`, `task`, `file`, `size_bytes`, `max_mb` |
 | `test_filter_unsupported` | benchmark | `--test-filter` was set and jvm benchmark legs were skipped (kotlinx-benchmark tasks reject gradle's `--tests` and have no CLI filter; running unfiltered would dispatch the full suite the user narrowed). Per-module detail in `skipped[]`. Carries `platform: "jvm"`, `test_filter`, `skipped_modules`. The android leg still filters via `-P` instrumentation args |
-| `no_coverage_data` | coverage, parallel | no XML coverage data collected from any module — either no plugin is applied or no test run has produced reports yet |
+| `no_coverage_data` | coverage, parallel, changed | no XML coverage data collected from any module — either no plugin is applied or no test run has produced reports yet |
 | `coverage_aggregation_skipped` | coverage | `--coverage-tool none` (or the `--no-coverage` alias) disabled the aggregation step |
 | `coverage_aggregation_drift` | coverage, parallel | the four `module_buckets` (`with_data` + `no_xml` + `parse_errored` + `skipped_by_user`) didn't sum to `modules_with_kover_plugin.length + modules_with_jacoco_plugin.length` — defensive guard against silent model drops. Carries `detected`, `accounted`, `unaccounted` |
 | `coverage_xml_disabled` | coverage, parallel | a jacoco module ran its report but emitted HTML/`.exec` only — no XML (Gradle's default `xml.required=false`). `kmp-test parallel` enables jacoco XML automatically; this fires when `--no-coverage-xml-autofix` was passed (or XML is otherwise absent). Carries `modules` |

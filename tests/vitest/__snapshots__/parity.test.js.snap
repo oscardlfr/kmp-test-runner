@@ -9,6 +9,7 @@ exports[`parity / envelope JSON schema snapshot > android --dry-run --json envel
     "instrumented_modules": [],
   },
   "coverage": {
+    "covered_lines": null,
     "missed_lines": null,
     "module_buckets": {
       "no_xml": [],
@@ -19,6 +20,7 @@ exports[`parity / envelope JSON schema snapshot > android --dry-run --json envel
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
+    "total_lines": null,
   },
   "dry_run": true,
   "duration_ms": "<DURATION_MS>",
@@ -65,6 +67,7 @@ exports[`parity / envelope JSON schema snapshot > android --list-only --json env
     "instrumented_modules": [],
   },
   "coverage": {
+    "covered_lines": null,
     "missed_lines": null,
     "module_buckets": {
       "no_xml": [],
@@ -75,6 +78,7 @@ exports[`parity / envelope JSON schema snapshot > android --list-only --json env
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
+    "total_lines": null,
   },
   "duration_ms": "<DURATION_MS>",
   "errors": [
@@ -119,6 +123,7 @@ exports[`parity / envelope JSON schema snapshot > benchmark --dry-run --json env
     "total": 0,
   },
   "coverage": {
+    "covered_lines": null,
     "missed_lines": null,
     "module_buckets": {
       "no_xml": [],
@@ -129,6 +134,7 @@ exports[`parity / envelope JSON schema snapshot > benchmark --dry-run --json env
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
+    "total_lines": null,
   },
   "dry_run": true,
   "duration_ms": "<DURATION_MS>",
@@ -174,6 +180,7 @@ exports[`parity / envelope JSON schema snapshot > changed --dry-run --json --sta
     "staged_only": true,
   },
   "coverage": {
+    "covered_lines": null,
     "missed_lines": null,
     "module_buckets": {
       "no_xml": [],
@@ -184,6 +191,7 @@ exports[`parity / envelope JSON schema snapshot > changed --dry-run --json --sta
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
+    "total_lines": null,
   },
   "dry_run": true,
   "duration_ms": "<DURATION_MS>",
@@ -235,6 +243,7 @@ exports[`parity / envelope JSON schema snapshot > changed --dry-run --json --sta
 exports[`parity / envelope JSON schema snapshot > coverage --dry-run --json envelope shape is stable 1`] = `
 {
   "coverage": {
+    "covered_lines": null,
     "missed_lines": null,
     "module_buckets": {
       "no_xml": [],
@@ -245,6 +254,7 @@ exports[`parity / envelope JSON schema snapshot > coverage --dry-run --json enve
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
+    "total_lines": null,
   },
   "dry_run": true,
   "duration_ms": "<DURATION_MS>",
@@ -466,6 +476,7 @@ exports[`parity / envelope JSON schema snapshot > info --json --no-adb envelope 
 exports[`parity / envelope JSON schema snapshot > parallel --dry-run --json envelope shape is stable 1`] = `
 {
   "coverage": {
+    "covered_lines": null,
     "missed_lines": null,
     "module_buckets": {
       "no_xml": [],
@@ -476,6 +487,7 @@ exports[`parity / envelope JSON schema snapshot > parallel --dry-run --json enve
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
+    "total_lines": null,
   },
   "dry_run": true,
   "duration_ms": "<DURATION_MS>",
