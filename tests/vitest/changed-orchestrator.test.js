@@ -335,6 +335,12 @@ describe('runChanged --show-modules-only', () => {
 
     expect(exitCode).toBe(0);
     expect(envelope.errors).toEqual([]);
+    // This early-return builds its own literal coverage object (not
+    // buildDryRunReport/runParallel) -- covered_lines/total_lines join
+    // the pre-existing missed_lines:null there too.
+    expect(envelope.coverage.missed_lines).toBeNull();
+    expect(envelope.coverage.covered_lines).toBeNull();
+    expect(envelope.coverage.total_lines).toBeNull();
   });
 });
 
@@ -586,6 +592,90 @@ describe('runChanged error code discrimination', () => {
     expect(codes).toContain('task_not_found');
     expect(codes).not.toContain('no_summary');
   });
+
+  // Every runParallelInjection stub in this file (including the
+  // one immediately above) hardcodes `warnings: []`, so line 543's
+  // `warnings: parallelEnvelope.warnings` passthrough has never actually been
+  // exercised with a non-empty array. Proves changed's own envelope
+  // construction forwards warnings unchanged, independent of whether the
+  // real coverage path happens to produce any (covered separately below).
+  it('runParallel-returned warnings flow through to changed envelope unchanged', async () => {
+    const dir = makeProject(['mod']);
+    const spawn = makeSpawnStub({
+      git: { statusOutput: porcelain(['mod/src/jvmTest/X.kt']) },
+    });
+    const stubbedWarnings = [{ code: 'no_coverage_data', message: 'No coverage data collected from any module' }];
+    const runParallelInjection = async () => ({
+      envelope: {
+        tests: { total: 1, passed: 1, failed: 0, skipped: 0 },
+        modules: ['mod'], skipped: [],
+        coverage: { tool: 'auto', missed_lines: null },
+        errors: [],
+        warnings: stubbedWarnings,
+      },
+      exitCode: 0,
+    });
+
+    const { envelope } = await runChanged({
+      projectRoot: dir,
+      args: [],
+      spawn,
+      runParallelInjection,
+    });
+
+    expect(envelope.warnings).toEqual(stubbedWarnings);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Same "no coverage plugin anywhere" scenario as
+// parallel-orchestrator.test.js, driven end-to-end through `changed`'s real
+// delegation to runParallel (no runParallelInjection stub) — proves the
+// warning/error survive the extra buildJsonReport rebuild at changed's own
+// step 9, not just runParallel's own envelope construction.
+// ---------------------------------------------------------------------------
+describe('changed coverage aggregation against a project with no coverage plugin anywhere (real runParallel, real coverage-orchestrator.js)', () => {
+  it('no --min-missed-lines -> warnings includes no_coverage_data, exit 0', async () => {
+    const dir = makeProject(['core']);
+    for (const ss of ['commonMain', 'jvmMain', 'jvmTest']) mkdirSync(path.join(dir, 'core', 'src', ss, 'kotlin'), { recursive: true });
+    const spawn = makeSpawnStub({
+      git: { statusOutput: porcelain(['core/src/jvmTest/kotlin/X.kt']) },
+      parallelSuite: { stdout: 'BUILD SUCCESSFUL in 1s\n' },
+    });
+    const { envelope, exitCode } = await runChanged({
+      projectRoot: dir,
+      args: ['--test-type', 'desktop'],
+      spawn,
+    });
+    expect(envelope.warnings.some(w => w.code === 'no_coverage_data')).toBe(true);
+    expect(envelope.errors).toEqual([]);
+    expect(exitCode).toBe(0);
+    expect(envelope.coverage.missed_lines).toBeNull();
+    expect(envelope.coverage.covered_lines).toBeNull();
+    expect(envelope.coverage.total_lines).toBeNull();
+  });
+
+  it('--min-missed-lines 15 -> errors includes coverage_data_unavailable/target-not-detected, exit 3', async () => {
+    const dir = makeProject(['core']);
+    for (const ss of ['commonMain', 'jvmMain', 'jvmTest']) mkdirSync(path.join(dir, 'core', 'src', ss, 'kotlin'), { recursive: true });
+    const spawn = makeSpawnStub({
+      git: { statusOutput: porcelain(['core/src/jvmTest/kotlin/X.kt']) },
+      parallelSuite: { stdout: 'BUILD SUCCESSFUL in 1s\n' },
+    });
+    const { envelope, exitCode } = await runChanged({
+      projectRoot: dir,
+      args: ['--test-type', 'desktop', '--min-missed-lines', '15'],
+      spawn,
+    });
+    expect(envelope.warnings.some(w => w.code === 'no_coverage_data')).toBe(true);
+    expect(envelope.errors).toEqual([
+      expect.objectContaining({ code: 'coverage_data_unavailable', threshold: 15, reason: 'target-not-detected' }),
+    ]);
+    expect(exitCode).toBe(3);
+    expect(envelope.coverage.missed_lines).toBeNull();
+    expect(envelope.coverage.covered_lines).toBeNull();
+    expect(envelope.coverage.total_lines).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -670,6 +760,11 @@ describe('runChanged --dry-run (F1)', () => {
     expect(gitCalls.length).toBe(0);
     expect(exitCode).toBe(0);
     expect(envelope.changed.detected_modules).toEqual([]);
+    // The shared buildDryRunReport carries covered_lines/total_lines null
+    // alongside the pre-existing missed_lines:null.
+    expect(envelope.coverage.missed_lines).toBeNull();
+    expect(envelope.coverage.covered_lines).toBeNull();
+    expect(envelope.coverage.total_lines).toBeNull();
   });
 
   it('--dry-run combined with --show-modules-only: dry-run wins, still empty and no git calls', async () => {

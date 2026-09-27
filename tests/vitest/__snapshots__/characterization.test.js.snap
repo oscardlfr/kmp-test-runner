@@ -3,6 +3,7 @@
 exports[`characterization / invalid-args envelopes > benchmark --platform bogus → CONFIG_ERROR envelope 1`] = `
 {
   "coverage": {
+    "covered_lines": null,
     "missed_lines": null,
     "module_buckets": {
       "no_xml": [],
@@ -13,6 +14,7 @@ exports[`characterization / invalid-args envelopes > benchmark --platform bogus 
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
+    "total_lines": null,
   },
   "duration_ms": "<DURATION_MS>",
   "errors": [
@@ -49,6 +51,7 @@ exports[`characterization / invalid-args envelopes > benchmark --platform bogus 
 exports[`characterization / invalid-args envelopes > benchmark --timeout abc → CONFIG_ERROR envelope 1`] = `
 {
   "coverage": {
+    "covered_lines": null,
     "missed_lines": null,
     "module_buckets": {
       "no_xml": [],
@@ -59,6 +62,7 @@ exports[`characterization / invalid-args envelopes > benchmark --timeout abc →
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
+    "total_lines": null,
   },
   "duration_ms": "<DURATION_MS>",
   "errors": [
@@ -90,6 +94,7 @@ exports[`characterization / invalid-args envelopes > benchmark --timeout abc →
 exports[`characterization / invalid-args envelopes > coverage --coverage-tool bogus → CONFIG_ERROR envelope 1`] = `
 {
   "coverage": {
+    "covered_lines": null,
     "missed_lines": null,
     "module_buckets": {
       "no_xml": [],
@@ -100,6 +105,7 @@ exports[`characterization / invalid-args envelopes > coverage --coverage-tool bo
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
+    "total_lines": null,
   },
   "duration_ms": "<DURATION_MS>",
   "errors": [
@@ -137,6 +143,7 @@ exports[`characterization / invalid-args envelopes > coverage --coverage-tool bo
 exports[`characterization / invalid-args envelopes > parallel --coverage-tool bogus → CONFIG_ERROR envelope 1`] = `
 {
   "coverage": {
+    "covered_lines": null,
     "missed_lines": null,
     "module_buckets": {
       "no_xml": [],
@@ -147,6 +154,7 @@ exports[`characterization / invalid-args envelopes > parallel --coverage-tool bo
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
+    "total_lines": null,
   },
   "duration_ms": "<DURATION_MS>",
   "errors": [
@@ -184,6 +192,7 @@ exports[`characterization / invalid-args envelopes > parallel --coverage-tool bo
 exports[`characterization / invalid-args envelopes > parallel --device (dangling) → CONFIG_ERROR envelope 1`] = `
 {
   "coverage": {
+    "covered_lines": null,
     "missed_lines": null,
     "module_buckets": {
       "no_xml": [],
@@ -194,6 +203,7 @@ exports[`characterization / invalid-args envelopes > parallel --device (dangling
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
+    "total_lines": null,
   },
   "duration_ms": "<DURATION_MS>",
   "errors": [
@@ -225,6 +235,7 @@ exports[`characterization / invalid-args envelopes > parallel --device (dangling
 exports[`characterization / invalid-args envelopes > parallel --isolated-cache-dir (dangling) → CONFIG_ERROR envelope 1`] = `
 {
   "coverage": {
+    "covered_lines": null,
     "missed_lines": null,
     "module_buckets": {
       "no_xml": [],
@@ -235,6 +246,7 @@ exports[`characterization / invalid-args envelopes > parallel --isolated-cache-d
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
+    "total_lines": null,
   },
   "duration_ms": "<DURATION_MS>",
   "errors": [
@@ -266,6 +278,7 @@ exports[`characterization / invalid-args envelopes > parallel --isolated-cache-d
 exports[`characterization / invalid-args envelopes > parallel --max-failures (retired flag, dangling) → CONFIG_ERROR envelope 1`] = `
 {
   "coverage": {
+    "covered_lines": null,
     "missed_lines": null,
     "module_buckets": {
       "no_xml": [],
@@ -276,6 +289,7 @@ exports[`characterization / invalid-args envelopes > parallel --max-failures (re
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
+    "total_lines": null,
   },
   "duration_ms": "<DURATION_MS>",
   "errors": [
@@ -306,6 +320,7 @@ exports[`characterization / invalid-args envelopes > parallel --max-failures (re
 exports[`characterization / invalid-args envelopes > parallel --max-failures 1 (retired flag, well-formed value) → CONFIG_ERROR envelope 1`] = `
 {
   "coverage": {
+    "covered_lines": null,
     "missed_lines": null,
     "module_buckets": {
       "no_xml": [],
@@ -316,6 +331,7 @@ exports[`characterization / invalid-args envelopes > parallel --max-failures 1 (
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
+    "total_lines": null,
   },
   "duration_ms": "<DURATION_MS>",
   "errors": [
@@ -346,6 +362,7 @@ exports[`characterization / invalid-args envelopes > parallel --max-failures 1 (
 exports[`characterization / invalid-args envelopes > parallel --max-failures 1.5 (retired flag, non-integer value) → CONFIG_ERROR envelope 1`] = `
 {
   "coverage": {
+    "covered_lines": null,
     "missed_lines": null,
     "module_buckets": {
       "no_xml": [],
@@ -356,6 +373,7 @@ exports[`characterization / invalid-args envelopes > parallel --max-failures 1.5
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
+    "total_lines": null,
   },
   "duration_ms": "<DURATION_MS>",
   "errors": [
@@ -386,6 +404,7 @@ exports[`characterization / invalid-args envelopes > parallel --max-failures 1.5
 exports[`characterization / invalid-args envelopes > parallel --max-workers -1 (negative) → CONFIG_ERROR envelope 1`] = `
 {
   "coverage": {
+    "covered_lines": null,
     "missed_lines": null,
     "module_buckets": {
       "no_xml": [],
@@ -396,6 +415,7 @@ exports[`characterization / invalid-args envelopes > parallel --max-workers -1 (
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
+    "total_lines": null,
   },
   "duration_ms": "<DURATION_MS>",
   "errors": [
@@ -427,6 +447,7 @@ exports[`characterization / invalid-args envelopes > parallel --max-workers -1 (
 exports[`characterization / invalid-args envelopes > parallel --max-workers abc (NaN) → CONFIG_ERROR envelope 1`] = `
 {
   "coverage": {
+    "covered_lines": null,
     "missed_lines": null,
     "module_buckets": {
       "no_xml": [],
@@ -437,6 +458,7 @@ exports[`characterization / invalid-args envelopes > parallel --max-workers abc 
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
+    "total_lines": null,
   },
   "duration_ms": "<DURATION_MS>",
   "errors": [
@@ -468,6 +490,7 @@ exports[`characterization / invalid-args envelopes > parallel --max-workers abc 
 exports[`characterization / invalid-args envelopes > parallel --test-type (dangling) → CONFIG_ERROR envelope 1`] = `
 {
   "coverage": {
+    "covered_lines": null,
     "missed_lines": null,
     "module_buckets": {
       "no_xml": [],
@@ -478,6 +501,7 @@ exports[`characterization / invalid-args envelopes > parallel --test-type (dangl
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
+    "total_lines": null,
   },
   "duration_ms": "<DURATION_MS>",
   "errors": [
@@ -509,6 +533,7 @@ exports[`characterization / invalid-args envelopes > parallel --test-type (dangl
 exports[`characterization / invalid-args envelopes > parallel --test-type bogus → CONFIG_ERROR envelope 1`] = `
 {
   "coverage": {
+    "covered_lines": null,
     "missed_lines": null,
     "module_buckets": {
       "no_xml": [],
@@ -519,6 +544,7 @@ exports[`characterization / invalid-args envelopes > parallel --test-type bogus 
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
+    "total_lines": null,
   },
   "duration_ms": "<DURATION_MS>",
   "errors": [
@@ -563,6 +589,7 @@ exports[`characterization / invalid-args envelopes > parallel --test-type bogus 
 exports[`characterization / variation envelopes > parallel --isolated --dry-run populates isolated:{} alongside plan 1`] = `
 {
   "coverage": {
+    "covered_lines": null,
     "missed_lines": null,
     "module_buckets": {
       "no_xml": [],
@@ -573,6 +600,7 @@ exports[`characterization / variation envelopes > parallel --isolated --dry-run 
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
+    "total_lines": null,
   },
   "dry_run": true,
   "duration_ms": "<DURATION_MS>",
@@ -630,6 +658,7 @@ exports[`characterization / variation envelopes > parallel --isolated --dry-run 
 exports[`characterization / variation envelopes > parallel --test-filter SomeTestClass populates plan.test_filter 1`] = `
 {
   "coverage": {
+    "covered_lines": null,
     "missed_lines": null,
     "module_buckets": {
       "no_xml": [],
@@ -640,6 +669,7 @@ exports[`characterization / variation envelopes > parallel --test-filter SomeTes
     "modules_with_jacoco_plugin": [],
     "modules_with_kover_plugin": [],
     "tool": "auto",
+    "total_lines": null,
   },
   "dry_run": true,
   "duration_ms": "<DURATION_MS>",
