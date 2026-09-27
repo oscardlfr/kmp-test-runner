@@ -2222,9 +2222,10 @@ describe('flavorsFromTasks (Finding #2)', () => {
     ])).toEqual(['demo', 'prod']);
   });
 
-  // Real fixture, WakeTheCave :app -- flavors declared directly
-  // (`flavorDimensions += "environment"`), same Debug-only shape as above.
-  it('real fixture: WakeTheCave :app (real directly-declared flavors, Debug-only) -> [demo, prod]', () => {
+  // Real fixture, a private app with directly-declared flavors -- flavors
+  // declared directly (`flavorDimensions += "environment"`), same Debug-only
+  // shape as above.
+  it('real fixture: a private app with directly-declared flavors (Debug-only) -> [demo, prod]', () => {
     expect(flavorsFromTasks([
       'testDemoDebugUnitTest', 'testProdDebugUnitTest',
     ])).toEqual(['demo', 'prod']);
