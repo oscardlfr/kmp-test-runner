@@ -36,6 +36,28 @@ soft. Text mode is unaffected (its `stdio:'inherit'` spawn never captures output
 the real PowerShell error is already visible on the user's own terminal). No `schema_version` bump —
 additive discriminated code, same pattern as `coverage_data_unavailable`.
 
+### Fixed — `parallel`/`changed --test-type all` no longer fails on a machine with no adb device
+
+**Regression, introduced by #338 (929aec8).** `--test-type all` adds `androidInstrumented` to the leg
+list automatically (`legsForAll`, unless `KMP_TEST_SKIP_ADB=1` is set) — the user asked for "everything
+this machine can run," not specifically for Android. #338 made the no-`--device`/no-`--clear-data`
+device-resolution path strict (`resolveAdbDevice`, catching offline/unauthorized/multiple-device states
+that a prior, looser check missed) but applied that same strictness to the *implicit* leg too: any
+machine with zero adb devices connected — true of most CI runners and most developer machines, even for
+a pure-JVM/KMP project with no Android module at all — got `instrumented_setup_failed`, exit `3`,
+before a single line of Gradle ran, for a leg nobody explicitly requested.
+
+`--test-type all` now narrows the run instead: when no `--device`/`--clear-data` was given and adb
+reports no usable device (none connected, all offline, or all unauthorized), the `androidInstrumented`
+leg is dropped and a new soft warning, `instrumented_leg_skipped` (carries `reason`, the adb error code
+that would otherwise have fired), is pushed — the remaining legs still dispatch and their own results
+decide `exit_code`. When exactly one usable device is present, the leg runs exactly as before. When
+multiple usable devices are present, `all` now proceeds without pinning one (gradle picks its own
+default) rather than failing with `multiple_adb_devices` — restoring pre-#338 behavior for this specific
+case. **Unaffected, unchanged**: an explicit `--test-type androidInstrumented` request, and `--device` /
+`--clear-data` (with or without `--test-type all`) — a user who specifically asks for Android
+instrumented testing still gets a hard, clear failure when it can't run, exactly as #338 intended.
+
 ### Added — public agentic usage benchmark v2 (`tools/runs/agentic-usage-benchmark-v2-2026-07-17.md`)
 
 **No behavior change** — docs/evidence only; no `lib/`, `bin/`, `.skills/`, or `tools/*.mjs`-at-top-level
