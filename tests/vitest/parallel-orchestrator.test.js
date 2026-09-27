@@ -2444,6 +2444,52 @@ describe('runParallel', () => {
       );
     });
 
+    it('only offline devices -> exit 0, instrumented_leg_skipped with reason: device_offline', async () => {
+      const dir = makeProject([
+        { name: 'shared', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      ]);
+      const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n' });
+      const { envelope, exitCode } = await runParallel({
+        projectRoot: dir,
+        args: ['--test-type', 'all'],
+        spawn,
+        adbProbe: () => [{ serial: 'FIRST', type: 'physical', model: 'A', state: 'offline' }],
+        log: () => {},
+        runCoverageInjection: makeRunCoverageStub(),
+      });
+
+      expect(exitCode).toBe(0);
+      expect(envelope.errors).toEqual([]);
+      expect(envelope.warnings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ code: 'instrumented_leg_skipped', reason: 'device_offline' }),
+        ]),
+      );
+    });
+
+    it('only unauthorized devices -> exit 0, instrumented_leg_skipped with reason: device_unauthorized', async () => {
+      const dir = makeProject([
+        { name: 'shared', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      ]);
+      const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL\n' });
+      const { envelope, exitCode } = await runParallel({
+        projectRoot: dir,
+        args: ['--test-type', 'all'],
+        spawn,
+        adbProbe: () => [{ serial: 'FIRST', type: 'physical', model: 'A', state: 'unauthorized' }],
+        log: () => {},
+        runCoverageInjection: makeRunCoverageStub(),
+      });
+
+      expect(exitCode).toBe(0);
+      expect(envelope.errors).toEqual([]);
+      expect(envelope.warnings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ code: 'instrumented_leg_skipped', reason: 'device_unauthorized' }),
+        ]),
+      );
+    });
+
     it('a project WITH an instrumented module, no adb devices -> the other legs still dispatch, only a warning (no adb error)', async () => {
       const dir = makeProject([
         { name: 'shared', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
