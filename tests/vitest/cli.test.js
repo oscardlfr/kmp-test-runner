@@ -1800,7 +1800,10 @@ describe('main() — Phase 4 step 7 (eager ProjectModel build before spawn)', ()
       // 8 → 9 (PR-28b): build-logic/**/*.kt joined the cache-key input set.
       // 9 → 10 (PR-28e): build-logic/**/*.gradle.kts and *.gradle joined
       // the cache-key input set.
-      expect(model.schemaVersion).toBe(10);
+      // 10 → 11: flavorsFromTasks no longer misreads a compound build-type
+      // name as a flavor — a cached model's derived resolved.flavors must
+      // be invalidated and recomputed.
+      expect(model.schemaVersion).toBe(11);
       expect(model.settingsIncludes).toEqual([':m']);
       expect(model.modules[':m'].type).toBe('jvm');
     });
