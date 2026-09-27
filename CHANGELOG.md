@@ -13,14 +13,20 @@ Read this section before upgrading if you have any automation parsing `kmp-test`
 branching on its exit codes — this release has more exit-code and field-semantics changes than usual.
 
 - **New exit-`3` cases that used to be exit `1`**: `task_not_found` / `unsupported_class_version` (any
-  subcommand), `gradle_timeout` (`parallel`/`benchmark`), `wrapper_no_output` (script-backed subcommands
-  on Windows). If you treated any of these as an ordinary test failure, they now need their own branch.
-- **New exit-`3` case that used to silently exit `0`**: `--min-missed-lines N>0` combined with
-  unreliable/absent coverage data now fails closed as `coverage_data_unavailable` instead of passing.
+  subcommand), `instrumented_setup_failed` detected from gradle's own output (`android`, via the same
+  `classifyExitCode` migration — the adb-preflight `instrumented_setup_failed` was already exit `3`),
+  `gradle_timeout` (`parallel` legs — `benchmark` already classified its own gradle timeouts as exit `3`
+  in 0.14.0, unchanged here), `wrapper_no_output` (script-backed subcommands on Windows). If you treated
+  any of these as an ordinary test failure, they now need their own branch.
+- **New exit-`3` cases that used to silently exit `0`**: `--min-missed-lines N>0` combined with
+  unreliable/absent coverage data now fails closed as `coverage_data_unavailable` instead of passing;
+  `changed`'s own git probing (`git rev-parse` / `git status` / `git diff`) failing now fails closed as
+  `git_error` instead of a false-green `no_changed_modules`.
 - **New exit-`2` cases**: unrecognized flags (`unknown_flag`), a dangling/malformed flag value
   (`invalid_flag_value`), `changed --max-failures` (removed, now rejected like any other unknown flag),
   `--min-missed-lines N>0` combined with `--no-coverage`/`--coverage-tool none`
-  (`coverage_budget_without_coverage`).
+  (`coverage_budget_without_coverage`), an invalid `--java-home` path (previously proceeded with an
+  unusable JDK path instead of rejecting it up front).
 - **Exit-`1` → exit-`0`**: `benchmark --json`'s partial-timeout grading now matches text mode (graded,
   not hard-failed) — pass `--strict-timeouts` to keep the old hard-fail behavior in either mode.
 - **`coverage.missed_lines` is now `null`, not `0`**, whenever `coverage.modules_contributing` is `0`
@@ -33,8 +39,30 @@ branching on its exit codes — this release has more exit-code and field-semant
 - **`--dry-run` no longer probes gradle on a never-before-seen project** — a convention-applied product
   flavor name may not appear in a cold-cache `--dry-run` preview until a real run or `describe` has
   populated the cache once; dispatch itself is unaffected.
-- **`parallel`/`changed --test-type all` no longer hard-fails with no adb device** — see the dedicated
-  entry below if you were relying on (or working around) that failure.
+- **`parallel`/`changed --test-type all` no longer hard-fails with no adb device; adb state is now
+  validated up front for every instrumented run** — see the dedicated entry below. The narrowing (skip
+  the leg, warn) applies only to `--test-type all`'s *implicit* inclusion of `androidInstrumented`. An
+  **explicit** `--test-type androidInstrumented` (or `--device`/`--clear-data`) request is stricter than
+  0.14.0 in one specific case: with no `--device` and more than one usable adb device connected, 0.14.0
+  silently picked one and proceeded — it now fails closed as `multiple_adb_devices`, exit `3`. Pass
+  `--device <serial>` to sidestep the ambiguity.
+- **`--test-type common`/`desktop` no longer dispatch `jsTest`/`wasmJsTest`** — those tasks belong to
+  their own dedicated leg; dispatching them from the JVM-side legs too was a double-dispatch bug. Task
+  lists and test counts for `common`/`desktop` runs on a project with JS/Wasm targets will shrink
+  accordingly.
+- **Windows: the gradle wrapper now launches via `java -cp gradle-wrapper.jar
+  org.gradle.wrapper.GradleWrapperMain` directly**, not through `gradlew.bat` — a `DEFAULT_JVM_OPTS` edit
+  baked into your own `gradlew.bat` no longer applies (move it to `gradle.properties`), and `%VAR%`-style
+  references no longer expand. `JAVA_OPTS`/`GRADLE_OPTS` are still forwarded.
+- **The Gradle plugin now requires Gradle 7.6+** and throws immediately when applied on an older version,
+  instead of failing later with a less legible error.
+- **`tests.individual_total` (and `test_failures[]`) now include an umbrella task's cached child tasks**
+  — a project relying on the old undercount will see both numbers rise; this is a completeness fix, not a
+  new test run.
+- **`include(...)` module discovery now handles multi-line calls and ignores commented-out /
+  string-embedded ones** — a project with either pattern may see its discovered module set change (grow
+  if a multi-line `include(...)` was previously missed entirely, shrink if a commented-out
+  `// include(":old-module")` was previously counted).
 - **Model cache schema 8 → 11**: three bumps landed across this release — build-logic sources (#347),
   precompiled build-logic scripts (#354), and compound-build-type flavor detection (#525) — each
   force-invalidating the project-model cache in turn. Warm caches built by 0.14.0 are rebuilt fresh on
@@ -764,36 +792,33 @@ project with either pattern (a multi-line `include(\n    ":a",\n    ":b",\n)` bl
 module list. Both are now parsed/ignored correctly, which can change which modules a dry-run or real run
 reports for such a project — a correction, not a new restriction.
 
-### Fixed — `parallel --test-type all` no longer fails on a machine with no adb device; new adb-state discriminators; `--java-home` applies before the JDK preflight (#338)
+### Changed — adb state validated up front for instrumented runs (new discriminators); `--test-type all` skips the instrumented leg with a warning when no usable device; `common`/`desktop` stop dispatching `jsTest`/`wasmJsTest`; `--java-home` applied before the JDK preflight (#338)
 
-**Exit-code changes.** `--test-type common`/`desktop` no longer dispatch `jsTest`/`wasmJsTest` (those
-belong to their own dedicated leg; dispatching them from the JVM-side legs too was a double-dispatch
-bug). New discriminated adb-state codes `device_offline` / `device_unauthorized` (previously both folded
-into a generic `instrumented_setup_failed`) let an agent distinguish "no device at all" from "a device
-is present but not usable yet." `runner.js` now applies `--java-home` *before* the JDK preflight check
+**Net behavior versus 0.14.0.** `--test-type common`/`desktop` no longer dispatch `jsTest`/`wasmJsTest`
+(those belong to their own dedicated leg; dispatching them from the JVM-side legs too was a
+double-dispatch bug). adb device state is now validated up front for every instrumented run, with new
+discriminated codes `device_offline` / `device_unauthorized` / `multiple_adb_devices` (0.14.0 folded all
+three into a generic `instrumented_setup_failed`, or in the multi-device case didn't check at all and
+just let Gradle pick a default). `runner.js` now applies `--java-home` *before* the JDK preflight check
 runs (previously the preflight could reject a JDK the user had just overridden); an invalid `--java-home`
 value now exits `2` (`CONFIG_ERROR`) instead of proceeding with an unusable path.
 
-**Regression, found and fixed before release.** This same commit made the no-`--device`/no-`--clear-data`
-adb-validation path stricter (catching the offline/unauthorized/multiple-device states above) but applied
-that strictness to `--test-type all`'s *implicit* inclusion of the `androidInstrumented` leg too — any
-machine with zero adb devices connected (true of most CI runners and most developer machines, even a
-pure-JVM/KMP project with no Android module at all) got `instrumented_setup_failed`, exit `3`, before any
-Gradle work, for a leg nobody explicitly requested. Caught during this release's own pre-tag audit (never
-published under `v0.14.0`, so **not** a user-facing regression against any released version — folded into
-this same entry rather than getting its own "Fixed a bug we shipped this release" entry).
+**`--test-type all`'s implicit `androidInstrumented` leg**: when no `--device`/`--clear-data` was given
+and adb reports no usable device (none connected, all offline, or all unauthorized), the leg is dropped
+and a new soft warning, `instrumented_leg_skipped` (carries `reason`, the adb error code that would
+otherwise have fired), is pushed — the remaining legs still dispatch and their own results decide
+`exit_code`. When exactly one usable device is present, the leg runs exactly as before. When multiple
+usable devices are present, `all` proceeds without pinning one (gradle picks its own default) rather than
+failing with `multiple_adb_devices` — matching 0.14.0 (which never checked device count in this implicit
+branch at all).
 
-`--test-type all` now narrows the run instead: when no `--device`/`--clear-data` was given and adb
-reports no usable device (none connected, all offline, or all unauthorized), the `androidInstrumented`
-leg is dropped and a new soft warning, `instrumented_leg_skipped` (carries `reason`, the adb error code
-that would otherwise have fired), is pushed — the remaining legs still dispatch and their own results
-decide `exit_code`. When exactly one usable device is present, the leg runs exactly as before. When
-multiple usable devices are present, `all` proceeds without pinning one (gradle picks its own default)
-rather than failing with `multiple_adb_devices` — matching this same commit's own pre-existing behavior
-for that specific case (it never checked device count in the plain/implicit branch at all). An explicit
-`--test-type androidInstrumented` request, and `--device`/`--clear-data` (with or without `--test-type
-all`), are unaffected — a user who specifically asks for Android instrumented testing still gets a hard,
-clear failure when it can't run.
+**An explicit `--test-type androidInstrumented` request (or `--device`/`--clear-data`, with or without
+`--test-type all`) is stricter than 0.14.0 in one specific case.** The overall philosophy is unchanged —
+a user who specifically asks for Android instrumented testing still gets a hard, clear failure when it
+can't run — but the *trigger* for that failure widened: with no `--device` and more than one usable adb
+device connected, 0.14.0 silently picked one (best-effort, no validation) and proceeded; it now fails
+closed as `multiple_adb_devices`, exit `3`, before any Gradle work. Pass `--device <serial>` to sidestep
+the ambiguity and keep the old zero-friction path.
 
 ### Fixed — `update --json` now prints exactly one JSON object on stdout (#339)
 
