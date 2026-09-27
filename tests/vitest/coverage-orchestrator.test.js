@@ -671,6 +671,12 @@ describe('runCoverage', () => {
     expect(envelope.warnings.find(w => w.code === 'no_coverage_data')).toBeTruthy();
     expect(envelope.coverage.modules_with_kover_plugin).toEqual([]);
     expect(envelope.coverage.modules_with_jacoco_plugin).toEqual([]);
+    // PLAN-B P1 -- missed_lines is null here too (not 0): modulesContributing
+    // is 0, so there is no real aggregate to report, same null-semantics as
+    // the sibling covered_lines/total_lines this scenario also carries.
+    expect(envelope.coverage.missed_lines).toBeNull();
+    expect(envelope.coverage.covered_lines).toBeNull();
+    expect(envelope.coverage.total_lines).toBeNull();
   });
 
   it('--dry-run → dry_run:true plus plan section, no fs writes for the report', async () => {

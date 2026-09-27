@@ -1652,6 +1652,13 @@ describe('runParallel', () => {
     expect(envelope.plan.legs).toEqual(['common']);
     expect(spawn.calls.length).toBe(0);
     expect(exitCode).toBe(0);
+    // PLAN-B P1 -- buildDryRunReport (lib/envelope/builder.js, shared with
+    // changed/android/benchmark) carries covered_lines/total_lines as null
+    // alongside the pre-existing missed_lines:null, same shape parity as
+    // every other coverage-unavailable path.
+    expect(envelope.coverage.missed_lines).toBeNull();
+    expect(envelope.coverage.covered_lines).toBeNull();
+    expect(envelope.coverage.total_lines).toBeNull();
   });
 
   it('--dry-run with --test-type all enumerates legs in plan', async () => {
@@ -6198,6 +6205,7 @@ describe('coverage aggregation against a project with no coverage plugin anywher
     expect(envelope.errors).toEqual([]);
     expect(exitCode).toBe(0);
     expect(envelope.coverage.modules_contributing).toBe(0);
+    expect(envelope.coverage.missed_lines).toBeNull();
     expect(envelope.coverage.covered_lines).toBeNull();
     expect(envelope.coverage.total_lines).toBeNull();
   });
@@ -6216,6 +6224,7 @@ describe('coverage aggregation against a project with no coverage plugin anywher
       expect.objectContaining({ code: 'coverage_data_unavailable', threshold: 15, reason: 'target-not-detected' }),
     ]);
     expect(exitCode).toBe(3);
+    expect(envelope.coverage.missed_lines).toBeNull();
     expect(envelope.coverage.covered_lines).toBeNull();
     expect(envelope.coverage.total_lines).toBeNull();
   });
