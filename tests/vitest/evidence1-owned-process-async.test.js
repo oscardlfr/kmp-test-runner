@@ -60,6 +60,24 @@ const treeStates = waitMs => `@(
       stopped=$item.process.WaitForExit(${waitMs})}
   }
 )`;
+// Stop-E1OwnedProcess's own cancellation path (RunCore in the .psm1) already
+// waits correctly before returning: it calls TerminateJobObject then polls
+// QueryInformationJobObject for up to 10s until the Job Object's own active-
+// process accounting reaches zero. But that accounting is a DIFFERENT OS
+// synchronization point from an individual System.Diagnostics.Process
+// handle's own exit-code finalization, which is what WaitForExit() here
+// reads. The two aren't guaranteed to settle in lockstep, especially under
+// CPU contention from many concurrent processes (a full local-ci run
+// spawns dozens). A zero-timeout poll right after Wait-E1OwnedProcess
+// returns can therefore observe a descendant (most often the grandchild,
+// two hops removed) as not-yet-`stopped` even though the job has already
+// been fully torn down a moment later. `Process.WaitForExit(ms)` blocks
+// only until the condition is true or this ceiling elapses — it doesn't
+// slow down the already-stopped case at all, so this costs nothing when
+// there's no race to wait out. Bound matches the production code's own
+// 10s Job Object teardown poll with margin (this is a lighter, per-process
+// check, not a full accounting query).
+const STOPPED_SETTLE_MS = 10_000;
 const withTree = (dir, code, seconds, body) => `
   $tracked=@()
   $op=$null
@@ -68,7 +86,7 @@ const withTree = (dir, code, seconds, body) => `
     ${captureTree(dir)}
     if ($op.Task.IsCompleted) {throw 'fixture_completed_before_observation'}
     ${body}
-    @{result=$r;processes=${treeStates(0)};before=$before;polls=$polls;same=$same} | ConvertTo-Json -Depth 5 -Compress
+    @{result=$r;processes=${treeStates(STOPPED_SETTLE_MS)};before=$before;polls=$polls;same=$same} | ConvertTo-Json -Depth 5 -Compress
   } finally {
     if ($null -ne $op -and -not $op.Task.IsCompleted) {
       Stop-E1OwnedProcess $op
