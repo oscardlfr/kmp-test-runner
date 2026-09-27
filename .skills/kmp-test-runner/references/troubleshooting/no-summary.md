@@ -2,7 +2,7 @@
 
 The orchestrator finished running but the wrapper script's stdout didn't contain a parseable summary block. **Soft code** — does NOT promote `exit_code`. Legitimate exit-0 outcome with structured signal.
 
-> **Not the same as `wrapper_no_output` (hard, exit 3).** `no_summary` means the wrapper *ran to completion* (exit 0) but produced nothing the parser recognised. `wrapper_no_output` means the wrapper *never ran its body at all* — it exited non-zero having written nothing to stdout (the most common cause on Windows: `PSExecutionPolicyPreference=Restricted` rejecting the ps1 before it starts). If `exit_code` is non-zero, you're looking at `wrapper_no_output`, not this page — see [`envelope-schema.md#errors-discriminated-codes`](../cli/envelope-schema.md#errors-discriminated-codes).
+> **Not the same as `wrapper_no_output` (hard, exit 3).** The discriminator is stdout, not exit code: `wrapper_no_output` fires only when the wrapper exited non-zero having written *nothing at all* to stdout — it never ran its body far enough to produce anything (the most common cause on Windows: `PSExecutionPolicyPreference=Restricted` rejecting the ps1 before it starts). `no_summary` fires whenever *some* stdout existed but none of it was recognisable — typically a clean exit 0, but also possible with a non-zero exit if the wrapper produced partial output before dying mid-run (see root cause 5 below). See [`envelope-schema.md#errors-discriminated-codes`](../cli/envelope-schema.md#errors-discriminated-codes).
 
 ## Symptom
 
