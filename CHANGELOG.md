@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — probe-derived flavor detection no longer treats a compound build type as a product flavor
+
+**Observable behavior change, cache-schema bump (10 → 11, invalidates existing warm caches).**
+`flavorsFromTasks` recovers product-flavor names from the probed gradle task list by matching
+`test<Capture><Debug|Release>UnitTest` — but a module with a custom, multi-word build type (e.g.
+`create("githubRelease")` in AGP, producing `testGithubReleaseUnitTest`) matches that same shape, so a
+module with **no real product flavors at all** could report a phantom flavor (`"github"` in the example
+above). A module with genuine product flavors never also exposes the flat `test<BuildType>UnitTest` task
+for a build type it already has a flavor-prefixed task for — confirmed against real `gradlew tasks --all`
+output from three projects (one compound-build-type-only, two with real, differently-sourced product
+flavors) — so a capture is now discarded when the flat form for its own build type is present in the same
+task list. Real product-flavor detection (`plan.modules[].flavors`, `has_flavor`) and every downstream
+consumer — `flavor_defaulted_umbrella`'s candidate list, `--flavor <name>` validation, the coverage
+"flavor weave" dispatch — are unaffected for a project with genuine flavors; only the false-positive case
+changes. Because a cached model stores this derived `flavors` array directly (never recomputed on a cache
+hit), the project-model cache schema version moves to `11` so an existing warm cache is invalidated and
+rebuilt with the corrected derivation rather than continuing to serve the stale, incorrect value.
+
 ### Fixed — Windows wrapper no longer silently blocked by a Restricted PowerShell execution policy
 
 **Observable behavior change.** On Windows, `parallel`/`changed`/`android`/`benchmark`/`coverage` and
