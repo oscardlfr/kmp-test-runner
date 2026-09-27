@@ -36,6 +36,29 @@ soft. Text mode is unaffected (its `stdio:'inherit'` spawn never captures output
 the real PowerShell error is already visible on the user's own terminal). No `schema_version` bump —
 additive discriminated code, same pattern as `coverage_data_unavailable`.
 
+### Added — explicit `covered_lines` / `total_lines` on the coverage aggregate; `changed`'s no-plugin scenario now under test
+
+**No `schema_version` bump — purely additive.** `coverage.covered_lines` / `coverage.total_lines` join
+the existing `coverage.missed_lines` on every subcommand's aggregate coverage block (`parallel`,
+`changed`, `coverage`). Same aggregate scope as `missed_lines` (the modules `--coverage-modules` /
+`--exclude-coverage` selected for this run, never narrowed by `--min-missed-lines`) and the same
+null-semantics: both are `null` whenever `modules_contributing` is `0`. `total_lines == covered_lines +
+missed_lines` whenever both are non-null. `--dry-run` and `--coverage-tool none` also carry the two new
+fields as `null`, matching the existing `missed_lines` shape.
+
+**Regression-locked**: a project with no `kover`/`jacoco` plugin anywhere had no direct test coverage
+for its exact envelope shape on either `parallel` or `changed` before this change — unset
+`--min-missed-lines` emits `no_coverage_data` and exits `0`; `--min-missed-lines N>0` emits
+`coverage_data_unavailable` (`reason: "target-not-detected"`) and exits `3`. Both subcommands are now
+pinned against real `coverage-orchestrator.js` (no stubs), including a discrimination proof that this
+exact assertion set fails against `v0.14.0`.
+
+**Internal fix, no user-visible behavior change**: writing a real (non-stubbed) end-to-end test for
+`changed`'s delegated coverage behavior surfaced that `changed`'s in-process delegation to `parallel`
+silently dropped the caller's injected `spawn` — only `env`/`log` were forwarded. Every real invocation
+already defaults `spawn` to the same `spawnSync`, so production callers were never affected; fixed by
+forwarding `spawn` alongside `env`/`log`.
+
 ### Added — public agentic usage benchmark v2 (`tools/runs/agentic-usage-benchmark-v2-2026-07-17.md`)
 
 **No behavior change** — docs/evidence only; no `lib/`, `bin/`, `.skills/`, or `tools/*.mjs`-at-top-level
