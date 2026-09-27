@@ -300,6 +300,21 @@ describe('buildInstallSpawn', () => {
       expect(spawn.args).toContain('1.2.3');
     }
   });
+
+  // Same wrapper-blocking bug as script-dispatcher.js: a Restricted
+  // PowerShell execution policy refuses to load install.ps1 before it ever
+  // runs, so `kmp-test update` silently fails. Real-platform-conditional,
+  // matching this describe block's existing convention (this argv branch is
+  // exercised for real on the windows-latest CI leg).
+  it.skipIf(process.platform !== 'win32')(
+    'win32 argv carries -ExecutionPolicy Bypass between -NoProfile and -File',
+    () => {
+      const spawn = buildInstallSpawn('1.2.3', '');
+      const i = spawn.args.indexOf('-NoProfile');
+      expect(i).toBeGreaterThanOrEqual(0);
+      expect(spawn.args.slice(i, i + 4)).toEqual(['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File']);
+    },
+  );
 });
 
 describe('formatUpdateText', () => {
