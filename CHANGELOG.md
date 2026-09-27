@@ -5,7 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.15.0] — 2026-09-28
+
+### Upgrade notes
+
+Read this section before upgrading if you have any automation parsing `kmp-test`'s `--json` output or
+branching on its exit codes — this release has more exit-code and field-semantics changes than usual.
+
+- **New exit-`3` cases that used to be exit `1`**: `task_not_found` / `unsupported_class_version` (any
+  subcommand), `gradle_timeout` (`parallel`/`benchmark`), `wrapper_no_output` (script-backed subcommands
+  on Windows). If you treated any of these as an ordinary test failure, they now need their own branch.
+- **New exit-`3` case that used to silently exit `0`**: `--min-missed-lines N>0` combined with
+  unreliable/absent coverage data now fails closed as `coverage_data_unavailable` instead of passing.
+- **New exit-`2` cases**: unrecognized flags (`unknown_flag`), a dangling/malformed flag value
+  (`invalid_flag_value`), `changed --max-failures` (removed, now rejected like any other unknown flag),
+  `--min-missed-lines N>0` combined with `--no-coverage`/`--coverage-tool none`
+  (`coverage_budget_without_coverage`).
+- **Exit-`1` → exit-`0`**: `benchmark --json`'s partial-timeout grading now matches text mode (graded,
+  not hard-failed) — pass `--strict-timeouts` to keep the old hard-fail behavior in either mode.
+- **`coverage.missed_lines` is now `null`, not `0`**, whenever `coverage.modules_contributing` is `0`
+  (`coverage`, `parallel`, and `changed`) — if you branch on `missed_lines === 0` to mean "measured, zero
+  missed," switch to checking `modules_contributing > 0` first. Two new additive fields,
+  `coverage.covered_lines` / `coverage.total_lines`, follow the same null-semantics.
+- **A failed `--json` run now writes runner diagnostics to stderr** (bounded, up to 64 KiB) — if your
+  tooling concatenates `2>&1` before parsing, switch to parsing stdout alone (already the documented
+  contract, just newly consequential).
+- **`--dry-run` no longer probes gradle on a never-before-seen project** — a convention-applied product
+  flavor name may not appear in a cold-cache `--dry-run` preview until a real run or `describe` has
+  populated the cache once; dispatch itself is unaffected.
+- **`parallel`/`changed --test-type all` no longer hard-fails with no adb device** — see the dedicated
+  entry below if you were relying on (or working around) that failure.
 
 ### Fixed — Windows wrapper no longer silently blocked by a Restricted PowerShell execution policy
 
@@ -36,27 +65,21 @@ soft. Text mode is unaffected (its `stdio:'inherit'` spawn never captures output
 the real PowerShell error is already visible on the user's own terminal). No `schema_version` bump —
 additive discriminated code, same pattern as `coverage_data_unavailable`.
 
-### Fixed — `parallel`/`changed --test-type all` no longer fails on a machine with no adb device
+### Added — `coverage_data_unavailable` / `coverage_budget_without_coverage`: `--min-missed-lines` can no longer silently exit `0` on unreliable data (#485)
 
-**Regression, introduced by #338 (929aec8).** `--test-type all` adds `androidInstrumented` to the leg
-list automatically (`legsForAll`, unless `KMP_TEST_SKIP_ADB=1` is set) — the user asked for "everything
-this machine can run," not specifically for Android. #338 made the no-`--device`/no-`--clear-data`
-device-resolution path strict (`resolveAdbDevice`, catching offline/unauthorized/multiple-device states
-that a prior, looser check missed) but applied that same strictness to the *implicit* leg too: any
-machine with zero adb devices connected — true of most CI runners and most developer machines, even for
-a pure-JVM/KMP project with no Android module at all — got `instrumented_setup_failed`, exit `3`,
-before a single line of Gradle ran, for a leg nobody explicitly requested.
-
-`--test-type all` now narrows the run instead: when no `--device`/`--clear-data` was given and adb
-reports no usable device (none connected, all offline, or all unauthorized), the `androidInstrumented`
-leg is dropped and a new soft warning, `instrumented_leg_skipped` (carries `reason`, the adb error code
-that would otherwise have fired), is pushed — the remaining legs still dispatch and their own results
-decide `exit_code`. When exactly one usable device is present, the leg runs exactly as before. When
-multiple usable devices are present, `all` now proceeds without pinning one (gradle picks its own
-default) rather than failing with `multiple_adb_devices` — restoring pre-#338 behavior for this specific
-case. **Unaffected, unchanged**: an explicit `--test-type androidInstrumented` request, and `--device` /
-`--clear-data` (with or without `--test-type all`) — a user who specifically asks for Android
-instrumented testing still gets a hard, clear failure when it can't run, exactly as #338 intended.
+**New discriminated codes, closing a fail-open gap.** `--min-missed-lines N>0` could previously exit `0`
+even when the coverage data behind that budget decision wasn't trustworthy: zero modules contributed any
+coverage data, a module the run actually dispatched for tests carried no coverage plugin at all
+(`target-not-detected`), a dispatched module's coverage XML was missing or failed to parse
+(`target-no-xml` / `target-parse-error`), the jacoco/kover report task itself exited non-zero this run
+(`report-dispatch-failed`), or the in-process aggregation step threw (`aggregation-failed`). All five
+now report `errors[].code: "coverage_data_unavailable"` (`ENV_ERROR`, exit `3`, carries `threshold` and
+the closed `reason` enum above) instead of silently passing. Combining `--min-missed-lines N>0` with
+`--no-coverage`/`--coverage-tool none` — a usage contradiction — is now caught explicitly as
+`coverage_budget_without_coverage` (`CONFIG_ERROR`, exit `2`) before any gradle dispatch or XML read.
+Both dispatch through the same `classifyExitCode` every other orchestrator error already uses.
+**Exit-code change: an unreliable-data budget check silently passing at `0` now exits `3` (or `2` for the
+contradictory-flags case).** `--min-missed-lines 0` (the default — no budget) is unaffected.
 
 ### Changed — `coverage.missed_lines` is `null`, not `0`, when no module contributes coverage data
 
@@ -271,9 +294,11 @@ dispatching `testAndroidHostTest` too once `unitTestTask` stopped being null —
 since that task belongs to the dedicated `--test-type androidUnit` leg, and `--test-type
 all` runs `common` and `androidUnit` as separate legs, which would have double-dispatched
 the same gradle task. `dispatch.js` gets one small additive guard excluding
-`testAndroidHostTest` from the `common`/`desktop` candidate (mirroring its existing
-`jsTest`/`wasmJsTest` exclusion for the same reason), restoring `common`/`desktop`/`all`
-to their exact pre-fix behavior.
+`testAndroidHostTest` from the `common`/`desktop` candidate, the same way `common`/`desktop`
+already exclude `jsTest`/`wasmJsTest` for the identical double-dispatch reason (that exclusion is
+itself new this release, from the "`--test-type common`/`desktop` no longer dispatch
+`jsTest`/`wasmJsTest`" change documented elsewhere in this same `[0.15.0]` section, not a
+pre-`v0.14.0` precedent) — restoring `common`/`desktop`/`all` to their exact pre-fix behavior.
 
 **Closed the same gap for every other accepted `--test-type` alias.** `TEST_TYPE_VALUES`
 also accepts `jvm`, `android`, and `wasm` — three undocumented legacy values with no case
@@ -541,8 +566,11 @@ to `1` in `parallel`, `android`, and `benchmark` (`changed` inherited the same b
 to `parallel`). Both codes represent an environment/toolchain problem, not a failing test assertion,
 and are now classified accordingly, taking priority over the generic `module_failed`/`TEST_FAIL`
 default they're discovered alongside. **Any agent or script branching on exit code for these two
-specific conditions must update from `1` to `3`.** `gradle_timeout` (the third code in this family)
-was already correctly classified as `3` — unaffected.
+specific conditions must update from `1` to `3`.** `gradle_timeout` (the third code in this family) is
+**not** touched by this specific commit — it had already moved from `1` to `3` the day before, in a
+separate fix (see "a parallel-leg gradle timeout is now discriminated" above); by this commit's own
+point in time it was already correctly classified, but that's a fact about commit ordering, not a claim
+that `gradle_timeout` was unaffected across this release as a whole.
 
 Introduces `classifyExitCode` (`lib/envelope/exit-codes.js`) as the one central mapping from a
 discriminated `errors[]` array to the documented exit code, replacing three independently-drifting
@@ -613,6 +641,222 @@ instead of silently returning empty rows indistinguishable from legitimate zero-
 non-numeric counter/line attributes are defensively coerced instead of crashing; and a size-cap
 guard (`KMP_COVERAGE_XML_MAX_MB`, default 128 MB) bounds memory use instead of an unbounded
 in-memory parse. The Gradle plugin no longer bundles the retired script in its JAR.
+
+### Added — installers write an install marker; hardened path/flag validation (#325)
+
+**Observable behavior change.** `install.sh`/`install.ps1` now write a
+`.kmp-test-runner-install.json` marker recording the installed version, prefix, and archive source —
+`uninstall.sh`/`uninstall.ps1` read it back to confirm they're removing what they think they're
+removing. Both installers now reject a missing or flag-shaped value for `--version`/`--prefix`/`--archive`
+(previously a dangling flag could silently consume the next token or install to an unintended path).
+Uninstallers refuse to operate on `/`, `$HOME`, a drive root, `%USERPROFILE%`, a reparse point (Windows
+junction/symlink), or any layout they don't recognize as a real kmp-test-runner install — a defense
+against a mistyped `--prefix` deleting something it shouldn't.
+
+### Added — PowerShell 5.1 installer support; skill scripts hardened (#326)
+
+**Observable behavior change, Windows only.** `install.ps1`/`uninstall.ps1` now parse and run correctly
+under Windows PowerShell 5.1 (previously assumed PowerShell 7+ syntax in places). `install.ps1` enables
+TLS 1.2 explicitly before its download request (PowerShell 5.1 defaults to an older, increasingly-rejected
+TLS version against GitHub's endpoints). The bundled skill script `run-tests.ps1` now resolves the
+`kmp-test` binary via `PATH` or `%LOCALAPPDATA%` directly instead of shelling out to `npx` (avoids an
+npm-registry round-trip and npx's own resolution quirks on a machine with only the HKCU-PATH install).
+`detect-env.ps1` is now safe to dot-source (no longer has top-level side effects that only make sense
+when run standalone).
+
+### Added — remote installs verify a release checksum; atomic, rollback-capable install (#331)
+
+**Observable behavior change.** `install.sh`/`install.ps1` now download the release's `.sha256` file
+alongside the archive and refuse to proceed on a mismatch, a malformed checksum file, or a failed
+checksum download — previously a corrupted or tampered download would install silently. New flags
+`--archive-sha256` / `-LocalArchiveSha256` let a local/offline install supply the expected checksum
+directly. The install itself is now staged into a temporary location and moved into place atomically,
+with rollback to the prior install if any step fails partway — previously a failure mid-install could
+leave a half-written, broken install in the target prefix.
+
+### Fixed — Gradle plugin JAR bundling was incomplete; plugin tasks gain real TaskAction tests (#332)
+
+**Observable behavior change for Gradle-plugin consumers.** The plugin's JAR manifest hardcoded a
+resource list naming paths that didn't exist in the packaged JAR, so the bundled JAR was missing files
+`lib/`/`scripts/{sh,ps1,lib}` actually needed at runtime — a project using the Gradle plugin (rather than
+the npm CLI directly) could hit a missing-file failure the CLI's own test suite never exercised.
+Bundling now deterministically includes the complete `lib/` and `scripts/{sh,ps1,lib}` trees.
+`parallelTests` now runs `node lib/runner.js` directly (previously an indirection that added a
+Gradle-version-sensitivity surface); an empty/unset `projectRoot` extension property now defaults to the
+Gradle root project instead of failing; `coverageTask` now forwards the `testType` extension property
+(previously silently ignored for the coverage task specifically, unlike the other task types). Gradle
+versions older than 7.6 now throw a clear, immediate error when the plugin is applied, instead of an
+opaque failure partway through configuration.
+
+### Fixed — a lock taken over with `--force` could be silently deleted by its original holder (#333)
+
+**Observable behavior change.** Lock release now verifies the current lock file's `pid` + `start_time`
+match the process releasing it before deleting it. Previously, if process A held the lock, was
+force-overridden by `--force` (which writes a new lock for the overriding process), and process A's own
+(now-stale) cleanup path ran afterward, it could delete the *new* lock — leaving the project unlocked
+while the overriding process still believed it held it.
+
+### Fixed — `changed` reports git failures as `git_error`, not a false-green `no_changed_modules` (#334)
+
+**Observable behavior change, exit code `0` → `3`.** A failing `git status`/`git diff` call (corrupted
+repo, permission denied, detached edge cases) previously fell through to the same code path as "clean
+working tree, nothing changed" — `no_changed_modules`, exit `0`. `changed` now discriminates a genuine
+git failure into `errors[].code: "git_error"` (hard, exit `3`, carries `git_command`/`exit_status`/
+`stderr_summary`) so a broken repo state is never silently reported as "nothing to test."
+
+### Fixed — Windows gradle-wrapper invocation now bypasses `cmd.exe` when a JAR is present
+
+**Observable behavior change, Windows only.** When a project's `gradlew.bat` has a co-located
+`gradle/wrapper/gradle-wrapper.jar`, kmp-test now invokes the JVM directly
+(`java -cp gradle-wrapper.jar org.gradle.wrapper.GradleWrapperMain <args>`) instead of shelling through
+`cmd.exe /c gradlew.bat <args>`. This means `cmd.exe`'s `%VAR%` environment-variable expansion no longer
+applies to gradle arguments (a literal `%` in a `--tests`/`-P` value is no longer at risk of accidental
+expansion), and `JAVA_OPTS`/`GRADLE_OPTS` are forwarded to the JVM invocation directly. One consequence:
+`DEFAULT_JVM_OPTS` baked into `gradlew.bat` itself no longer applies (only `JAVA_OPTS`/`GRADLE_OPTS` and
+the project's own `gradle.properties` `org.gradle.jvmargs` do) — a project relying specifically on a
+custom `DEFAULT_JVM_OPTS` edit inside `gradlew.bat` should move that setting to `gradle.properties`. The
+`.bat` + no-JAR case (a non-standard gradle-wrapper layout) keeps the previous `cmd.exe`-based fallback
+unchanged.
+
+### Fixed — unknown/malformed flags now get a discriminated error instead of being silently ignored or misparsed (#336)
+
+**Observable behavior change, exit code (previously ignored) → `2`.** An unrecognized `--flag` token
+previously either did nothing (silently ignored) or, worse, could be misinterpreted depending on
+position. Two-layer validation now catches this: Layer 1 (`cli.js`) rejects a flag unknown to *every*
+subcommand before the platform wrapper even spawns; Layer 2 (each orchestrator's argument-parsing
+`default:` case) rejects a flag that's valid for some *other* subcommand but not this one. Both report
+`errors[].code: "unknown_flag"`, exit `2`. A value-bearing flag followed immediately by another `--flag`
+token (i.e., dangling with no value) now reports `invalid_flag_value` instead of silently consuming the
+next flag as its value. `--gradle-args` now explicitly accepts flag-shaped values (its own values often
+look like `--foo`, which would otherwise trip the same dangling-value heuristic). The text-mode banner
+now shows only a token count for an unrecognized-flag run, not a full argv echo (avoids leaking
+possibly-sensitive `-P`/`--gradle-args` values to a log).
+
+### Fixed — multi-line and string/comment-embedded `include(...)` blocks now parse correctly
+
+**Observable behavior change — the discovered module set can change.** The `settings.gradle.kts` module
+parser previously matched `include(...)` only when the whole call sat on one line, and didn't distinguish
+a real `include(...)` call from one that merely *appeared* inside a string literal or a comment. A
+project with either pattern (a multi-line `include(\n    ":a",\n    ":b",\n)` block, or a commented-out
+`// include(":old-module")` left as documentation) previously had an incomplete or incorrectly-inflated
+module list. Both are now parsed/ignored correctly, which can change which modules a dry-run or real run
+reports for such a project — a correction, not a new restriction.
+
+### Fixed — `parallel --test-type all` no longer fails on a machine with no adb device; new adb-state discriminators; `--java-home` applies before the JDK preflight (#338)
+
+**Exit-code changes.** `--test-type common`/`desktop` no longer dispatch `jsTest`/`wasmJsTest` (those
+belong to their own dedicated leg; dispatching them from the JVM-side legs too was a double-dispatch
+bug). New discriminated adb-state codes `device_offline` / `device_unauthorized` (previously both folded
+into a generic `instrumented_setup_failed`) let an agent distinguish "no device at all" from "a device
+is present but not usable yet." `runner.js` now applies `--java-home` *before* the JDK preflight check
+runs (previously the preflight could reject a JDK the user had just overridden); an invalid `--java-home`
+value now exits `2` (`CONFIG_ERROR`) instead of proceeding with an unusable path.
+
+**Regression, found and fixed before release.** This same commit made the no-`--device`/no-`--clear-data`
+adb-validation path stricter (catching the offline/unauthorized/multiple-device states above) but applied
+that strictness to `--test-type all`'s *implicit* inclusion of the `androidInstrumented` leg too — any
+machine with zero adb devices connected (true of most CI runners and most developer machines, even a
+pure-JVM/KMP project with no Android module at all) got `instrumented_setup_failed`, exit `3`, before any
+Gradle work, for a leg nobody explicitly requested. Caught during this release's own pre-tag audit (never
+published under `v0.14.0`, so **not** a user-facing regression against any released version — folded into
+this same entry rather than getting its own "Fixed a bug we shipped this release" entry).
+
+`--test-type all` now narrows the run instead: when no `--device`/`--clear-data` was given and adb
+reports no usable device (none connected, all offline, or all unauthorized), the `androidInstrumented`
+leg is dropped and a new soft warning, `instrumented_leg_skipped` (carries `reason`, the adb error code
+that would otherwise have fired), is pushed — the remaining legs still dispatch and their own results
+decide `exit_code`. When exactly one usable device is present, the leg runs exactly as before. When
+multiple usable devices are present, `all` proceeds without pinning one (gradle picks its own default)
+rather than failing with `multiple_adb_devices` — matching this same commit's own pre-existing behavior
+for that specific case (it never checked device count in the plain/implicit branch at all). An explicit
+`--test-type androidInstrumented` request, and `--device`/`--clear-data` (with or without `--test-type
+all`), are unaffected — a user who specifically asks for Android instrumented testing still gets a hard,
+clear failure when it can't run.
+
+### Fixed — `update --json` now prints exactly one JSON object on stdout (#339)
+
+**Observable behavior change.** `kmp-test update --json` previously could interleave installer-script
+output with the JSON envelope on stdout, breaking a consumer that expects `JSON.parse(stdout)` to
+succeed. Installer output now goes to stderr; stdout carries the single JSON envelope only.
+
+### Fixed — a parallel-leg gradle timeout is now discriminated (`gradle_timeout`), never silently retried
+
+**Exit-code change: `1` → `3`.** A gradle spawn killed by the `--timeout` deadline (SIGTERM on POSIX,
+ETIMEDOUT on Windows) previously lost its signal/error information internally, so it looked like an
+ordinary test failure — exit `1`, and eligible for the same cascade-isolation and `--auto-retry` retry
+paths a genuine flaky failure gets, meaning a single infra-level timeout could trigger an expensive
+per-module re-run. Timeouts are now detected immediately and reported as `errors[].code: "gradle_timeout"`
+(carries `module`, `task`, `timeout_ms`), classified as `ENV_ERROR` (exit `3`), and explicitly excluded
+from both retry paths — a spawn timeout is an infrastructure failure, not a flaky test, and is never
+retried.
+
+### Fixed — `android --auto-retry` now reports counts from the final attempt only (#341)
+
+**Observable behavior change.** `--auto-retry`'s reported test counts previously could reflect an
+earlier failed attempt rather than the retry that actually determined the outcome. Counts now come from
+the final attempt only.
+
+### Fixed — `benchmark --json` grading now matches text-mode's partial-timeout behavior
+
+**Exit-code change: partial timeout `1` → `0`.** `kmp-test benchmark --json` previously exited `1` when
+at least one benchmark module timed out but at least one other passed — inconsistent with text mode's
+own graded, exit-`0` treatment of the same scenario (surfaced via `partial_timeout` in `warnings[]`,
+carrying `timed_out`/`passed` counts). Pass `--strict-timeouts` to restore the pre-graded hard-fail
+behavior in either mode.
+
+### Fixed — Gradle plugin tasks now spawn through Gradle's `ExecOperations`; false-green entrypoint guard closed (#357)
+
+**Observable behavior change for Gradle-plugin consumers.** Plugin task classes are now `abstract` and
+spawn the underlying process through Gradle's injected `ExecOperations` (the configuration-cache- and
+Gradle-9-compatible mechanism) instead of a raw `ProcessBuilder`, with the working directory pinned to
+the project root explicitly. Closes a realpath-resolution gap in the entrypoint guard that could let a
+task report a false-green (success) result under a specific symlink/junction layout.
+
+### Fixed — a gradle task that fails at resolution now says so in its own message
+
+**Observable behavior change (message text only, no code/exit-code change).** The `[FAIL]` banner line
+and `errors[].message` for a `module_failed` entry now append a `(task not found / build aborted at
+resolution)` suffix when the JUnit-XML evidence walk finds nothing to attribute the failure to — the same
+underlying signal `setup_failed:true` already carries structurally, now also visible in the human-readable
+text for a reader who isn't parsing `--json` output.
+
+### Removed — `changed --max-failures` (#415)
+
+**Exit-code change: previously accepted (no-op) → `unknown_flag`, exit `2`.** `--max-failures` was
+already a no-op on `changed` (the flag never affected its behavior) but was silently accepted rather than
+rejected. It's now a `changed`-invalid flag like any other, reported via the standard `unknown_flag`
+discriminator. `--coverage-tool`'s help text now correctly states its default (`auto`), matching runtime
+behavior.
+
+### Fixed — a failed `--json` run now writes runner diagnostics to stderr (#492)
+
+**Observable behavior change — anything parsing `2>&1` together is affected.** A failed `kmp-test
+... --json` run now writes up to 64 KiB of the runner's captured human-diagnostic output to stderr
+(bounded, with truncation labelled) — previously this diagnostic detail was only visible in text mode.
+**A consumer that concatenates stdout+stderr before calling `JSON.parse` will now see non-JSON content
+mixed in on a failed run and must parse stdout alone** (this was already the documented contract —
+`docs/envelope-contract.md`'s own top section states "Parse `stdout` only; do not concatenate the
+streams before parsing JSON" — but this change is the first time a failed JSON run actually populates
+stderr with something substantial enough to break a consumer that was never following that contract).
+
+### Fixed — `tests.individual_total` now includes cached child tasks of an umbrella task (#498)
+
+**Observable behavior change.** An umbrella gradle task (e.g. `:module:test`, which fans out to
+per-variant children) that had some children satisfied `UP-TO-DATE`/`FROM-CACHE` on a given run
+previously undercounted `tests.individual_total` and could omit those children's `test_failures[]`
+entries — the JUnit-XML walk only looked for freshly-written result files, and a cache hit doesn't
+rewrite them. Cached children are now counted from their existing (pre-existing, still valid) XML output.
+
+### Changed — `SKILL.md`'s Decision protocol rewritten: dispatch-first, `describe`-driven module binding, coverage via `parallel --min-missed-lines`
+
+**No CLI/envelope behavior change — agent-facing skill guidance only.** The bundled Claude Code skill's
+decision protocol (`~/.claude/skills/kmp-test-runner/SKILL.md`) was rewritten across a series of commits
+to reflect the CLI's actual, current dispatch model: it now recommends a dispatch-first flow (run the
+tests, read the envelope) over an upfront `describe`-then-decide flow for the common case; module binding
+for a targeted `--module-filter` run is guided by `describe`'s cached model rather than ad hoc gradle-task
+guessing; coverage budget checks are routed through `parallel --min-missed-lines` (the integrated path)
+rather than a separate `coverage` invocation. Existing `--json` output, exit codes, and error/warning
+codes are unaffected — this changes what the skill *tells an agent to do*, not what the CLI *does*.
 
 ## [0.14.0] — 2026-06-10
 
