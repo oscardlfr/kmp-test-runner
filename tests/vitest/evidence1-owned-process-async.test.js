@@ -60,24 +60,18 @@ const treeStates = waitMs => `@(
       stopped=$item.process.WaitForExit(${waitMs})}
   }
 )`;
-// Stop-E1OwnedProcess's own cancellation path (RunCore in the .psm1) already
-// waits correctly before returning: it calls TerminateJobObject then polls
-// QueryInformationJobObject for up to 10s until the Job Object's own active-
-// process accounting reaches zero. But that accounting is a DIFFERENT OS
-// synchronization point from an individual System.Diagnostics.Process
-// handle's own exit-code finalization, which is what WaitForExit() here
-// reads. The two aren't guaranteed to settle in lockstep, especially under
-// CPU contention from many concurrent processes (a full local-ci run
-// spawns dozens). A zero-timeout poll right after Wait-E1OwnedProcess
-// returns can therefore observe a descendant (most often the grandchild,
-// two hops removed) as not-yet-`stopped` even though the job has already
-// been fully torn down a moment later. `Process.WaitForExit(ms)` blocks
-// only until the condition is true or this ceiling elapses — it doesn't
-// slow down the already-stopped case at all, so this costs nothing when
-// there's no race to wait out. Bound matches the production code's own
-// 10s Job Object teardown poll with margin (this is a lighter, per-process
-// check, not a full accounting query).
-const STOPPED_SETTLE_MS = 10_000;
+// RunCore only sets CleanupOk=true once the Job Object's own active-process
+// accounting reaches zero (checked separately below, unaffected by this
+// change). That accounting reaching zero and an individually-held
+// System.Diagnostics.Process handle actually becoming signaled are two
+// different OS synchronization points, not guaranteed to land in the same
+// instant under CPU contention — so a zero-timeout poll right after
+// Wait-E1OwnedProcess returns can see a descendant (usually the grandchild)
+// as not-yet-stopped a moment before it settles. WaitForExit(ms) returns as
+// soon as the condition is true, so this costs nothing on the already-
+// stopped path. One shared deadline (not per-process) so a genuine
+// regression still surfaces as this test's own stopped:false diff rather
+// than degrading into execFile's generic 40s timeout.
 const withTree = (dir, code, seconds, body) => `
   $tracked=@()
   $op=$null
@@ -86,7 +80,8 @@ const withTree = (dir, code, seconds, body) => `
     ${captureTree(dir)}
     if ($op.Task.IsCompleted) {throw 'fixture_completed_before_observation'}
     ${body}
-    @{result=$r;processes=${treeStates(STOPPED_SETTLE_MS)};before=$before;polls=$polls;same=$same} | ConvertTo-Json -Depth 5 -Compress
+    $deadline=[datetime]::UtcNow.AddSeconds(10)
+    @{result=$r;processes=${treeStates('[Math]::Max(0,[int]($deadline-[datetime]::UtcNow).TotalMilliseconds)')};before=$before;polls=$polls;same=$same} | ConvertTo-Json -Depth 5 -Compress
   } finally {
     if ($null -ne $op -and -not $op.Task.IsCompleted) {
       Stop-E1OwnedProcess $op
