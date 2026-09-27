@@ -2,6 +2,8 @@
 
 The orchestrator finished running but the wrapper script's stdout didn't contain a parseable summary block. **Soft code** — does NOT promote `exit_code`. Legitimate exit-0 outcome with structured signal.
 
+> **Not the same as `wrapper_no_output` (hard, exit 3).** `no_summary` means the wrapper *ran to completion* (exit 0) but produced nothing the parser recognised. `wrapper_no_output` means the wrapper *never ran its body at all* — it exited non-zero having written nothing to stdout (the most common cause on Windows: `PSExecutionPolicyPreference=Restricted` rejecting the ps1 before it starts). If `exit_code` is non-zero, you're looking at `wrapper_no_output`, not this page — see [`envelope-schema.md#errors-discriminated-codes`](../cli/envelope-schema.md#errors-discriminated-codes).
+
 ## Symptom
 
 ```json
@@ -34,7 +36,7 @@ WS-5 invariant: hard codes promote `exit_code` from 0 to 1; soft codes don't. `n
 2. **`--list-only` short-circuit**: the orchestrator returned early before any gradle dispatch. `parallel.legs[]` is populated but no test summary exists. Since v0.9 the orchestrator emits `parallel.legs[]` directly so `no_summary` should be rare on `--list-only`; surfaces only on edge cases.
 3. **Stub gradle output in tests**: vitest characterization tests inject fake wrappers that emit minimal output. The parser can't find the summary line; emits `no_summary`.
 4. **Gradle progress format change**: a new gradle version reshaped the "X tests completed" line beyond what the parser recognises. The orchestrator's `parseScriptOutput` regex doesn't match. Recovery: file a bug at `kmp-test-runner` repo with the captured stdout.
-5. **Wrapper script crash mid-output**: rare — would normally surface as a non-zero exit with a different error code. Could leave partial stdout that the parser doesn't match.
+5. **Wrapper script crash mid-output**: rare — would normally surface as a non-zero exit with a different error code (a crash with completely empty stdout is `wrapper_no_output`, not `no_summary`). Could leave partial stdout that the parser doesn't match.
 
 ## Recovery path
 
@@ -77,3 +79,4 @@ kmp-test parallel 2>&1 | tee /tmp/wrapper-output.log
 - [`overview.md`](overview.md) — troubleshooting hub
 - [`no-changed-modules.md`](no-changed-modules.md) — the other soft code
 - [`no-test-modules.md`](no-test-modules.md) — the HARD code that fires when discovery confirms empty (preempts `no_summary`)
+- `wrapper_no_output` (hard, exit 3) — the wrapper never ran at all (e.g. a blocked PowerShell execution policy on Windows); see the callout above and [`envelope-schema.md#errors-discriminated-codes`](../cli/envelope-schema.md#errors-discriminated-codes)

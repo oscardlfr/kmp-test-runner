@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — Windows wrapper no longer silently blocked by `PSExecutionPolicyPreference=Restricted`
+
+**Observable behavior change.** On Windows, `parallel`/`changed`/`android`/`benchmark`/`coverage` and
+`update` spawned `powershell.exe`/`pwsh` with no `-ExecutionPolicy` override. On a host whose
+`PSExecutionPolicyPreference` is `Restricted` — the Windows 11 client default, inherited as-is by any
+process environment that never explicitly ran `Set-ExecutionPolicy` (CI runners, service accounts,
+narrow/guest environments) — PowerShell refused to load the `.ps1` wrapper at all, before a single
+line of it ran. The 5 script-backed subcommands then silently fell through to the legacy output
+parser against completely empty stdout and reported a soft `no_summary` (exit `0` tests, `exit_code
+1`) in under a second — indistinguishable from "ran fine but produced nothing parseable". `kmp-test
+update` failed the same way against `install.ps1`. Both spawns now pass `-ExecutionPolicy Bypass`,
+scoped to that one child process only (a `MachinePolicy`/`UserPolicy` GPO still applies and is
+unaffected).
+
+**New discriminated code, `errors[].code: "wrapper_no_output"` (`ENV_ERROR`, exit `3`).** In `--json`
+mode, when a script-backed subcommand's wrapper process exits non-zero having written nothing to
+stdout — the execution-policy block above, or any other reason the wrapper's own body never ran
+(permission denied, `noexec`, a missing shell) — the dispatcher now reports this as an environment
+error instead of the misleading soft `no_summary`. **Any agent or script that treated a sub-1-second
+`no_summary` with a non-zero exit as a benign parse gap must now branch on `wrapper_no_output`
+separately; the exit code for this specific case changes from `1` to `3`.** The message carries a
+bounded excerpt of the wrapper's stderr and, when it contains `about_Execution_Policies` /
+`UnauthorizedAccess` / `PSSecurityException`, an explicit execution-policy hint. `no_summary` itself
+is unchanged — a wrapper that runs to completion (exit `0`) but produces nothing parseable is still
+soft. Text mode is unaffected (its `stdio:'inherit'` spawn never captures output to diagnose from —
+the real PowerShell error is already visible on the user's own terminal). No `schema_version` bump —
+additive discriminated code, same pattern as `coverage_data_unavailable`.
+
 ### Added — public agentic usage benchmark v2 (`tools/runs/agentic-usage-benchmark-v2-2026-07-17.md`)
 
 **No behavior change** — docs/evidence only; no `lib/`, `bin/`, `.skills/`, or `tools/*.mjs`-at-top-level
