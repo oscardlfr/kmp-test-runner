@@ -671,9 +671,9 @@ describe('runCoverage', () => {
     expect(envelope.warnings.find(w => w.code === 'no_coverage_data')).toBeTruthy();
     expect(envelope.coverage.modules_with_kover_plugin).toEqual([]);
     expect(envelope.coverage.modules_with_jacoco_plugin).toEqual([]);
-    // PLAN-B P1 -- missed_lines is null here too (not 0): modulesContributing
-    // is 0, so there is no real aggregate to report, same null-semantics as
-    // the sibling covered_lines/total_lines this scenario also carries.
+    // missed_lines is null here too (not 0): modulesContributing is 0, so
+    // there is no real aggregate to report, same null-semantics as the
+    // sibling covered_lines/total_lines this scenario also carries.
     expect(envelope.coverage.missed_lines).toBeNull();
     expect(envelope.coverage.covered_lines).toBeNull();
     expect(envelope.coverage.total_lines).toBeNull();
@@ -1394,13 +1394,13 @@ describe('PR A — coverage budget fail-closed (requiredCoverageModules)', () =>
   });
 });
 
-// PLAN-B P1 — covered_lines/total_lines real-data path. Every other test
-// touching these two fields only asserts the null case (no coverage plugin
+// covered_lines/total_lines real-data path. Every other test touching
+// these two fields only asserts the null case (no coverage plugin
 // contributed data); nothing locks the POPULATED case against real XML rows,
 // so a swapped assignment (covered_lines given grandMissed, or either field
 // hardcoded to null unconditionally) would pass every other test in this
 // file untouched.
-describe('PLAN-B P1 — covered_lines/total_lines against real, non-null coverage data', () => {
+describe('covered_lines/total_lines against real, non-null coverage data', () => {
   it('covered_lines/total_lines equal agg.grandCovered/grandTotal, total_lines == covered_lines + missed_lines, and match the markdown TOTAL row', async () => {
     const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
     dropFakeXml(projectRoot, 'a', 'kover');

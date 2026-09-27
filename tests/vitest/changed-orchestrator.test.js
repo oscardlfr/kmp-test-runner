@@ -335,8 +335,8 @@ describe('runChanged --show-modules-only', () => {
 
     expect(exitCode).toBe(0);
     expect(envelope.errors).toEqual([]);
-    // PLAN-B P1 -- this early-return builds its own literal coverage object
-    // (not buildDryRunReport/runParallel) -- covered_lines/total_lines join
+    // This early-return builds its own literal coverage object (not
+    // buildDryRunReport/runParallel) -- covered_lines/total_lines join
     // the pre-existing missed_lines:null there too.
     expect(envelope.coverage.missed_lines).toBeNull();
     expect(envelope.coverage.covered_lines).toBeNull();
@@ -593,7 +593,7 @@ describe('runChanged error code discrimination', () => {
     expect(codes).not.toContain('no_summary');
   });
 
-  // PLAN-B B1 — every runParallelInjection stub in this file (including the
+  // Every runParallelInjection stub in this file (including the
   // one immediately above) hardcodes `warnings: []`, so line 543's
   // `warnings: parallelEnvelope.warnings` passthrough has never actually been
   // exercised with a non-empty array. Proves changed's own envelope
@@ -628,7 +628,7 @@ describe('runChanged error code discrimination', () => {
 });
 
 // ---------------------------------------------------------------------------
-// PLAN-B B1 — same "no coverage plugin anywhere" scenario as
+// Same "no coverage plugin anywhere" scenario as
 // parallel-orchestrator.test.js, driven end-to-end through `changed`'s real
 // delegation to runParallel (no runParallelInjection stub) — proves the
 // warning/error survive the extra buildJsonReport rebuild at changed's own
@@ -760,8 +760,8 @@ describe('runChanged --dry-run (F1)', () => {
     expect(gitCalls.length).toBe(0);
     expect(exitCode).toBe(0);
     expect(envelope.changed.detected_modules).toEqual([]);
-    // PLAN-B P1 -- shared buildDryRunReport carries covered_lines/total_lines
-    // null alongside the pre-existing missed_lines:null.
+    // The shared buildDryRunReport carries covered_lines/total_lines null
+    // alongside the pre-existing missed_lines:null.
     expect(envelope.coverage.missed_lines).toBeNull();
     expect(envelope.coverage.covered_lines).toBeNull();
     expect(envelope.coverage.total_lines).toBeNull();

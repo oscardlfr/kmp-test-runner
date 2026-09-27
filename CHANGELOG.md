@@ -38,18 +38,29 @@ additive discriminated code, same pattern as `coverage_data_unavailable`.
 
 ### Changed — `coverage.missed_lines` is `null`, not `0`, when no module contributes coverage data
 
-**Observable behavior change, standalone `kmp-test coverage` only.** Before this change, a project with
-no `kover`/`jacoco` plugin anywhere (or one where the parser found no rows) got
-`coverage.missed_lines: 0` from `runCoverage`'s own aggregate — indistinguishable from "we measured
-zero missed lines," even though nothing was measured at all. `parallel`/`changed`'s equivalent
-"unavailable" path already used `null` for this exact condition; standalone `coverage` did not. Now
-`missed_lines` is `null` whenever `coverage.modules_contributing` is `0`, matching that existing
-convention and closing the exact ambiguity a prior macOS coverage-reporting audit surfaced. No existing
-test asserted `missed_lines === 0` for this scenario, so none needed updating — verified by running the
-full suite before and after this change (both green).
+**Observable behavior change — `coverage`, `parallel`, and `changed` (`changed` inherits it by
+delegation).** `docs/envelope-contract.md` already documented `missed_lines` as "`null` when coverage
+couldn't be aggregated," but the aggregate in `coverage-orchestrator.js` returned the unguarded
+`agg.grandMissed` (`0` with no rows) instead — an implementation bug against its own already-documented
+contract, not a new decision. This aligns the code with that contract: `missed_lines` is now `null`
+whenever `coverage.modules_contributing` is `0`, whether that's because no module has a `kover`/`jacoco`
+plugin, a plugin is present but produced no usable XML, or every module's XML failed to parse.
 
-**For consumer-side work**: any downstream tooling reading `coverage.missed_lines` from standalone
-`kmp-test coverage` and branching on `=== 0` to mean "measured, zero missed lines" must switch to
+`parallel` adopts `coverage-orchestrator.js`'s aggregate wholesale
+(`parallel-orchestrator.js`: `state.coverage = cov.coverage`) whenever aggregation completes normally —
+`buildUnavailableCoverageBlock`'s existing `null` only applies to the narrower case of aggregation
+*throwing*, not to a normal run that simply finds no data. So this change reaches `parallel` (and
+`changed`, which delegates to `parallel` in-process) as directly as it reaches standalone `coverage`,
+regardless of `--min-missed-lines`. Confirmed by reverting just this one guard and re-running the
+suite: exactly 5 tests fail, across all three subcommands' own test files — `coverage-orchestrator.test.js`
+("no coverage plugins detected → no_coverage_data warning"), `parallel-orchestrator.test.js` (both
+no-plugin tests under "coverage aggregation against a project with no coverage plugin anywhere"), and
+`changed-orchestrator.test.js` (both no-plugin tests under the equivalent describe block) — reverting
+restores them to green. No existing test asserted `missed_lines === 0` for this scenario before this PR,
+so none needed updating.
+
+**For consumer-side work**: any downstream tooling reading `coverage.missed_lines` from `coverage`,
+`parallel`, or `changed` and branching on `=== 0` to mean "measured, zero missed lines" must switch to
 checking `modules_contributing > 0` first — the value for "nothing was measured" changed from `0` to
 `null`.
 

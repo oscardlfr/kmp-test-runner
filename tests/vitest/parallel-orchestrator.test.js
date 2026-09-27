@@ -1652,7 +1652,7 @@ describe('runParallel', () => {
     expect(envelope.plan.legs).toEqual(['common']);
     expect(spawn.calls.length).toBe(0);
     expect(exitCode).toBe(0);
-    // PLAN-B P1 -- buildDryRunReport (lib/envelope/builder.js, shared with
+    // buildDryRunReport (lib/envelope/builder.js, shared with
     // changed/android/benchmark) carries covered_lines/total_lines as null
     // alongside the pre-existing missed_lines:null, same shape parity as
     // every other coverage-unavailable path.
@@ -6181,8 +6181,8 @@ kotlin {
 });
 
 // ---------------------------------------------------------------------------
-// PLAN-B B1 — a project with ZERO kover/jacoco plugin anywhere (the exact
-// "macOS report" audit scenario: a real project genuinely has no coverage
+// A project with ZERO kover/jacoco plugin anywhere (the exact
+// macOS audit scenario: a real project genuinely has no coverage
 // tooling configured). Runs the REAL coverage-orchestrator.js end to end (no
 // runCoverageInjection stub) — this exact combination (no threshold ->
 // warning only; --min-missed-lines -> hard error) had no test at all before

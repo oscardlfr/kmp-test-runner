@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// PLAN-B P1 -- direct unit coverage for the shared envelope-builder helpers
+// Direct unit coverage for the shared envelope-builder helpers
 // (lib/envelope/builder.js) that construct a minimal coverage:{} stub.
 // buildDryRunReport is used, unmodified, by parallel/changed's own
 // --dry-run short-circuit (neither overwrites envelope.coverage afterward,
