@@ -6172,3 +6172,51 @@ kotlin {
     expect(envelope.skipped.some(s => s.module === 'shared')).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// PLAN-B B1 — a project with ZERO kover/jacoco plugin anywhere (the exact
+// "macOS report" audit scenario: a real project genuinely has no coverage
+// tooling configured). Runs the REAL coverage-orchestrator.js end to end (no
+// runCoverageInjection stub) — this exact combination (no threshold ->
+// warning only; --min-missed-lines -> hard error) had no test at all before
+// this PR; every existing coverage_data_unavailable test above covers a
+// DIFFERENT reason (target-no-xml: plugin present, XML missing;
+// report-dispatch-failed / aggregation-failed: injected failures). Preserved
+// unchanged from 0.14.0's own behavior for this scenario -- this PR's P1
+// only adds covered_lines/total_lines alongside the existing fields.
+describe('coverage aggregation against a project with no coverage plugin anywhere (real coverage-orchestrator.js)', () => {
+  it('no --min-missed-lines -> warnings includes no_coverage_data, exit 0, covered_lines/total_lines null', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'desktop'],
+      spawn,
+      log: () => {},
+    });
+    expect(envelope.warnings.some(w => w.code === 'no_coverage_data')).toBe(true);
+    expect(envelope.errors).toEqual([]);
+    expect(exitCode).toBe(0);
+    expect(envelope.coverage.modules_contributing).toBe(0);
+    expect(envelope.coverage.covered_lines).toBeNull();
+    expect(envelope.coverage.total_lines).toBeNull();
+  });
+
+  it('--min-missed-lines 15 -> errors includes coverage_data_unavailable/target-not-detected, exit 3', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'desktop', '--min-missed-lines', '15'],
+      spawn,
+      log: () => {},
+    });
+    expect(envelope.warnings.some(w => w.code === 'no_coverage_data')).toBe(true);
+    expect(envelope.errors).toEqual([
+      expect.objectContaining({ code: 'coverage_data_unavailable', threshold: 15, reason: 'target-not-detected' }),
+    ]);
+    expect(exitCode).toBe(3);
+    expect(envelope.coverage.covered_lines).toBeNull();
+    expect(envelope.coverage.total_lines).toBeNull();
+  });
+});
