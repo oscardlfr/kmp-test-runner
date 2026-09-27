@@ -60,6 +60,18 @@ const treeStates = waitMs => `@(
       stopped=$item.process.WaitForExit(${waitMs})}
   }
 )`;
+// RunCore only sets CleanupOk=true once the Job Object's own active-process
+// accounting reaches zero (checked separately below, unaffected by this
+// change). That accounting reaching zero and an individually-held
+// System.Diagnostics.Process handle actually becoming signaled are two
+// different OS synchronization points, not guaranteed to land in the same
+// instant under CPU contention — so a zero-timeout poll right after
+// Wait-E1OwnedProcess returns can see a descendant (usually the grandchild)
+// as not-yet-stopped a moment before it settles. WaitForExit(ms) returns as
+// soon as the condition is true, so this costs nothing on the already-
+// stopped path. One shared deadline (not per-process) so a genuine
+// regression still surfaces as this test's own stopped:false diff rather
+// than degrading into execFile's generic 40s timeout.
 const withTree = (dir, code, seconds, body) => `
   $tracked=@()
   $op=$null
@@ -68,7 +80,8 @@ const withTree = (dir, code, seconds, body) => `
     ${captureTree(dir)}
     if ($op.Task.IsCompleted) {throw 'fixture_completed_before_observation'}
     ${body}
-    @{result=$r;processes=${treeStates(0)};before=$before;polls=$polls;same=$same} | ConvertTo-Json -Depth 5 -Compress
+    $deadline=[datetime]::UtcNow.AddSeconds(10)
+    @{result=$r;processes=${treeStates('[Math]::Max(0,[int]($deadline-[datetime]::UtcNow).TotalMilliseconds)')};before=$before;polls=$polls;same=$same} | ConvertTo-Json -Depth 5 -Compress
   } finally {
     if ($null -ne $op -and -not $op.Task.IsCompleted) {
       Stop-E1OwnedProcess $op

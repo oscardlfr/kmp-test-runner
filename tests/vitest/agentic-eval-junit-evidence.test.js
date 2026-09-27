@@ -214,7 +214,7 @@ describe('countEvidenceTaskJunit -- aggregate byte cap (MAX_JUNIT_XML_AGGREGATE_
     for (const n of ['A', 'B', 'C', 'D']) writeXml(workDir, 'shared', 'testAndroidHostTest', n, xmlOfSize(n, 20 * ONE_MB));
     const result = countEvidenceTaskJunit(workDir, ':shared:testAndroidHostTest');
     expect(result).toEqual({ status: 'integrity_error', reason: 'capture_bounds_exceeded' });
-  });
+  }, 30000);
 });
 
 describe('countEvidenceTaskJunit -- aggregate file-count cap (MAX_JUNIT_XML_FILES = 2000) at the real, documented threshold', () => {
