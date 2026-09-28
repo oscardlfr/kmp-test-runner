@@ -1,8 +1,8 @@
 <svg viewBox="0 0 880 412" width="880" height="412" xmlns="http://www.w3.org/2000/svg" role="img" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif">
-  <title>Agent sessions with and without kmp-test</title>
-  <desc>Claude Code · claude-sonnet-5 — key facts 4/4 with kmp-test, 4/4 without; tool calls per session (median): 4 with kmp-test, 13 without; wall-clock per session (median): 3.2 min with kmp-test, 3.2 min without; estimated api cost per session: $0.09–$0.14 with kmp-test, $0.15–$0.22 without. Codex CLI · gpt-5.6-terra — key facts 4/4 with kmp-test, 4/4 without; tool calls per session (median): 13 with kmp-test, 12 without; wall-clock per session (median): 4.8 min with kmp-test, 3.7 min without; estimated api cost per session: not estimated.</desc>
+  <title>Results at a glance</title>
+  <desc>Claude Code · claude-sonnet-5 — key facts 4/4 with kmp-test, 4/4 without; tool calls per session (median): 4 with kmp-test, 13 without; wall-clock per session (median): 3.2 min with kmp-test, 3.2 min without; estimated API cost per session: $0.09–$0.14 with kmp-test, $0.15–$0.22 without. Codex CLI · gpt-5.6-terra — key facts 4/4 with kmp-test, 4/4 without; tool calls per session (median): 13 with kmp-test, 12 without; wall-clock per session (median): 4.8 min with kmp-test, 3.7 min without; estimated API cost per session: not estimated.</desc>
   <rect x="1" y="1" width="878" height="410" rx="12" fill="#ffffff" stroke="#d0d7de" stroke-width="1"/>
-  <text x="28" y="48.0" font-size="20" font-weight="600" fill="#1f2328">Agent sessions with and without kmp-test</text>
+  <text x="28" y="48.0" font-size="20" font-weight="600" fill="#1f2328">Results at a glance</text>
   <text x="28" y="75.0" font-size="13" font-weight="400" fill="#59636e">1 pre-registered scenario · 4 sessions per arm per agent · Windows 11 · details in the evidence doc</text>
   <rect x="736" y="30.0" width="10.0" height="10" rx="2" fill="#0969da"/>
   <text x="752" y="41.0" font-size="13" font-weight="400" fill="#1f2328">with kmp-test</text>

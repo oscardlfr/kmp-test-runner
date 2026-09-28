@@ -250,7 +250,7 @@ export function computeScorecardLayout(summary, costEstimate) {
   const titleFS = 20;
   const titleY = PAD + titleFS;
   items.push(textItem('title', null, PAD, titleY, titleFS, 600, COLOR_TEXT,
-    'Agent sessions with and without kmp-test'));
+    'Results at a glance'));
 
   const subtitleFS = 13;
   const subtitleY = titleY + ROW_GAP + subtitleFS;
@@ -351,7 +351,7 @@ export function renderScorecardSvg(summary, costEstimate) {
     }
   }
   return `<svg viewBox="0 0 ${layout.width} ${layout.height}" width="${layout.width}" height="${layout.height}" xmlns="http://www.w3.org/2000/svg" role="img" font-family="${FONT_STACK}">
-  <title>Agent sessions with and without kmp-test</title>
+  <title>Results at a glance</title>
   <desc>${escapeXml(buildScorecardAlt(summary, costEstimate))}</desc>
   <rect x="1" y="1" width="${layout.width - 2}" height="${layout.height - 2}" rx="12" fill="${COLOR_CARD_FILL}" stroke="${COLOR_CARD_STROKE}" stroke-width="1"/>
   ${parts.join('\n  ')}
@@ -366,9 +366,11 @@ export function buildScorecardAlt(summary, costEstimate) {
     const gFree = findGroup(summary, runtimeId, 'free');
     const bits = [`key facts ${fmtRatio(gProduct.key_facts_match)} with kmp-test, ${fmtRatio(gFree.key_facts_match)} without`];
     for (const metric of buildBarMetrics(runtimeId, summary, costEstimate)) {
+      // Lowercase the label for alt-text style, but keep "API" as an acronym, not "api".
+      const label = metric.label.toLowerCase().replace(/\bapi\b/, 'API');
       bits.push(metric.notEstimated
-        ? `${metric.label.toLowerCase()}: not estimated`
-        : `${metric.label.toLowerCase()}: ${metric.withLabel} with kmp-test, ${metric.withoutLabel} without`);
+        ? `${label}: not estimated`
+        : `${label}: ${metric.withLabel} with kmp-test, ${metric.withoutLabel} without`);
     }
     parts.push(`${RUNTIME_LABELS[runtimeId]} — ${bits.join('; ')}`);
   }

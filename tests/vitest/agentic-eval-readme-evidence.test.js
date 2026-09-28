@@ -458,6 +458,24 @@ describe('scorecard layout: no overlapping text', () => {
     expect(subtitle.y).toBeGreaterThanOrEqual(title.y + title.fontSize + 4);
   });
 
+  it('the chart title is "Results at a glance", not a duplicate of the README H3 directly above the image', () => {
+    const layout = computeScorecardLayout(summary, costEstimate);
+    const title = layout.items.find(i => i.role === 'title');
+    expect(title.text).toBe('Results at a glance');
+    const svg = renderScorecardSvg(summary, costEstimate);
+    expect(svg).toContain('<title>Results at a glance</title>');
+    expect(svg).not.toContain('Agent sessions with and without kmp-test');
+  });
+
+  it('the alt text says "API" (acronym), never lowercase "api", even though the rest of each metric label is lowercased', () => {
+    const alt = buildScorecardAlt(summary, costEstimate);
+    expect(alt).toContain('estimated API cost per session');
+    expect(alt).not.toMatch(/\bapi\b/); // lowercase "api" must not appear anywhere
+    // Still lowercased apart from the acronym -- this isn't just "never touch the label".
+    expect(alt).toContain('tool calls per session (median)');
+    expect(alt).toContain('wall-clock per session (median)');
+  });
+
   it('the computed height covers every item with room to spare (nothing renders below the card)', () => {
     const layout = computeScorecardLayout(summary, costEstimate);
     const maxY = Math.max(...layout.items.filter(i => i.kind === 'text').map(i => i.y));
