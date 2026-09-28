@@ -1,7 +1,7 @@
 # Product principles — kmp-test-runner
 
 > Strategic charter. Every PR justifies itself against this document.
-> Updated when strategy changes (rare). Operational rules live in `CLAUDE.md`;
+> Updated when strategy changes (rare). Operational rules live in `AGENTS.md`;
 > current and queued work in `BACKLOG.md`; the decision log lives in PR
 > descriptions, BACKLOG entries, and commit messages.
 
@@ -120,7 +120,7 @@ shellcheck rules, zsh migration, greenfield Node rewrite, status quo).
 
 The repo began as a Windows-primary POC to reduce agent token costs against
 the repo owner's personal KMP project. It decoupled from that origin
-(see `CLAUDE.md` "Decouple from L0" rules: 8 audit patterns must remain
+(see `AGENTS.md` privacy rules: the audit patterns must remain
 0-hits in scripts) and now ships as an independent open-source product.
 
 The repo owner develops primarily on Windows; the macOS testing surface
@@ -135,8 +135,8 @@ constraint.
 The following are explicitly NOT part of this product. PRs proposing them
 should be redirected to a more appropriate venue:
 
-- **L0 / consumer-project-specific behavior.** The 8 audit patterns
-  enumerated in `CLAUDE.md` "Decouple from L0" must remain 0-hits in
+- **Private / consumer-project-specific behavior.** The audit patterns
+  enforced by `tools/decouple-audit.mjs` must remain 0-hits in
   `scripts/`. The shipped consumer-config env vars (`SKIP_DESKTOP_MODULES`,
   `SKIP_ANDROID_MODULES`, `PARENT_ONLY_MODULES`) are the documented API
   surface and do not violate this rule.
@@ -157,7 +157,9 @@ should be redirected to a more appropriate venue:
 | Document        | Purpose                                                  | Update cadence                |
 |-----------------|----------------------------------------------------------|-------------------------------|
 | `PRODUCT.md`    | Strategic charter (this file)                            | Rare (when strategy changes)  |
-| `CLAUDE.md`     | Operational rules: gitflow, CI checks, commit conventions| When those rules change       |
+| `AGENTS.md`     | Portable operational rules for coding agents             | When those rules change       |
+| `CLAUDE.md`     | Thin Claude Code adapter importing `AGENTS.md`            | Rare compatibility changes    |
+| `.claude/rules/`| Path-scoped implementation rules                          | When area-specific rules change|
 | `BACKLOG.md`    | Current and queued work                                  | Each PR                       |
 | `CHANGELOG.md`  | Released versions                                        | Each release (append-only)    |
 | `README.md`     | User-facing onboarding + value-prop measurements         | Each user-visible feature     |

@@ -55,7 +55,6 @@ fi
 "${source_git[@]}" bundle create "${source_bundle}" HEAD
 
 while IFS= read -r -d '' rel; do
-    [[ "${rel}" == "AGENTS.md" ]] && continue
     if [[ -f "${source_root}/${rel}" || -L "${source_root}/${rel}" ]]; then
         printf '%s\0' "${rel}" >>"${source_manifest}"
     fi

@@ -1,6 +1,6 @@
 # Backlog
 
-> Active and queued tasks for `kmp-test-runner`. Newest first. Read `CLAUDE.md` first for repo state + gitflow rules.
+> Active and queued tasks for `kmp-test-runner`. Newest first. `AGENTS.md` owns portable agent rules; this file owns planning history and the current queue.
 
 ---
 

@@ -18,6 +18,7 @@ actionlint -shellcheck=
 node tools/decouple-audit.mjs
 node tools/check-bundle-size.mjs
 node tools/validate-plugin.mjs
+node tools/validate-agent-config.mjs
 
 npm audit --omit=dev --audit-level=high
 if ! npm audit --audit-level=high; then

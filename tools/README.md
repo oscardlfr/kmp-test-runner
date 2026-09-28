@@ -88,7 +88,7 @@ node tools/measurement-registry.mjs summarize    # totals, or --feature <name> f
 See [`docs/token-cost-measurement.md`](../docs/token-cost-measurement.md#measurement-registry) for the schema.
 
 ### `sync-versions.js`
-Keeps `package.json#version` in lockstep with the hardcoded version pins across `gradle-plugin/build.gradle.kts`, `README.md`, `CLAUDE.md`, and `.claude-plugin/plugin.json` (Claude Code plugin manifest). Wired into CI's `secrets-scan` job as a pre-flight.
+Keeps `package.json#version` in lockstep with the hardcoded version pins across `gradle-plugin/build.gradle.kts`, `README.md`, and `.claude-plugin/plugin.json` (Claude Code plugin manifest). Agent instruction files deliberately contain no release-version snapshots. Wired into CI's `secrets-scan` job as a pre-flight.
 ```
 node tools/sync-versions.js --check    # exit non-zero on mismatch
 node tools/sync-versions.js            # write fix
@@ -98,6 +98,12 @@ node tools/sync-versions.js            # write fix
 Claude Code plugin manifest gate. Asserts `.claude-plugin/plugin.json` has the required shape (kebab-case name, semver version matching `package.json`, license matching `package.json`, no PR/bug refs in description, `skills[]` paths resolve to a `<name>/SKILL.md` on disk). Wired into CI's `skills-validate` job (shares the required-check name with `npx skills-ref validate`).
 ```
 node tools/validate-plugin.mjs         # exit 0 on pass, 1 on validation failure
+```
+
+### `validate-agent-config.mjs`
+Zero-dependency gate for the repository's contributor-agent configuration. It enforces `AGENTS.md` as the portable canonical source, keeps `CLAUDE.md` a small importing adapter, validates `.claude/rules/*.md` path scopes, and rejects temporal memory or retired role directories. Wired into CI's existing `skills-validate` job and the Linux local gate.
+```
+node tools/validate-agent-config.mjs   # exit 0 on pass, 1 on validation failure
 ```
 
 ### `agentic-eval/`

@@ -2794,7 +2794,7 @@ function scenarioCellIntegrityOk(record, conditionResult, { sharedAmbientNames =
   // Deliberately NOT delegated to the shared evaluation below (shared.checksByName.availabilityOk/
   // noSkillSafetyOk) -- kept reading directly off the already-built `record` because several
   // existing tests mutate record.skill_available.value/record.skill_invoked.value to prove these
-  // two checks fail; delegating would silently stop honoring that mutation (CLAUDE.md: never
+  // two checks fail; delegating would silently stop honoring that mutation (AGENTS.md: never
   // weaken an existing test). Provably equivalent to the shared evaluation's own computation in
   // production: buildRunRecord copies both fields verbatim (nullableMetric(isSkillAvailable(...)),
   // nullableMetric(invocation?.confirmed ?? false)) from the exact same primitives

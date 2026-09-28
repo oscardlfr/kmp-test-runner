@@ -64,7 +64,7 @@ done
 #
 # DOWNLOAD_PLATFORM is the suffix used in the release archive name. Only
 # `linux` and `windows` artifacts are published per the single-artifact
-# policy in CLAUDE.md, so macOS reuses the `linux.tar.gz` (Node + bash
+# artifact policy in PRODUCT.md, so macOS reuses the `linux.tar.gz` (Node + bash
 # scripts only — no native binaries to differentiate).
 # --------------------------------------------------------------------------
 OS="$(uname -s)"

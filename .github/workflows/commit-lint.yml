@@ -4,7 +4,7 @@ name: Commit Lint
 # Conventional Commits v1.0.0 enforcement for kmp-test-runner.
 #
 # Adapted from private-toolkit/reusable-commit-lint.yml (kept inline so this
-# repo stays standalone — see CLAUDE.md "Decouple from L0").
+# repo stays standalone — see AGENTS.md "Product invariants").
 #
 # Branch protection on `main` and `develop` enforces squash-merge, so the only
 # message that survives the merge is the PR title (PR events) — equivalently,
@@ -15,9 +15,8 @@ name: Commit Lint
 #   - `push` events on main/develop: validate the latest commit subject
 #     (equivalent to the squash-PR title that just landed)
 #   - `workflow_dispatch`: validate either an explicit input message or
-#     the latest commit on the dispatching ref — for re-running after
-#     GitHub Actions deduped a pull_request event (seen on develop→main
-#     release PRs whose head SHA matches a recent push run).
+#     the latest commit on the dispatching ref — a recovery path when
+#     GitHub Actions deduplicates an event or a check must be re-run.
 #
 # Format:  <type>[scope][!]: <description>
 # Types:   feat | fix | docs | style | refactor | perf | test | build | ci |

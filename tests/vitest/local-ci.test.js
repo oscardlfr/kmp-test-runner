@@ -42,7 +42,9 @@ describe('local CI cost gate', () => {
       'bash scripts/build-artifact.sh',
       'bats tests/installer/install.bats --filter E2E',
       'skills-ref@0.1.5 validate',
+      'node tools/validate-agent-config.mjs',
     ]) expect(gate).toContain(required);
+    expect(read('tools/local-ci/run-linux.sh')).not.toContain('[[ "${rel}" == "AGENTS.md" ]] && continue');
   });
 
   it('keeps Windows-only behavior on the native host', () => {
