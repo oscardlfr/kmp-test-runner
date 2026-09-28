@@ -361,11 +361,21 @@ describe('the committed evidence1-agentic-benchmark-2026-09-28 campaign', () => 
       const high = Math.max(...cells.map(c => cost(c.tokens, 'cache_write_1h')));
       return `$${low.toFixed(2)}–$${high.toFixed(2)}`;
     };
-    // Independent per-session duration range, straight from cells[].duration_ms -- not via any
-    // module helper -- so this test can't pass just because it agrees with the generator's own bug.
+    // The generator reads the range from the SAME counted-cells aggregate the median comes from
+    // (by_runtime_arm[].duration_ms.min/max), not recomputed from cells[] independently -- a
+    // rejected cell would otherwise feed a cells[]-based range but not the median it's paired
+    // with. Cross-check: an INDEPENDENT recomputation straight from cells[].duration_ms (not via
+    // any module helper) must still agree with the aggregate for this campaign's real data, so
+    // this test can't pass just because it and the generator share the same underlying bug.
+    for (const [r, arm] of [['claude-code', 'product'], ['claude-code', 'free'], ['codex-cli', 'product'], ['codex-cli', 'free']]) {
+      const minutesFromCells = cellsOf(r, arm).map(c => c.duration_ms / 60000);
+      const g = arm === 'product' ? gp(r) : gf(r);
+      expect(Math.min(...minutesFromCells) * 60000).toBe(g.duration_ms.min);
+      expect(Math.max(...minutesFromCells) * 60000).toBe(g.duration_ms.max);
+    }
     const durationRange = (r, arm) => {
-      const minutes = cellsOf(r, arm).map(c => c.duration_ms / 60000);
-      return `${Math.min(...minutes).toFixed(1)}–${Math.max(...minutes).toFixed(1)}`;
+      const g = arm === 'product' ? gp(r) : gf(r);
+      return `${(g.duration_ms.min / 60000).toFixed(1)}–${(g.duration_ms.max / 60000).toFixed(1)}`;
     };
 
     const claudeWallWith = (gp('claude-code').duration_ms.median / 60000).toFixed(1);
@@ -424,19 +434,23 @@ describe('the committed evidence1-agentic-benchmark-2026-09-28 campaign', () => 
 // needs a defined rendering, not a silent gap.
 
 describe('bullet fallback branches (synthetic fixtures)', () => {
+  // duration_ms.min/max default equal to median (degenerate but well-defined) -- the generator
+  // (post F-B fix) reads the wall-clock range from THIS aggregate, the same one the median comes
+  // from, not recomputed from cells[] independently. A caller that overrides duration_ms.median
+  // without also setting min/max gets a degenerate min=max=median range, which is deliberate and
+  // sufficient for these tests: none needs a specific NON-degenerate range value.
   const baseGroup = (runtime, arm, overrides = {}) => ({
     runtime_id: runtime,
     arm,
     declared: 4,
     key_facts_match: { matched: 4, of: 4 },
-    duration_ms: { n: 4, median: 180000 },
+    duration_ms: { n: 4, median: 180000, min: 180000, max: 180000 },
     tool_calls_total: { n: 4, median: 10 },
     ...overrides,
   });
-  // 4 degenerate cells per group, each exactly at that group's own median (min=max=median) --
-  // deterministic and sufficient for these tests, none of which assert a specific range value.
-  // Callers that DO mutate by_runtime_arm after baseSummary() must call this again to keep
-  // summary.cells consistent with the group they just changed.
+  // cells[] still mirrors by_runtime_arm for fixture realism, even though the generator no longer
+  // reads summary.cells for the wall-clock range (it did before the F-B fix). Callers that mutate
+  // by_runtime_arm after baseSummary() should call this again to keep the two consistent.
   const cellsFromGroups = (groups) => groups.flatMap((g) =>
     Array.from({ length: 4 }, (_, i) => ({ runtime_id: g.runtime_id, arm: g.arm, round_index: i, duration_ms: g.duration_ms.median }))
   );
@@ -489,7 +503,7 @@ describe('bullet fallback branches (synthetic fixtures)', () => {
   it('the Claude bullet uses the "vs" wall-clock phrase (not "same") when its two medians differ, with a per-session range and breakdown link', () => {
     const summary = baseSummary();
     summary.by_runtime_arm = summary.by_runtime_arm.map(g =>
-      g.runtime_id === 'claude-code' && g.arm === 'free' ? { ...g, duration_ms: { n: 4, median: 240000 } } : g
+      g.runtime_id === 'claude-code' && g.arm === 'free' ? { ...g, duration_ms: { n: 4, median: 240000, min: 240000, max: 240000 } } : g
     );
     summary.cells = cellsFromGroups(summary.by_runtime_arm); // keep cells consistent with the override above
     const [, bullet2] = buildBullets(summary, baseCostEstimate(), FAKE_RUNS_PATH);

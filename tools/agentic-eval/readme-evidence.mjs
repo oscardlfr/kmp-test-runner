@@ -70,9 +70,9 @@ export function validateSummary(summary) {
     }
   }
   // The README's Scope line names the kmp-test version under measurement, so a campaign that
-  // mixes versions (or records none) must never silently render one. Schema 3 (#534, planned for
-  // 0.16.0) changes the envelope and exit semantics -- readers need to know which version produced
-  // these numbers, permanently, not just while the version happens to be uniform by accident.
+  // mixes versions (or records none) must never silently render one: a later release can change
+  // the envelope and exit semantics, so readers must see which kmp-test version produced these
+  // numbers, permanently, not just while the version happens to be uniform by accident.
   const kmpTestVersion = summary.provenance && summary.provenance.kmp_test_cli_version;
   if (!kmpTestVersion || kmpTestVersion.mixed === true || !Array.isArray(kmpTestVersion.values) || kmpTestVersion.values.length !== 1) {
     errors.push(`provenance.kmp_test_cli_version must be a single, non-mixed value, got ${JSON.stringify(kmpTestVersion)}`);
@@ -95,10 +95,6 @@ export function loadSummary(path) {
 
 function findGroup(summary, runtime, arm) {
   return summary.by_runtime_arm.find(g => g.runtime_id === runtime && g.arm === arm);
-}
-
-function findCells(summary, runtime, arm) {
-  return summary.cells.filter(c => c.runtime_id === runtime && c.arm === arm);
 }
 
 // ---------------------------------------------------------------------------
@@ -400,9 +396,11 @@ export function buildScorecardAlt(summary, costEstimate) {
 // spaces and therefore a DOUBLE hyphen: "results--campaign-16-sessions".
 const RESULTS_HEADING_ANCHOR = 'results--campaign-16-sessions';
 
-function durationRangeMinutes(cells) {
-  const minutes = cells.map(c => c.duration_ms / 60000);
-  return `${Math.min(...minutes).toFixed(1)}–${Math.max(...minutes).toFixed(1)}`;
+// Reads min/max from the SAME counted-cells aggregate the median itself comes from
+// (by_runtime_arm[].duration_ms), not recomputed from cells[] independently -- a cell rejected
+// from the count would otherwise feed the range but not the median it's paired with.
+function durationRangeMinutes(group) {
+  return `${(group.min / 60000).toFixed(1)}–${(group.max / 60000).toFixed(1)}`;
 }
 
 // When the rounded medians are equal, "same" already tells the whole story -- no range needed.
@@ -410,12 +408,12 @@ function durationRangeMinutes(cells) {
 // when the actual driver was a couple of long-tail sessions, not every session. The per-session
 // range plus a link into the evidence doc's full breakdown gives that context without asserting a
 // cause the generator can't derive from its own inputs (that stays in the doc, out of the README).
-function wallClockPhrase(withMinutes, withoutMinutes, withCells, withoutCells, runsPath) {
+function wallClockPhrase(withMinutes, withoutMinutes, withGroup, withoutGroup, runsPath) {
   const w = withMinutes.toFixed(1);
   const wo = withoutMinutes.toFixed(1);
   if (w === wo) return `same median wall-clock (${w} min)`;
-  const withRange = durationRangeMinutes(withCells);
-  const withoutRange = durationRangeMinutes(withoutCells);
+  const withRange = durationRangeMinutes(withGroup);
+  const withoutRange = durationRangeMinutes(withoutGroup);
   const breakdownLink = `${runsPath}/README.md#${RESULTS_HEADING_ANCHOR}`;
   return `median wall-clock ${w} vs ${wo} min (per-session range ${withRange} vs ${withoutRange} min; [breakdown](${breakdownLink}))`;
 }
@@ -448,7 +446,7 @@ function buildClaudeBullet(summary, costEstimate, runsPath) {
   const wallWithout = gf.duration_ms.median / 60000;
   const costWith = fmtCostRange(claudeCostRange(costEstimate, 'product'));
   const costWithout = fmtCostRange(claudeCostRange(costEstimate, 'free'));
-  const wallPhrase = wallClockPhrase(wallWith, wallWithout, findCells(summary, 'claude-code', 'product'), findCells(summary, 'claude-code', 'free'), runsPath);
+  const wallPhrase = wallClockPhrase(wallWith, wallWithout, gp.duration_ms, gf.duration_ms, runsPath);
   return `Claude Code (Sonnet 5) with kmp-test: median ${toolsWith} tool calls vs ${toolsWithout} without, ${wallPhrase}, estimated API cost ${costWith} vs ${costWithout} per session.`;
 }
 
@@ -459,7 +457,7 @@ function buildCodexBullet(summary, runsPath) {
   const toolsWithout = fmtToolCallsMedian(gf.tool_calls_total.median);
   const wallWith = gp.duration_ms.median / 60000;
   const wallWithout = gf.duration_ms.median / 60000;
-  const wallPhrase = wallClockPhrase(wallWith, wallWithout, findCells(summary, 'codex-cli', 'product'), findCells(summary, 'codex-cli', 'free'), runsPath);
+  const wallPhrase = wallClockPhrase(wallWith, wallWithout, gp.duration_ms, gf.duration_ms, runsPath);
   return `Codex CLI (gpt-5.6-terra, low reasoning effort): median ${toolsWith} tool calls with kmp-test vs ${toolsWithout} without; ${wallPhrase}.`;
 }
 

@@ -167,21 +167,28 @@ export function shouldSkip(rel, selfRel) {
 // this is what keeps a token-level allowlist fail-closed instead of
 // widening into a line-level exemption.
 //
-// The allowTokens path iterates via matchAll on a guaranteed-global regex
-// (rule.re itself if already global, otherwise a clone with 'g' appended) --
-// never rule.re.exec() in a manual loop. exec() only advances past a match
-// when the regex has the global flag; without it, lastIndex is ignored on
-// every call, so exec() returns the SAME match forever and a manual
-// lastIndex bump has no effect on its behavior -- an infinite loop the
-// instant an allowlisted rule's own regex isn't global. matchAll requires
-// (and enforces) a global regex, so this can't regress the same way.
+// The allowTokens path iterates via matchAll on a FRESH RegExp built from
+// rule.re's own source/flags (global flag added if not already present) --
+// never rule.re itself, even when rule.re is already global. A fresh
+// RegExp always starts at lastIndex 0 and is never mutated afterward.
+// Passing the shared rule.re directly would be unsafe two ways at once:
+// (1) exec() in a manual loop never advances lastIndex on a non-global
+// regex, so it returns the SAME match forever (the original bug this
+// function fixed); (2) matchAll's own spec (RegExp.prototype[@@matchAll]
+// step 5) copies the INPUT regex's current lastIndex into the iterator it
+// builds -- so reusing the shared rule.re (already global, e.g. every
+// PUBLIC_SHAPE_RULES entry) after some unrelated caller left a stale
+// non-zero lastIndex on that same object silently starts the scan past
+// the beginning of the line, missing a real privacy hit before that
+// position. Fail-open, and strictly worse than the hang it would have
+// replaced. A fresh RegExp per call is immune to both failure modes.
 // ---------------------------------------------------------------------------
 export function lineHasUnallowedMatch(line, rule) {
   if (!rule.allowTokens) {
     rule.re.lastIndex = 0;
     return rule.re.test(line);
   }
-  const globalRe = rule.re.global ? rule.re : new RegExp(rule.re.source, rule.re.flags + 'g');
+  const globalRe = new RegExp(rule.re.source, rule.re.global ? rule.re.flags : `${rule.re.flags}g`);
   for (const m of line.matchAll(globalRe)) {
     if (!rule.allowTokens.has(m[0])) return true;
   }

@@ -487,6 +487,25 @@ describe('lineHasUnallowedMatch: non-global regex + allowTokens safety', () => {
     expect(lineHasUnallowedMatch('EVIDENCE1 only', deviceSerialRule)).toBe(false);
     expect(lineHasUnallowedMatch(`EVIDENCE1 and ${'ZZ0123' + '456789'}`, deviceSerialRule)).toBe(true);
   });
+
+  // Second review round caught a fail-open regression in the first fix (commit 7405cdc): passing
+  // the SHARED, already-global rule.re object straight into matchAll copies THAT object's current
+  // lastIndex into the iterator (RegExp.prototype[@@matchAll] step 5) -- so a stale non-zero
+  // lastIndex left behind by any earlier .test()/.exec() call on that same shared object (every
+  // entry in AUDIT_PUBLIC_RULES is a long-lived, reused object, not a fresh one per call) silently
+  // starts the scan past the beginning of the line, hiding a real privacy hit. Strictly worse than
+  // the hang it replaced. Building a FRESH RegExp per call (never rule.re itself) fixes this.
+  it('a stale non-zero lastIndex on the SHARED device_serial regex must never hide a real hit before that position (fail-open, caught in review of 7405cdc)', () => {
+    const deviceSerialRule = AUDIT_PUBLIC_RULES.find(r => r.class === 'device_serial');
+    const serial = 'R5CR20A' + 'BCDE'; // device_serial shape, split at write time (see SERIAL_FIXTURE above)
+    const line = `serial ${serial} here, then EVIDENCE1 later in the same line`;
+    try {
+      deviceSerialRule.re.lastIndex = 30; // stale -- simulates a prior .test()/.exec() call on this SAME shared object
+      expect(lineHasUnallowedMatch(line, deviceSerialRule)).toBe(true);
+    } finally {
+      deviceSerialRule.re.lastIndex = 0; // never leak state into other tests sharing this rule object
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
