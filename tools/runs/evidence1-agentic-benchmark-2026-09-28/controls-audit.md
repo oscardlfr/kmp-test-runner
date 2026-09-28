@@ -4,7 +4,7 @@ Date: 2026-09-28. Checkout: `agentic-eval-codex-runtime` @ `15ad0dd` (branch
 `codex/agentic-eval-codex-runtime`). No repository file was modified.
 
 This is the full backing detail for the "Experimental controls and threats to validity" section of
-the main evidence document (`evidence1-agentic-benchmark-2026-09-28.md`), which distills this into a
+the main evidence document (`README.md` in this directory), which distills this into a
 compact table and a ranked list. Read this file for every citation and the complete per-parameter
 breakdown; read the main document for the summary a reader needs to correctly bound this benchmark's
 claims.
@@ -365,7 +365,7 @@ donor was warmed with `:core:domain:test` plus both coverage-report tasks, with 
 
 ---
 
-## 3. Not established from repo evidence (needs a transcript or runtime-doc check before publication)
+## 3. Not established from repo evidence (would need a transcript or runtime-doc check)
 
 - Claude Code 2.1.238's default effort or thinking setting for `claude-sonnet-5`, and whether it
   depends on remote configuration. (Partially addressed post-campaign: Claude Code's own

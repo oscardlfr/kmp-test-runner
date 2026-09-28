@@ -36,7 +36,7 @@
   Experimental controls and threats to validity for why two runtimes measured under genuinely
   different conditions cannot be ranked against each other here, and Metric definitions for the
   design.
-- **Cells accepted / rejected / missing**: canary 4/4/0/0; campaign 16/16/0/0.
+- **Cells declared / accepted / rejected / missing**: canary 4/4/0/0; campaign 16/16/0/0.
 
 ## The Windows execution-policy bug (H1) and why this document exists
 
@@ -557,26 +557,7 @@ list summarizes.
   `6a8bbd9d-db3d-4776-bd9d-c8d361180a6e` (post-fix, harness commit `47783fa919668e028aaa3ee5226733eb1ec988ec`,
   a merge of `develop`@`da990280` into this closure's own working branch).
 - Manifest / analysis command: `node tools/agentic-eval/campaign-summary.mjs <campaign-dir>`
-- `node tools/decouple-audit.mjs`: the CLI itself scans only `git ls-files` (repo-tracked text), so
-  it cannot target this file directly while it lives outside the repo, in scratch. Checked instead by
-  importing the tool's own exported `AUDIT_PUBLIC_RULES` and `scanFile` (same code, not a
-  reimplementation) and running them against this file's current content: **clean, 0 hits, 3 public
-  rules applied** (`device_serial`, `user_path_win`, `user_path_posix`), verified 2026-09-28. Must be
-  re-run as the literal CLI command once this file is moved into the repo under `tools/runs/`, before
-  publication — this scratch-side check does not replace that.
-
-## Changelog entry (draft, for `CHANGELOG.md` `[Unreleased]`)
-
-Docs/evidence entry, not a release — no README "What's new" section (standing project rule). Must
-not state the scenario's answer (module, missed lines, threshold): `CHANGELOG.md` ships in the
-release archives.
-
-```
-### Added
-- Evidence1 agentic benchmark — Claude Code vs Codex CLI, with vs without kmp-test, on
-  `v0.15.0` (`tools/runs/evidence1-agentic-benchmark-2026-09-28.md`). Within claude-code, no
-  wall-clock difference between arms at the median but fewer tool calls and lower estimated cost
-  with the product. Within codex-cli (fixed at low reasoning effort), higher median wall-clock and
-  wider variance with the product, traced to two sessions in which the agent invoked kmp-test 6 and
-  4 times. No cross-runtime comparison — see the full document for design, controls and limitations.
-```
+- `node tools/decouple-audit.mjs`, run directly as the literal CLI command against this committed
+  bundle (this file now lives in the repo under `tools/runs/`, not scratch): **clean (1050 files, 3
+  public rules)**, verified 2026-09-28. This exact command is also the required `decouple-audit` CI
+  check on every PR touching this bundle.
