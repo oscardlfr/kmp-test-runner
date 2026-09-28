@@ -42,10 +42,16 @@ branching on its exit codes — this release has more exit-code and field-semant
 - **`parallel`/`changed --test-type all` no longer hard-fails with no adb device; adb state is now
   validated up front for every instrumented run** — see the dedicated entry below. The narrowing (skip
   the leg, warn) applies only to `--test-type all`'s *implicit* inclusion of `androidInstrumented`. An
-  **explicit** `--test-type androidInstrumented` (or `--device`/`--clear-data`) request is stricter than
-  0.14.0 in one specific case: with no `--device` and more than one usable adb device connected, 0.14.0
-  silently picked one and proceeded — it now fails closed as `multiple_adb_devices`, exit `3`. Pass
-  `--device <serial>` to sidestep the ambiguity.
+  **explicit** `--test-type androidInstrumented` request (with no `--device`/`--clear-data`) is stricter
+  than 0.14.0 in three specific cases — 0.14.0 had no per-device state check at all in this branch, only a
+  device-*count* check: (1) **zero adb devices**: 0.14.0 silently dispatched gradle anyway and let *it*
+  fail (generic exit `1`); now fails closed as `instrumented_setup_failed`, exit `3`, before any gradle
+  work. (2) **devices present but all offline/unauthorized**: 0.14.0 picked the first one regardless of
+  its state and let gradle fail on it (exit `1`); now fails closed as `device_offline`/`device_unauthorized`,
+  exit `3`. (3) **more than one usable device**: 0.14.0 picked one without pinning `ANDROID_SERIAL`, so
+  gradle/adb's own default resolution took over silently; now fails closed as `multiple_adb_devices`, exit
+  `3`. Pass `--device <serial>` in any of these cases to sidestep the ambiguity and dispatch exactly as
+  before.
 - **`--test-type common`/`desktop` no longer dispatch `jsTest`/`wasmJsTest`** — those tasks belong to
   their own dedicated leg; dispatching them from the JVM-side legs too was a double-dispatch bug. Task
   lists and test counts for `common`/`desktop` runs on a project with JS/Wasm targets will shrink
@@ -812,13 +818,19 @@ usable devices are present, `all` proceeds without pinning one (gradle picks its
 failing with `multiple_adb_devices` — matching 0.14.0 (which never checked device count in this implicit
 branch at all).
 
-**An explicit `--test-type androidInstrumented` request (or `--device`/`--clear-data`, with or without
-`--test-type all`) is stricter than 0.14.0 in one specific case.** The overall philosophy is unchanged —
-a user who specifically asks for Android instrumented testing still gets a hard, clear failure when it
-can't run — but the *trigger* for that failure widened: with no `--device` and more than one usable adb
-device connected, 0.14.0 silently picked one (best-effort, no validation) and proceeded; it now fails
-closed as `multiple_adb_devices`, exit `3`, before any Gradle work. Pass `--device <serial>` to sidestep
-the ambiguity and keep the old zero-friction path.
+**An explicit `--test-type androidInstrumented` request, with no `--device`/`--clear-data`, is stricter
+than 0.14.0 in three specific cases.** The overall philosophy is unchanged — a user who specifically asks
+for Android instrumented testing still gets a hard, clear failure when it can't run — but the *trigger*
+widened, because 0.14.0 had no per-device state check at all in this branch, only a device-*count* check:
+(1) **zero adb devices**: 0.14.0 silently dispatched gradle anyway and let *it* fail (generic exit `1`);
+now fails closed as `instrumented_setup_failed`, exit `3`, before any gradle work. (2) **devices present
+but all offline/unauthorized**: 0.14.0 picked the first one regardless of its state and let gradle fail on
+it (exit `1`); now fails closed as `device_offline`/`device_unauthorized`, exit `3`. (3) **more than one
+usable device**: 0.14.0 picked one without pinning `ANDROID_SERIAL`, so gradle/adb's own default
+resolution took over silently; now fails closed as `multiple_adb_devices`, exit `3`. Pass `--device
+<serial>` in any of these cases to sidestep the ambiguity and dispatch exactly as before. (`--device` /
+`--clear-data` themselves already had their own, narrower strict-validation path before this commit — this
+change is specifically about the plain, no-flags explicit-instrumented branch.)
 
 ### Fixed — `update --json` now prints exactly one JSON object on stdout (#339)
 
