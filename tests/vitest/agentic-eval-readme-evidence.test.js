@@ -445,6 +445,23 @@ describe('the committed evidence1-agentic-benchmark-2026-09-28 campaign', () => 
     expect(evidenceDoc).toMatch(/^## Results — campaign \(16 sessions\)$/m);
   });
 
+  it('the Reproducibility section discloses that the cited harness commits are not on a public branch yet', () => {
+    // The harness commits cited in Reproducibility live only on the maintainers' local evaluation
+    // branch (375 commits ahead of origin/develop, verified: `git branch -r --contains <sha>` is
+    // empty for both cited SHAs) and that branch itself fails decouple-audit (9 hits) -- so it
+    // cannot be published as-is. The doc must say so, not just cite commands a reader can't run.
+    const evidenceDoc = readFileSync(join(RUNS_DIR, 'README.md'), 'utf8');
+    const reproStart = evidenceDoc.indexOf('## Reproducibility');
+    expect(reproStart).toBeGreaterThan(-1);
+    const reproSection = evidenceDoc.slice(reproStart, evidenceDoc.indexOf('\n## ', reproStart + 1));
+    // Markdown re-wraps this paragraph across multiple lines in the committed doc, so match with
+    // \s+ between words (not a literal multi-line string) -- a future re-wrap that changes no word
+    // must not break this test the way a literal string would.
+    expect(reproSection).toMatch(
+      /\*\*Availability:\*\*\s+the\s+harness\s+commits\s+cited\s+below\s+live\s+on\s+the\s+maintainers['’]\s+evaluation\s+branch,\s+which\s+is\s+not\s+public\s+yet\s*—\s*it\s+must\s+first\s+pass\s+this\s+repository['’]s\s+privacy\s+audit\.\s+Until\s+a\s+sanitized\s+harness\s+is\s+published\s+\(tracked\s+in\s+`BACKLOG\.md`\),\s+the\s+commit-based\s+checks\s+below\s+can\s+be\s+run\s+only\s+by\s+the\s+maintainers;\s+the\s+product-code\s+parity\s+result\s+they\s+report\s+is\s+stated\s+here\s+as\s+verified\s+on\s+2026-09-28\./
+    );
+  });
+
   it('the README block never asserts a cause for the Codex wall-clock difference (that stays in the evidence doc, behind the link)', () => {
     const block = renderReadmeBlock(summary, CAMPAIGN_DATE, costEstimate);
     expect(block).not.toMatch(/re-ran kmp-test/i);

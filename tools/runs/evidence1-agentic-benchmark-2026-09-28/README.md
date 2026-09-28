@@ -527,6 +527,12 @@ list summarizes.
 
 ## Reproducibility
 
+**Availability:** the harness commits cited below live on the maintainers' evaluation branch,
+which is not public yet — it must first pass this repository's privacy audit. Until a sanitized
+harness is published (tracked in `BACKLOG.md`), the commit-based checks below can be run only by
+the maintainers; the product-code parity result they report is stated here as verified on
+2026-09-28.
+
 - Harness commit (canary): `bbefc600b9399a22803c88a29def5a50934106fe` — this is NOT the `v0.15.0` tag's
   underlying commit (`git cat-file -t c458e6ad10ee2dddd57b0a787935e959e5498676` is `tag`: that SHA is
   the annotated tag OBJECT, not a commit; `git rev-parse v0.15.0^{commit}` resolves it to
