@@ -12,10 +12,12 @@
 //     effort.svg and the README block in place
 //
 // Never edit outcomes.svg, effort.svg or the README block between the markers
-// by hand -- edit this generator (or the campaign-summary.json it reads) and
-// regenerate. Fails closed unless the summary is summary_status:"ok",
+// by hand -- edit this generator (or the campaign-summary.json / cost-estimate.json
+// it reads) and regenerate. Fails closed unless the summary is summary_status:"ok",
 // provider_mode:"live", schema 1, with all 4 (runtime x arm) groups declaring
-// exactly 4 cells each -- a partial or non-live summary must never render.
+// exactly 4 cells each, and cost-estimate.json is schema 1 with 4 claude-code
+// cells per arm and a complete price table -- a partial or non-live summary,
+// or an incomplete cost estimate, must never render.
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -86,6 +88,72 @@ function findCells(summary, runtime, arm) {
 }
 
 // ---------------------------------------------------------------------------
+// Cost estimate -- Claude Code only (schema 1 has no token data for Codex).
+// Fails closed on the same "not recorded" philosophy as validateSummary: a
+// malformed or incomplete cost-estimate.json must never silently render a
+// wrong or partial number.
+
+const COST_ESTIMATE_PRICE_KEYS = ['input', 'cache_write_5m', 'cache_write_1h', 'cache_read', 'output'];
+
+export function validateCostEstimate(doc) {
+  const errors = [];
+  if (!doc || typeof doc !== 'object') return ['cost estimate is not an object'];
+  if (doc.schema !== 1) errors.push(`schema must be 1, got ${JSON.stringify(doc.schema)}`);
+  const price = doc.pricing && doc.pricing.per_million_tokens;
+  for (const key of COST_ESTIMATE_PRICE_KEYS) {
+    if (!price || typeof price[key] !== 'number') errors.push(`pricing.per_million_tokens.${key} must be a number`);
+  }
+  const cells = Array.isArray(doc.cells) ? doc.cells : [];
+  for (const arm of ARM_ORDER) {
+    const n = cells.filter(c => c.runtime_id === 'claude-code' && c.arm === arm).length;
+    if (n !== 4) errors.push(`expected 4 claude-code/${arm} cells, got ${n}`);
+  }
+  return errors;
+}
+
+export function loadCostEstimate(path) {
+  const raw = JSON.parse(readFileSync(path, 'utf8'));
+  const errors = validateCostEstimate(raw);
+  if (errors.length > 0) {
+    throw new Error(`cost-estimate.json failed validation:\n  ${errors.join('\n  ')}`);
+  }
+  return raw;
+}
+
+// One session's cost at a given per-million-token price table.
+function sessionCost(tokens, price, cacheWriteKey) {
+  return (
+    tokens.input * price.input +
+    tokens.cache_creation * price[cacheWriteKey] +
+    tokens.cache_read * price.cache_read +
+    tokens.output * price.output
+  ) / 1e6;
+}
+
+// The record doesn't distinguish a 5-minute from a 1-hour cache write, so the
+// range spans both prices across every cell in the arm: the low bound is the
+// cheapest cell under the 5m price, the high bound is the priciest cell under
+// the 1h price -- the widest interval consistent with every session in the
+// arm regardless of which TTL it actually used.
+function armCostRange(cells, price) {
+  const low5m = cells.map(c => sessionCost(c.tokens, price, 'cache_write_5m'));
+  const high1h = cells.map(c => sessionCost(c.tokens, price, 'cache_write_1h'));
+  return { low: Math.min(...low5m), high: Math.max(...high1h) };
+}
+
+function fmtCostRange({ low, high }) {
+  return `$${low.toFixed(3)}–$${high.toFixed(3)}`;
+}
+
+export function buildCostSentence(costEstimate) {
+  const price = costEstimate.pricing.per_million_tokens;
+  const cellsFor = arm => costEstimate.cells.filter(c => c.runtime_id === 'claude-code' && c.arm === arm);
+  const withRange = armCostRange(cellsFor('product'), price);
+  const withoutRange = armCostRange(cellsFor('free'), price);
+  return `Claude Code estimated API cost per session: ${fmtCostRange(withRange)} with kmp-test, ${fmtCostRange(withoutRange)} without (recorded tokens × published Sonnet 5 prices; an estimate, not a bill). Not estimated for Codex CLI.`;
+}
+
+// ---------------------------------------------------------------------------
 // Formatting helpers -- "not recorded" for anything absent, never inferred
 
 function fmtRatio(match) {
@@ -121,8 +189,6 @@ export function buildPlaceholders(summary, campaignDate) {
       p[`WALL_${ak}_${rk}`] = fmtMinutesStat(g.duration_ms);
       p[`TOOLS_${ak}_${rk}`] = fmtCountStat(g.tool_calls_total);
     }
-    const productGroup = findGroup(summary, runtime, 'product');
-    p[`STRICT_SUCCESS_PRODUCT_${rk}`] = fmtRatio(productGroup.success);
   }
 
   // Ceiling wording (rule e): "no difference in key facts at n=4 (16/16)" --
@@ -343,9 +409,10 @@ function buildEffortAlt(summary) {
 // ---------------------------------------------------------------------------
 // README block
 
-export function renderReadmeBlock(summary, campaignDate) {
+export function renderReadmeBlock(summary, campaignDate, costEstimate) {
   const p = buildPlaceholders(summary, campaignDate);
   const runsPath = `tools/runs/evidence1-agentic-benchmark-${campaignDate}`;
+  const costSentence = buildCostSentence(costEstimate);
   const ceilingSentence = p.KEY_FACTS_AT_CEILING
     ? ` No difference in key facts at n=4 (${p.KEY_FACTS_CEILING_TOTALS}).`
     : '';
@@ -369,7 +436,7 @@ kmp-test hands an agent the test and coverage verdict as one JSON envelope inste
 
 Compare each agent's two rows with each other. The agents differ in model, tools and harness, so the table does not rank Claude Code against Codex CLI.${ceilingSentence}${missingSentence}
 
-With kmp-test only (no comparable number exists without it): strict protocol success ${p.STRICT_SUCCESS_PRODUCT_CLAUDE} (Claude Code) and ${p.STRICT_SUCCESS_PRODUCT_CODEX} (Codex CLI).
+${costSentence}
 
 **Scope:** one scenario, tagged \`train\` (the skill was tuned on this task family); n=4 sessions per arm per agent in counterbalanced order; Windows 11 in an isolated VM with a restricted network (provider APIs only); design and metrics fixed before any live session. Claude Code 2.1.238 · claude-sonnet-5 · effort not set by the harness (docs default: high). Codex CLI 0.154.0 · gpt-5.6-terra · reasoning effort low. Key facts = module, outcome, coverage numbers. "Full answer" also requires the test counts, which the prompt leaves ambiguous. [Evidence, per-session detail and limitations](${runsPath}/README.md) · [controls audit](${runsPath}/controls-audit.md) · [pre-registration](${runsPath}/preregistration.md)
 <!-- agentic-benchmark:end -->`;
@@ -383,15 +450,21 @@ function main(argv) {
   const campaignDate = (argv.find(a => a.startsWith('--date=')) || '--date=2026-09-28').split('=')[1];
   const runsDir = join(REPO_ROOT, 'tools', 'runs', `evidence1-agentic-benchmark-${campaignDate}`);
   const summaryPath = join(runsDir, 'campaign-summary.json');
+  const costEstimatePath = join(runsDir, 'cost-estimate.json');
 
   if (!existsSync(summaryPath)) {
     console.error(`::error::campaign-summary.json not found at ${summaryPath}`);
     process.exit(1);
   }
+  if (!existsSync(costEstimatePath)) {
+    console.error(`::error::cost-estimate.json not found at ${costEstimatePath}`);
+    process.exit(1);
+  }
 
-  let summary;
+  let summary, costEstimate;
   try {
     summary = loadSummary(summaryPath);
+    costEstimate = loadCostEstimate(costEstimatePath);
   } catch (err) {
     console.error(`::error::${err.message}`);
     process.exit(1);
@@ -399,7 +472,7 @@ function main(argv) {
 
   const outcomesSvg = renderOutcomesSvg(summary);
   const effortSvg = renderEffortSvg(summary);
-  const block = renderReadmeBlock(summary, campaignDate);
+  const block = renderReadmeBlock(summary, campaignDate, costEstimate);
 
   const outcomesPath = join(runsDir, 'outcomes.svg');
   const effortPath = join(runsDir, 'effort.svg');

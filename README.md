@@ -24,7 +24,7 @@ kmp-test hands an agent the test and coverage verdict as one JSON envelope inste
 
 Compare each agent's two rows with each other. The agents differ in model, tools and harness, so the table does not rank Claude Code against Codex CLI. No difference in key facts at n=4 (16/16).
 
-With kmp-test only (no comparable number exists without it): strict protocol success 4/4 (Claude Code) and 0/4 (Codex CLI).
+Claude Code estimated API cost per session: $0.086–$0.137 with kmp-test, $0.146–$0.218 without (recorded tokens × published Sonnet 5 prices; an estimate, not a bill). Not estimated for Codex CLI.
 
 **Scope:** one scenario, tagged `train` (the skill was tuned on this task family); n=4 sessions per arm per agent in counterbalanced order; Windows 11 in an isolated VM with a restricted network (provider APIs only); design and metrics fixed before any live session. Claude Code 2.1.238 · claude-sonnet-5 · effort not set by the harness (docs default: high). Codex CLI 0.154.0 · gpt-5.6-terra · reasoning effort low. Key facts = module, outcome, coverage numbers. "Full answer" also requires the test counts, which the prompt leaves ambiguous. [Evidence, per-session detail and limitations](tools/runs/evidence1-agentic-benchmark-2026-09-28/README.md) · [controls audit](tools/runs/evidence1-agentic-benchmark-2026-09-28/controls-audit.md) · [pre-registration](tools/runs/evidence1-agentic-benchmark-2026-09-28/preregistration.md)
 <!-- agentic-benchmark:end -->

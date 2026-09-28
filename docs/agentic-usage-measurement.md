@@ -12,10 +12,12 @@ This is no longer a proposal without an implementation. A working harness
 exists at [`tools/agentic-eval/`](../tools/agentic-eval/), and accepted
 evidence produced under its strict command policy is committed under
 `tools/runs/`, covering both `claude-code` and `codex-cli`. One
-pre-registered scenario has cleared the acceptance criteria below and been
-promoted to the README's "Agent sessions with and without kmp-test"
-section; it is one scenario at n=4 per arm per runtime, not the full
-methodology this document describes. Treat this document as the
+pre-registered scenario has cleared the acceptance criteria below except
+one partial: model identity is recorded as the requested alias, not the
+served snapshot — see the [controls audit](../tools/runs/evidence1-agentic-benchmark-2026-09-28/controls-audit.md)
+— and been promoted to the README's "Agent sessions with and without
+kmp-test" section; it is one scenario at n=4 per arm per runtime, not the
+full methodology this document describes. Treat this document as the
 methodology of record for a harness that runs, not as a sketch for one that
 might.
 
@@ -744,8 +746,7 @@ trusted, only when all of the following hold:
   and redacted aggregates.
 - **README promotion requires evidence.** No result is promoted to a README
   headline unless it is backed by same-scenario evidence checked into this
-  repo, consistent with today's README note that no agentic benchmark
-  results are published yet.
+  repo.
 
 ### Reporting format
 

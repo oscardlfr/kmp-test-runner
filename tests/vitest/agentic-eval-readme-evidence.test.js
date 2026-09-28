@@ -15,6 +15,9 @@ import {
   renderOutcomesSvg,
   renderEffortSvg,
   renderReadmeBlock,
+  validateCostEstimate,
+  loadCostEstimate,
+  buildCostSentence,
 } from '../../tools/agentic-eval/readme-evidence.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -90,17 +93,75 @@ describe('validateSummary', () => {
 });
 
 // ---------------------------------------------------------------------------
+// validateCostEstimate -- fail-closed guard, same philosophy as validateSummary
+
+describe('validateCostEstimate', () => {
+  const completeCells = () => {
+    const cells = [];
+    for (const arm of ['product', 'free']) {
+      for (let i = 0; i < 4; i++) {
+        cells.push({ runtime_id: 'claude-code', arm, order_index: i, tokens: { input: 1, output: 1, cache_read: 1, cache_creation: 1 } });
+      }
+    }
+    return cells;
+  };
+  const complete = () => ({
+    schema: 1,
+    pricing: { per_million_tokens: { input: 2, cache_write_5m: 2.5, cache_write_1h: 4, cache_read: 0.2, output: 10 } },
+    cells: completeCells(),
+  });
+
+  it('accepts a complete, schema-1 cost estimate with 4 claude-code cells per arm and a full price table', () => {
+    expect(validateCostEstimate(complete())).toEqual([]);
+  });
+
+  it('rejects schema !== 1', () => {
+    const d = complete(); d.schema = 2;
+    expect(validateCostEstimate(d).join(' ')).toContain('schema');
+  });
+
+  it('rejects a price table missing any of the 5 required keys', () => {
+    const d = complete(); delete d.pricing.per_million_tokens.cache_write_1h;
+    expect(validateCostEstimate(d).join(' ')).toContain('cache_write_1h');
+  });
+
+  it('rejects fewer than 4 claude-code cells in either arm', () => {
+    const d = complete(); d.cells = d.cells.filter(c => !(c.arm === 'free' && c.order_index === 3));
+    const errors = validateCostEstimate(d);
+    expect(errors.some(e => e.includes('claude-code/free'))).toBe(true);
+  });
+
+  it('loadCostEstimate throws (does not silently proceed) on an incomplete file on disk', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'readme-evidence-cost-'));
+    const path = join(dir, 'cost-estimate.json');
+    try {
+      const incomplete = complete();
+      incomplete.schema = 2;
+      writeFileSync(path, JSON.stringify(incomplete));
+      expect(() => loadCostEstimate(path)).toThrow(/schema/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // The real, committed campaign -- regeneration must match byte for byte
 
 describe('the committed evidence1-agentic-benchmark-2026-09-28 campaign', () => {
-  let summary;
+  let summary, costEstimate;
 
   beforeAll(() => {
     summary = loadSummary(join(RUNS_DIR, 'campaign-summary.json'));
+    costEstimate = loadCostEstimate(join(RUNS_DIR, 'cost-estimate.json'));
   });
 
   it('is a valid, complete, live summary', () => {
     expect(validateSummary(summary)).toEqual([]);
+  });
+
+  it('is a valid, complete cost estimate', () => {
+    expect(validateCostEstimate(costEstimate)).toEqual([]);
   });
 
   it('regenerating outcomes.svg matches the committed file byte for byte (CRLF-normalized)', () => {
@@ -121,7 +182,7 @@ describe('the committed evidence1-agentic-benchmark-2026-09-28 campaign', () => 
     const end = readme.indexOf('<!-- agentic-benchmark:end -->') + '<!-- agentic-benchmark:end -->'.length;
     expect(start).toBeGreaterThan(-1);
     const committedBlock = readme.slice(start, end);
-    const regenerated = crlfNormalize(renderReadmeBlock(summary, CAMPAIGN_DATE));
+    const regenerated = crlfNormalize(renderReadmeBlock(summary, CAMPAIGN_DATE, costEstimate));
     expect(regenerated).toBe(committedBlock);
   });
 
@@ -148,7 +209,7 @@ describe('the committed evidence1-agentic-benchmark-2026-09-28 campaign', () => 
   });
 
   it('the README block links to the evidence doc, controls audit, and preregistration, all inside the campaign directory', () => {
-    const block = renderReadmeBlock(summary, CAMPAIGN_DATE);
+    const block = renderReadmeBlock(summary, CAMPAIGN_DATE, costEstimate);
     const dir = `tools/runs/evidence1-agentic-benchmark-${CAMPAIGN_DATE}`;
     expect(block).toContain(`(${dir}/README.md)`);
     expect(block).toContain(`(${dir}/controls-audit.md)`);
@@ -156,24 +217,28 @@ describe('the committed evidence1-agentic-benchmark-2026-09-28 campaign', () => 
   });
 
   it('every file the README block links to actually exists on disk, not just in the generated text', () => {
-    for (const name of ['README.md', 'controls-audit.md', 'preregistration.md', 'campaign-summary.json', 'outcomes.svg', 'effort.svg']) {
+    for (const name of ['README.md', 'controls-audit.md', 'preregistration.md', 'campaign-summary.json', 'cost-estimate.json', 'outcomes.svg', 'effort.svg']) {
       expect(existsSync(join(RUNS_DIR, name)), `${name} should exist in ${RUNS_DIR}`).toBe(true);
     }
     // The pre-consolidation top-level file must NOT exist -- it was moved inside the directory.
     expect(existsSync(`${RUNS_DIR}.md`)).toBe(false);
   });
 
-  it('no product-only metric (strict protocol success) appears on a "without kmp-test" row', () => {
+  it('has no strict-success placeholder at all -- dropped from the generated block per review (misleading without the evidence doc\'s full explanation)', () => {
     const placeholders = buildPlaceholders(summary, CAMPAIGN_DATE);
-    // The table template has no STRICT_SUCCESS_FREE_* placeholder at all --
-    // this test locks that shape: only PRODUCT keys exist for success.
     const keys = Object.keys(placeholders);
-    expect(keys.some(k => /STRICT_SUCCESS_FREE/.test(k))).toBe(false);
-    expect(keys.some(k => /^STRICT_SUCCESS_PRODUCT_/.test(k))).toBe(true);
+    expect(keys.some(k => /STRICT_SUCCESS/.test(k))).toBe(false);
+  });
+
+  it('the README block never mentions "strict" -- the strict-success line was dropped; the evidence doc keeps it with the full explanation', () => {
+    const block = renderReadmeBlock(summary, CAMPAIGN_DATE, costEstimate);
+    // Word-boundary, not a bare substring check -- "restricted network" (required
+    // wording, asserted elsewhere in this file) contains "strict" as a substring.
+    expect(block.toLowerCase()).not.toMatch(/\bstrict\b/);
   });
 
   it('never names the scenario\'s ground truth (module path, specific numeric answers) in generated text', () => {
-    const block = renderReadmeBlock(summary, CAMPAIGN_DATE);
+    const block = renderReadmeBlock(summary, CAMPAIGN_DATE, costEstimate);
     // Ground truth lives only in the (unshipped) evidence doc under tools/runs/,
     // never in README.md (shipped in the npm tarball). Word-boundary match --
     // a bare substring check false-positives on "2.1.238" (the Claude Code
@@ -184,11 +249,11 @@ describe('the committed evidence1-agentic-benchmark-2026-09-28 campaign', () => 
   });
 
   it('never uses the word "baseline" to label an arm', () => {
-    expect(renderReadmeBlock(summary, CAMPAIGN_DATE).toLowerCase()).not.toContain('baseline');
+    expect(renderReadmeBlock(summary, CAMPAIGN_DATE, costEstimate).toLowerCase()).not.toContain('baseline');
   });
 
   it('states no ratio (e.g. "2x faster") and no pooled cross-runtime row', () => {
-    const block = renderReadmeBlock(summary, CAMPAIGN_DATE);
+    const block = renderReadmeBlock(summary, CAMPAIGN_DATE, costEstimate);
     expect(block).not.toMatch(/\d+(\.\d+)?x\s*(faster|slower|cheaper)/i);
     expect(block).not.toMatch(/all agents/i);
   });
@@ -196,26 +261,59 @@ describe('the committed evidence1-agentic-benchmark-2026-09-28 campaign', () => 
   it('says the exact ceiling sentence when key facts matched in every cell', () => {
     // This campaign's real data is a ceiling case (4/4 in all 4 groups) --
     // locks the exact wording, not just "some sentence exists".
-    const block = renderReadmeBlock(summary, CAMPAIGN_DATE);
+    const block = renderReadmeBlock(summary, CAMPAIGN_DATE, costEstimate);
     expect(block).toContain('No difference in key facts at n=4 (16/16).');
   });
 
   it('uses the exact overridden agent labels, never the proposal draft\'s originals', () => {
-    const block = renderReadmeBlock(summary, CAMPAIGN_DATE);
+    const block = renderReadmeBlock(summary, CAMPAIGN_DATE, costEstimate);
     expect(block).toContain('Claude Code 2.1.238 · claude-sonnet-5 · effort not set by the harness (docs default: high)');
     expect(block).toContain('Codex CLI 0.154.0 · gpt-5.6-terra · reasoning effort low');
   });
 
   it('uses "restricted network (provider APIs only)", never "sealed"', () => {
-    const block = renderReadmeBlock(summary, CAMPAIGN_DATE);
+    const block = renderReadmeBlock(summary, CAMPAIGN_DATE, costEstimate);
     expect(block).toContain('restricted network (provider APIs only)');
     expect(block.toLowerCase()).not.toContain('sealed');
   });
 
   it('drops the test-invocations/retries clause entirely (schema 1 carries neither field)', () => {
-    const block = renderReadmeBlock(summary, CAMPAIGN_DATE);
+    const block = renderReadmeBlock(summary, CAMPAIGN_DATE, costEstimate);
     expect(block).not.toMatch(/test runs per session/);
     expect(block).not.toMatch(/retries \S+ \/ \S+/);
+  });
+
+  it('the cost sentence is present and matches an independent recomputation from cost-estimate.json', () => {
+    // Recomputes from the raw committed JSON without calling any of the module's own
+    // cost helpers -- this proves the FORMULA is right, not just that the module agrees
+    // with itself. Sonnet 5 pricing per million tokens, from cost-estimate.json.
+    const price = costEstimate.pricing.per_million_tokens;
+    const cost = (tokens, cacheWriteKey) => (
+      tokens.input * price.input +
+      tokens.cache_creation * price[cacheWriteKey] +
+      tokens.cache_read * price.cache_read +
+      tokens.output * price.output
+    ) / 1e6;
+    const range = arm => {
+      const cells = costEstimate.cells.filter(c => c.runtime_id === 'claude-code' && c.arm === arm);
+      const low = Math.min(...cells.map(c => cost(c.tokens, 'cache_write_5m')));
+      const high = Math.max(...cells.map(c => cost(c.tokens, 'cache_write_1h')));
+      return `$${low.toFixed(3)}–$${high.toFixed(3)}`;
+    };
+    const expected = `Claude Code estimated API cost per session: ${range('product')} with kmp-test, ${range('free')} without (recorded tokens × published Sonnet 5 prices; an estimate, not a bill). Not estimated for Codex CLI.`;
+    expect(buildCostSentence(costEstimate)).toBe(expected);
+
+    // These are the auditor's own independently verified ranges for this exact
+    // campaign's data -- reproducing them exactly, not just "some range", is the point.
+    expect(expected).toBe('Claude Code estimated API cost per session: $0.086–$0.137 with kmp-test, $0.146–$0.218 without (recorded tokens × published Sonnet 5 prices; an estimate, not a bill). Not estimated for Codex CLI.');
+
+    const block = renderReadmeBlock(summary, CAMPAIGN_DATE, costEstimate);
+    expect(block).toContain(expected);
+  });
+
+  it('never estimates a cost for Codex CLI (schema 1 has no token data for it)', () => {
+    const block = renderReadmeBlock(summary, CAMPAIGN_DATE, costEstimate);
+    expect(block).not.toMatch(/Codex CLI estimated/);
   });
 });
 
