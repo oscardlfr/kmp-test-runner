@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed — 0.15.0 never reached npm; publish now uses a Node/npm pin that meets Trusted Publishing's own floor
+
+**Observable behavior change (CI-only, no product code affected).** 0.15.0 published to GitHub
+Releases and GitHub Packages (the Gradle plugin) but never reached npm. `publish-npm.yml` pinned
+`node-version: 20`; npm's Trusted Publishing (OIDC, `--provenance`) requires npm >= 11.5.1 and
+Node >= 22.14.0 ([docs.npmjs.com/trusted-publishers](https://docs.npmjs.com/trusted-publishers)).
+npm 10.x still signs a provenance statement with the GitHub OIDC token — a separate, older
+feature — but predates Trusted Publishing itself, so the registry `PUT` goes out with no valid
+auth and fails with a bare `404`. Fixed by pinning `node-version: '24.18.0'` (the same pin
+`ci.yml` already uses), which bundles npm 11.16.0 and clears both floors with no separate npm
+install step.
+
+### Fixed — release publish guards no longer fail on a required check that hasn't been created yet, and wait long enough for the post-release CI they depend on
+
+**Observable behavior change.** A required check gated on an earlier job (e.g. `installer-e2e`,
+which waits on `build`) doesn't exist yet the moment CI starts — the guard treated that the same
+as an outright failure. Separately, the timeout itself was too short: a release's fast-forward to
+`main` starts a second full CI run on the same commit (`ci.yml` also triggers on push to `main`),
+and the guard has to wait for that run, not just develop's. Both fixed: a not-yet-created check
+now polls like an in-flight one until the deadline, and the three callers' timeouts are long
+enough for a full CI run plus margin.
+
 ## [0.15.0] — 2026-09-28
 
 ### Upgrade notes

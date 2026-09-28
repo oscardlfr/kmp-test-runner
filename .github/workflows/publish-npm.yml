@@ -26,9 +26,16 @@ jobs:
         with:
           fetch-depth: 0    # need full history to query existing tags
 
+      # npm's Trusted Publishing (OIDC, --provenance) requires npm >= 11.5.1 and
+      # Node >= 22.14.0 (docs.npmjs.com/trusted-publishers). An older bundled npm
+      # still signs a provenance statement with the GitHub OIDC token -- a
+      # separate, older feature -- but predates Trusted Publishing itself, so
+      # the registry PUT goes out with no valid auth and fails with a bare 404.
+      # Node 24.18.0 (same pin as ci.yml) bundles npm 11.16.0, clearing both
+      # floors with no separate npm install step.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
-          node-version: 20
+          node-version: '24.18.0'
           registry-url: 'https://registry.npmjs.org'
 
       # Guard 1: only publish when GITHUB_SHA is the tip of origin/main.
@@ -49,7 +56,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           node tools/release-gate.mjs poll-checks "$GITHUB_SHA" .github/required-checks.json \
-            --repo "$GITHUB_REPOSITORY" --timeout-minutes 10
+            --repo "$GITHUB_REPOSITORY" --timeout-minutes 45
 
       - name: Read version from package.json
         id: ver

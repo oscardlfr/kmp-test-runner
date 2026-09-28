@@ -13,6 +13,7 @@ import {
   verifyTagVersion,
   mergeCheckSources,
   pollChecksForSha,
+  formatPollFailureMessages,
 } from '../../tools/release-gate.mjs';
 
 // ---------------------------------------------------------------------------
@@ -380,7 +381,52 @@ describe('pollChecksForSha', () => {
     await vi.runAllTimersAsync();
     const result = await p;
     expect(result.ok).toBe(false);
+    expect(result.timedOut).toBe(true);
     expect(result.missing).toContain('build (ubuntu-latest)');
+  });
+
+  it('a context missing at first poll does NOT short-circuit — it is retried like an in-flight check', async () => {
+    // Regression: a required check gated by `needs:` (e.g. installer-e2e waiting on
+    // build) has no check-run and no status at all until its dependency finishes.
+    // The old code treated 'missing' the same as 'refuse' and returned ok:false on
+    // the very first poll, well before the timeout — a downstream job could never
+    // win the race no matter how generous --timeout-minutes was.
+    let call = 0;
+    fetchMock.mockImplementation(url => {
+      call++;
+      if (url.includes('/check-runs')) {
+        // First poll: build (ubuntu-latest) doesn't exist yet (needs: gate not
+        // satisfied). Second poll onward: it has started and succeeded.
+        const runs = call === 1
+          ? [{ name: 'secrets-scan', conclusion: 'success', status: 'completed' }]
+          : CTX.map(n => ({ name: n, conclusion: 'success', status: 'completed' }));
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ total_count: runs.length, check_runs: runs }) });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve([]) });
+    });
+
+    const p = pollChecksForSha({ sha: 'abc', contexts: CTX, repo: 'owner/repo', intervalMs: 1000, timeoutMs: 60000 });
+    await vi.runAllTimersAsync();
+    const result = await p;
+    expect(result.ok).toBe(true);
+  });
+
+  it('a real refuse verdict still short-circuits immediately, even alongside a missing context', async () => {
+    // A genuine failure must not be masked by waiting on an unrelated missing check.
+    fetchMock.mockImplementation(url => {
+      const body = url.includes('/check-runs')
+        ? { total_count: 1, check_runs: [{ name: 'secrets-scan', conclusion: 'failure', status: 'completed' }] }
+        : [];
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
+    });
+
+    const p = pollChecksForSha({ sha: 'abc', contexts: CTX, repo: 'owner/repo', intervalMs: 30000, timeoutMs: 60000 });
+    await vi.runAllTimersAsync();
+    const result = await p;
+    expect(result.ok).toBe(false);
+    expect(result.timedOut).toBeUndefined();
+    // Short-circuited on the first poll — no sleep needed.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('resolves ok via sentinel: skipped check-run + success status', async () => {
@@ -399,5 +445,52 @@ describe('pollChecksForSha', () => {
     await vi.runAllTimersAsync();
     const result = await p;
     expect(result.ok).toBe(true);
+  });
+});
+
+describe('formatPollFailureMessages', () => {
+  it('names missing contexts on a timeout, not just the generic timeout line', () => {
+    // Regression: a context that stays 'missing' all the way to the deadline (now a
+    // real path since 'missing' no longer short-circuits) used to vanish from the
+    // output entirely — only the generic "Timed out..." line printed.
+    const result = {
+      timedOut: true,
+      results: { 'build (ubuntu-latest)': { verdict: 'missing', source: 'missing' } },
+      missing: ['build (ubuntu-latest)'],
+    };
+    const lines = formatPollFailureMessages(result, 10);
+    expect(lines).toContainEqual(expect.stringContaining('Timed out after 10m'));
+    expect(lines).toContainEqual(expect.stringContaining('Missing required checks: build (ubuntu-latest)'));
+  });
+
+  it('a timeout with nothing missing (all still waiting) prints only the generic line', () => {
+    const result = {
+      timedOut: true,
+      results: { 'build (ubuntu-latest)': { verdict: 'wait', source: 'check-run' } },
+      missing: [],
+    };
+    const lines = formatPollFailureMessages(result, 10);
+    expect(lines).toEqual([expect.stringContaining('Timed out after 10m')]);
+  });
+
+  it('an immediate refuse names the failing context and does not claim a timeout', () => {
+    const result = {
+      timedOut: false,
+      results: { 'secrets-scan': { verdict: 'refuse', source: 'check-run' } },
+      missing: [],
+    };
+    const lines = formatPollFailureMessages(result, 10);
+    expect(lines).toEqual([expect.stringContaining("Required check 'secrets-scan' is not green (verdict=refuse")]);
+  });
+
+  it('an immediate missing (never became a timeout) still names it via both the per-context line and the summary', () => {
+    const result = {
+      timedOut: false,
+      results: { 'installer-e2e (ubuntu-latest)': { verdict: 'missing', source: 'missing' } },
+      missing: ['installer-e2e (ubuntu-latest)'],
+    };
+    const lines = formatPollFailureMessages(result, 10);
+    expect(lines).toContainEqual(expect.stringContaining("Required check 'installer-e2e (ubuntu-latest)' is not green (verdict=missing"));
+    expect(lines).toContainEqual(expect.stringContaining('Missing required checks: installer-e2e (ubuntu-latest)'));
   });
 });

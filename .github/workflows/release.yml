@@ -80,7 +80,7 @@ jobs:
         run: |
           SHA=$(git rev-parse HEAD)
           node tools/release-gate.mjs poll-checks "$SHA" .github/required-checks.json \
-            --repo "$GITHUB_REPOSITORY" --timeout-minutes 15
+            --repo "$GITHUB_REPOSITORY" --timeout-minutes 45
 
       - name: Fast-forward main -> develop
         env:
