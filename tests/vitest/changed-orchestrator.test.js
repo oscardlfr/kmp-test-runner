@@ -668,6 +668,42 @@ describe('changed coverage aggregation against unavailable explicitly requested 
     expect(envelope.coverage.total_lines).toBeNull();
   });
 
+  it('--coverage-tool kover rejects unrelated XML when every changed module is no_xml', async () => {
+    const dir = makeProject(['core', 'other'], {
+      moduleBuild: {
+        core: 'plugins { id("org.jetbrains.kotlinx.kover"); kotlin("jvm") }\n',
+        other: 'plugins { id("org.jetbrains.kotlinx.kover"); kotlin("jvm") }\n',
+      },
+    });
+    for (const ss of ['commonMain', 'jvmMain', 'jvmTest']) mkdirSync(path.join(dir, 'core', 'src', ss, 'kotlin'), { recursive: true });
+    const otherReportDir = path.join(dir, 'other', 'build', 'reports', 'kover');
+    mkdirSync(otherReportDir, { recursive: true });
+    writeFileSync(path.join(otherReportDir, 'reportDesktop.xml'),
+      '<report><package name="p"><sourcefile name="F.kt">'
+      + '<counter type="LINE" missed="2" covered="8"/>'
+      + '</sourcefile></package></report>');
+    const spawn = makeSpawnStub({
+      git: { statusOutput: porcelain(['core/src/jvmTest/kotlin/X.kt']) },
+      parallelSuite: { stdout: 'BUILD SUCCESSFUL in 1s\n' },
+    });
+    const { envelope, exitCode } = await runChanged({
+      projectRoot: dir,
+      args: ['--test-type', 'desktop', '--coverage-tool', 'kover'],
+      spawn,
+    });
+    expect(exitCode).toBe(3);
+    expect(envelope.errors).toEqual([
+      expect.objectContaining({
+        code: 'coverage_data_unavailable',
+        reason: 'target-no-xml',
+        required_by: 'explicit-coverage-tool',
+      }),
+    ]);
+    expect(envelope.coverage.modules_contributing).toBe(1);
+    expect(envelope.coverage.module_buckets.with_data).toEqual(['other']);
+    expect(envelope.coverage.module_buckets.no_xml).toEqual(['core']);
+  });
+
   it('--min-missed-lines 15 -> errors includes coverage_data_unavailable/target-not-detected, exit 3', async () => {
     const dir = makeProject(['core']);
     for (const ss of ['commonMain', 'jvmMain', 'jvmTest']) mkdirSync(path.join(dir, 'core', 'src', ss, 'kotlin'), { recursive: true });

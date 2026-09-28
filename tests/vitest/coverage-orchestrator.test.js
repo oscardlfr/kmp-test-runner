@@ -1374,6 +1374,35 @@ describe('PR A — coverage budget fail-closed (requiredCoverageModules)', () =>
     expect(envelope.coverage.module_buckets.no_xml).toEqual(['app']);
   });
 
+  it('explicit coverage evidence ignores unselected contributors when every required module is no_xml', async () => {
+    const projectRoot = makeProject([
+      { name: 'selected', coverage: 'kover' },
+      { name: 'unselected', coverage: 'kover' },
+    ]);
+    dropFakeXml(projectRoot, 'unselected', 'kover');
+    const parseCoverageXml = makeParseCoverageStub({
+      rowsByModule: { unselected: ['unselected|p|F.kt|F|8|2|10|80|9-10'] },
+    });
+    const { envelope, exitCode } = await runCoverage({
+      projectRoot,
+      args: [],
+      parseCoverageXml,
+      requiredCoverageModules: ['selected'],
+      requireCoverageEvidence: true,
+    });
+    expect(exitCode).toBe(3);
+    expect(envelope.errors).toEqual([
+      expect.objectContaining({
+        code: 'coverage_data_unavailable',
+        reason: 'target-no-xml',
+        required_by: 'explicit-coverage-tool',
+      }),
+    ]);
+    expect(envelope.coverage.modules_contributing).toBe(1);
+    expect(envelope.coverage.module_buckets.with_data).toEqual(['unselected']);
+    expect(envelope.coverage.module_buckets.no_xml).toEqual(['selected']);
+  });
+
   it('explicit coverage evidence + parseable XML with zero coverable rows -> coverage_data_unavailable/no-contributing-data', async () => {
     const projectRoot = makeProject([{ name: 'app', coverage: 'kover' }]);
     dropFakeXml(projectRoot, 'app', 'kover');
