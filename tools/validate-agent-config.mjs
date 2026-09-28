@@ -15,19 +15,117 @@ export const LIMITS = Object.freeze({
 });
 
 const REQUIRED_PROJECT_FILES = [
+  'README.md',
   'PRODUCT.md',
   'CONTRIBUTING.md',
   'BACKLOG.md',
   'CHANGELOG.md',
+  'docs/envelope-contract.md',
   'docs/maintainers/agent-configuration.md',
   'docs/maintainers/release-process.md',
   'docs/testing/local-ci.md',
 ];
 
+export const REQUIRED_RULE_FILES = Object.freeze([
+  '.claude/rules/agentic-eval.md',
+  '.claude/rules/consumer-skill.md',
+  '.claude/rules/docs-ci-release.md',
+  '.claude/rules/gradle-plugin.md',
+  '.claude/rules/node-runtime.md',
+  '.claude/rules/platform-scripts.md',
+  '.claude/rules/project-model.md',
+]);
+
+export const REQUIRED_RULE_PATHS = Object.freeze({
+  '.claude/rules/agentic-eval.md': ['tools/agentic-eval/**/*', 'tests/vitest/agentic-eval-*.test.js'],
+  '.claude/rules/consumer-skill.md': ['.skills/**/*', '.claude-plugin/**/*'],
+  '.claude/rules/docs-ci-release.md': ['*.md', 'docs/**/*.md', '.github/**/*'],
+  '.claude/rules/gradle-plugin.md': ['gradle-plugin/**/*'],
+  '.claude/rules/node-runtime.md': ['bin/**/*.js', 'lib/**/*.js'],
+  '.claude/rules/platform-scripts.md': ['scripts/**/*.sh', 'scripts/**/*.ps1'],
+  '.claude/rules/project-model.md': [
+    'lib/project-model.js',
+    'lib/project/**/*.js',
+    'lib/orchestrators/android-orchestrator.js',
+    'lib/orchestrators/benchmark-orchestrator.js',
+    'lib/orchestrators/describe-orchestrator.js',
+    'lib/orchestrators/parallel-orchestrator.js',
+    'lib/orchestrators/parallel/dispatch.js',
+    'scripts/sh/lib/project-model.sh',
+    'scripts/sh/lib/script-utils.sh',
+    'scripts/ps1/lib/ProjectModel.ps1',
+    'scripts/ps1/lib/Script-Utils.ps1',
+    'tests/vitest/android-orchestrator.test.js',
+    'tests/vitest/benchmark-orchestrator.test.js',
+    'tests/vitest/cross-platform-fixture.test.js',
+    'tests/vitest/describe-orchestrator.test.js',
+    'tests/vitest/parallel-orchestrator.test.js',
+    'tests/vitest/project-model.test.js',
+  ],
+});
+
+const REQUIRED_AGENTS_SECTIONS = [
+  'Sources of truth',
+  'Repository shape',
+  'Working agreement',
+  'Product invariants',
+  'Verification',
+  'Agent configuration and memory',
+];
+
+const REQUIRED_AGENTS_CONTRACTS = [
+  { label: 'machine envelope source', pattern: /docs\/envelope-contract\.md/ },
+  { label: 'explicit merge authority', pattern: /Do not merge unless the user explicitly asks/i },
+  { label: 'explicit milestone authority', pattern: /Do not create, rename, move, or drop milestones without an explicit user/i },
+  { label: 'public API surfaces', pattern: /documented CLI flags,[\s\S]{0,160}Gradle DSL are public API/i },
+  { label: 'privacy enforcement', pattern: /tools\/decouple-audit\.mjs/ },
+];
+
+const REQUIRED_RULE_CONTRACTS = Object.freeze({
+  '.claude/rules/agentic-eval.md': [
+    { label: 'fail-closed evidence', pattern: /evidence contracts[\s\S]{0,120}Fail closed/i },
+  ],
+  '.claude/rules/consumer-skill.md': [
+    { label: 'consumer artifact boundary', pattern: /shipped consumer artifact/i },
+  ],
+  '.claude/rules/docs-ci-release.md': [
+    { label: 'timeless README routing', pattern: /What['’]s\s+new[\s\S]{0,160}CHANGELOG\.md/i },
+    { label: 'squash-title setting', pattern: /squash_merge_commit_title=PR_TITLE/ },
+  ],
+  '.claude/rules/gradle-plugin.md': [
+    { label: 'TestKit fixture strategy', pattern: /withPluginClasspath\(\)/ },
+    { label: 'Gradle DSL public API', pattern: /Gradle DSL as[\s\S]{0,20}public API/i },
+  ],
+  '.claude/rules/node-runtime.md': [
+    { label: 'envelope contract synchronization', pattern: /docs\/envelope-contract\.md/ },
+  ],
+  '.claude/rules/platform-scripts.md': [
+    { label: 'macOS Bash floor', pattern: /Bash 3\.2/ },
+    { label: 'installer download fallback', pattern: /redirect-first[\s\S]{0,100}API fallback/i },
+  ],
+  '.claude/rules/project-model.md': [
+    { label: 'independent task families', pattern: /unitTestTask[\s\S]{0,100}iosTestTask[\s\S]{0,100}macosTestTask/ },
+  ],
+});
+
+const REQUIRED_DOCUMENT_CONTRACTS = Object.freeze({
+  'docs/maintainers/release-process.md': [
+    { label: 'top-level archive directory', pattern: /top-level `kmp-test-runner-\$\{VER\}\/` directory/i },
+    { label: 'architecture-agnostic artifact names', pattern: /kmp-test-runner-\$\{VER\}-linux\.tar\.gz[\s\S]{0,160}kmp-test-runner-\$\{VER\}-windows\.zip[\s\S]{0,80}no architecture suffix/i },
+    { label: 'packaged runtime version source', pattern: /Include `package\.json` inside both archives/i },
+    { label: 'release App anti-recursion', pattern: /RELEASE_APP_ID[\s\S]{0,100}RELEASE_APP_PRIVATE_KEY[\s\S]{0,160}GITHUB_TOKEN[\s\S]{0,120}anti-recursion/i },
+    { label: 'gh token environment convention', pattern: /`GH_TOKEN`\s+environment variable[\s\S]{0,100}not the `GITHUB_TOKEN`\s+environment variable/i },
+    { label: 'Trusted Publishing runtime floors', pattern: /npm 11\.5\.1[\s\S]{0,80}Node 22\.14\.0[\s\S]{0,160}Node 24\.18\.0/i },
+    { label: 'post-fast-forward CI timeout', pattern: /45-minute timeout[\s\S]{0,160}second CI run/i },
+  ],
+});
+
 const RETIRED_CONFIG_DIRS = [
   '.claude/agents',
+  '.codex/agents',
   '.Codex/agents',
   '.claude/agent-memory',
+  '.codex/memory',
   '.Codex/memory',
 ];
 
@@ -109,6 +207,14 @@ function validateNoPrivateMemoryReference(file, content, errors) {
   }
 }
 
+function validateRequiredContracts(file, content, contracts, errors, code) {
+  for (const contract of contracts) {
+    if (!contract.pattern.test(content)) {
+      errors.push(makeError(file, code, `missing durable contract: ${contract.label}`));
+    }
+  }
+}
+
 export function parseRuleFrontmatter(content) {
   const lines = content.split('\n');
   if (lines[0] !== '---') return { ok: false, error: 'frontmatter must start on line 1', paths: [], body: '' };
@@ -158,6 +264,11 @@ function validateRule(repoRoot, absolutePath, errors) {
     return;
   }
   if (!parsed.body) errors.push(makeError(file, 'rule-body', 'rule body must not be empty'));
+  for (const expected of REQUIRED_RULE_PATHS[file] ?? []) {
+    if (!parsed.paths.includes(expected)) {
+      errors.push(makeError(file, 'missing-rule-path', `canonical rule must include path scope: ${expected}`));
+    }
+  }
   validateNoPrivateMemoryReference(file, content, errors);
   for (const pattern of parsed.paths) {
     const normalized = pattern.replaceAll('\\', '/');
@@ -210,6 +321,12 @@ export function validateAgentConfig({ repoRoot = DEFAULT_REPO_ROOT } = {}) {
   if (agents !== null) {
     validateStartupFile('AGENTS.md', agents, LIMITS.agentsBytes, errors);
     validateRelativeReferences(root, 'AGENTS.md', agents, errors);
+    for (const section of REQUIRED_AGENTS_SECTIONS) {
+      if (!new RegExp(`^## ${section}$`, 'm').test(agents)) {
+        errors.push(makeError('AGENTS.md', 'missing-agent-section', `required section is missing: ${section}`));
+      }
+    }
+    validateRequiredContracts('AGENTS.md', agents, REQUIRED_AGENTS_CONTRACTS, errors, 'missing-agent-contract');
   }
   if (claude !== null) {
     validateStartupFile('CLAUDE.md', claude, LIMITS.claudeBytes, errors);
@@ -226,11 +343,28 @@ export function validateAgentConfig({ repoRoot = DEFAULT_REPO_ROOT } = {}) {
   for (const file of REQUIRED_PROJECT_FILES) {
     if (!existsSync(join(root, file))) errors.push(makeError(file, 'missing-source-of-truth', 'referenced source-of-truth file is missing'));
   }
+  for (const [file, contracts] of Object.entries(REQUIRED_DOCUMENT_CONTRACTS)) {
+    if (!existsSync(join(root, file))) continue;
+    const content = readText(root, file, errors);
+    if (content !== null) {
+      validateRequiredContracts(file, content, contracts, errors, 'missing-document-contract');
+    }
+  }
 
   const rulesDir = join(root, '.claude', 'rules');
   const rules = walkMarkdown(rulesDir);
   if (rules.length === 0) errors.push(makeError('.claude/rules', 'missing-rules', 'at least one path-scoped rule is required'));
   for (const rule of rules) validateRule(root, rule, errors);
+  for (const file of REQUIRED_RULE_FILES) {
+    if (!existsSync(join(root, file))) {
+      errors.push(makeError(file, 'missing-required-rule', 'canonical path-scoped rule is missing'));
+      continue;
+    }
+    const content = readText(root, file, errors);
+    if (content !== null) {
+      validateRequiredContracts(file, content, REQUIRED_RULE_CONTRACTS[file], errors, 'missing-rule-contract');
+    }
+  }
 
   for (const workflowPath of walkYaml(join(root, '.github', 'workflows'))) {
     const file = relative(root, workflowPath).split(sep).join('/');

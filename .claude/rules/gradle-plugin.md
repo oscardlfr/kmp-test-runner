@@ -10,6 +10,8 @@ paths:
 
 - Gradle tasks must dispatch the same runtime and argument shapes as the npm
   CLI; extend cross-shape parity coverage when the public surface changes.
+- Treat documented extension properties and task options in the Gradle DSL as
+  public API. Keep DSL documentation, CLI parity, and TestKit coverage aligned.
 - Use the local Maven repository fixture approach for TestKit. Do not switch to
   `withPluginClasspath()`; it is not reliable for this plugin shape.
 - Keep the plugin version sourced from `package.json` through

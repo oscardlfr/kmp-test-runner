@@ -99,7 +99,12 @@ For maintainer scripts (wide-smoke sweeps, wet-audit, macOS validation gate, tok
 
 ### 4. Commit with Conventional Commits
 
-PR titles MUST conform to [Conventional Commits v1.0.0](https://www.conventionalcommits.org/) — branch protection enforces squash-merge so the PR title becomes the squash commit subject.
+PR titles MUST conform to
+[Conventional Commits v1.0.0](https://www.conventionalcommits.org/) — branch
+protection enforces squash-merge so the PR title becomes the squash commit
+subject. Keep the repository setting `squash_merge_commit_title=PR_TITLE`;
+GitHub's `COMMIT_OR_PR_TITLE` mode can use a single commit's subject instead and
+break push-event commit lint after merge.
 
 ```
 feat(cli): add --dry-run flag
@@ -124,6 +129,10 @@ it never accepts contributor or release pull requests.
 Open code-changing PRs as drafts. Finish review fixes and the full local gate before marking the
 PR ready; `ready_for_review` starts the hosted matrix. Draft pushes retain the security/privacy
 checks but defer the expensive cross-platform jobs.
+
+If implementation changes are required after a code-changing PR is ready,
+return it to draft before pushing. Re-run the appropriate local gate, then mark
+it ready again only after the correction is validated.
 
 When the draft is marked ready, CI runs automatically:
 - `build (ubuntu-latest)`, `build (windows-latest)` — npm + vitest

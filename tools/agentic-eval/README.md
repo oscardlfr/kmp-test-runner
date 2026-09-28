@@ -2047,13 +2047,13 @@ to the existing `coverage-threshold-failure-v2` scenario, with no scenario or pi
 Run each preview separately:
 
 ```bash
-rtk node tools/agentic-eval/cli.mjs run \
+node tools/agentic-eval/cli.mjs run \
   --campaign-design claude-product-canary-v1 \
   --scenario coverage-threshold-failure-v2 \
   --source-repo-dir <local-clone> --seed 7 \
   --isolation-attestation-file <path> --dry-run
 
-rtk node tools/agentic-eval/cli.mjs run \
+node tools/agentic-eval/cli.mjs run \
   --campaign-design claude-free-baseline-canary-v1 \
   --scenario coverage-threshold-failure-v2 \
   --source-repo-dir <local-clone> --seed 7 \

@@ -17,6 +17,9 @@ focused maintainer docs. Path-specific conventions now live under
 separate consumer artifact. A zero-dependency validator, Vitest regression
 suite, required `skills-validate` step, and local-CI integration prevent the
 adapter, rules, role policy, or memory hygiene from drifting back.
+The validator also pins the canonical rule inventory and critical product,
+workflow, project-model, installer, and release contracts so a syntactically
+valid rewrite cannot silently discard them.
 
 ### Fixed — 0.15.0 never reached npm; publish now uses a Node/npm pin that meets Trusted Publishing's own floor
 
