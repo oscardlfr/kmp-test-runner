@@ -329,7 +329,7 @@ describe('runChanged() -- production-real envelope never carries a parallel key,
     return async () => ({
       exitCode: 0,
       envelope: {
-        tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0',
+        tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0',
         exit_code: 0, duration_ms: 42,
         tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 1 },
         modules: [{ name: 'shared', type: 'jvm' }], skipped: [], coverage: {}, errors: [], warnings: [],

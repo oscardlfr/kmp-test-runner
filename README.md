@@ -441,7 +441,7 @@ Fail the build when coverage regresses:
       - run: npx kmp-test-runner@latest coverage --min-missed-lines 100 --json
 ```
 
-> **Pin a version for reproducible CI.** `kmp-test-runner` is pre-v1 — flags can evolve between minor releases. Pin a published version (`npx kmp-test-runner@<x.y.z> …`, current version on [npm](https://www.npmjs.com/package/kmp-test-runner)) instead of `@latest` once your pipeline is set up. The envelope contract itself is stable from `schema_version: 2`.
+> **Pin a version for reproducible CI.** `kmp-test-runner` is pre-v1 — flags can evolve between minor releases. Pin a published version (`npx kmp-test-runner@<x.y.z> …`, current version on [npm](https://www.npmjs.com/package/kmp-test-runner)) instead of `@latest` once your pipeline is set up. The current envelope contract is `schema_version: 3`; use `kmp-test --version --json` to preflight named capabilities.
 
 ### Via the Gradle plugin
 

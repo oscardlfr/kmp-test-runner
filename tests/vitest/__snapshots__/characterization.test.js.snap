@@ -2,6 +2,9 @@
 
 exports[`characterization / invalid-args envelopes > benchmark --platform bogus → CONFIG_ERROR envelope 1`] = `
 {
+  "contracts": {
+    "coverage_evidence": 1,
+  },
   "coverage": {
     "covered_lines": null,
     "missed_lines": null,
@@ -33,7 +36,7 @@ exports[`characterization / invalid-args envelopes > benchmark --platform bogus 
   "exit_code": 2,
   "modules": [],
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 2,
+  "schema_version": 3,
   "skipped": [],
   "subcommand": "benchmark",
   "tests": {
@@ -50,6 +53,9 @@ exports[`characterization / invalid-args envelopes > benchmark --platform bogus 
 
 exports[`characterization / invalid-args envelopes > benchmark --timeout abc → CONFIG_ERROR envelope 1`] = `
 {
+  "contracts": {
+    "coverage_evidence": 1,
+  },
   "coverage": {
     "covered_lines": null,
     "missed_lines": null,
@@ -76,7 +82,7 @@ exports[`characterization / invalid-args envelopes > benchmark --timeout abc →
   "exit_code": 2,
   "modules": [],
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 2,
+  "schema_version": 3,
   "skipped": [],
   "subcommand": "benchmark",
   "tests": {
@@ -93,6 +99,9 @@ exports[`characterization / invalid-args envelopes > benchmark --timeout abc →
 
 exports[`characterization / invalid-args envelopes > coverage --coverage-tool bogus → CONFIG_ERROR envelope 1`] = `
 {
+  "contracts": {
+    "coverage_evidence": 1,
+  },
   "coverage": {
     "covered_lines": null,
     "missed_lines": null,
@@ -125,7 +134,7 @@ exports[`characterization / invalid-args envelopes > coverage --coverage-tool bo
   "exit_code": 2,
   "modules": [],
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 2,
+  "schema_version": 3,
   "skipped": [],
   "subcommand": "coverage",
   "tests": {
@@ -142,6 +151,9 @@ exports[`characterization / invalid-args envelopes > coverage --coverage-tool bo
 
 exports[`characterization / invalid-args envelopes > parallel --coverage-tool bogus → CONFIG_ERROR envelope 1`] = `
 {
+  "contracts": {
+    "coverage_evidence": 1,
+  },
   "coverage": {
     "covered_lines": null,
     "missed_lines": null,
@@ -174,7 +186,7 @@ exports[`characterization / invalid-args envelopes > parallel --coverage-tool bo
   "exit_code": 2,
   "modules": [],
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 2,
+  "schema_version": 3,
   "skipped": [],
   "subcommand": "parallel",
   "tests": {
@@ -191,6 +203,9 @@ exports[`characterization / invalid-args envelopes > parallel --coverage-tool bo
 
 exports[`characterization / invalid-args envelopes > parallel --device (dangling) → CONFIG_ERROR envelope 1`] = `
 {
+  "contracts": {
+    "coverage_evidence": 1,
+  },
   "coverage": {
     "covered_lines": null,
     "missed_lines": null,
@@ -217,7 +232,7 @@ exports[`characterization / invalid-args envelopes > parallel --device (dangling
   "exit_code": 2,
   "modules": [],
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 2,
+  "schema_version": 3,
   "skipped": [],
   "subcommand": "parallel",
   "tests": {
@@ -234,6 +249,9 @@ exports[`characterization / invalid-args envelopes > parallel --device (dangling
 
 exports[`characterization / invalid-args envelopes > parallel --isolated-cache-dir (dangling) → CONFIG_ERROR envelope 1`] = `
 {
+  "contracts": {
+    "coverage_evidence": 1,
+  },
   "coverage": {
     "covered_lines": null,
     "missed_lines": null,
@@ -260,7 +278,7 @@ exports[`characterization / invalid-args envelopes > parallel --isolated-cache-d
   "exit_code": 2,
   "modules": [],
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 2,
+  "schema_version": 3,
   "skipped": [],
   "subcommand": "parallel",
   "tests": {
@@ -277,6 +295,9 @@ exports[`characterization / invalid-args envelopes > parallel --isolated-cache-d
 
 exports[`characterization / invalid-args envelopes > parallel --max-failures (retired flag, dangling) → CONFIG_ERROR envelope 1`] = `
 {
+  "contracts": {
+    "coverage_evidence": 1,
+  },
   "coverage": {
     "covered_lines": null,
     "missed_lines": null,
@@ -302,7 +323,7 @@ exports[`characterization / invalid-args envelopes > parallel --max-failures (re
   "exit_code": 2,
   "modules": [],
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 2,
+  "schema_version": 3,
   "skipped": [],
   "subcommand": "parallel",
   "tests": {
@@ -319,6 +340,9 @@ exports[`characterization / invalid-args envelopes > parallel --max-failures (re
 
 exports[`characterization / invalid-args envelopes > parallel --max-failures 1 (retired flag, well-formed value) → CONFIG_ERROR envelope 1`] = `
 {
+  "contracts": {
+    "coverage_evidence": 1,
+  },
   "coverage": {
     "covered_lines": null,
     "missed_lines": null,
@@ -344,7 +368,7 @@ exports[`characterization / invalid-args envelopes > parallel --max-failures 1 (
   "exit_code": 2,
   "modules": [],
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 2,
+  "schema_version": 3,
   "skipped": [],
   "subcommand": "parallel",
   "tests": {
@@ -361,6 +385,9 @@ exports[`characterization / invalid-args envelopes > parallel --max-failures 1 (
 
 exports[`characterization / invalid-args envelopes > parallel --max-failures 1.5 (retired flag, non-integer value) → CONFIG_ERROR envelope 1`] = `
 {
+  "contracts": {
+    "coverage_evidence": 1,
+  },
   "coverage": {
     "covered_lines": null,
     "missed_lines": null,
@@ -386,7 +413,7 @@ exports[`characterization / invalid-args envelopes > parallel --max-failures 1.5
   "exit_code": 2,
   "modules": [],
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 2,
+  "schema_version": 3,
   "skipped": [],
   "subcommand": "parallel",
   "tests": {
@@ -403,6 +430,9 @@ exports[`characterization / invalid-args envelopes > parallel --max-failures 1.5
 
 exports[`characterization / invalid-args envelopes > parallel --max-workers -1 (negative) → CONFIG_ERROR envelope 1`] = `
 {
+  "contracts": {
+    "coverage_evidence": 1,
+  },
   "coverage": {
     "covered_lines": null,
     "missed_lines": null,
@@ -429,7 +459,7 @@ exports[`characterization / invalid-args envelopes > parallel --max-workers -1 (
   "exit_code": 2,
   "modules": [],
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 2,
+  "schema_version": 3,
   "skipped": [],
   "subcommand": "parallel",
   "tests": {
@@ -446,6 +476,9 @@ exports[`characterization / invalid-args envelopes > parallel --max-workers -1 (
 
 exports[`characterization / invalid-args envelopes > parallel --max-workers abc (NaN) → CONFIG_ERROR envelope 1`] = `
 {
+  "contracts": {
+    "coverage_evidence": 1,
+  },
   "coverage": {
     "covered_lines": null,
     "missed_lines": null,
@@ -472,7 +505,7 @@ exports[`characterization / invalid-args envelopes > parallel --max-workers abc 
   "exit_code": 2,
   "modules": [],
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 2,
+  "schema_version": 3,
   "skipped": [],
   "subcommand": "parallel",
   "tests": {
@@ -489,6 +522,9 @@ exports[`characterization / invalid-args envelopes > parallel --max-workers abc 
 
 exports[`characterization / invalid-args envelopes > parallel --test-type (dangling) → CONFIG_ERROR envelope 1`] = `
 {
+  "contracts": {
+    "coverage_evidence": 1,
+  },
   "coverage": {
     "covered_lines": null,
     "missed_lines": null,
@@ -515,7 +551,7 @@ exports[`characterization / invalid-args envelopes > parallel --test-type (dangl
   "exit_code": 2,
   "modules": [],
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 2,
+  "schema_version": 3,
   "skipped": [],
   "subcommand": "parallel",
   "tests": {
@@ -532,6 +568,9 @@ exports[`characterization / invalid-args envelopes > parallel --test-type (dangl
 
 exports[`characterization / invalid-args envelopes > parallel --test-type bogus → CONFIG_ERROR envelope 1`] = `
 {
+  "contracts": {
+    "coverage_evidence": 1,
+  },
   "coverage": {
     "covered_lines": null,
     "missed_lines": null,
@@ -571,7 +610,7 @@ exports[`characterization / invalid-args envelopes > parallel --test-type bogus 
   "exit_code": 2,
   "modules": [],
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 2,
+  "schema_version": 3,
   "skipped": [],
   "subcommand": "parallel",
   "tests": {
@@ -588,6 +627,9 @@ exports[`characterization / invalid-args envelopes > parallel --test-type bogus 
 
 exports[`characterization / variation envelopes > parallel --isolated --dry-run populates isolated:{} alongside plan 1`] = `
 {
+  "contracts": {
+    "coverage_evidence": 1,
+  },
   "coverage": {
     "covered_lines": null,
     "missed_lines": null,
@@ -640,7 +682,7 @@ exports[`characterization / variation envelopes > parallel --isolated --dry-run 
     "test_filter": null,
   },
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 2,
+  "schema_version": 3,
   "skipped": [],
   "subcommand": "parallel",
   "tests": {
@@ -657,6 +699,9 @@ exports[`characterization / variation envelopes > parallel --isolated --dry-run 
 
 exports[`characterization / variation envelopes > parallel --test-filter SomeTestClass populates plan.test_filter 1`] = `
 {
+  "contracts": {
+    "coverage_evidence": 1,
+  },
   "coverage": {
     "covered_lines": null,
     "missed_lines": null,
@@ -709,7 +754,7 @@ exports[`characterization / variation envelopes > parallel --test-filter SomeTes
     "test_filter": "SomeTestClass",
   },
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 2,
+  "schema_version": 3,
   "skipped": [],
   "subcommand": "parallel",
   "tests": {

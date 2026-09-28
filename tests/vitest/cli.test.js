@@ -1914,10 +1914,10 @@ describe('main() — doctor subcommand', () => {
     }
     const json = JSON.parse(captured.join('').trim());
     // Baseline shape (shared across subcommand envelopes).
-    // schema_version bumped 1 → 2 in this same release window for the
-    // OBS-3 + OBS-7 + OBS-4 exit-code semantics changes; the OBS-1 doctor
-    // unification is additive but rides the same bump.
-    expect(json.schema_version).toBe(2);
+    // schema_version 3 carries the explicit coverage-evidence fail-closed
+    // semantics; doctor exposes the same named contract as every envelope.
+    expect(json.schema_version).toBe(3);
+    expect(json.contracts).toEqual({ coverage_evidence: 1 });
     expect(json.tool).toBe('kmp-test');
     expect(json).toHaveProperty('subcommand', 'doctor');
     expect(json).toHaveProperty('version');
@@ -4125,6 +4125,7 @@ describe('dispatcher envelope_parse_failed fallback (e2e via main)', () => {
       const w = (json.warnings || []).find(x => x.code === 'envelope_parse_failed');
       expect(w).toBeTruthy();
       expect(w.reason).toBe('json_parse_failed');
+      expect(json.contracts.coverage_evidence).toBe(0);
     });
   });
 
@@ -4142,6 +4143,7 @@ describe('dispatcher envelope_parse_failed fallback (e2e via main)', () => {
       }
       const json = JSON.parse(captured.join('').trim());
       expect((json.warnings || []).find(x => x.code === 'envelope_parse_failed')).toBeUndefined();
+      expect(json.contracts.coverage_evidence).toBe(0);
     });
   });
 });

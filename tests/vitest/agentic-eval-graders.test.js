@@ -251,7 +251,7 @@ const SCENARIO_3_CORRECT_ANSWER = kmpEvalResultText(
 const DEFAULT_ISOLATED_FIELD = { enabled: false, cache_dir: null, kept: false, locked: true };
 
 const KMP_TEST_ENVELOPE_SCENARIO1_PASS = JSON.stringify({
-  tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0',
+  tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0',
   project_root: 'C:\\fake', exit_code: 0, duration_ms: 13169,
   tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 },
   modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {}, errors: [], warnings: [],
@@ -278,7 +278,7 @@ const KMP_TEST_ENVELOPE_SCENARIO1_PASS = JSON.stringify({
 const NO_APPLICABLE_TESTS_COVERAGE_BLOCK = { tool: 'auto', missed_lines: null, modules_with_kover_plugin: [], modules_with_jacoco_plugin: [] };
 
 const KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS = JSON.stringify({
-  tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0',
+  tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0',
   project_root: 'C:\\fake', exit_code: 2, duration_ms: 21,
   tests: { total: 0, passed: 0, failed: 0, skipped: 0, individual_total: 0 },
   modules: [], skipped: [{ module: 'app', reason: 'no test source set' }], coverage: NO_APPLICABLE_TESTS_COVERAGE_BLOCK,
@@ -297,7 +297,7 @@ const GRADLE_SCENARIO2_NO_SOURCE_VIA_ALIAS = `> Task :app:testDebugUnitTest NO-S
 // 2's `:app`) -- one leg, `fresh:1`, mirroring KMP_TEST_ENVELOPE_SCENARIO1_PASS's shape with
 // counts/module substituted for the ground-truth-verified 1/1/0 result.
 const KMP_TEST_ENVELOPE_SCENARIO3_PASS = JSON.stringify({
-  tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0',
+  tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0',
   project_root: 'C:\\fake', exit_code: 0, duration_ms: 5231,
   tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 1 },
   modules: [{ name: 'core:common', type: 'jvm' }], skipped: [], coverage: {}, errors: [], warnings: [],
@@ -369,7 +369,7 @@ const KMP_TEST_ENVELOPE_SCENARIO4_TEST_FAILURES = [
 ];
 
 const KMP_TEST_ENVELOPE_SCENARIO4_FAIL = JSON.stringify({
-  tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0',
+  tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0',
   project_root: 'C:\\fake', exit_code: 1, duration_ms: 128033,
   tests: { total: 1, passed: 0, failed: 1, skipped: 0, individual_total: 3 },
   modules: [{ name: 'lint', type: 'jvm', test_failures: KMP_TEST_ENVELOPE_SCENARIO4_TEST_FAILURES }], skipped: [], coverage: {},
@@ -455,7 +455,7 @@ const SCENARIO_5_CORRECT_ANSWER = kmpEvalResultText(
 // the real invoked flag and the real aggregated total exactly.
 function coverageEnvelope(overrides = {}) {
   return JSON.stringify({
-    tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0',
+    tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0',
     project_root: 'C:\\fake', exit_code: 1, duration_ms: 143214,
     tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 4 },
     modules: [
@@ -493,7 +493,7 @@ function mutateCoverageEnvelope(mutator) {
 
 function cleanCoverageGateFreeEnvelope(overrides = {}) {
   return JSON.stringify({
-    tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0',
+    tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0',
     project_root: 'C:\\fake', exit_code: 0, duration_ms: 98214,
     tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 4 },
     modules: [{ name: 'core:domain', type: 'android', coverage_plugin: 'jacoco' }],
@@ -562,7 +562,7 @@ const SCENARIO_6_CORRECT_ANSWER = kmpEvalResultText(
 // ("core:common"), a deliberately different convention from `modules[].name` and `expected.module`.
 function changedEnvelope(overrides = {}) {
   return JSON.stringify({
-    tool: 'kmp-test', schema_version: 2, subcommand: 'changed', version: '0.14.0',
+    tool: 'kmp-test', schema_version: 3, subcommand: 'changed', version: '0.14.0',
     project_root: 'C:\\fake', exit_code: 0, duration_ms: 131843,
     tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 1 },
     modules: [
@@ -694,7 +694,7 @@ describe('gradeScenarioCondition -- scenario 1 (:shared, tests_executed) happy p
   it('a doctor call before the real parallel call is auxiliary -- never counted as a competing/ambiguous envelope', () => {
     const cr = buildConditionResult(
       [
-        { command: 'kmp-test doctor --json', resultContent: JSON.stringify({ tool: 'kmp-test', schema_version: 2, subcommand: 'doctor', tests: { total: 0, passed: 0, failed: 0 }, modules: [], errors: [] }) },
+        { command: 'kmp-test doctor --json', resultContent: JSON.stringify({ tool: 'kmp-test', schema_version: 3, subcommand: 'doctor', tests: { total: 0, passed: 0, failed: 0 }, modules: [], errors: [] }) },
         { command: 'kmp-test parallel --module-filter shared --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO1_PASS },
       ],
       SCENARIO_1_CORRECT_ANSWER,
@@ -776,7 +776,7 @@ describe('gradeScenarioCondition -- scenario 3 (:core:common) negative cases: wr
     // being a bare-bones fixture) so this test genuinely exercises the module-identity guard at
     // computeKmpTestTargetMatch, not an incidentally-missing-parallel-block failure instead.
     const wrongModuleEnvelope = JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 0, duration_ms: 100,
       tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 1 }, // identical shape to SCENARIO_3's expectation
       modules: [{ name: 'some-other-module', type: 'jvm' }], // but the WRONG module
@@ -805,7 +805,7 @@ describe('gradeScenarioCondition -- scenario 3 (:core:common) negative cases: wr
 
   it('a well-formed envelope for the RIGHT module but WRONG individual_total fails outcome (not just a final-answer-block mismatch)', () => {
     const wrongCountEnvelope = JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 0, duration_ms: 100,
       tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 2 }, // WRONG: ground truth is 1
       modules: [{ name: 'core:common', type: 'jvm' }],
@@ -900,7 +900,7 @@ describe('gradeScenarioCondition -- scenario 4 (:lint, tests_failed) happy paths
 describe('gradeScenarioCondition -- scenario 4 (:lint) negative cases: wrong module/count/exit, compile/setup failures never satisfy tests_failed', () => {
   it('a well-formed envelope for the WRONG module, with coincidentally-matching counts, fails target AND outcome', () => {
     const wrongModuleEnvelope = JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 1, duration_ms: 100,
       tests: { total: 1, passed: 0, failed: 1, skipped: 0, individual_total: 3 },
       modules: [{ name: 'some-other-module', type: 'jvm' }],
@@ -930,7 +930,7 @@ describe('gradeScenarioCondition -- scenario 4 (:lint) negative cases: wrong mod
 
   it('a well-formed envelope for the RIGHT module but WRONG failed count fails outcome', () => {
     const wrongCountEnvelope = JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 1, duration_ms: 100,
       tests: { total: 1, passed: 0, failed: 1, skipped: 0, individual_total: 2 }, // WRONG: ground truth individual_total is 3
       // Deliberately kept internally coherent with its own (wrong) individual_total:2 -- exactly 2
@@ -1378,7 +1378,7 @@ describe('gradeScenarioCondition -- module-filter target attribution uses real m
 
   it('an envelope reporting MULTIPLE modules still fails closed even with a filter matchModuleFilter would otherwise accept -- the modules.length===1 gate runs BEFORE the filter comparison and is unchanged', () => {
     const multiModuleEnvelope = JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 0, duration_ms: 100, tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 1 },
       modules: [{ name: 'core:common', type: 'jvm' }, { name: 'core:other', type: 'jvm' }],
       skipped: [], coverage: {}, errors: [], warnings: [],
@@ -1416,7 +1416,7 @@ describe('gradeScenarioCondition -- module-filter target attribution uses real m
 describe('gradeScenarioCondition -- terminal-attempt selection: intendedTargetMatches also uses real matchModuleFilter semantics', () => {
   it('a CORRECT first attempt using a short (substring) filter, followed by a later attempt at an unrelated wrong module, keeps the FIRST attempt as terminal evidence -- fails under the old exact-match intendedTargetMatches logic (both attempts would read as "never tried the target", so terminal falls back to the LAST attempt overall -- the wrong one)', () => {
     const wrongModuleEnvelope = JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 0, duration_ms: 50, tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 1 },
       modules: [{ name: 'some-other-module', type: 'jvm' }], skipped: [], coverage: {}, errors: [], warnings: [],
       parallel: {
@@ -1498,7 +1498,7 @@ describe('gradeScenarioCondition -- decision 13 fix: check 5 (target) is a REQUI
   // DIFFERENT module that happens to have the identical 1/1/0/24 shape scenario 1 expects.
   it('a well-formed envelope for the WRONG module, with coincidentally-matching counts, fails target AND outcome -- never a match', () => {
     const wrongModuleEnvelope = JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 0, duration_ms: 100,
       tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 }, // identical shape to SCENARIO_1's expectation
       modules: [{ name: 'some-other-module', type: 'kmp' }], // but the WRONG module
@@ -1644,7 +1644,7 @@ describe('gradeScenarioCondition -- structural/evidence adversarial cases (evide
 
   it('agent runs the WRONG module\'s tests and accurately (and correctly-formatted) reports THAT module -- must fail scenario 1 (target mismatch), not pass on "the block parses fine"', () => {
     const otherModulePass = JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 0, duration_ms: 100, tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 3 },
       modules: [{ name: 'app', type: 'android' }], skipped: [], coverage: {}, errors: [], warnings: [],
     });
@@ -1795,7 +1795,7 @@ describe('gradeScenarioCondition -- round-8: bash_tool_use_present is decision-a
     ['kmp-test parallel --dry-run --json', 'parallel --dry-run (plan-only)'],
   ])('an ALLOWED %s DOES satisfy bash_tool_use_present (%s)', (command) => {
     const cr = buildConditionResult(
-      [{ command, decision: 'allow', resultContent: '{"tool":"kmp-test","schema_version":2}' }],
+      [{ command, decision: 'allow', resultContent: '{"tool":"kmp-test","schema_version":3}' }],
       'Ran a diagnostic command.\n\nKMP_EVAL_RESULT\n{"module": ":shared", "outcome_kind": "no_applicable_tests"}\nKMP_EVAL_RESULT_END',
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
@@ -1817,7 +1817,7 @@ describe('gradeScenarioCondition -- envelope self-contradiction (review-round-2/
 
   it('kmp-test path: an envelope self-contradictorily carrying BOTH a no_test_modules error AND matching passing test counts must fail (tests_executed scenario)', () => {
     const contradictoryEnvelope = JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 0, duration_ms: 100, tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 },
       modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {},
       errors: [{ code: 'no_test_modules', message: 'No modules found matching filter: shared', test_type: '', caused_by_filter: true }],
@@ -1834,7 +1834,7 @@ describe('gradeScenarioCondition -- envelope self-contradiction (review-round-2/
 
   it('kmp-test path: a no_test_modules envelope with NON-zero test counts must fail (no_applicable_tests scenario) -- the converse self-contradiction', () => {
     const contradictoryEnvelope = JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 2, duration_ms: 21, tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 3 },
       modules: [], skipped: [{ module: 'app', reason: 'no test source set' }], coverage: NO_APPLICABLE_TESTS_COVERAGE_BLOCK,
       errors: [{ code: 'no_test_modules', message: 'No modules found matching filter: app', test_type: '', caused_by_filter: true }],
@@ -1867,7 +1867,7 @@ describe('gradeScenarioCondition -- timeout tolerance integration', () => {
   it('a legitimate timeout mid-Bash-call, with otherwise-clean structure, does not fail checks 1/3 on its own', () => {
     const cr = buildConditionResult(
       [
-        { command: 'kmp-test doctor --json', resultContent: JSON.stringify({ tool: 'kmp-test', schema_version: 2, subcommand: 'doctor', tests: { total: 0, passed: 0, failed: 0 }, modules: [], errors: [] }) },
+        { command: 'kmp-test doctor --json', resultContent: JSON.stringify({ tool: 'kmp-test', schema_version: 3, subcommand: 'doctor', tests: { total: 0, passed: 0, failed: 0 }, modules: [], errors: [] }) },
         { command: 'kmp-test parallel --module-filter shared --json' /* killed mid-flight */ },
       ],
       'irrelevant',
@@ -1944,7 +1944,7 @@ describe('gradeScenarioCondition -- round-3 mandatory reproduction 2: G+G JUnit-
 describe('gradeScenarioCondition -- round-3 mandatory reproduction 3: envelope subcommand never cross-checked against the invoked command', () => {
   it('a Bash command classified as "kmp-test parallel", whose OWN JSON content claims subcommand:"doctor" (stale/wrong content), must not pass as parallel evidence', () => {
     const staleSubcommandEnvelope = JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'doctor', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'doctor', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 0, duration_ms: 100, tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 },
       modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {}, errors: [], warnings: [],
     });
@@ -1962,7 +1962,7 @@ describe('gradeScenarioCondition -- round-3 mandatory reproduction 3: envelope s
 describe('gradeScenarioCondition -- round-3 mandatory reproduction 4: no_applicable_tests never bounded individual_total', () => {
   it('a no_test_modules envelope with total/passed/failed correctly all-zero but a STALE non-zero individual_total must fail', () => {
     const staleIndividualTotal = JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 2, duration_ms: 21, tests: { total: 0, passed: 0, failed: 0, skipped: 0, individual_total: 24 },
       modules: [], skipped: [{ module: 'app', reason: 'no test source set' }], coverage: NO_APPLICABLE_TESTS_COVERAGE_BLOCK,
       errors: [{ code: 'no_test_modules', message: 'No modules found matching filter: app', test_type: '', caused_by_filter: true }],
@@ -2005,7 +2005,7 @@ describe('gradeScenarioCondition -- round-3 mandatory reproduction 8 + round-4: 
 describe('gradeScenarioCondition -- round-3 additional finding: no_applicable_tests errors[] must contain EXACTLY the one matching entry', () => {
   it('a matching no_test_modules error PLUS a second, unrelated error entry must fail', () => {
     const extraUnrelatedError = JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 2, duration_ms: 21, tests: { total: 0, passed: 0, failed: 0, skipped: 0, individual_total: 0 },
       modules: [], skipped: [{ module: 'app', reason: 'no test source set' }], coverage: NO_APPLICABLE_TESTS_COVERAGE_BLOCK,
       errors: [
@@ -2151,7 +2151,7 @@ describe('gradeScenarioCondition -- round-4: terminal-attempt selection distingu
 
   it('when NO attempt ever targets the expected module at all, terminal still falls back to the last attempt overall -- the single-wrong-module-only failure case must not have regressed', () => {
     const otherModulePass = JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 0, duration_ms: 100, tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 3 },
       modules: [{ name: 'app', type: 'android' }], skipped: [], coverage: {}, errors: [], warnings: [],
     });
@@ -2297,7 +2297,7 @@ describe('gradeScenarioCondition -- round-5: planning (--dry-run) vs execution',
 describe('gradeScenarioCondition -- round-5: command/envelope module coherence, no unproven multi-module attribution', () => {
   it('command explicitly filtered to --module-filter app, but the envelope itself claims modules:[{name:"shared"}] -- internally contradictory, must fail even though "shared" happens to be the real target', () => {
     const contradictoryEnvelope = JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 0, duration_ms: 100, tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 },
       modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {}, errors: [], warnings: [],
     });
@@ -2312,7 +2312,7 @@ describe('gradeScenarioCondition -- round-5: command/envelope module coherence, 
 
   it('a whole-project run (no --module-filter) whose envelope lists TWO modules, target at index 1 -- must fail: the AGGREGATE tests.total/passed/failed cannot be safely attributed to any ONE of several listed modules', () => {
     const multiModuleEnvelope = JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 0, duration_ms: 100, tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 },
       modules: [{ name: 'some-other-module', type: 'kmp' }, { name: 'shared', type: 'kmp' }],
       skipped: [], coverage: {}, errors: [], warnings: [],
@@ -2464,7 +2464,7 @@ describe('gradeScenarioCondition -- round-5: structured KMP_EVAL_RESULT block re
 describe('gradeScenarioCondition -- round-5: envelope skipped counter validated (not just total/passed/failed/individual_total)', () => {
   it('an otherwise-clean tests_executed envelope with a stray non-zero skipped count must fail', () => {
     const skippedEnvelope = JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 0, duration_ms: 100, tests: { total: 1, passed: 1, failed: 0, skipped: 42, individual_total: 24 },
       modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {}, errors: [], warnings: [],
     });
@@ -2479,7 +2479,7 @@ describe('gradeScenarioCondition -- round-5: envelope skipped counter validated 
 
   it('a no_applicable_tests envelope with a non-zero skipped count must also fail (the converse case)', () => {
     const skippedEnvelope = JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 2, duration_ms: 21, tests: { total: 0, passed: 0, failed: 0, skipped: 5, individual_total: 0 },
       modules: [], skipped: [{ module: 'app', reason: 'no test source set' }], coverage: NO_APPLICABLE_TESTS_COVERAGE_BLOCK,
       errors: [{ code: 'no_test_modules', message: 'No modules found matching filter: app', test_type: '', caused_by_filter: true }],
@@ -2598,7 +2598,7 @@ describe('gradeScenarioCondition -- round-6: kmp-test --list/--list-only is a se
 describe('gradeScenarioCondition -- round-6: no_applicable_tests target-match now also requires envelope.modules to be genuinely empty', () => {
   it('an envelope with a NON-empty modules[] array -- even one that names the CORRECT target module -- self-contradicts a no_test_modules error and must fail; "the right module happens to be listed" must not stand in for "modules[] is genuinely empty"', () => {
     const selfContradictoryEnvelope = JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 2, duration_ms: 21, tests: { total: 0, passed: 0, failed: 0, skipped: 0, individual_total: 0 },
       modules: [{ name: 'app', type: 'android' }], // non-empty, AND names the target -- still contradicts "no test modules resolved"
       skipped: [], coverage: {},
@@ -2674,7 +2674,7 @@ describe('gradeScenarioCondition -- round-6: dimension-matrix gaps a fresh test-
 
   it('tests_executed, envelope.modules is EMPTY (0 entries) -- must fail the same way a 2+-entry array does, not just the multi-module case', () => {
     const emptyModulesEnvelope = JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 0, duration_ms: 100, tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 },
       modules: [], skipped: [], coverage: {}, errors: [], warnings: [],
     });
@@ -2708,7 +2708,7 @@ describe('gradeScenarioCondition -- round-6: dimension-matrix gaps a fresh test-
 describe('gradeScenarioCondition -- round-7: envelope execution/plan-mode must agree with a real execution, not just the command text', () => {
   it('command has NO --dry-run in its own text, but the RETURNED envelope claims dry_run:true -- must fail, never trust matching counts over the envelope\'s own self-reported mode', () => {
     const staleDryRunEnvelope = JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 0, duration_ms: 100, dry_run: true,
       tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 },
       modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {}, errors: [], warnings: [],
@@ -2724,7 +2724,7 @@ describe('gradeScenarioCondition -- round-7: envelope execution/plan-mode must a
 
   it('command has NO --list-only in its own text, but the RETURNED envelope claims parallel.list_only:true -- must fail the same way', () => {
     const staleListOnlyEnvelope = JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 0, duration_ms: 100, parallel: { test_type: 'auto', list_only: true, legs: [] },
       tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 },
       modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {}, errors: [], warnings: [],
@@ -2757,7 +2757,7 @@ describe('gradeScenarioCondition -- round-7: envelope execution/plan-mode must a
 describe('gradeScenarioCondition -- round-8: execution-mode coherence must fail closed on a wrong-typed value, not just literal true', () => {
   it('EXACT REPRODUCTION: envelope.dry_run is the STRING "true" (not the boolean) -- previously accepted, must now be rejected', () => {
     const wrongTypeDryRunEnvelope = JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 0, duration_ms: 100, dry_run: 'true',
       tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 },
       modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {}, errors: [], warnings: [],
@@ -2773,7 +2773,7 @@ describe('gradeScenarioCondition -- round-8: execution-mode coherence must fail 
 
   it('EXACT REPRODUCTION: envelope.dry_run is the NUMBER 1 (not the boolean) -- previously accepted, must now be rejected', () => {
     const numericDryRunEnvelope = JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 0, duration_ms: 100, dry_run: 1,
       tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 },
       modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {}, errors: [], warnings: [],
@@ -2789,7 +2789,7 @@ describe('gradeScenarioCondition -- round-8: execution-mode coherence must fail 
 
   it('EXACT REPRODUCTION: envelope.parallel.list_only is the STRING "true" (not the boolean) -- previously accepted, must now be rejected', () => {
     const wrongTypeListOnlyEnvelope = JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 0, duration_ms: 100, parallel: { test_type: 'auto', list_only: 'true', legs: [] },
       tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 },
       modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {}, errors: [], warnings: [],
@@ -2805,7 +2805,7 @@ describe('gradeScenarioCondition -- round-8: execution-mode coherence must fail 
 
   it('regression guard: envelope.dry_run explicitly false (a real, well-typed value) still passes normally', () => {
     const explicitFalseDryRunEnvelope = JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 0, duration_ms: 100, dry_run: false,
       tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 },
       modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {}, errors: [], warnings: [],
@@ -2839,7 +2839,7 @@ describe('gradeScenarioCondition -- round-8: execution-mode coherence must fail 
 describe('gradeScenarioCondition -- round-9: tests_executed requires a real, well-formed parallel.legs[] block, not just absence of a bad list_only', () => {
   function envelopeWithParallel(parallelValue) {
     return JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 0, duration_ms: 100, parallel: parallelValue,
       tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 },
       modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {}, errors: [], warnings: [],
@@ -2963,7 +2963,7 @@ describe('gradeScenarioCondition -- round-10: validateParallelEvidence closes th
 
   function buildEnvelope({ parallel = GOOD_PARALLEL, tests = { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 }, errors = [], isolated = DEFAULT_ISOLATED_FIELD } = {}) {
     return JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 0, duration_ms: 100, tests,
       modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {}, errors, warnings: [],
       parallel, isolated,
@@ -3280,7 +3280,7 @@ describe('gradeScenarioCondition -- round-10: malformed parallel evidence is a H
 
   it('EXACT REPRODUCTION: a well-shaped outer envelope with an incoherent parallel.legs[] (missing no_evidence key) sets parallelEvidenceMalformed:true, not just expectedOutcomeMatched:false', () => {
     const envelope = JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 0, duration_ms: 100,
       tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 24 },
       modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {}, errors: [], warnings: [],
@@ -3306,7 +3306,7 @@ describe('gradeScenarioCondition -- round-10: malformed parallel evidence is a H
 
   it('regression guard: a genuine count-mismatch (well-formed parallel evidence, but wrong test counts) is NOT flagged as parallelEvidenceMalformed -- still a plain, legitimate negative result', () => {
     const envelope = JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 0, duration_ms: 100,
       tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 20 }, // wrong count (expected 24), otherwise clean
       modules: [{ name: 'shared', type: 'kmp' }], skipped: [], coverage: {}, errors: [], warnings: [],
@@ -4802,7 +4802,7 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
   // ground truth, but no coverage_threshold_exceeded error at all (the gate never fired). Mirrors
   // KMP_TEST_ENVELOPE_SCENARIO1_PASS's real, well-formed shape with the module/counts substituted.
   const KMP_TEST_ENVELOPE_SCENARIO5_CLEAN_NO_COVERAGE_GATE = JSON.stringify({
-    tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0',
+    tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0',
     project_root: 'C:\\fake', exit_code: 0, duration_ms: 98214,
     tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 4 },
     modules: [{ name: 'core:domain', type: 'android', coverage_plugin: 'jacoco' }], skipped: [], coverage: {}, errors: [], warnings: [],
@@ -4845,7 +4845,7 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
 
   it("[case 3] terminal targets the WRONG module (scenario 1 expects :shared, agent ran :app) and the final block honestly reports :app's own real result -- must PASS final-consistency; target check and success still fail", () => {
     const otherModulePass = JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 0, duration_ms: 100, tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 3 },
       modules: [{ name: 'app', type: 'android' }], skipped: [], coverage: {}, errors: [], warnings: [],
       parallel: {
@@ -4872,7 +4872,7 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
 
   it("[case 4] same wrong-module (:app) terminal as case 3, but the final block instead names the SCENARIO's expected module/counts (:shared, 24/24/0) -- must fail final-consistency (the block does not describe what this terminal attempt actually showed)", () => {
     const otherModulePass = JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 0, duration_ms: 100, tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 3 },
       modules: [{ name: 'app', type: 'android' }], skipped: [], coverage: {}, errors: [], warnings: [],
       parallel: {
@@ -4944,7 +4944,7 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
 
   it('[case 6d] a self-contradictory parallel.legs[] block (a leg claiming a clean exit_code:0 alongside execution.failed:999) on a WRONG-module attempt must not produce a canonicalizable observedResult, even though the pre-existing well-formedness gate does not independently catch this for an off-target attempt', () => {
     const incoherentEnvelope = JSON.stringify({
-      tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
       exit_code: 0, duration_ms: 100, tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 3 },
       modules: [{ name: 'app', type: 'android' }], skipped: [], coverage: {}, errors: [], warnings: [],
       parallel: {

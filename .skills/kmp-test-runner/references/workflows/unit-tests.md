@@ -127,7 +127,8 @@ The `parallel` subcommand emits the standard top-level envelope (see [`../cli/en
 ```json
 {
   "tool": "kmp-test",
-  "schema_version": 2,
+  "schema_version": 3,
+  "contracts": { "coverage_evidence": 1 },
   "subcommand": "parallel",
   "exit_code": 0,
   "tests": { "total": 42, "passed": 42, "failed": 0, "skipped": 0, "individual_total": 58 },

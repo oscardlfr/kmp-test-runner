@@ -139,7 +139,8 @@ When change detection returns nothing (clean working tree, or `--staged-only` wi
 ```json
 {
   "tool": "kmp-test",
-  "schema_version": 2,
+  "schema_version": 3,
+  "contracts": { "coverage_evidence": 1 },
   "subcommand": "changed",
   "exit_code": 0,
   "tests": { "total": 4, "passed": 4, "failed": 0, "skipped": 0 },

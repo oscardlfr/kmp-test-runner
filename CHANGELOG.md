@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — explicit coverage requests fail closed without real XML evidence
+
+`parallel` and `changed` now return `coverage_data_unavailable` (exit `3`) when an explicit
+`--coverage-tool auto|kover|jacoco` request produces zero real contributing modules, including
+the all-`no_xml` case. Numeric coverage totals remain `null` at zero contributors and are derived
+only from parsed XML rows; a mixed contributing/non-contributing selection keeps the real aggregate
+while preserving the missing modules in `module_buckets.no_xml`. Coverage errors, warnings, and
+buckets survive the `coverage → parallel → changed` delegation unchanged.
+
+This exit/error semantic change bumps the envelope to `schema_version: 3`. Every JSON envelope and
+the new cheap `kmp-test --version --json` identity include
+`contracts:{"coverage_evidence":1}` so consumers can reject an incompatible global installation
+before running Gradle. Plain `kmp-test --version` remains unchanged.
+
 ### Fixed — 0.15.0 never reached npm; publish now uses a Node/npm pin that meets Trusted Publishing's own floor
 
 **Observable behavior change (CI-only, no product code affected).** 0.15.0 published to GitHub
