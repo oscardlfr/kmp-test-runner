@@ -67,6 +67,13 @@ export function validateSummary(summary) {
       const g = groups.find(x => x.runtime_id === runtime && x.arm === arm);
       if (!g) { errors.push(`missing group for ${runtime}/${arm}`); continue; }
       if (g.declared !== 4) errors.push(`${runtime}/${arm}: declared must be 4, got ${g.declared}`);
+      // wallClockPhrase reads duration_ms.min/max directly (the same aggregate as the median) to
+      // render the per-session range -- a group missing either, or a non-numeric value, must fail
+      // closed here, not render literal "NaN–NaN" in the README.
+      const d = g.duration_ms || {};
+      if (!(Number.isFinite(d.min) && Number.isFinite(d.max) && d.min <= d.median && d.median <= d.max)) {
+        errors.push(`${runtime}/${arm}: duration_ms.min/median/max must be finite with min <= median <= max, got ${JSON.stringify(d)}`);
+      }
     }
   }
   // The README's Scope line names the kmp-test version under measurement, so a campaign that

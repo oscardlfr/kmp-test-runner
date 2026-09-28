@@ -47,15 +47,16 @@ function contrastRatio(hexA, hexB) {
 // validateSummary -- fail-closed guard, RED then GREEN
 
 describe('validateSummary', () => {
+  const validDuration = () => ({ n: 4, min: 100000, median: 150000, max: 200000 });
   const complete = () => ({
     schema: 1,
     summary_status: 'ok',
     provider_mode: 'live',
     by_runtime_arm: [
-      { runtime_id: 'claude-code', arm: 'product', declared: 4 },
-      { runtime_id: 'claude-code', arm: 'free', declared: 4 },
-      { runtime_id: 'codex-cli', arm: 'product', declared: 4 },
-      { runtime_id: 'codex-cli', arm: 'free', declared: 4 },
+      { runtime_id: 'claude-code', arm: 'product', declared: 4, duration_ms: validDuration() },
+      { runtime_id: 'claude-code', arm: 'free', declared: 4, duration_ms: validDuration() },
+      { runtime_id: 'codex-cli', arm: 'product', declared: 4, duration_ms: validDuration() },
+      { runtime_id: 'codex-cli', arm: 'free', declared: 4, duration_ms: validDuration() },
     ],
     provenance: { kmp_test_cli_version: { values: ['0.15.0'], mixed: false } },
   });
@@ -90,6 +91,30 @@ describe('validateSummary', () => {
   it('rejects a group with declared !== 4', () => {
     const s = complete(); s.by_runtime_arm[0].declared = 3;
     expect(validateSummary(s).some(e => e.includes('declared must be 4'))).toBe(true);
+  });
+
+  // wallClockPhrase (F-B) reads duration_ms.min/max directly to render the per-session range --
+  // a summary missing either previously rendered literal "NaN–NaN" instead of failing validation
+  // (confirmed by reproduction before this fix existed: validateSummary returned [], and the
+  // rendered bullet contained "per-session range NaN–NaN ...").
+  it('rejects a group missing duration_ms.min', () => {
+    const s = complete(); delete s.by_runtime_arm[0].duration_ms.min;
+    expect(validateSummary(s).some(e => e.includes('duration_ms.min/median/max'))).toBe(true);
+  });
+
+  it('rejects a group with a non-number duration_ms.max', () => {
+    const s = complete(); s.by_runtime_arm[0].duration_ms.max = 'not-a-number';
+    expect(validateSummary(s).some(e => e.includes('duration_ms.min/median/max'))).toBe(true);
+  });
+
+  it('rejects a group where duration_ms.min > median', () => {
+    const s = complete(); s.by_runtime_arm[0].duration_ms.min = 999999999;
+    expect(validateSummary(s).some(e => e.includes('duration_ms.min/median/max'))).toBe(true);
+  });
+
+  it('accepts the real committed campaign summary (min <= median <= max holds for all 4 groups)', () => {
+    const real = loadSummary(join(RUNS_DIR, 'campaign-summary.json'));
+    expect(validateSummary(real)).toEqual([]);
   });
 
   it('rejects provenance.kmp_test_cli_version.mixed: true (a campaign must never silently pick one of several versions)', () => {
