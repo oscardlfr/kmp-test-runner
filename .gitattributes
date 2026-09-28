@@ -34,6 +34,13 @@ tools/lib/redact.mjs text eol=lf
 tools/wet-evidence.mjs text eol=lf
 tests/vitest/wet-evidence.test.js text eol=lf
 
+# Contributor agent-config validator — same class. On a fresh Windows clone
+# (core.autocrlf=true) vitest cannot import this shebang module with CRLF
+# endings ("SyntaxError: Invalid or unexpected token" at the import); either
+# LF or no shebang fixes it, and LF matches the pins above.
+tools/validate-agent-config.mjs text eol=lf
+tests/vitest/validate-agent-config.test.js text eol=lf
+
 # Fixture wrapper scripts: gradlew (POSIX) needs LF; gradlew.bat needs CRLF
 # so cmd.exe parses it correctly across hosts.
 tests/fixtures/fake-gradlew/gradlew text eol=lf
