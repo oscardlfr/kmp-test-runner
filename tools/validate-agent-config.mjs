@@ -207,9 +207,17 @@ function validateNoPrivateMemoryReference(file, content, errors) {
   }
 }
 
+// Contracts pin wording, not line layout: a literal space in a contract
+// pattern matches any whitespace run, so a Markdown re-wrap that moves a line
+// break into a phrase does not read as a deleted contract. Keep literal spaces
+// out of character classes in contract patterns.
+function layoutTolerant(pattern) {
+  return new RegExp(pattern.source.replaceAll(' ', '\\s+'), pattern.flags);
+}
+
 function validateRequiredContracts(file, content, contracts, errors, code) {
   for (const contract of contracts) {
-    if (!contract.pattern.test(content)) {
+    if (!layoutTolerant(contract.pattern).test(content)) {
       errors.push(makeError(file, code, `missing durable contract: ${contract.label}`));
     }
   }

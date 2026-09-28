@@ -172,6 +172,22 @@ describe('validateAgentConfig', () => {
     }));
   });
 
+  // A Markdown re-wrap moves a line break into a contract phrase without
+  // changing a word; the durable contract is the wording, not the layout.
+  it('accepts a durable AGENTS contract re-wrapped across lines', () => {
+    makeFixture({
+      agents: VALID_AGENTS.replace('Do not merge unless the user explicitly asks', 'Do not merge unless the user\n  explicitly asks'),
+    });
+    expect(validateAgentConfig({ repoRoot: scratch })).toMatchObject({ ok: true, errors: [] });
+  });
+
+  it('accepts a durable release document contract re-wrapped across lines', () => {
+    makeFixture();
+    const file = 'docs/maintainers/release-process.md';
+    write(file, SOURCE_FIXTURES[file].replace('`package.json` inside both archives', '`package.json` inside\n  both archives'));
+    expect(validateAgentConfig({ repoRoot: scratch })).toMatchObject({ ok: true, errors: [] });
+  });
+
   it('rejects mutation of a durable AGENTS contract', () => {
     makeFixture({ agents: VALID_AGENTS.replace('Gradle DSL are public API', 'Gradle DSL are implementation details') });
     expect(validateAgentConfig({ repoRoot: scratch }).errors).toContainEqual(expect.objectContaining({

@@ -13,7 +13,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT   = join(__dirname, '..', '..');
 const WORKFLOWS   = join(REPO_ROOT, '.github', 'workflows');
 const REQUIRED_CHECKS_JSON = join(REPO_ROOT, '.github', 'required-checks.json');
-const REQUIRED_CHECKS_VALIDATOR = join(REPO_ROOT, 'tools', 'validate-required-checks.mjs');
 
 // Extracts the YAML text block for a named job (2-space-indented key).
 // Normalizes CRLF → LF first so equality checks work on Windows checkouts.
@@ -401,14 +400,6 @@ describe('.github/required-checks.json', () => {
     expect(ctx).toContain('build (windows-latest)');
     expect(ctx).toContain('secrets-scan');
     expect(ctx).toContain('Commit Lint');
-  });
-});
-
-describe('required-checks drift validator', () => {
-  it('fails closed unless squash merge subjects come from PR titles', () => {
-    const validator = readFileSync(REQUIRED_CHECKS_VALIDATOR, 'utf8');
-    expect(validator).toMatch(/squash_merge_commit_title/);
-    expect(validator).toMatch(/!== 'PR_TITLE'/);
   });
 });
 

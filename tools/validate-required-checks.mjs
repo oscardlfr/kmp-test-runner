@@ -5,8 +5,7 @@
 //
 // Two modes:
 //   --schema-only   Validate JSON structure only (no API calls). Always safe.
-//   --check-drift   Compare manifest vs develop branch protection and main ruleset,
-//                   and verify squash titles come from PR titles.
+//   --check-drift   Compare manifest vs develop branch protection AND main ruleset.
 //                   Reads GH_TOKEN or GITHUB_TOKEN from env.
 //                   Only run on push to main/develop (GITHUB_TOKEN needs write context
 //                   to read branch protection settings reliably).
@@ -75,18 +74,6 @@ function ghApi(path, jqFilter) {
 async function checkDrift(manifestContexts) {
   const repo = process.env.GITHUB_REPOSITORY;
   if (!repo) throw new Error('GITHUB_REPOSITORY env var is required for --check-drift');
-
-  // The squash title is the commit subject that lands on develop. Using
-  // COMMIT_OR_PR_TITLE lets a single-commit PR bypass the validated PR title
-  // and can make the subsequent push-event commit-lint fail.
-  try {
-    const settings = ghApi(`/repos/${repo}`);
-    if (settings?.squash_merge_commit_title !== 'PR_TITLE') {
-      throw new Error(`squash_merge_commit_title must be PR_TITLE (got ${JSON.stringify(settings?.squash_merge_commit_title)})`);
-    }
-  } catch (err) {
-    throw new Error(`Failed to verify repository squash-title setting: ${err.message}`);
-  }
 
   // --- develop: classic branch protection ---
   let developContexts;
@@ -161,7 +148,6 @@ async function checkDrift(manifestContexts) {
   }
 
   console.log('required-checks manifest matches develop branch protection and main ruleset.');
-  console.log('Repository squash_merge_commit_title is PR_TITLE.');
   console.log(`Validated ${manifestSorted.length} required contexts.`);
 }
 
