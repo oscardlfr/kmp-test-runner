@@ -18,6 +18,7 @@ import {
   hasBinaryNul,
   shouldSkip,
   scanFile,
+  lineHasUnallowedMatch,
   buildRules,
   compareShas,
 } from '../../tools/decouple-audit.mjs';
@@ -130,6 +131,68 @@ describe('decouple-audit public rules', () => {
     const f = tmpFile(dir, 'README.md', content);
     const hits = scanFile(f, 'README.md', AUDIT_PUBLIC_RULES);
     expect(hits).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// EVIDENCE1 benchmark name: exact-token allowlist on device_serial only.
+//
+// EVIDENCE1 is the name of the published agentic-benchmark campaign
+// (tools/runs/evidence1-agentic-benchmark-*), not a device serial, but it
+// matches the device_serial shape (9 uppercase-alnum chars with a digit).
+// The allowlist is applied PER MATCH, never per line or per file, so it stays
+// fail-closed: a real serial-shaped token sharing a line with EVIDENCE1 still
+// flags, and a token that only CONTAINS "EVIDENCE1" as a substring is a
+// different token (the regex's own \b matching makes this exact, not
+// approximate -- see the two flagging tests below).
+//
+// Fixtures for the still-flagged tokens are split at runtime, same technique
+// as SERIAL_FIXTURE above: writing the full shape as one source literal would
+// make THIS test file itself trip the rule under test.
+// ---------------------------------------------------------------------------
+describe('decouple-audit device_serial: EVIDENCE1 allowlist', () => {
+  const SYNTHETIC_SERIAL = 'ZZ0123' + '456789'; // device_serial shape, split (each half <8 chars) at write time
+  const EVIDENCE1_PLUS_SUFFIX = 'EVIDENCE1' + '2ZZ'; // contains EVIDENCE1 as a prefix, not an exact-token match
+
+  it('a line containing only EVIDENCE1 is clean', () => {
+    const dir = makeTmpDir();
+    const f = tmpFile(dir, 'doc.md', 'See the EVIDENCE1 benchmark for details.\n');
+    const hits = scanFile(f, 'doc.md', AUDIT_PUBLIC_RULES);
+    expect(hits.filter(h => h.class === 'device_serial')).toHaveLength(0);
+  });
+
+  it('a real serial-shaped token sharing a line with EVIDENCE1 still flags (fail-closed, not fail-open)', () => {
+    const dir = makeTmpDir();
+    const f = tmpFile(dir, 'doc.md', `EVIDENCE1 benchmark, device ${SYNTHETIC_SERIAL} attached\n`);
+    const hits = scanFile(f, 'doc.md', AUDIT_PUBLIC_RULES);
+    expect(hits.filter(h => h.class === 'device_serial').length).toBeGreaterThan(0);
+  });
+
+  it('a token that merely contains EVIDENCE1 as a substring still flags (exact-match allowlist, not a prefix check)', () => {
+    const dir = makeTmpDir();
+    const f = tmpFile(dir, 'doc.md', `id ${EVIDENCE1_PLUS_SUFFIX} assigned\n`);
+    const hits = scanFile(f, 'doc.md', AUDIT_PUBLIC_RULES);
+    expect(hits.filter(h => h.class === 'device_serial').length).toBeGreaterThan(0);
+  });
+
+  it('does not add allowTokens to any rule other than device_serial', () => {
+    const others = AUDIT_PUBLIC_RULES.filter(r => r.class !== 'device_serial');
+    expect(others.length).toBeGreaterThan(0);
+    for (const rule of others) {
+      expect(rule.allowTokens).toBeUndefined();
+    }
+  });
+
+  it('lineHasUnallowedMatch: a rule with no allowTokens behaves exactly like a bare rule.re.test', () => {
+    const rule = { re: /\bfoo\b/g };
+    expect(lineHasUnallowedMatch('a foo here', rule)).toBe(true);
+    expect(lineHasUnallowedMatch('no match here', rule)).toBe(false);
+  });
+
+  it('lineHasUnallowedMatch: allows an exact-listed token but still flags a different one on the same line', () => {
+    const deviceSerialRule = AUDIT_PUBLIC_RULES.find(r => r.class === 'device_serial');
+    expect(lineHasUnallowedMatch('EVIDENCE1 only', deviceSerialRule)).toBe(false);
+    expect(lineHasUnallowedMatch(`EVIDENCE1 and ${SYNTHETIC_SERIAL}`, deviceSerialRule)).toBe(true);
   });
 });
 

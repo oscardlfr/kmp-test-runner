@@ -86,6 +86,12 @@ export const AUDIT_PUBLIC_RULES = [
     ..._baseDeviceSerial,
     // Skip device_serial check on lines whose content is an npm/yarn integrity hash.
     excludeLineRe: /"integrity"\s*:\s*"sha\d+-/,
+    // EVIDENCE1 is the published agentic-benchmark campaign name
+    // (tools/runs/evidence1-agentic-benchmark-*), not a device serial, but it
+    // matches this rule's shape. Exact-token match, applied per match (see
+    // lineHasUnallowedMatch below) rather than per line, so a real
+    // serial-shaped token sharing a line with EVIDENCE1 still flags.
+    allowTokens: new Set(['EVIDENCE1']),
   },
   {
     class: 'user_path_win',
@@ -154,6 +160,27 @@ export function shouldSkip(rel, selfRel) {
 }
 
 // ---------------------------------------------------------------------------
+// lineHasUnallowedMatch — true if `line` has at least one match of `rule.re`
+// whose exact matched text is not in `rule.allowTokens` (when the rule has
+// one). Applied per match, not per line: a line can carry one allowlisted
+// token and one real hit at the same time, and the real hit still flags —
+// this is what keeps a token-level allowlist fail-closed instead of
+// widening into a line-level exemption.
+// ---------------------------------------------------------------------------
+export function lineHasUnallowedMatch(line, rule) {
+  rule.re.lastIndex = 0;
+  if (!rule.allowTokens) {
+    return rule.re.test(line);
+  }
+  let m;
+  while ((m = rule.re.exec(line)) !== null) {
+    if (!rule.allowTokens.has(m[0])) return true;
+    if (m.index === rule.re.lastIndex) rule.re.lastIndex += 1;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
 // scanFile — returns [{file, lineNo, class}]. Never includes matched content.
 // ---------------------------------------------------------------------------
 export function scanFile(absPath, rel, rules) {
@@ -172,10 +199,8 @@ export function scanFile(absPath, rel, rules) {
         rule.excludeLineRe.lastIndex = 0;
         if (rule.excludeLineRe.test(line)) continue;
       }
-      rule.re.lastIndex = 0;
-      if (rule.re.test(line)) {
+      if (lineHasUnallowedMatch(line, rule)) {
         hits.push({ file: rel, lineNo: i + 1, class: rule.class });
-        rule.re.lastIndex = 0;
       }
     }
   }
