@@ -1,10 +1,12 @@
 // tests/vitest/publish-npm-config.test.js
 // Static guard for .github/workflows/publish-npm.yml: npm's Trusted Publishing
 // (OIDC, --provenance) requires npm >= 11.5.1 and Node >= 22.14.0
-// (docs.npmjs.com/trusted-publishers) -- an older bundled npm authenticates
-// fine but the registry PUT then 404s, a failure mode with no useful error
-// until you're staring at the actual publish log. Reads the file from disk;
-// no network, no subprocess.
+// (docs.npmjs.com/trusted-publishers). An older bundled npm still signs a
+// provenance statement with the GitHub OIDC token -- a separate, older
+// feature -- but predates Trusted Publishing itself, so the registry PUT
+// goes out with no valid auth and fails with a bare 404, a failure mode with
+// no useful error until you're staring at the actual publish log. Reads the
+// file from disk; no network, no subprocess.
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { readFileSync } from 'node:fs';

@@ -7,33 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed — npm publish now uses a Node/npm pin that satisfies Trusted Publishing's own floor
+### Fixed — 0.15.0 never reached npm; publish now uses a Node/npm pin that meets Trusted Publishing's own floor
 
-**Observable behavior change (CI-only, no product code affected).** `publish-npm.yml` pinned
-`node-version: 20`, whose bundled npm authenticates npm's Trusted Publishing (OIDC,
-`--provenance`) handshake successfully but then gets a bare `404 Not Found` on the actual
-registry `PUT` — npm's own docs state the requirement plainly (npm >= 11.5.1, Node >= 22.14.0;
-[docs.npmjs.com/trusted-publishers](https://docs.npmjs.com/trusted-publishers)), but nothing in
-the failure itself names it. Surfaced when 0.15.0 published cleanly to GitHub Releases and GitHub
-Packages but never reached npm. Fixed by pinning `node-version: '24.18.0'` (the same exact pin
-`ci.yml` already uses), which bundles npm 11.16.0 — clears both floors with no separate npm
-install step, so `npm install -g npm@<pinned>` is unnecessary here (unlike the supply-chain
-rationale for pinning an explicit npm version elsewhere, this floor is already met by the Node
-pin alone).
+**Observable behavior change (CI-only, no product code affected).** 0.15.0 published to GitHub
+Releases and GitHub Packages (the Gradle plugin) but never reached npm. `publish-npm.yml` pinned
+`node-version: 20`; npm's Trusted Publishing (OIDC, `--provenance`) requires npm >= 11.5.1 and
+Node >= 22.14.0 ([docs.npmjs.com/trusted-publishers](https://docs.npmjs.com/trusted-publishers)).
+npm 10.x still signs a provenance statement with the GitHub OIDC token — a separate, older
+feature — but predates Trusted Publishing itself, so the registry `PUT` goes out with no valid
+auth and fails with a bare `404`. Fixed by pinning `node-version: '24.18.0'` (the same pin
+`ci.yml` already uses), which bundles npm 11.16.0 and clears both floors with no separate npm
+install step.
 
-### Fixed — `release-gate.mjs`'s CI-checks guard no longer treats "not created yet" as a failure
+### Fixed — release publish guards no longer fail on a required check that hasn't been created yet, and wait long enough for the post-release CI they depend on
 
-**Observable behavior change.** A required check gated by `needs:` on an earlier job (e.g.
-`installer-e2e`, which waits on `build`) has no check-run and no commit status at all until that
-earlier job finishes — `pollChecksForSha` classified this as `missing` and, incorrectly, treated
-`missing` exactly like `refuse` (a real failure), returning `ok:false` on the very first poll,
-long before the job could possibly have started. A downstream-gated required check could never
-win the race, regardless of how generous `--timeout-minutes` was. `missing` now polls like an
-in-flight check until the deadline; only a genuine `refuse` verdict (a real failure/cancellation
-conclusion, or a failed commit status) still short-circuits immediately. Surfaced when 0.15.0's
-npm and Gradle-plugin publish workflows both failed their guard ~80 seconds after the release
-push, naming `installer-e2e (ubuntu-latest)`/`installer-e2e (windows-latest)` as "missing" while
-CI was still assembling its job graph.
+**Observable behavior change.** A required check gated on an earlier job (e.g. `installer-e2e`,
+which waits on `build`) doesn't exist yet the moment CI starts — the guard treated that the same
+as an outright failure. Separately, the timeout itself was too short: a release's fast-forward to
+`main` starts a second full CI run on the same commit (`ci.yml` also triggers on push to `main`),
+and the guard has to wait for that run, not just develop's. Both fixed: a not-yet-created check
+now polls like an in-flight one until the deadline, and the three callers' timeouts are long
+enough for a full CI run plus margin.
 
 ## [0.15.0] — 2026-09-28
 

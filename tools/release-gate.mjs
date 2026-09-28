@@ -13,7 +13,7 @@
 //
 //   node tools/release-gate.mjs poll-checks <sha> <manifestPath> \
 //     --repo <owner/repo> [--timeout-minutes N]
-//     exit 1 on failed/missing check or timeout
+//     exit 1 on a failed check, or at timeout with checks still pending or missing
 //     reads token from GH_TOKEN or GITHUB_TOKEN env var
 
 import { readFileSync } from 'node:fs';
@@ -238,6 +238,32 @@ function _sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// ---------------------------------------------------------------------------
+// formatPollFailureMessages — pure, testable without console/process mocking
+//
+// Turns a failed pollChecksForSha() result into the exact GH Actions
+// `::error::` annotation lines main() prints. Missing contexts are named
+// whether the failure was a timeout or an immediate refuse/missing verdict —
+// a required check absent at the deadline is exactly as actionable as one
+// absent on the first poll.
+
+export function formatPollFailureMessages(result, timeoutMinutes) {
+  const lines = [];
+  if (result.timedOut) {
+    lines.push(`::error::Timed out after ${timeoutMinutes}m waiting for required CI checks to complete.`);
+  } else {
+    for (const [ctx, { verdict, source }] of Object.entries(result.results)) {
+      if (verdict !== 'ok') {
+        lines.push(`::error::Required check '${ctx}' is not green (verdict=${verdict}, source=${source})`);
+      }
+    }
+  }
+  if (result.missing.length > 0) {
+    lines.push(`::error::Missing required checks: ${result.missing.join(', ')}`);
+  }
+  return lines;
+}
+
 async function _ghFetch(path) {
   const token = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN;
   const res = await fetch(`https://api.github.com${path}`, {
@@ -329,18 +355,7 @@ async function main(argv) {
       return;
     }
 
-    if (result.timedOut) {
-      console.error(`::error::Timed out after ${timeoutMinutes}m waiting for required CI checks to complete.`);
-    } else {
-      for (const [ctx, { verdict, source }] of Object.entries(result.results)) {
-        if (verdict !== 'ok') {
-          console.error(`::error::Required check '${ctx}' is not green (verdict=${verdict}, source=${source})`);
-        }
-      }
-      if (result.missing.length > 0) {
-        console.error(`::error::Missing required checks: ${result.missing.join(', ')}`);
-      }
-    }
+    formatPollFailureMessages(result, timeoutMinutes).forEach(msg => console.error(msg));
     process.exit(1);
     return;
   }
