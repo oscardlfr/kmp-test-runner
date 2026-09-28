@@ -12,7 +12,8 @@ import {
 } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import {
   AUDIT_PUBLIC_RULES,
   hasBinaryNul,
@@ -437,6 +438,54 @@ describe('compareShas', () => {
   it('returns { ok: false } when either SHA is not a string', () => {
     expect(compareShas(null, 'abc').ok).toBe(false);
     expect(compareShas('abc', undefined).ok).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 16. lineHasUnallowedMatch -- non-global regex + allowTokens must never hang
+// (CodeRabbit review finding on PR #535, confirmed by execution: a non-global
+// regex's lastIndex is ignored by exec(), so a manual bump never advances it
+// and the old implementation looped forever the instant a matched token was
+// allowlisted). Today's only allowTokens rule (device_serial) is global, so
+// this never fired in the shipped tool -- but the exported function itself
+// must be safe for any caller.
+// ---------------------------------------------------------------------------
+describe('lineHasUnallowedMatch: non-global regex + allowTokens safety', () => {
+  const moduleUrl = pathToFileURL(path.join(__dirname, '..', '..', 'tools', 'decouple-audit.mjs')).href;
+
+  // Runs the exact scenario in a CHILD PROCESS with a real timeout, so a regression FAILS this
+  // test instead of hanging the whole suite -- an in-process call with no timeout would just hang
+  // vitest itself if the bug ever came back.
+  function runInChild(lineLiteral, reSource) {
+    const script = `
+      import { lineHasUnallowedMatch } from ${JSON.stringify(moduleUrl)};
+      const rule = { re: new RegExp(${JSON.stringify(reSource)}), allowTokens: new Set(['FOO']) };
+      const result = lineHasUnallowedMatch(${JSON.stringify(lineLiteral)}, rule);
+      process.stdout.write(String(result));
+    `;
+    return spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+      timeout: 5000,
+      encoding: 'utf8',
+    });
+  }
+
+  it('a non-global rule with an allowed-only match returns false and does not hang (RED before the fix, GREEN after -- see commit message for the captured RED output)', () => {
+    const r = runInChild('FOO', 'FOO');
+    expect(r.status, `child stderr: ${r.stderr}`).toBe(0);
+    expect(r.stdout).toBe('false');
+  });
+
+  it('a non-global rule where an allowed token AND a real hit share the line still returns true (fail-closed)', () => {
+    const r = runInChild('FOO and BAR both here', 'FOO|BAR');
+    expect(r.status, `child stderr: ${r.stderr}`).toBe(0);
+    expect(r.stdout).toBe('true');
+  });
+
+  it('the existing global-rule (device_serial) behavior stays exactly as before the fix', () => {
+    const deviceSerialRule = AUDIT_PUBLIC_RULES.find(r => r.class === 'device_serial');
+    expect(deviceSerialRule.re.global).toBe(true);
+    expect(lineHasUnallowedMatch('EVIDENCE1 only', deviceSerialRule)).toBe(false);
+    expect(lineHasUnallowedMatch(`EVIDENCE1 and ${'ZZ0123' + '456789'}`, deviceSerialRule)).toBe(true);
   });
 });
 

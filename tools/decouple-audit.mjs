@@ -166,16 +166,24 @@ export function shouldSkip(rel, selfRel) {
 // token and one real hit at the same time, and the real hit still flags —
 // this is what keeps a token-level allowlist fail-closed instead of
 // widening into a line-level exemption.
+//
+// The allowTokens path iterates via matchAll on a guaranteed-global regex
+// (rule.re itself if already global, otherwise a clone with 'g' appended) --
+// never rule.re.exec() in a manual loop. exec() only advances past a match
+// when the regex has the global flag; without it, lastIndex is ignored on
+// every call, so exec() returns the SAME match forever and a manual
+// lastIndex bump has no effect on its behavior -- an infinite loop the
+// instant an allowlisted rule's own regex isn't global. matchAll requires
+// (and enforces) a global regex, so this can't regress the same way.
 // ---------------------------------------------------------------------------
 export function lineHasUnallowedMatch(line, rule) {
-  rule.re.lastIndex = 0;
   if (!rule.allowTokens) {
+    rule.re.lastIndex = 0;
     return rule.re.test(line);
   }
-  let m;
-  while ((m = rule.re.exec(line)) !== null) {
+  const globalRe = rule.re.global ? rule.re : new RegExp(rule.re.source, rule.re.flags + 'g');
+  for (const m of line.matchAll(globalRe)) {
     if (!rule.allowTokens.has(m[0])) return true;
-    if (m.index === rule.re.lastIndex) rule.re.lastIndex += 1;
   }
   return false;
 }
