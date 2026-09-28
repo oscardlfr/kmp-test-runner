@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — README publishes one pre-registered agentic benchmark scenario
+
+Claude Code and Codex CLI each ran the same pre-registered coverage-gate scenario on a pinned
+NowInAndroid commit, 4 sessions with the kmp-test skill and CLI, 4 without — "Agent sessions with
+and without kmp-test" in the README's "Why this exists" section, generated deterministically by
+`tools/agentic-eval/readme-evidence.mjs` from the committed
+[`tools/runs/evidence1-agentic-benchmark-2026-09-28/campaign-summary.json`](tools/runs/evidence1-agentic-benchmark-2026-09-28/campaign-summary.json).
+One committed SVG scorecard (`scorecard.svg`, small-multiple horizontal bars) plus three
+data-driven bullets; no cross-provider winner, no ratios, no pooled row. Key facts matched in
+every cell at n=4 (16/16) — correctness is at ceiling in both arms, both runtimes, at this sample
+size. Within claude-code, no wall-clock difference between arms at the median but fewer tool
+calls and a lower estimated cost with the product. Within codex-cli (fixed at low reasoning
+effort), higher median wall-clock and wider
+variance with the product, traced to two sessions in which the agent invoked kmp-test 6 and 4 times.
+No cross-runtime comparison — see the
+[evidence doc](tools/runs/evidence1-agentic-benchmark-2026-09-28/README.md),
+[its controls audit](tools/runs/evidence1-agentic-benchmark-2026-09-28/controls-audit.md), and
+[pre-registration](tools/runs/evidence1-agentic-benchmark-2026-09-28/preregistration.md) for per-session detail, experimental
+controls, scope and limitations. Updated the stale "no agentic benchmark results are published yet"
+wording in the README's separate "Agentic usage — token-cost rationale" section and in
+[`docs/agentic-usage-measurement.md`](docs/agentic-usage-measurement.md) to reflect this one
+promoted scenario, without overstating it as the full methodology.
+
 ### Changed — contributor-agent configuration is portable, scoped, and regression-tested
 
 `AGENTS.md` is now the concise cross-agent source of truth and `CLAUDE.md` is a

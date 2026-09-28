@@ -45,17 +45,26 @@ afterEach(() => {
   while (cleanupDirs.length) rmSync(cleanupDirs.pop(), { recursive: true, force: true });
 });
 
-describe('materializeSkillSnapshot', () => {
+// Every real-snapshot test below spawns a genuine `git archive | tar` subprocess pipeline via
+// materializeSkillSnapshot -- not mocked, matching this file's own established idiom. That pipeline
+// is fast in isolation (356ms observed uncontended) but shares the Windows CI runner with every
+// other concurrently-scheduled test file, and under full-suite contention the same call has been
+// observed taking > 5s -- past vitest's default 5s per-test timeout, reported as a semantic test
+// failure even though nothing about the assertions themselves is wrong. A single suite-level
+// timeout is the one authority for every test in this describe, instead of a per-test number that
+// has to be independently remembered and re-applied to each new test using the same call. Vitest
+// inherits a describe's `timeout` suite option into every test it contains (see @vitest/runner's
+// chunk-hooks.js, which merges suite options onto each collected test).
+describe('materializeSkillSnapshot', { timeout: 30_000 }, () => {
   // In GitHub's default shallow checkout this historical SHA may require a real bounded
-  // `git fetch` before archive validation. Keep the assertion strict, but give Git IO
-  // enough room that runner/network jitter is not reported as a semantic failure.
+  // `git fetch` before archive validation, on top of the archive/tar spawn above.
   it('extracts and validates a real pinned-SHA snapshot from this repo', async () => {
     const { snapshotDir, validation } = await materializeSkillSnapshot({ repoRoot: REPO_ROOT, sha: KNOWN_SHA, validateFn: runValidator });
     cleanupDirs.push(snapshotDir);
     expect(validation.ok).toBe(true);
     expect(existsSync(path.join(snapshotDir, '.claude-plugin', 'plugin.json'))).toBe(true);
     expect(existsSync(path.join(snapshotDir, '.skills', 'kmp-test-runner', 'SKILL.md'))).toBe(true);
-  }, 15_000);
+  });
 
   // Uses the live HEAD (not KNOWN_SHA above, which is intentionally a fixed historical pin for
   // mechanism-only tests) because this test's whole point is content-sensitive: it proves the
@@ -570,9 +579,9 @@ describe('materializeSkillSnapshot', () => {
     cleanupDirs.push(snapshotDir);
     expect(validation.ok).toBe(true);
     expect(existsSync(path.join(snapshotDir, '.claude-plugin', 'plugin.json'))).toBe(true);
-  }, 30000); // real init + 2 commits + a --no-local shallow clone + backfill-and-archive: several
-  // real git subprocess spawns, slow enough on Windows CI runners to trip vitest's default 5000ms
-  // per-test timeout (observed: build (windows-latest) timing out here with no other failure).
+  }); // real init + 2 commits + a --no-local shallow clone + backfill-and-archive: several real git
+  // subprocess spawns on top of materializeSkillSnapshot's own -- see the describe-level timeout
+  // rationale above.
 
   it('serializes concurrent shallow backfills against the same clone', async () => {
     const originDir = mkdtempSync(path.join(os.tmpdir(), 'aemat-origin-'));
@@ -622,7 +631,7 @@ describe('materializeSkillSnapshot', () => {
 
     const results = await Promise.all(runs);
     expect(results).toEqual(Array.from({ length: 4 }, () => ({ status: 0, stderr: '' })));
-  }, 30000);
+  });
 });
 
 describe('materializeCalibrationProject', () => {

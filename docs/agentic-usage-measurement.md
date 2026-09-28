@@ -10,20 +10,24 @@ the whole loop from user request to verified diagnosis or fix.
 
 This is no longer a proposal without an implementation. A working harness
 exists at [`tools/agentic-eval/`](../tools/agentic-eval/), and accepted
-Claude Code evidence produced under its strict command policy is committed
-under `tools/runs/`. What remains unpublished is a headline: no number from
-this methodology has been promoted to the README, and the acceptance
-criteria below still gate that promotion. Treat this document as the
+evidence produced under its strict command policy is committed under
+`tools/runs/`, covering both `claude-code` and `codex-cli`. One
+pre-registered scenario has cleared the acceptance criteria below except
+one partial: model identity is recorded as the requested alias, not the
+served snapshot — see the [controls audit](../tools/runs/evidence1-agentic-benchmark-2026-09-28/controls-audit.md)
+— and been promoted to the README's "Agent sessions with and without
+kmp-test" section; it is one scenario at n=4 per arm per runtime, not the
+full methodology this document describes. Treat this document as the
 methodology of record for a harness that runs, not as a sketch for one that
 might.
 
 [`README.md`](../README.md)'s "Agentic usage — token-cost rationale"
-section links to this document and states plainly that no agentic
-benchmark results are published yet. Nothing in the README depends on any
-number in this document, and that stays true regardless of how this
-document's internal structure evolves -- as long as it continues to exist
-at this path and continues to describe a methodology whose results are not
-promoted to the README.
+section links to this document and, since the promoted scenario above, now
+also points to the "Why this exists" section for that evidence. Nothing in
+the broader methodology below depends on that one scenario's numbers, and
+that stays true regardless of how this document's internal structure
+evolves -- as long as it continues to exist at this path and continues to
+describe a methodology whose full scope is not yet promoted to the README.
 
 ## What this measures
 
@@ -742,8 +746,7 @@ trusted, only when all of the following hold:
   and redacted aggregates.
 - **README promotion requires evidence.** No result is promoted to a README
   headline unless it is backed by same-scenario evidence checked into this
-  repo, consistent with today's README note that no agentic benchmark
-  results are published yet.
+  repo.
 
 ### Reporting format
 
@@ -836,13 +839,18 @@ and the raw evidence has been checked for privacy.
   and the committed evidence corpus described under Registry relationship.
   No `tools/runs/agentic-usage-registry.jsonl` exists in this repo, and none
   is planned.
-- Nothing in [`README.md`](../README.md) currently depends on any number in
-  this document, the pilot, or the v2 benchmark — it only links here and
-  states that no agentic benchmark results are published yet. That sentence
-  is now stale in the narrow sense that two rounds of evidence exist, but
-  neither round's own Interpretation section claims its evidence is solid
-  enough to promote to a README headline yet; that stays a deliberate,
-  explicit deferral, not an oversight.
+- The pilot and the v2 benchmark specifically remain unpromoted: neither
+  round's own Interpretation section claims its evidence is solid enough
+  for a README headline, and nothing in the README depends on any number
+  from either of them. That stays a deliberate, explicit deferral, not an
+  oversight.
+- **One pre-registered scenario, run under the instrumented harness (not
+  the pilot or v2 benchmark above), has been promoted.** The README's "Why
+  this exists" section carries "Agent sessions with and without kmp-test"
+  (`claude-code` and `codex-cli`, n=4 per arm per runtime), generated from
+  the committed campaign summary under `tools/runs/`. This is the harness
+  described above, not a third measurement round layered on the pilot/v2
+  history — the acceptance criteria section below is what gated it.
 - Future docs-alignment or measurement work should reference this document
   rather than re-deriving the methodology inline. If the methodology
   changes, update it here first, then update whatever links to it.

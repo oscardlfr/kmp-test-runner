@@ -12,12 +12,14 @@ import {
 } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import {
   AUDIT_PUBLIC_RULES,
   hasBinaryNul,
   shouldSkip,
   scanFile,
+  lineHasUnallowedMatch,
   buildRules,
   compareShas,
 } from '../../tools/decouple-audit.mjs';
@@ -130,6 +132,68 @@ describe('decouple-audit public rules', () => {
     const f = tmpFile(dir, 'README.md', content);
     const hits = scanFile(f, 'README.md', AUDIT_PUBLIC_RULES);
     expect(hits).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// EVIDENCE1 benchmark name: exact-token allowlist on device_serial only.
+//
+// EVIDENCE1 is the name of the published agentic-benchmark campaign
+// (tools/runs/evidence1-agentic-benchmark-*), not a device serial, but it
+// matches the device_serial shape (9 uppercase-alnum chars with a digit).
+// The allowlist is applied PER MATCH, never per line or per file, so it stays
+// fail-closed: a real serial-shaped token sharing a line with EVIDENCE1 still
+// flags, and a token that only CONTAINS "EVIDENCE1" as a substring is a
+// different token (the regex's own \b matching makes this exact, not
+// approximate -- see the two flagging tests below).
+//
+// Fixtures for the still-flagged tokens are split at runtime, same technique
+// as SERIAL_FIXTURE above: writing the full shape as one source literal would
+// make THIS test file itself trip the rule under test.
+// ---------------------------------------------------------------------------
+describe('decouple-audit device_serial: EVIDENCE1 allowlist', () => {
+  const SYNTHETIC_SERIAL = 'ZZ0123' + '456789'; // device_serial shape, split (each half <8 chars) at write time
+  const EVIDENCE1_PLUS_SUFFIX = 'EVIDENCE1' + '2ZZ'; // contains EVIDENCE1 as a prefix, not an exact-token match
+
+  it('a line containing only EVIDENCE1 is clean', () => {
+    const dir = makeTmpDir();
+    const f = tmpFile(dir, 'doc.md', 'See the EVIDENCE1 benchmark for details.\n');
+    const hits = scanFile(f, 'doc.md', AUDIT_PUBLIC_RULES);
+    expect(hits.filter(h => h.class === 'device_serial')).toHaveLength(0);
+  });
+
+  it('a real serial-shaped token sharing a line with EVIDENCE1 still flags (fail-closed, not fail-open)', () => {
+    const dir = makeTmpDir();
+    const f = tmpFile(dir, 'doc.md', `EVIDENCE1 benchmark, device ${SYNTHETIC_SERIAL} attached\n`);
+    const hits = scanFile(f, 'doc.md', AUDIT_PUBLIC_RULES);
+    expect(hits.filter(h => h.class === 'device_serial').length).toBeGreaterThan(0);
+  });
+
+  it('a token that merely contains EVIDENCE1 as a substring still flags (exact-match allowlist, not a prefix check)', () => {
+    const dir = makeTmpDir();
+    const f = tmpFile(dir, 'doc.md', `id ${EVIDENCE1_PLUS_SUFFIX} assigned\n`);
+    const hits = scanFile(f, 'doc.md', AUDIT_PUBLIC_RULES);
+    expect(hits.filter(h => h.class === 'device_serial').length).toBeGreaterThan(0);
+  });
+
+  it('does not add allowTokens to any rule other than device_serial', () => {
+    const others = AUDIT_PUBLIC_RULES.filter(r => r.class !== 'device_serial');
+    expect(others.length).toBeGreaterThan(0);
+    for (const rule of others) {
+      expect(rule.allowTokens).toBeUndefined();
+    }
+  });
+
+  it('lineHasUnallowedMatch: a rule with no allowTokens behaves exactly like a bare rule.re.test', () => {
+    const rule = { re: /\bfoo\b/g };
+    expect(lineHasUnallowedMatch('a foo here', rule)).toBe(true);
+    expect(lineHasUnallowedMatch('no match here', rule)).toBe(false);
+  });
+
+  it('lineHasUnallowedMatch: allows an exact-listed token but still flags a different one on the same line', () => {
+    const deviceSerialRule = AUDIT_PUBLIC_RULES.find(r => r.class === 'device_serial');
+    expect(lineHasUnallowedMatch('EVIDENCE1 only', deviceSerialRule)).toBe(false);
+    expect(lineHasUnallowedMatch(`EVIDENCE1 and ${SYNTHETIC_SERIAL}`, deviceSerialRule)).toBe(true);
   });
 });
 
@@ -374,6 +438,73 @@ describe('compareShas', () => {
   it('returns { ok: false } when either SHA is not a string', () => {
     expect(compareShas(null, 'abc').ok).toBe(false);
     expect(compareShas('abc', undefined).ok).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 16. lineHasUnallowedMatch -- non-global regex + allowTokens must never hang
+// (CodeRabbit review finding on PR #535, confirmed by execution: a non-global
+// regex's lastIndex is ignored by exec(), so a manual bump never advances it
+// and the old implementation looped forever the instant a matched token was
+// allowlisted). Today's only allowTokens rule (device_serial) is global, so
+// this never fired in the shipped tool -- but the exported function itself
+// must be safe for any caller.
+// ---------------------------------------------------------------------------
+describe('lineHasUnallowedMatch: non-global regex + allowTokens safety', () => {
+  const moduleUrl = pathToFileURL(path.join(__dirname, '..', '..', 'tools', 'decouple-audit.mjs')).href;
+
+  // Runs the exact scenario in a CHILD PROCESS with a real timeout, so a regression FAILS this
+  // test instead of hanging the whole suite -- an in-process call with no timeout would just hang
+  // vitest itself if the bug ever came back.
+  function runInChild(lineLiteral, reSource) {
+    const script = `
+      import { lineHasUnallowedMatch } from ${JSON.stringify(moduleUrl)};
+      const rule = { re: new RegExp(${JSON.stringify(reSource)}), allowTokens: new Set(['FOO']) };
+      const result = lineHasUnallowedMatch(${JSON.stringify(lineLiteral)}, rule);
+      process.stdout.write(String(result));
+    `;
+    return spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+      timeout: 5000,
+      encoding: 'utf8',
+    });
+  }
+
+  it('a non-global rule with an allowed-only match returns false and does not hang (RED before the fix, GREEN after -- see commit message for the captured RED output)', () => {
+    const r = runInChild('FOO', 'FOO');
+    expect(r.status, `child stderr: ${r.stderr}`).toBe(0);
+    expect(r.stdout).toBe('false');
+  });
+
+  it('a non-global rule where an allowed token AND a real hit share the line still returns true (fail-closed)', () => {
+    const r = runInChild('FOO and BAR both here', 'FOO|BAR');
+    expect(r.status, `child stderr: ${r.stderr}`).toBe(0);
+    expect(r.stdout).toBe('true');
+  });
+
+  it('the existing global-rule (device_serial) behavior stays exactly as before the fix', () => {
+    const deviceSerialRule = AUDIT_PUBLIC_RULES.find(r => r.class === 'device_serial');
+    expect(deviceSerialRule.re.global).toBe(true);
+    expect(lineHasUnallowedMatch('EVIDENCE1 only', deviceSerialRule)).toBe(false);
+    expect(lineHasUnallowedMatch(`EVIDENCE1 and ${'ZZ0123' + '456789'}`, deviceSerialRule)).toBe(true);
+  });
+
+  // Second review round caught a fail-open regression in the first fix (commit 7405cdc): passing
+  // the SHARED, already-global rule.re object straight into matchAll copies THAT object's current
+  // lastIndex into the iterator (RegExp.prototype[@@matchAll] step 5) -- so a stale non-zero
+  // lastIndex left behind by any earlier .test()/.exec() call on that same shared object (every
+  // entry in AUDIT_PUBLIC_RULES is a long-lived, reused object, not a fresh one per call) silently
+  // starts the scan past the beginning of the line, hiding a real privacy hit. Strictly worse than
+  // the hang it replaced. Building a FRESH RegExp per call (never rule.re itself) fixes this.
+  it('a stale non-zero lastIndex on the SHARED device_serial regex must never hide a real hit before that position (fail-open, caught in review of 7405cdc)', () => {
+    const deviceSerialRule = AUDIT_PUBLIC_RULES.find(r => r.class === 'device_serial');
+    const serial = 'R5CR20A' + 'BCDE'; // device_serial shape, split at write time (see SERIAL_FIXTURE above)
+    const line = `serial ${serial} here, then EVIDENCE1 later in the same line`;
+    try {
+      deviceSerialRule.re.lastIndex = 30; // stale -- simulates a prior .test()/.exec() call on this SAME shared object
+      expect(lineHasUnallowedMatch(line, deviceSerialRule)).toBe(true);
+    } finally {
+      deviceSerialRule.re.lastIndex = 0; // never leak state into other tests sharing this rule object
+    }
   });
 });
 

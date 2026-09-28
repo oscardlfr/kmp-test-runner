@@ -1,0 +1,107 @@
+{
+  "schema": 1,
+  "pricing": {
+    "currency": "USD",
+    "model": "claude-sonnet-5",
+    "per_million_tokens": {
+      "input": 2,
+      "cache_write_5m": 2.5,
+      "cache_write_1h": 4,
+      "cache_read": 0.2,
+      "output": 10
+    },
+    "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+    "retrieved": "2026-09-28"
+  },
+  "formula": "session_cost = (tokens.input * price.input + tokens.cache_creation * price.cache_write + tokens.cache_read * price.cache_read + tokens.output * price.output) / 1e6, evaluated once with price.cache_write = cache_write_5m and once with cache_write_1h (the record does not distinguish which TTL was used); an arm range is [min over its cells of the 5m-priced cost, max over its cells of the 1h-priced cost], the widest interval consistent with every session in the arm under either TTL.",
+  "cells": [
+    {
+      "runtime_id": "claude-code",
+      "arm": "product",
+      "order_index": 0,
+      "tokens": {
+        "input": 10,
+        "output": 1293,
+        "cache_read": 105505,
+        "cache_creation": 23185
+      }
+    },
+    {
+      "runtime_id": "claude-code",
+      "arm": "free",
+      "order_index": 1,
+      "tokens": {
+        "input": 28,
+        "output": 3407,
+        "cache_read": 296523,
+        "cache_creation": 25848
+      }
+    },
+    {
+      "runtime_id": "claude-code",
+      "arm": "free",
+      "order_index": 2,
+      "tokens": {
+        "input": 28,
+        "output": 4055,
+        "cache_read": 298116,
+        "cache_creation": 20545
+      }
+    },
+    {
+      "runtime_id": "claude-code",
+      "arm": "product",
+      "order_index": 3,
+      "tokens": {
+        "input": 10,
+        "output": 1841,
+        "cache_read": 106105,
+        "cache_creation": 23740
+      }
+    },
+    {
+      "runtime_id": "claude-code",
+      "arm": "free",
+      "order_index": 4,
+      "tokens": {
+        "input": 28,
+        "output": 3526,
+        "cache_read": 293138,
+        "cache_creation": 31127
+      }
+    },
+    {
+      "runtime_id": "claude-code",
+      "arm": "product",
+      "order_index": 5,
+      "tokens": {
+        "input": 10,
+        "output": 2112,
+        "cache_read": 106282,
+        "cache_creation": 23714
+      }
+    },
+    {
+      "runtime_id": "claude-code",
+      "arm": "product",
+      "order_index": 6,
+      "tokens": {
+        "input": 8,
+        "output": 1259,
+        "cache_read": 76709,
+        "cache_creation": 23093
+      }
+    },
+    {
+      "runtime_id": "claude-code",
+      "arm": "free",
+      "order_index": 7,
+      "tokens": {
+        "input": 22,
+        "output": 3766,
+        "cache_read": 229291,
+        "cache_creation": 25140
+      }
+    }
+  ]
+}

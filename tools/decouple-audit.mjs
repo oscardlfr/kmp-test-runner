@@ -86,6 +86,12 @@ export const AUDIT_PUBLIC_RULES = [
     ..._baseDeviceSerial,
     // Skip device_serial check on lines whose content is an npm/yarn integrity hash.
     excludeLineRe: /"integrity"\s*:\s*"sha\d+-/,
+    // EVIDENCE1 is the published agentic-benchmark campaign name
+    // (tools/runs/evidence1-agentic-benchmark-*), not a device serial, but it
+    // matches this rule's shape. Exact-token match, applied per match (see
+    // lineHasUnallowedMatch below) rather than per line, so a real
+    // serial-shaped token sharing a line with EVIDENCE1 still flags.
+    allowTokens: new Set(['EVIDENCE1']),
   },
   {
     class: 'user_path_win',
@@ -154,6 +160,42 @@ export function shouldSkip(rel, selfRel) {
 }
 
 // ---------------------------------------------------------------------------
+// lineHasUnallowedMatch — true if `line` has at least one match of `rule.re`
+// whose exact matched text is not in `rule.allowTokens` (when the rule has
+// one). Applied per match, not per line: a line can carry one allowlisted
+// token and one real hit at the same time, and the real hit still flags —
+// this is what keeps a token-level allowlist fail-closed instead of
+// widening into a line-level exemption.
+//
+// The allowTokens path iterates via matchAll on a FRESH RegExp built from
+// rule.re's own source/flags (global flag added if not already present) --
+// never rule.re itself, even when rule.re is already global. A fresh
+// RegExp always starts at lastIndex 0 and is never mutated afterward.
+// Passing the shared rule.re directly would be unsafe two ways at once:
+// (1) exec() in a manual loop never advances lastIndex on a non-global
+// regex, so it returns the SAME match forever (the original bug this
+// function fixed); (2) matchAll's own spec (RegExp.prototype[@@matchAll]
+// step 5) copies the INPUT regex's current lastIndex into the iterator it
+// builds -- so reusing the shared rule.re (already global, e.g. every
+// PUBLIC_SHAPE_RULES entry) after some unrelated caller left a stale
+// non-zero lastIndex on that same object silently starts the scan past
+// the beginning of the line, missing a real privacy hit before that
+// position. Fail-open, and strictly worse than the hang it would have
+// replaced. A fresh RegExp per call is immune to both failure modes.
+// ---------------------------------------------------------------------------
+export function lineHasUnallowedMatch(line, rule) {
+  if (!rule.allowTokens) {
+    rule.re.lastIndex = 0;
+    return rule.re.test(line);
+  }
+  const globalRe = new RegExp(rule.re.source, rule.re.global ? rule.re.flags : `${rule.re.flags}g`);
+  for (const m of line.matchAll(globalRe)) {
+    if (!rule.allowTokens.has(m[0])) return true;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
 // scanFile — returns [{file, lineNo, class}]. Never includes matched content.
 // ---------------------------------------------------------------------------
 export function scanFile(absPath, rel, rules) {
@@ -172,10 +214,8 @@ export function scanFile(absPath, rel, rules) {
         rule.excludeLineRe.lastIndex = 0;
         if (rule.excludeLineRe.test(line)) continue;
       }
-      rule.re.lastIndex = 0;
-      if (rule.re.test(line)) {
+      if (lineHasUnallowedMatch(line, rule)) {
         hits.push({ file: rel, lineNo: i + 1, class: rule.class });
-        rule.re.lastIndex = 0;
       }
     }
   }
