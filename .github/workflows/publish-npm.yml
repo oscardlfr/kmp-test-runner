@@ -26,9 +26,14 @@ jobs:
         with:
           fetch-depth: 0    # need full history to query existing tags
 
+      # npm's Trusted Publishing (OIDC, --provenance) requires npm >= 11.5.1 and
+      # Node >= 22.14.0 (docs.npmjs.com/trusted-publishers) -- older bundled npm
+      # authenticates the OIDC handshake but the registry PUT then 404s. Node
+      # 24.18.0 (same pin as ci.yml) bundles npm 11.16.0, clearing both floors
+      # with no separate npm install step.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
-          node-version: 20
+          node-version: '24.18.0'
           registry-url: 'https://registry.npmjs.org'
 
       # Guard 1: only publish when GITHUB_SHA is the tip of origin/main.

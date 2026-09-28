@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed — npm publish now uses a Node/npm pin that satisfies Trusted Publishing's own floor
+
+**Observable behavior change (CI-only, no product code affected).** `publish-npm.yml` pinned
+`node-version: 20`, whose bundled npm authenticates npm's Trusted Publishing (OIDC,
+`--provenance`) handshake successfully but then gets a bare `404 Not Found` on the actual
+registry `PUT` — npm's own docs state the requirement plainly (npm >= 11.5.1, Node >= 22.14.0;
+[docs.npmjs.com/trusted-publishers](https://docs.npmjs.com/trusted-publishers)), but nothing in
+the failure itself names it. Surfaced when 0.15.0 published cleanly to GitHub Releases and GitHub
+Packages but never reached npm. Fixed by pinning `node-version: '24.18.0'` (the same exact pin
+`ci.yml` already uses), which bundles npm 11.16.0 — clears both floors with no separate npm
+install step, so `npm install -g npm@<pinned>` is unnecessary here (unlike the supply-chain
+rationale for pinning an explicit npm version elsewhere, this floor is already met by the Node
+pin alone).
+
+### Fixed — `release-gate.mjs`'s CI-checks guard no longer treats "not created yet" as a failure
+
+**Observable behavior change.** A required check gated by `needs:` on an earlier job (e.g.
+`installer-e2e`, which waits on `build`) has no check-run and no commit status at all until that
+earlier job finishes — `pollChecksForSha` classified this as `missing` and, incorrectly, treated
+`missing` exactly like `refuse` (a real failure), returning `ok:false` on the very first poll,
+long before the job could possibly have started. A downstream-gated required check could never
+win the race, regardless of how generous `--timeout-minutes` was. `missing` now polls like an
+in-flight check until the deadline; only a genuine `refuse` verdict (a real failure/cancellation
+conclusion, or a failed commit status) still short-circuits immediately. Surfaced when 0.15.0's
+npm and Gradle-plugin publish workflows both failed their guard ~80 seconds after the release
+push, naming `installer-e2e (ubuntu-latest)`/`installer-e2e (windows-latest)` as "missing" while
+CI was still assembling its job graph.
+
 ## [0.15.0] — 2026-09-28
 
 ### Upgrade notes

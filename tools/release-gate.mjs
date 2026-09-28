@@ -212,14 +212,20 @@ export async function pollChecksForSha({
     const merged = mergeCheckSources(checkRuns, statuses, contexts);
     const entries = Object.entries(merged);
 
-    const refusing = entries.filter(([, v]) => v.verdict === 'refuse' || v.verdict === 'missing');
+    // 'missing' means the context has no check-run and no status YET — normal for a
+    // job gated by `needs:` that hasn't started (e.g. installer-e2e waits on build).
+    // It is a pending state within the timeout window, not a terminal failure: only
+    // 'refuse' (a real failure/cancellation conclusion, or a failed commit status)
+    // short-circuits immediately. A context still 'missing' at the deadline is
+    // reported as part of the timeout below, not confused with an active failure.
+    const refusing = entries.filter(([, v]) => v.verdict === 'refuse');
     const allOk = entries.every(([, v]) => v.verdict === 'ok');
     const missing = entries.filter(([, v]) => v.verdict === 'missing').map(([ctx]) => ctx);
 
     if (allOk) return { ok: true, results: merged, missing: [] };
     if (refusing.length > 0) return { ok: false, results: merged, missing };
 
-    // Some are still waiting — check timeout before sleeping
+    // Some are still waiting (or missing) — check timeout before sleeping
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
       return { ok: false, timedOut: true, results: merged, missing };
