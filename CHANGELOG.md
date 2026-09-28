@@ -14,11 +14,12 @@ NowInAndroid commit, 4 sessions with the kmp-test skill and CLI, 4 without — "
 and without kmp-test" in the README's "Why this exists" section, generated deterministically by
 `tools/agentic-eval/readme-evidence.mjs` from the committed
 [`tools/runs/evidence1-agentic-benchmark-2026-09-28/campaign-summary.json`](tools/runs/evidence1-agentic-benchmark-2026-09-28/campaign-summary.json).
-Two committed SVG charts (`outcomes.svg`, `effort.svg`) plus a compact table; no cross-provider
-winner, no ratios, no pooled row. Key facts matched in every cell at n=4 (16/16) — correctness is at
-ceiling in both arms, both runtimes, at this sample size. Within claude-code, no wall-clock
-difference between arms at the median but fewer tool calls and a lower estimated cost with the
-product. Within codex-cli (fixed at low reasoning effort), higher median wall-clock and wider
+One committed SVG scorecard (`scorecard.svg`, small-multiple horizontal bars) plus three
+data-driven bullets; no cross-provider winner, no ratios, no pooled row. Key facts matched in
+every cell at n=4 (16/16) — correctness is at ceiling in both arms, both runtimes, at this sample
+size. Within claude-code, no wall-clock difference between arms at the median but fewer tool
+calls and a lower estimated cost with the product. Within codex-cli (fixed at low reasoning
+effort), higher median wall-clock and wider
 variance with the product, traced to two sessions in which the agent invoked kmp-test 6 and 4 times.
 No cross-runtime comparison — see the
 [evidence doc](tools/runs/evidence1-agentic-benchmark-2026-09-28/README.md),

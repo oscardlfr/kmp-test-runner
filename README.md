@@ -11,22 +11,13 @@ AI coding agents re-run tests constantly. The expensive path is not just wall-cl
 
 kmp-test hands an agent the test and coverage verdict as one JSON envelope instead of Gradle logs and report files. To check that this helps end to end, Claude Code and Codex CLI each ran the same pre-registered coverage-gate task on a pinned NowInAndroid commit: 4 sessions with the kmp-test skill and CLI, 4 without. Every session is shown; none was re-run or replaced.
 
-![Claude Code · claude-sonnet-5 with kmp-test: key facts 4/4; Claude Code · claude-sonnet-5 without kmp-test: key facts 4/4; Codex CLI · gpt-5.6-terra with kmp-test: key facts 4/4; Codex CLI · gpt-5.6-terra without kmp-test: key facts 4/4.](tools/runs/evidence1-agentic-benchmark-2026-09-28/outcomes.svg)
+![Claude Code · claude-sonnet-5 — key facts 4/4 with kmp-test, 4/4 without; tool calls per session (median): 4 with kmp-test, 13 without; wall-clock per session (median): 3.2 min with kmp-test, 3.2 min without; estimated api cost per session: $0.09–$0.14 with kmp-test, $0.15–$0.22 without. Codex CLI · gpt-5.6-terra — key facts 4/4 with kmp-test, 4/4 without; tool calls per session (median): 13 with kmp-test, 12 without; wall-clock per session (median): 4.8 min with kmp-test, 3.7 min without; estimated api cost per session: not estimated.](tools/runs/evidence1-agentic-benchmark-2026-09-28/scorecard.svg)
 
-![Claude Code · claude-sonnet-5 with kmp-test: wall-clock 3.2 min (3.1–3.4), tool calls 4 (3–4); Claude Code · claude-sonnet-5 without kmp-test: wall-clock 3.2 min (2.9–3.8), tool calls 13 (10–13); Codex CLI · gpt-5.6-terra with kmp-test: wall-clock 4.8 min (3.3–7.9), tool calls 13 (4–27); Codex CLI · gpt-5.6-terra without kmp-test: wall-clock 3.7 min (3.3–4.2), tool calls 12 (8–24).](tools/runs/evidence1-agentic-benchmark-2026-09-28/effort.svg)
+- Both agents reported the key facts correctly in every session, with and without kmp-test (16/16).
+- Claude Code (Sonnet 5) with kmp-test: median 4 tool calls vs 13 without, same median wall-clock (3.2 min), estimated API cost $0.09–$0.14 vs $0.15–$0.22 per session.
+- Codex CLI (gpt-5.6-terra, low reasoning effort): median 13 tool calls with kmp-test vs 12 without; median wall-clock 4.8 vs 3.7 min.
 
-| Agent (model) | Arm | Key facts correct | Full answer correct | Wall-clock per session, median (range) | Tool calls per session, median (range) |
-|---|---|:-:|:-:|--:|--:|
-| Claude Code (`claude-sonnet-5`) | with kmp-test | 4/4 | 4/4 | 3.2 min (3.1–3.4) | 4 (3–4) |
-| Claude Code (`claude-sonnet-5`) | without kmp-test | 4/4 | 0/4 | 3.2 min (2.9–3.8) | 13 (10–13) |
-| Codex CLI (`gpt-5.6-terra`) | with kmp-test | 4/4 | 0/4 | 4.8 min (3.3–7.9) | 13 (4–27) |
-| Codex CLI (`gpt-5.6-terra`) | without kmp-test | 4/4 | 0/4 | 3.7 min (3.3–4.2) | 12 (8–24) |
-
-Compare each agent's two rows with each other. The agents differ in model, tools and harness, so the table does not rank Claude Code against Codex CLI. No difference in key facts at n=4 (16/16).
-
-Claude Code estimated API cost per session: $0.086–$0.137 with kmp-test, $0.146–$0.218 without (recorded tokens × published Sonnet 5 prices; an estimate, not a bill). Not estimated for Codex CLI.
-
-**Scope:** one scenario, tagged `train` (the skill was tuned on this task family); n=4 sessions per arm per agent in counterbalanced order; Windows 11 in an isolated VM with a restricted network (provider APIs only); design and metrics fixed before any live session. Claude Code 2.1.238 · claude-sonnet-5 · effort not set by the harness (docs default: high). Codex CLI 0.154.0 · gpt-5.6-terra · reasoning effort low. Key facts = module, outcome, coverage numbers. "Full answer" also requires the test counts, which the prompt leaves ambiguous. [Evidence, per-session detail and limitations](tools/runs/evidence1-agentic-benchmark-2026-09-28/README.md) · [controls audit](tools/runs/evidence1-agentic-benchmark-2026-09-28/controls-audit.md) · [pre-registration](tools/runs/evidence1-agentic-benchmark-2026-09-28/preregistration.md)
+**Scope:** one scenario, tagged `train` (the skill was tuned on this task family); n=4 sessions per arm per agent in counterbalanced order; Windows 11 in an isolated VM with a restricted network (provider APIs only); design and metrics fixed before any live session. Claude Code 2.1.238 · claude-sonnet-5 · effort not set by the harness (docs default: high). Codex CLI 0.154.0 · gpt-5.6-terra · reasoning effort low. Key facts = module, outcome, coverage numbers. [Evidence, per-session detail and limitations](tools/runs/evidence1-agentic-benchmark-2026-09-28/README.md) · [controls audit](tools/runs/evidence1-agentic-benchmark-2026-09-28/controls-audit.md) · [pre-registration](tools/runs/evidence1-agentic-benchmark-2026-09-28/preregistration.md)
 <!-- agentic-benchmark:end -->
 
 ### Command output size: raw Gradle vs `kmp-test --json`

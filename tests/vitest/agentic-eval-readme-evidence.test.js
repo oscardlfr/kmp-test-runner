@@ -11,13 +11,14 @@ import { fileURLToPath } from 'node:url';
 import {
   validateSummary,
   loadSummary,
-  buildPlaceholders,
-  renderOutcomesSvg,
-  renderEffortSvg,
   renderReadmeBlock,
   validateCostEstimate,
   loadCostEstimate,
-  buildCostSentence,
+  computeScorecardLayout,
+  renderScorecardSvg,
+  buildScorecardAlt,
+  buildBullets,
+  armCostRange,
 } from '../../tools/agentic-eval/readme-evidence.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -28,6 +29,18 @@ const README_PATH = join(REPO_ROOT, 'README.md');
 
 function crlfNormalize(s) {
   return s.replace(/\r\n/g, '\n');
+}
+
+// WCAG 2.x relative-luminance / contrast-ratio formulas, self-contained so the
+// contrast test below has no dependency on the generator exporting a color.
+function relLuminance(hex) {
+  const channels = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255);
+  const lin = channels.map(c => (c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4)));
+  return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
+}
+function contrastRatio(hexA, hexB) {
+  const a = relLuminance(hexA), b = relLuminance(hexB);
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
 }
 
 // ---------------------------------------------------------------------------
@@ -164,15 +177,9 @@ describe('the committed evidence1-agentic-benchmark-2026-09-28 campaign', () => 
     expect(validateCostEstimate(costEstimate)).toEqual([]);
   });
 
-  it('regenerating outcomes.svg matches the committed file byte for byte (CRLF-normalized)', () => {
-    const committed = crlfNormalize(readFileSync(join(RUNS_DIR, 'outcomes.svg'), 'utf8'));
-    const regenerated = crlfNormalize(renderOutcomesSvg(summary));
-    expect(regenerated).toBe(committed);
-  });
-
-  it('regenerating effort.svg matches the committed file byte for byte (CRLF-normalized)', () => {
-    const committed = crlfNormalize(readFileSync(join(RUNS_DIR, 'effort.svg'), 'utf8'));
-    const regenerated = crlfNormalize(renderEffortSvg(summary));
+  it('regenerating scorecard.svg matches the committed file byte for byte (CRLF-normalized)', () => {
+    const committed = crlfNormalize(readFileSync(join(RUNS_DIR, 'scorecard.svg'), 'utf8'));
+    const regenerated = crlfNormalize(renderScorecardSvg(summary, costEstimate));
     expect(regenerated).toBe(committed);
   });
 
@@ -201,7 +208,7 @@ describe('the committed evidence1-agentic-benchmark-2026-09-28 campaign', () => 
     const block = readme.slice(start, end);
     const paths = [...block.matchAll(/\]\(([^)]+)\)/g)].map(m => m[1]);
     expect(paths.length).toBeGreaterThan(0);
-    // All evidence (doc, controls audit, preregistration, summary, SVGs) lives inside the one
+    // All evidence (doc, controls audit, preregistration, summary, chart) lives inside the one
     // campaign directory -- no exceptions, unlike an earlier revision that carved out docs/.
     for (const p of paths) {
       expect(p.startsWith(`tools/runs/evidence1-agentic-benchmark-${CAMPAIGN_DATE}`)).toBe(true);
@@ -217,35 +224,44 @@ describe('the committed evidence1-agentic-benchmark-2026-09-28 campaign', () => 
   });
 
   it('every file the README block links to actually exists on disk, not just in the generated text', () => {
-    for (const name of ['README.md', 'controls-audit.md', 'preregistration.md', 'campaign-summary.json', 'cost-estimate.json', 'outcomes.svg', 'effort.svg']) {
+    for (const name of ['README.md', 'controls-audit.md', 'preregistration.md', 'campaign-summary.json', 'cost-estimate.json', 'scorecard.svg']) {
       expect(existsSync(join(RUNS_DIR, name)), `${name} should exist in ${RUNS_DIR}`).toBe(true);
     }
+    // The old two-chart shape must NOT exist -- replaced by the scorecard redesign.
+    expect(existsSync(join(RUNS_DIR, 'outcomes.svg'))).toBe(false);
+    expect(existsSync(join(RUNS_DIR, 'effort.svg'))).toBe(false);
     // The pre-consolidation top-level file must NOT exist -- it was moved inside the directory.
     expect(existsSync(`${RUNS_DIR}.md`)).toBe(false);
   });
 
-  it('has no strict-success placeholder at all -- dropped from the generated block per review (misleading without the evidence doc\'s full explanation)', () => {
-    const placeholders = buildPlaceholders(summary, CAMPAIGN_DATE);
-    const keys = Object.keys(placeholders);
-    expect(keys.some(k => /STRICT_SUCCESS/.test(k))).toBe(false);
+  it('the README block has no markdown table (dropped per review: it conveyed nothing clearly)', () => {
+    const block = renderReadmeBlock(summary, CAMPAIGN_DATE, costEstimate);
+    expect(block).not.toMatch(/\|---/);
+    expect(block).not.toMatch(/^\|.*\|$/m);
   });
 
-  it('the README block never mentions "strict" -- the strict-success line was dropped; the evidence doc keeps it with the full explanation', () => {
+  it('the README block never mentions "strict" (strict-success line was dropped; the evidence doc keeps it with the full explanation)', () => {
     const block = renderReadmeBlock(summary, CAMPAIGN_DATE, costEstimate);
     // Word-boundary, not a bare substring check -- "restricted network" (required
     // wording, asserted elsewhere in this file) contains "strict" as a substring.
     expect(block.toLowerCase()).not.toMatch(/\bstrict\b/);
   });
 
+  it('the README block never says "Full answer correct" (dropped per review: ambiguity-sensitive, explained in the evidence doc)', () => {
+    const block = renderReadmeBlock(summary, CAMPAIGN_DATE, costEstimate);
+    expect(block).not.toMatch(/Full answer/i);
+  });
+
   it('never names the scenario\'s ground truth (module path, specific numeric answers) in generated text', () => {
     const block = renderReadmeBlock(summary, CAMPAIGN_DATE, costEstimate);
     // Ground truth lives only in the (unshipped) evidence doc under tools/runs/,
-    // never in README.md (shipped in the npm tarball). Word-boundary match --
-    // a bare substring check false-positives on "2.1.238" (the Claude Code
-    // version, legitimately present), which contains "23" mid-token.
+    // never in README.md (shipped in the npm tarball). Word-boundary match, and not
+    // preceded by "." -- a bare substring/boundary check false-positives on "2.1.238"
+    // (the Claude Code version, containing "23" mid-token) and on "$0.15" (a cost
+    // figure, containing "15" right after the decimal point).
     expect(block).not.toMatch(/nowinandroid.*(core|feature|app):/i);
-    expect(block).not.toMatch(/\b23\b/);
-    expect(block).not.toMatch(/\b15\b/);
+    expect(block).not.toMatch(/(?<!\.)\b23\b/);
+    expect(block).not.toMatch(/(?<!\.)\b15\b/);
   });
 
   it('never uses the word "baseline" to label an arm', () => {
@@ -256,13 +272,6 @@ describe('the committed evidence1-agentic-benchmark-2026-09-28 campaign', () => 
     const block = renderReadmeBlock(summary, CAMPAIGN_DATE, costEstimate);
     expect(block).not.toMatch(/\d+(\.\d+)?x\s*(faster|slower|cheaper)/i);
     expect(block).not.toMatch(/all agents/i);
-  });
-
-  it('says the exact ceiling sentence when key facts matched in every cell', () => {
-    // This campaign's real data is a ceiling case (4/4 in all 4 groups) --
-    // locks the exact wording, not just "some sentence exists".
-    const block = renderReadmeBlock(summary, CAMPAIGN_DATE, costEstimate);
-    expect(block).toContain('No difference in key facts at n=4 (16/16).');
   });
 
   it('uses the exact overridden agent labels, never the proposal draft\'s originals', () => {
@@ -283,37 +292,195 @@ describe('the committed evidence1-agentic-benchmark-2026-09-28 campaign', () => 
     expect(block).not.toMatch(/retries \S+ \/ \S+/);
   });
 
-  it('the cost sentence is present and matches an independent recomputation from cost-estimate.json', () => {
+  it('never estimates a cost for Codex CLI (schema 1 has no token data for it)', () => {
+    const block = renderReadmeBlock(summary, CAMPAIGN_DATE, costEstimate);
+    expect(block).not.toMatch(/Codex CLI estimated/);
+    expect(block).toContain('not estimated');
+  });
+
+  it('renders exactly 3 bullets, each an exact match against an independent recomputation from the committed JSON', () => {
     // Recomputes from the raw committed JSON without calling any of the module's own
-    // cost helpers -- this proves the FORMULA is right, not just that the module agrees
-    // with itself. Sonnet 5 pricing per million tokens, from cost-estimate.json.
+    // helpers for the numbers -- this proves the FORMULAS are right, not just that the
+    // module agrees with itself.
+    const gp = r => summary.by_runtime_arm.find(g => g.runtime_id === r && g.arm === 'product');
+    const gf = r => summary.by_runtime_arm.find(g => g.runtime_id === r && g.arm === 'free');
+    const allGroups = summary.by_runtime_arm;
+    const totalMatched = allGroups.reduce((s, g) => s + g.key_facts_match.matched, 0);
+    const totalOf = allGroups.reduce((s, g) => s + g.key_facts_match.of, 0);
+    const bullet1 = `Both agents reported the key facts correctly in every session, with and without kmp-test (${totalMatched}/${totalOf}).`;
+
     const price = costEstimate.pricing.per_million_tokens;
-    const cost = (tokens, cacheWriteKey) => (
-      tokens.input * price.input +
-      tokens.cache_creation * price[cacheWriteKey] +
-      tokens.cache_read * price.cache_read +
-      tokens.output * price.output
-    ) / 1e6;
+    const cost = (tokens, key) => (tokens.input * price.input + tokens.cache_creation * price[key] + tokens.cache_read * price.cache_read + tokens.output * price.output) / 1e6;
     const range = arm => {
       const cells = costEstimate.cells.filter(c => c.runtime_id === 'claude-code' && c.arm === arm);
       const low = Math.min(...cells.map(c => cost(c.tokens, 'cache_write_5m')));
       const high = Math.max(...cells.map(c => cost(c.tokens, 'cache_write_1h')));
-      return `$${low.toFixed(3)}–$${high.toFixed(3)}`;
+      return `$${low.toFixed(2)}–$${high.toFixed(2)}`;
     };
-    const expected = `Claude Code estimated API cost per session: ${range('product')} with kmp-test, ${range('free')} without (recorded tokens × published Sonnet 5 prices; an estimate, not a bill). Not estimated for Codex CLI.`;
-    expect(buildCostSentence(costEstimate)).toBe(expected);
+    const claudeWallWith = (gp('claude-code').duration_ms.median / 60000).toFixed(1);
+    const claudeWallWithout = (gf('claude-code').duration_ms.median / 60000).toFixed(1);
+    const claudeWallPhrase = claudeWallWith === claudeWallWithout
+      ? `same median wall-clock (${claudeWallWith} min)`
+      : `median wall-clock ${claudeWallWith} vs ${claudeWallWithout} min`;
+    const bullet2 = `Claude Code (Sonnet 5) with kmp-test: median ${Math.round(gp('claude-code').tool_calls_total.median)} tool calls vs ${Math.round(gf('claude-code').tool_calls_total.median)} without, ${claudeWallPhrase}, estimated API cost ${range('product')} vs ${range('free')} per session.`;
 
-    // These are the auditor's own independently verified ranges for this exact
-    // campaign's data -- reproducing them exactly, not just "some range", is the point.
-    expect(expected).toBe('Claude Code estimated API cost per session: $0.086–$0.137 with kmp-test, $0.146–$0.218 without (recorded tokens × published Sonnet 5 prices; an estimate, not a bill). Not estimated for Codex CLI.');
+    const codexWallWith = (gp('codex-cli').duration_ms.median / 60000).toFixed(1);
+    const codexWallWithout = (gf('codex-cli').duration_ms.median / 60000).toFixed(1);
+    const codexWallPhrase = codexWallWith === codexWallWithout
+      ? `same median wall-clock (${codexWallWith} min)`
+      : `median wall-clock ${codexWallWith} vs ${codexWallWithout} min`;
+    const bullet3 = `Codex CLI (gpt-5.6-terra, low reasoning effort): median ${Math.round(gp('codex-cli').tool_calls_total.median)} tool calls with kmp-test vs ${Math.round(gf('codex-cli').tool_calls_total.median)} without; ${codexWallPhrase}.`;
+
+    expect(buildBullets(summary, costEstimate)).toEqual([bullet1, bullet2, bullet3]);
 
     const block = renderReadmeBlock(summary, CAMPAIGN_DATE, costEstimate);
-    expect(block).toContain(expected);
+    expect(block).toContain(`- ${bullet1}`);
+    expect(block).toContain(`- ${bullet2}`);
+    expect(block).toContain(`- ${bullet3}`);
+
+    // This campaign's real data hits both branches this test cares about: the
+    // ceiling case for bullet 1, and an EQUAL Claude median (forcing "same") vs a
+    // DIFFERENT Codex median (forcing "vs") for the wall-clock phrase -- so this one
+    // assertion, against real data, already exercises both wallClockPhrase branches.
+    expect(bullet2).toContain('same median wall-clock');
+    expect(bullet3).toMatch(/median wall-clock \d+\.\d vs \d+\.\d min/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bullet fallback branches -- synthetic fixtures, not exercised by this
+// campaign's real (ceiling / ceiling) data. A future non-ceiling campaign
+// needs a defined rendering, not a silent gap.
+
+describe('bullet fallback branches (synthetic fixtures)', () => {
+  const baseGroup = (runtime, arm, overrides = {}) => ({
+    runtime_id: runtime,
+    arm,
+    declared: 4,
+    key_facts_match: { matched: 4, of: 4 },
+    duration_ms: { n: 4, median: 180000 },
+    tool_calls_total: { n: 4, median: 10 },
+    ...overrides,
+  });
+  const baseSummary = (overrides) => ({
+    schema: 1,
+    summary_status: 'ok',
+    provider_mode: 'live',
+    by_runtime_arm: [
+      baseGroup('claude-code', 'product'),
+      baseGroup('claude-code', 'free'),
+      baseGroup('codex-cli', 'product'),
+      baseGroup('codex-cli', 'free'),
+      ...(overrides || []),
+    ].filter((g, i, arr) => arr.findIndex(x => x.runtime_id === g.runtime_id && x.arm === g.arm) === i),
+  });
+  const baseCostEstimate = () => {
+    const cells = [];
+    for (const arm of ['product', 'free']) {
+      for (let i = 0; i < 4; i++) {
+        cells.push({ runtime_id: 'claude-code', arm, order_index: i, tokens: { input: 10, output: 1000, cache_read: 100000, cache_creation: 20000 } });
+      }
+    }
+    return {
+      schema: 1,
+      pricing: { per_million_tokens: { input: 2, cache_write_5m: 2.5, cache_write_1h: 4, cache_read: 0.2, output: 10 } },
+      cells,
+    };
+  };
+
+  it('bullet 1 falls back to per-agent k/n phrasing when not every group is at the key-facts ceiling', () => {
+    const summary = baseSummary([
+      { ...baseGroup('claude-code', 'product'), key_facts_match: { matched: 3, of: 4 } },
+    ]);
+    // Replace the claude-code/product group with the degraded one.
+    summary.by_runtime_arm = summary.by_runtime_arm.map(g =>
+      g.runtime_id === 'claude-code' && g.arm === 'product' ? { ...g, key_facts_match: { matched: 3, of: 4 } } : g
+    );
+    const [bullet1] = buildBullets(summary, baseCostEstimate());
+    expect(bullet1).toBe(
+      'Claude Code · claude-sonnet-5 reported the key facts correctly in 3/4 sessions with kmp-test and 4/4 without; ' +
+      'Codex CLI · gpt-5.6-terra reported the key facts correctly in 4/4 sessions with kmp-test and 4/4 without.'
+    );
+    expect(bullet1).not.toContain('16/16');
+    expect(bullet1).not.toContain('every session');
   });
 
-  it('never estimates a cost for Codex CLI (schema 1 has no token data for it)', () => {
-    const block = renderReadmeBlock(summary, CAMPAIGN_DATE, costEstimate);
-    expect(block).not.toMatch(/Codex CLI estimated/);
+  it('the Claude bullet uses the "vs" wall-clock phrase (not "same") when its two medians differ', () => {
+    const summary = baseSummary();
+    summary.by_runtime_arm = summary.by_runtime_arm.map(g =>
+      g.runtime_id === 'claude-code' && g.arm === 'free' ? { ...g, duration_ms: { n: 4, median: 240000 } } : g
+    );
+    const [, bullet2] = buildBullets(summary, baseCostEstimate());
+    expect(bullet2).toContain('median wall-clock 3.0 vs 4.0 min');
+    expect(bullet2).not.toContain('same median wall-clock');
+  });
+
+  it('the Codex bullet uses the "same" wall-clock phrase when its two medians are equal at 1 decimal', () => {
+    const summary = baseSummary();
+    const [, , bullet3] = buildBullets(summary, baseCostEstimate());
+    expect(bullet3).toContain('same median wall-clock (3.0 min)');
+    // The bullet's tool-calls clause legitimately says "... vs ..." too (a
+    // different comparison) -- assert against the specific wall-clock "vs"
+    // shape, not a blanket "no vs anywhere in the bullet".
+    expect(bullet3).not.toMatch(/median wall-clock \d+\.\d vs \d+\.\d min/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scorecard layout -- computeScorecardLayout is the single source of truth
+// for every (x, y); this proves it never produces overlapping text, which is
+// exactly the defect class the redesign was fixing.
+
+describe('scorecard layout: no overlapping text', () => {
+  let summary, costEstimate;
+
+  beforeAll(() => {
+    summary = loadSummary(join(RUNS_DIR, 'campaign-summary.json'));
+    costEstimate = loadCostEstimate(join(RUNS_DIR, 'cost-estimate.json'));
+  });
+
+  it('every text baseline y within a column is >= the previous row\'s y + its font-size + 4', () => {
+    const layout = computeScorecardLayout(summary, costEstimate);
+    for (const columnId of ['claude-code', 'codex-cli']) {
+      const rows = layout.items.filter(i => i.kind === 'text' && i.column === columnId);
+      expect(rows.length).toBeGreaterThan(0);
+      for (let i = 1; i < rows.length; i++) {
+        const prev = rows[i - 1], cur = rows[i];
+        expect(cur.y, `row ${i} ("${cur.text}") in column ${columnId}`).toBeGreaterThanOrEqual(prev.y + prev.fontSize + 4);
+      }
+    }
+  });
+
+  it('the header title and subtitle do not overlap', () => {
+    const layout = computeScorecardLayout(summary, costEstimate);
+    const title = layout.items.find(i => i.role === 'title');
+    const subtitle = layout.items.find(i => i.role === 'subtitle');
+    expect(subtitle.y).toBeGreaterThanOrEqual(title.y + title.fontSize + 4);
+  });
+
+  it('the computed height covers every item with room to spare (nothing renders below the card)', () => {
+    const layout = computeScorecardLayout(summary, costEstimate);
+    const maxY = Math.max(...layout.items.filter(i => i.kind === 'text').map(i => i.y));
+    expect(layout.height).toBeGreaterThan(maxY);
+  });
+
+  it('the card rect height is at least 20px below the lowest text baseline or bar bottom (not clipped)', () => {
+    const layout = computeScorecardLayout(summary, costEstimate);
+    const maxTextY = Math.max(...layout.items.filter(i => i.kind === 'text').map(i => i.y));
+    const maxBarBottom = Math.max(...layout.items.filter(i => i.kind === 'bar').map(i => i.y + i.h));
+    expect(layout.height).toBeGreaterThanOrEqual(Math.max(maxTextY, maxBarBottom) + 20);
+  });
+
+  it('the card border rect is fully inside the viewBox on all 4 sides (not flush with the edge)', () => {
+    const svg = renderScorecardSvg(summary, costEstimate);
+    const m = svg.match(/<rect x="(\d+(?:\.\d+)?)" y="(\d+(?:\.\d+)?)" width="(\d+(?:\.\d+)?)" height="(\d+(?:\.\d+)?)" rx="12" fill="#ffffff"/);
+    expect(m).not.toBeNull();
+    const [, x, y, w, h] = m.map(Number);
+    const layout = computeScorecardLayout(summary, costEstimate);
+    expect(x).toBeGreaterThan(0);
+    expect(y).toBeGreaterThan(0);
+    expect(x + w).toBeLessThan(layout.width);
+    expect(y + h).toBeLessThan(layout.height);
   });
 });
 
@@ -321,52 +488,52 @@ describe('the committed evidence1-agentic-benchmark-2026-09-28 campaign', () => 
 // SVG authoring rules -- structural, not visual
 
 describe('SVG authoring rules (github/markup sanitizer safety)', () => {
-  let outcomesSvg, effortSvg;
+  let scorecardSvg;
 
   beforeAll(() => {
     const summary = loadSummary(join(RUNS_DIR, 'campaign-summary.json'));
-    outcomesSvg = renderOutcomesSvg(summary);
-    effortSvg = renderEffortSvg(summary);
+    const costEstimate = loadCostEstimate(join(RUNS_DIR, 'cost-estimate.json'));
+    scorecardSvg = renderScorecardSvg(summary, costEstimate);
   });
 
-  it.each([['outcomes.svg', () => outcomesSvg], ['effort.svg', () => effortSvg]])(
-    '%s has no <style> block, no style= attribute, and no forbidden elements',
-    (_name, get) => {
-      const svg = get();
-      expect(svg).not.toMatch(/<style/i);
-      expect(svg).not.toMatch(/\sstyle=/i);
-      for (const forbidden of ['<script', '<foreignObject', '<use', '<image', '<filter', '<!DOCTYPE', '<!--']) {
-        expect(svg).not.toContain(forbidden);
-      }
+  it('has no <style> block, no style= attribute, and no forbidden elements', () => {
+    expect(scorecardSvg).not.toMatch(/<style/i);
+    expect(scorecardSvg).not.toMatch(/\sstyle=/i);
+    for (const forbidden of ['<script', '<foreignObject', '<use', '<image', '<filter', '<!DOCTYPE', '<!--']) {
+      expect(scorecardSvg).not.toContain(forbidden);
     }
-  );
-
-  it.each([['outcomes.svg', () => outcomesSvg], ['effort.svg', () => effortSvg]])(
-    '%s declares role="img" plus <title> and <desc>',
-    (_name, get) => {
-      const svg = get();
-      expect(svg).toContain('role="img"');
-      expect(svg).toMatch(/<title>[^<]+<\/title>/);
-      expect(svg).toMatch(/<desc>[^<]+<\/desc>/);
-    }
-  );
-
-  it.each([['outcomes.svg', () => outcomesSvg], ['effort.svg', () => effortSvg]])(
-    '%s uses only the system font stack, no webfonts',
-    (_name, get) => {
-      const svg = get();
-      expect(svg).not.toMatch(/@font-face|googleapis|fonts\./);
-    }
-  );
-
-  it('outcomes.svg is deterministic: two independent renders are byte-identical', () => {
-    const summary = loadSummary(join(RUNS_DIR, 'campaign-summary.json'));
-    expect(renderOutcomesSvg(summary)).toBe(renderOutcomesSvg(summary));
   });
 
-  it('effort.svg is deterministic: two independent renders are byte-identical', () => {
+  it('declares role="img" plus <title> and <desc>', () => {
+    expect(scorecardSvg).toContain('role="img"');
+    expect(scorecardSvg).toMatch(/<title>[^<]+<\/title>/);
+    expect(scorecardSvg).toMatch(/<desc>[^<]+<\/desc>/);
+  });
+
+  it('declares font-family as a root <svg> attribute (not CSS), using only the system font stack', () => {
+    expect(scorecardSvg).toMatch(/<svg[^>]*\sfont-family="[^"]+"/);
+    expect(scorecardSvg).not.toMatch(/@font-face|googleapis|fonts\./);
+  });
+
+  it('is deterministic: two independent renders are byte-identical', () => {
     const summary = loadSummary(join(RUNS_DIR, 'campaign-summary.json'));
-    expect(renderEffortSvg(summary)).toBe(renderEffortSvg(summary));
+    const costEstimate = loadCostEstimate(join(RUNS_DIR, 'cost-estimate.json'));
+    expect(renderScorecardSvg(summary, costEstimate)).toBe(renderScorecardSvg(summary, costEstimate));
+  });
+
+  it('the "without kmp-test" color has at least 3:1 contrast against white (WCAG non-text UI floor)', () => {
+    const m = scorecardSvg.match(/fill="(#[0-9a-fA-F]{6})"\/>\s*<text[^>]*>without kmp-test<\/text>/);
+    expect(m).not.toBeNull();
+    const withoutColor = m[1];
+    expect(contrastRatio(withoutColor, '#ffffff')).toBeGreaterThanOrEqual(3.0);
+  });
+
+  it('the "with kmp-test" and "without kmp-test" bar colors are distinct', () => {
+    const withM = scorecardSvg.match(/fill="(#[0-9a-fA-F]{6})"\/>\s*<text[^>]*>with kmp-test<\/text>/);
+    const withoutM = scorecardSvg.match(/fill="(#[0-9a-fA-F]{6})"\/>\s*<text[^>]*>without kmp-test<\/text>/);
+    expect(withM).not.toBeNull();
+    expect(withoutM).not.toBeNull();
+    expect(withM[1]).not.toBe(withoutM[1]);
   });
 });
 
