@@ -50,8 +50,9 @@ branching on its exit codes — this release has more exit-code and field-semant
   its state and let gradle fail on it (exit `1`); now fails closed as `device_offline`/`device_unauthorized`,
   exit `3`. (3) **more than one usable device**: 0.14.0 picked one without pinning `ANDROID_SERIAL`, so
   gradle/adb's own default resolution took over silently; now fails closed as `multiple_adb_devices`, exit
-  `3`. Pass `--device <serial>` in any of these cases to sidestep the ambiguity and dispatch exactly as
-  before.
+  `3` — pass `--device <serial>` to pick one and dispatch exactly as before. `--device` doesn't help cases
+  (1) or (2): naming a serial that doesn't exist, or is offline/unauthorized, still fails the same state
+  check — connect or authorize a usable device first.
 - **`--test-type common`/`desktop` no longer dispatch `jsTest`/`wasmJsTest`** — those tasks belong to
   their own dedicated leg; dispatching them from the JVM-side legs too was a double-dispatch bug. Task
   lists and test counts for `common`/`desktop` runs on a project with JS/Wasm targets will shrink
@@ -827,10 +828,12 @@ now fails closed as `instrumented_setup_failed`, exit `3`, before any gradle wor
 but all offline/unauthorized**: 0.14.0 picked the first one regardless of its state and let gradle fail on
 it (exit `1`); now fails closed as `device_offline`/`device_unauthorized`, exit `3`. (3) **more than one
 usable device**: 0.14.0 picked one without pinning `ANDROID_SERIAL`, so gradle/adb's own default
-resolution took over silently; now fails closed as `multiple_adb_devices`, exit `3`. Pass `--device
-<serial>` in any of these cases to sidestep the ambiguity and dispatch exactly as before. (`--device` /
-`--clear-data` themselves already had their own, narrower strict-validation path before this commit — this
-change is specifically about the plain, no-flags explicit-instrumented branch.)
+resolution took over silently; now fails closed as `multiple_adb_devices`, exit `3` — pass `--device
+<serial>` to pick one and dispatch exactly as before. `--device` doesn't help cases (1) or (2): naming a
+serial that doesn't exist, or is offline/unauthorized, still fails the same state check — connect or
+authorize a usable device first. (`--device` / `--clear-data` themselves already had their own, narrower
+strict-validation path before this commit — this change is specifically about the plain, no-flags
+explicit-instrumented branch.)
 
 ### Fixed — `update --json` now prints exactly one JSON object on stdout (#339)
 
