@@ -462,6 +462,17 @@ describe('the committed evidence1-agentic-benchmark-2026-09-28 campaign', () => 
     );
   });
 
+  it('controls-audit.md points back to the Reproducibility Availability note, right after its own provenance line', () => {
+    // The audit's own citation lines (bbefc600, 15ad0dd used as "run this diff" commands) are left
+    // exactly as written -- they're the record of what was actually run, and rewriting them would
+    // falsify provenance. This pointer, not a rewrite, is how a reader learns those commits aren't
+    // public yet.
+    const controlsAudit = readFileSync(join(RUNS_DIR, 'controls-audit.md'), 'utf8');
+    expect(controlsAudit).toMatch(
+      /The\s+commits\s+cited\s+in\s+this\s+audit\s+\(`bbefc600`,\s+`15ad0dd`\)\s+are\s+on\s+the\s+maintainers['’]\s+evaluation\s+branch,\s+which\s+is\s+not\s+public\s+yet;\s+see\s+the\s+main\s+document['’]s\s+Reproducibility\s*›\s*Availability\s+note\./
+    );
+  });
+
   it('the README block never asserts a cause for the Codex wall-clock difference (that stays in the evidence doc, behind the link)', () => {
     const block = renderReadmeBlock(summary, CAMPAIGN_DATE, costEstimate);
     expect(block).not.toMatch(/re-ran kmp-test/i);
