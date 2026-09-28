@@ -1,0 +1,37 @@
+<svg viewBox="0 0 640 232" width="640" height="232" xmlns="http://www.w3.org/2000/svg" role="img">
+  <title>Did the agent report the right coverage-gate facts?</title>
+  <desc>Claude Code · claude-sonnet-5 with kmp-test: key facts 4/4; Claude Code · claude-sonnet-5 without kmp-test: key facts 4/4; Codex CLI · gpt-5.6-terra with kmp-test: key facts 4/4; Codex CLI · gpt-5.6-terra without kmp-test: key facts 4/4.</desc>
+  <rect x="0" y="0" width="640" height="232" rx="8" fill="#fcfcfb"/>
+  <text x="24" y="28" font-size="15" font-weight="600" fill="#0b0b0b">Did the agent report the right coverage-gate facts?</text>
+  <text x="24" y="46" font-size="12" fill="#898781">Primary metric · one square per session · pre-registered, n=4 per arm</text>
+  <line x1="320" y1="52" x2="320" y2="216" stroke="#e1e0d9" stroke-width="1"/>
+  <text x="24" y="60" font-size="14" font-weight="600" fill="#0b0b0b">Claude Code · claude-sonnet-5</text>
+  <text x="24" y="111" font-size="12" fill="#52514e">with kmp-test</text>
+  <rect x="150" y="96" width="20" height="20" rx="4" fill="#2a78d6"/>
+    <rect x="176" y="96" width="20" height="20" rx="4" fill="#2a78d6"/>
+    <rect x="202" y="96" width="20" height="20" rx="4" fill="#2a78d6"/>
+    <rect x="228" y="96" width="20" height="20" rx="4" fill="#2a78d6"/>
+  <text x="296" y="111" text-anchor="end" font-size="12" fill="#52514e">4/4</text>
+  <text x="24" y="147" font-size="12" fill="#52514e">without kmp-test</text>
+  <rect x="150" y="132" width="20" height="20" rx="4" fill="#eb6834"/>
+    <rect x="176" y="132" width="20" height="20" rx="4" fill="#eb6834"/>
+    <rect x="202" y="132" width="20" height="20" rx="4" fill="#eb6834"/>
+    <rect x="228" y="132" width="20" height="20" rx="4" fill="#eb6834"/>
+  <text x="296" y="147" text-anchor="end" font-size="12" fill="#52514e">4/4</text>
+
+  <text x="344" y="60" font-size="14" font-weight="600" fill="#0b0b0b">Codex CLI · gpt-5.6-terra</text>
+  <text x="344" y="111" font-size="12" fill="#52514e">with kmp-test</text>
+  <rect x="470" y="96" width="20" height="20" rx="4" fill="#2a78d6"/>
+    <rect x="496" y="96" width="20" height="20" rx="4" fill="#2a78d6"/>
+    <rect x="522" y="96" width="20" height="20" rx="4" fill="#2a78d6"/>
+    <rect x="548" y="96" width="20" height="20" rx="4" fill="#2a78d6"/>
+  <text x="616" y="111" text-anchor="end" font-size="12" fill="#52514e">4/4</text>
+  <text x="344" y="147" font-size="12" fill="#52514e">without kmp-test</text>
+  <rect x="470" y="132" width="20" height="20" rx="4" fill="#eb6834"/>
+    <rect x="496" y="132" width="20" height="20" rx="4" fill="#eb6834"/>
+    <rect x="522" y="132" width="20" height="20" rx="4" fill="#eb6834"/>
+    <rect x="548" y="132" width="20" height="20" rx="4" fill="#eb6834"/>
+  <text x="616" y="147" text-anchor="end" font-size="12" fill="#52514e">4/4</text>
+  <rect x="24" y="208" width="12" height="12" rx="3" fill="#898781"/>
+  <text x="42" y="218" font-size="11" fill="#52514e">filled = all 4 key facts matched · hollow = counted, not matched · &#8211; = rejected</text>
+</svg>
