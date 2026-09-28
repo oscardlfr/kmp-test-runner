@@ -156,6 +156,16 @@ tools/runs/agentic-eval-*/*.json text eol=lf
 # repo has hit before (see every other eol=lf entry in this file).
 tools/runs/agentic-eval-*/audit/*.json text eol=lf
 
+# README evidence generator (tools/agentic-eval/readme-evidence.mjs): committed campaign summary
+# and generated SVG charts must stay byte-identical to what the generator produces on a clean
+# checkout -- a CRLF-converted campaign-summary.json would still parse as JSON, but the SVGs are
+# compared byte-for-byte (CRLF-normalized) against a fresh render in
+# tests/vitest/agentic-eval-readme-evidence.test.js, and the raw committed bytes are also what
+# GitHub/npm serve at the image URL, so LF is the one form both the test and the served asset
+# agree on.
+tools/runs/evidence1-agentic-benchmark-*/*.svg text eol=lf
+tools/runs/evidence1-agentic-benchmark-*/*.json text eol=lf
+
 # CodeRabbit/Codex review fix pass -- new bash-script fixtures need the same LF pin as
 # .skills/**/*.sh and scripts/**/*.sh above (CRLF corrupts bash control-flow constructs under
 # Windows git-bash with core.autocrlf=true).
