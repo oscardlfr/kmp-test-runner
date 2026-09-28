@@ -133,7 +133,8 @@ This is independent of the per-task gradle watchdog. The outer kicks in when the
 ```json
 {
   "tool": "kmp-test",
-  "schema_version": 2,
+  "schema_version": 3,
+  "contracts": { "coverage_evidence": 1 },
   "subcommand": "benchmark",
   "exit_code": 0,
   "tests": { "total": 1, "passed": 1, "failed": 0, "skipped": 0 },

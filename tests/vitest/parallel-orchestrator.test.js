@@ -6116,14 +6116,10 @@ describe('PR A — coverage budget fail-closed at the parallel-dispatch layer (r
     });
   });
 
-  // Post-review fix (finding #3): threshold 0 (the default, no
-  // --min-missed-lines) must stay byte-identical to pre-PR-A behavior even
-  // when the report task fails this run -- never-trust-possibly-stale-XML is
-  // a GATE-only hardening. With no budget requested there is no gate to
-  // protect, so coverage-orchestrator.js must read whatever XML genuinely
-  // sits on disk exactly as it always did, not force every dispatched
-  // module to no_xml.
-  it('report-task failure with threshold 0 (no budget) -> XML still read normally, no forced no_xml, no new error', async () => {
+  // An explicit coverage-tool selection is itself an evidence request. A
+  // failed report task means stale XML from a prior run is never trustworthy,
+  // even without a numeric budget.
+  it('report-task failure with explicit coverage and threshold 0 -> stale XML rejected, exit 3', async () => {
     const dir = makeProject([jacocoModule]);
     const xmlPath = path.join(dir, 'core', 'build', 'reports', 'jacoco', 'jacocoTestReport.xml');
     mkdirSync(path.dirname(xmlPath), { recursive: true });
@@ -6144,12 +6140,18 @@ describe('PR A — coverage budget fail-closed at the parallel-dispatch layer (r
       log: () => {},
     });
     expect(envelope.warnings.some(w => w.code === 'coverage_report_dispatch_failed')).toBe(true);
-    expect(envelope.errors).toEqual([]);
-    expect(exitCode).toBe(0);
-    expect(envelope.coverage.missed_lines).toBe(7);
-    expect(envelope.coverage.modules_contributing).toBe(1);
+    expect(envelope.errors).toEqual([
+      expect.objectContaining({
+        code: 'coverage_data_unavailable',
+        reason: 'report-dispatch-failed',
+        required_by: 'explicit-coverage-tool',
+      }),
+    ]);
+    expect(exitCode).toBe(3);
+    expect(envelope.coverage.missed_lines).toBeNull();
+    expect(envelope.coverage.modules_contributing).toBe(0);
     expect(envelope.coverage.module_buckets).toEqual({
-      with_data: ['core'], no_xml: [], parse_errored: [], skipped_by_user: [],
+      with_data: [], no_xml: ['core'], parse_errored: [], skipped_by_user: [],
     });
   });
 
@@ -6196,6 +6198,36 @@ describe('PR A — coverage budget fail-closed at the parallel-dispatch layer (r
         }),
       ]),
     );
+  });
+
+  it('aggregation exception + explicit coverage at threshold 0 -> coverage_data_unavailable/aggregation-failed, exit 3', async () => {
+    const dir = makeProject([{
+      name: 'core',
+      build: 'plugins {\n  id("org.jetbrains.kotlinx.kover")\n  kotlin("jvm")\n}\n',
+      sourceSets: ['commonMain', 'jvmMain', 'jvmTest'],
+    }]);
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const throwingCoverage = async () => { throw new Error('boom'); };
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'common', '--coverage-tool', 'kover'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: throwingCoverage,
+    });
+    expect(envelope.warnings.some(w => w.code === 'coverage_aggregation_failed')).toBe(true);
+    expect(envelope.errors).toEqual([
+      expect.objectContaining({
+        code: 'coverage_data_unavailable',
+        reason: 'aggregation-failed',
+        required_by: 'explicit-coverage-tool',
+      }),
+    ]);
+    expect(exitCode).toBe(3);
+    expect(envelope.coverage.modules_contributing).toBe(0);
+    expect(envelope.coverage.missed_lines).toBeNull();
+    expect(envelope.coverage.covered_lines).toBeNull();
+    expect(envelope.coverage.total_lines).toBeNull();
   });
 
   it('--no-coverage + budget>0 -> coverage_budget_without_coverage, CONFIG_ERROR exit 2, zero gradle spawns', async () => {

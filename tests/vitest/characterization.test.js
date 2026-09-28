@@ -198,7 +198,8 @@ describe('characterization / environment-error envelopes', () => {
     // Lock the envelope shape — every key on envErrorJson must be present.
     expect(envelope).toMatchObject({
       tool: 'kmp-test',
-      schema_version: 2,
+      schema_version: 3,
+      contracts: { coverage_evidence: 1 },
       subcommand: 'parallel',
       exit_code: 3,
       tests: { total: 0, passed: 0, failed: 0, skipped: 0 },

@@ -163,7 +163,8 @@ The `android` subcommand emits the standard top-level envelope (see [`../../cli/
 ```json
 {
   "tool": "kmp-test",
-  "schema_version": 2,
+  "schema_version": 3,
+  "contracts": { "coverage_evidence": 1 },
   "subcommand": "android",
   "exit_code": 0,
   "tests": { "total": 3, "passed": 3, "failed": 0, "skipped": 0 },

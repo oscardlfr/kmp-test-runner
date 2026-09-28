@@ -1352,7 +1352,7 @@ describe('PR A — coverage budget fail-closed (requiredCoverageModules)', () =>
     expect(envelope.errors.some((e) => e.code === 'coverage_data_unavailable')).toBe(false);
   });
 
-  it('threshold 0 + requiredCoverageModules present -> gate stays disabled, no new errors (regression guard)', async () => {
+  it('explicit coverage evidence + every required module no_xml -> coverage_data_unavailable/target-no-xml', async () => {
     const projectRoot = makeProject([{ name: 'app', coverage: 'kover' }]); // no xml on disk
     const parseCoverageXml = makeParseCoverageStub();
     const { envelope, exitCode } = await runCoverage({
@@ -1360,9 +1360,74 @@ describe('PR A — coverage budget fail-closed (requiredCoverageModules)', () =>
       args: [],
       parseCoverageXml,
       requiredCoverageModules: ['app'],
+      requireCoverageEvidence: true,
+    });
+    expect(exitCode).toBe(3);
+    expect(envelope.errors).toEqual([
+      expect.objectContaining({
+        code: 'coverage_data_unavailable',
+        reason: 'target-no-xml',
+        required_by: 'explicit-coverage-tool',
+      }),
+    ]);
+    expect(envelope.coverage.modules_contributing).toBe(0);
+    expect(envelope.coverage.module_buckets.no_xml).toEqual(['app']);
+  });
+
+  it('explicit coverage evidence + parseable XML with zero coverable rows -> coverage_data_unavailable/no-contributing-data', async () => {
+    const projectRoot = makeProject([{ name: 'app', coverage: 'kover' }]);
+    dropFakeXml(projectRoot, 'app', 'kover');
+    const parseCoverageXml = makeParseCoverageStub({ rowsByModule: { app: [] } });
+    const { envelope, exitCode } = await runCoverage({
+      projectRoot,
+      args: [],
+      parseCoverageXml,
+      requiredCoverageModules: ['app'],
+      requireCoverageEvidence: true,
+    });
+    expect(exitCode).toBe(3);
+    expect(envelope.errors).toEqual([
+      expect.objectContaining({
+        code: 'coverage_data_unavailable',
+        reason: 'no-contributing-data',
+        required_by: 'explicit-coverage-tool',
+      }),
+    ]);
+    expect(envelope.coverage.modules_contributing).toBe(0);
+    expect(envelope.coverage.module_buckets.with_data).toEqual(['app']);
+    expect(envelope.coverage.missed_lines).toBeNull();
+    expect(envelope.coverage.covered_lines).toBeNull();
+    expect(envelope.coverage.total_lines).toBeNull();
+  });
+
+  it('explicit coverage evidence + mixed contributing/no_xml modules -> succeeds using only real rows', async () => {
+    const projectRoot = makeProject([
+      { name: 'covered', coverage: 'kover' },
+      { name: 'missing', coverage: 'kover' },
+    ]);
+    dropFakeXml(projectRoot, 'covered', 'kover');
+    const parseCoverageXml = makeParseCoverageStub({
+      rowsByModule: { covered: ['covered|p|F.kt|F|8|2|10|80|9-10'] },
+    });
+    const { envelope, exitCode } = await runCoverage({
+      projectRoot,
+      args: [],
+      parseCoverageXml,
+      requiredCoverageModules: ['covered', 'missing'],
+      requireCoverageEvidence: true,
     });
     expect(exitCode).toBe(0);
     expect(envelope.errors).toEqual([]);
+    expect(envelope.coverage.modules_contributing).toBe(1);
+    expect(envelope.coverage.module_buckets).toEqual({
+      with_data: ['covered'],
+      no_xml: ['missing'],
+      parse_errored: [],
+      skipped_by_user: [],
+    });
+    expect(envelope.coverage.missed_lines).toBe(2);
+    expect(envelope.coverage.covered_lines).toBe(8);
+    expect(envelope.coverage.total_lines).toBe(10);
   });
 
   it('--coverage-tool none + budget>0 -> coverage_budget_without_coverage, CONFIG_ERROR exit 2, zero parser calls', async () => {
