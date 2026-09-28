@@ -1,6 +1,6 @@
 # Backlog
 
-> Active and queued tasks for `kmp-test-runner`. Newest first. Read `CLAUDE.md` first for repo state + gitflow rules.
+> Active and queued tasks for `kmp-test-runner`. Newest first. `AGENTS.md` owns portable agent rules; this file owns planning history and the current queue.
 
 ---
 
@@ -96,6 +96,15 @@
 
 ### 📋 QUEUED follow-ups (next sessions)
 
+- 🔍 **Machine-check the `squash_merge_commit_title=PR_TITLE` repository setting** — documented as
+  an invariant in `CONTRIBUTING.md` and `.claude/rules/docs-ci-release.md`, but not verified by CI.
+  A check in `tools/validate-required-checks.mjs --check-drift` was drafted and dropped before
+  merge because it had never run in its only trigger context (push to `develop`/`main`, with the
+  required-checks GitHub App token), and `GET /repos/{repo}` returns `squash_merge_commit_title`
+  only to sufficiently privileged callers (absent unauthenticated, `PR_TITLE` with an admin token).
+  Prerequisite: prove in a real push run that the App token can read the field, or grant and
+  document the App permission it needs; then add the check with a behavioral test, not a source
+  grep.
 - ✅ **Agentic-eval multi-runtime foundation v1 — Claude-side phases 1-4 SHIPPED** (2026-08-20,
   `feature/agentic-eval-isolated-unrestricted-profile-v1`; earlier phases already on `develop` as
   `5c0e38b`/#436, `988f417`, `da19f6e`/#438). Execution order followed exactly as planned: freeze

@@ -3,10 +3,12 @@
 node_modules/
 dist/
 
-# Local Claude Code settings (contain machine-specific permission allowlists
-# that may include absolute paths and private project references — not
-# portable, never commit).
-.claude/
+# Local Claude Code settings can contain machine-specific permission allowlists
+# and private paths. Keep them ignored, but commit portable path-scoped rules.
+.claude/*
+!.claude/rules/
+!.claude/rules/*.md
+CLAUDE.local.md
 # Root-level only — npm/c8 test-coverage output. The measurement captures live
 # under tools/runs/coverage/ and must NOT be ignored.
 /coverage/

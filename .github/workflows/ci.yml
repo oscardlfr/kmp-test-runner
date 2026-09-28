@@ -238,7 +238,7 @@ jobs:
   secrets-scan:
     # Always runs — security checks are non-negotiable, even on docs-only PRs.
     # Also gates the release version-pin invariant: tools/sync-versions.js --check
-    # exits non-zero if package.json version drifts from gradle-plugin / README / CLAUDE.md.
+    # exits non-zero if package.json version drifts from gradle-plugin / README / plugin manifest.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -273,7 +273,7 @@ jobs:
     # runner; ready PRs and branch pushes use this dedicated required job.
     # Fails on any committed text matching the maintainer's PRIVATE_PATTERNS
     # registry (private project / module names, home-directory paths, etc.).
-    # See `tools/decouple-audit.mjs` and CLAUDE.md "Decouple from L0".
+    # See `tools/decouple-audit.mjs` and AGENTS.md "Product invariants".
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
     timeout-minutes: 5
@@ -303,9 +303,10 @@ jobs:
   skills-validate:
     # Runs on ready PRs and branch pushes. Draft pushes defer it to the final
     # local gate. Content quality gate for the agentskills.io-conformant
-    # bundled skill at .skills/kmp-test-runner/. Catches frontmatter typos,
-    # naming-rule violations, and reference-chain breakage. Cheap (~5s)
-    # so no decide-gating.
+    # bundled skill plus the repository's contributor-agent configuration.
+    # Catches frontmatter typos, canonical-source drift, startup bloat,
+    # naming-rule violations, and reference-chain breakage. Cheap (~5s), so
+    # no decide-gating.
     # See `agentskills.io/specification` and `.skills/kmp-test-runner/SKILL.md`.
     #
     # Job also validates the Claude Code plugin manifest at
@@ -324,6 +325,8 @@ jobs:
         run: npx -y skills-ref@0.1.5 validate .skills/kmp-test-runner/
       - name: Validate Claude Code plugin manifest (tools/validate-plugin.mjs)
         run: node tools/validate-plugin.mjs
+      - name: Validate contributor agent configuration (tools/validate-agent-config.mjs)
+        run: node tools/validate-agent-config.mjs
   installer-e2e:
     needs: [decide, build]
     if: needs.decide.outputs.heavy == 'true'
@@ -375,22 +378,17 @@ jobs:
       - name: Test Gradle plugin
         run: cd gradle-plugin && ./gradlew test
 
-  # 2026-05-05 — CI cost discipline + branch protection bridge.
-  # PR4 introduced the `decide` job to skip heavy jobs on docs-only PRs
-  # (saves CI minutes — see `feedback_ci_cost_discipline.md`). But branch
-  # protection on develop+main requires the heavy contexts (build × ubuntu/
-  # win, installer-e2e × ubuntu/win, gradle-plugin-test) to report `success`
-  # — and skipped jobs report `skipped`, not `success`. Net result before
-  # this sentinel: docs-only PRs cannot merge because branch protection
-  # rejects skipped contexts (PR #132 hit this 2026-05-05).
+  # Branch-protection bridge for changes that do not need heavyweight jobs.
+  # The `decide` job skips expensive build, installer, and Gradle checks for
+  # docs-only changes, but required skipped jobs do not report `success`.
   #
   # This sentinel runs ONLY when heavy=false and posts a `success`
   # commit-status to each required heavy context, satisfying branch
   # protection without spinning up the heavy runners. When heavy=true the
   # sentinel is a no-op — the real heavy jobs report success themselves.
   #
-  # Required heavy contexts mirror branch-protection's required_status_checks
-  # list (verified 2026-05-05 via `gh api repos/.../branches/develop/protection`).
+  # Required heavy contexts mirror `.github/required-checks.json` and branch
+  # protection. Static tests keep the two definitions synchronized.
   # `secrets-scan` and `Commit Lint` are NOT in this list — they always run
   # regardless of heavy state, so branch protection sees them green directly.
   # All macOS jobs (build-macos, installer-e2e-macos, bats-macos,

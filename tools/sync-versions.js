@@ -7,7 +7,6 @@
 //   • package.json                            "version": "X.Y.Z"
 //   • gradle-plugin/build.gradle.kts          version = "X.Y.Z"
 //   • README.md                               plugin DSL sample
-//   • CLAUDE.md                               npm + Gradle plugin + GH release lines
 //   • .claude-plugin/plugin.json              "version": "X.Y.Z"  (Claude Code plugin manifest)
 //
 // Designed to be invoked via:
@@ -45,24 +44,6 @@ export function buildTargets(version, repoRoot = REPO_ROOT) {
       path: join(repoRoot, "README.md"),
       pattern: /id\("io\.github\.oscardlfr\.kmp-test-runner"\) version "([0-9]+\.[0-9]+\.[0-9]+)"/,
       template: `id("io.github.oscardlfr.kmp-test-runner") version "${version}"`,
-    },
-    {
-      label: "CLAUDE.md (npm package line)",
-      path: join(repoRoot, "CLAUDE.md"),
-      pattern: /npm: `kmp-test-runner@([0-9]+\.[0-9]+\.[0-9]+)`/,
-      template: `npm: \`kmp-test-runner@${version}\``,
-    },
-    {
-      label: "CLAUDE.md (Gradle plugin line)",
-      path: join(repoRoot, "CLAUDE.md"),
-      pattern: /Gradle plugin: `io\.github\.oscardlfr\.kmp-test-runner:([0-9]+\.[0-9]+\.[0-9]+)`/,
-      template: `Gradle plugin: \`io.github.oscardlfr.kmp-test-runner:${version}\``,
-    },
-    {
-      label: "CLAUDE.md (GitHub Releases line)",
-      path: join(repoRoot, "CLAUDE.md"),
-      pattern: /GitHub Releases: `v([0-9]+\.[0-9]+\.[0-9]+)`/,
-      template: `GitHub Releases: \`v${version}\``,
     },
     {
       label: ".claude-plugin/plugin.json (Claude Code plugin manifest)",
@@ -168,7 +149,6 @@ Usage:
 Targets:
   gradle-plugin/build.gradle.kts
   README.md (plugin DSL sample)
-  CLAUDE.md (npm + Gradle plugin + GitHub Releases lines)
   .claude-plugin/plugin.json (Claude Code plugin manifest)
 
 Source of truth: package.json "version".

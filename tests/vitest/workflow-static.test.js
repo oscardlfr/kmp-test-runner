@@ -347,6 +347,32 @@ describe('.github/required-checks.json — PR-19 stability', () => {
     for (const name of EXPECTED) expect(ctx).toContain(name);
     expect(ctx.length).toBe(EXPECTED.length);
   });
+
+  it('keeps the docs-only success sentinel aligned with required heavy checks', () => {
+    const manifest = JSON.parse(readFileSync(REQUIRED_CHECKS_JSON, 'utf8'));
+    const alwaysRun = new Set([
+      'Commit Lint',
+      'bundle-size',
+      'decouple-audit',
+      'secrets-scan',
+      'skills-validate',
+    ]);
+    const expectedHeavy = manifest.required_contexts.filter((name) => !alwaysRun.has(name)).sort();
+    const section = jobSection(readFileSync(join(WORKFLOWS, 'ci.yml'), 'utf8'), 'report-skipped-as-success');
+    const loop = section?.match(/for CTX in \\\n([\s\S]*?); do/)?.[1] ?? '';
+    const sentinelContexts = [...loop.matchAll(/"([^"]+)"/g)].map((match) => match[1]).sort();
+
+    expect(sentinelContexts).toEqual(expectedHeavy);
+  });
+});
+
+describe('skills-validate — agent configuration gate', () => {
+  it('runs the zero-dependency agent-config validator exactly once', () => {
+    const ci = readFileSync(join(WORKFLOWS, 'ci.yml'), 'utf8');
+    const section = jobSection(ci, 'skills-validate');
+    expect(section).not.toBeNull();
+    expect(section.match(/node tools\/validate-agent-config\.mjs/g)).toHaveLength(1);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -283,7 +283,7 @@ function main() {
       `decouple-audit: ${allHits.length} hit(s) across ${scanned} file(s) ` +
       `[${pubCount} public + ${privCount} private rules].`,
     );
-    console.error('See CLAUDE.md "Decouple from L0" for the policy.');
+    console.error('See AGENTS.md "Product invariants" for the policy.');
     process.exit(1);
   }
 

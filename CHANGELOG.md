@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — contributor-agent configuration is portable, scoped, and regression-tested
+
+`AGENTS.md` is now the concise cross-agent source of truth and `CLAUDE.md` is a
+small adapter that imports it. Historical release snapshots and multi-step
+procedures moved out of startup context into the existing changelog/backlog and
+focused maintainer docs. Path-specific conventions now live under
+`.claude/rules/`, while the published `.skills/kmp-test-runner/` remains a
+separate consumer artifact. A zero-dependency validator, Vitest regression
+suite, required `skills-validate` step, and local-CI integration prevent the
+adapter, rules, role policy, or memory hygiene from drifting back.
+The validator also pins the canonical rule inventory and critical product,
+workflow, project-model, installer, and release contracts so a syntactically
+valid rewrite cannot silently discard them.
+
 ### Fixed — 0.15.0 never reached npm; publish now uses a Node/npm pin that meets Trusted Publishing's own floor
 
 **Observable behavior change (CI-only, no product code affected).** 0.15.0 published to GitHub
