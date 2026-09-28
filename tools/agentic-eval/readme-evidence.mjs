@@ -69,7 +69,19 @@ export function validateSummary(summary) {
       if (g.declared !== 4) errors.push(`${runtime}/${arm}: declared must be 4, got ${g.declared}`);
     }
   }
+  // The README's Scope line names the kmp-test version under measurement, so a campaign that
+  // mixes versions (or records none) must never silently render one. Schema 3 (#534, planned for
+  // 0.16.0) changes the envelope and exit semantics -- readers need to know which version produced
+  // these numbers, permanently, not just while the version happens to be uniform by accident.
+  const kmpTestVersion = summary.provenance && summary.provenance.kmp_test_cli_version;
+  if (!kmpTestVersion || kmpTestVersion.mixed === true || !Array.isArray(kmpTestVersion.values) || kmpTestVersion.values.length !== 1) {
+    errors.push(`provenance.kmp_test_cli_version must be a single, non-mixed value, got ${JSON.stringify(kmpTestVersion)}`);
+  }
   return errors;
+}
+
+function kmpTestVersionOf(summary) {
+  return summary.provenance.kmp_test_cli_version.values[0];
 }
 
 export function loadSummary(path) {
@@ -83,6 +95,10 @@ export function loadSummary(path) {
 
 function findGroup(summary, runtime, arm) {
   return summary.by_runtime_arm.find(g => g.runtime_id === runtime && g.arm === arm);
+}
+
+function findCells(summary, runtime, arm) {
+  return summary.cells.filter(c => c.runtime_id === runtime && c.arm === arm);
 }
 
 // ---------------------------------------------------------------------------
@@ -233,11 +249,14 @@ const PAD = 28;
 const ROW_GAP = 14; // minimum vertical gap between two text rows' allocated space
 const COLUMN_GAP = 32;
 const COLUMN_W = (SCORECARD_W - 2 * PAD - COLUMN_GAP) / 2;
-const BAR_MAX_W = 300;
+const BAR_AREA_W = 300; // gutter + bar, unchanged total footprint from before the gutter existed
+const GUTTER_W = 60; // fixed left gutter for each bar row's own "with"/"without" arm label
+const BAR_MAX_W = BAR_AREA_W - GUTTER_W;
 const BAR_H = 14;
 const BAR_ROW_GAP = 6;
 const BLOCK_GAP = 24;
 const VALUE_LABEL_X_OFFSET = 12;
+const ARM_LABEL_FS = 11;
 
 function textItem(role, column, x, y, fontSize, fontWeight, fill, text, anchor) {
   return { kind: 'text', role, column, x, y, fontSize, fontWeight, fill, text, anchor: anchor || 'start' };
@@ -246,7 +265,9 @@ function textItem(role, column, x, y, fontSize, fontWeight, fill, text, anchor) 
 export function computeScorecardLayout(summary, costEstimate) {
   const items = [];
 
-  // Header: title + subtitle (left), legend (right), both anchored at PAD.
+  // Header: title + subtitle only. No corner legend -- every bar row now carries its own
+  // "with"/"without" arm label directly (see the gutter below), which review found reads more
+  // reliably than a single legend far away from a two-column, many-row chart.
   const titleFS = 20;
   const titleY = PAD + titleFS;
   items.push(textItem('title', null, PAD, titleY, titleFS, 600, COLOR_TEXT,
@@ -257,21 +278,7 @@ export function computeScorecardLayout(summary, costEstimate) {
   items.push(textItem('subtitle', null, PAD, subtitleY, subtitleFS, 400, COLOR_SECONDARY,
     '1 pre-registered scenario · 4 sessions per arm per agent · Windows 11 · details in the evidence doc'));
 
-  const legendFS = 13;
-  const legendRows = [
-    { color: COLOR_WITH, text: 'with kmp-test' },
-    { color: COLOR_WITHOUT, text: 'without kmp-test' },
-  ];
-  let legendY = PAD + legendFS;
-  const legendTextX = SCORECARD_W - PAD - 100;
-  const legendSwatchX = SCORECARD_W - PAD - 116;
-  for (const row of legendRows) {
-    items.push({ kind: 'legendSwatch', x: legendSwatchX, y: legendY - legendFS + 2, w: 10, h: 10, rx: 2, fill: row.color });
-    items.push(textItem('legendLabel', null, legendTextX, legendY, legendFS, 400, COLOR_TEXT, row.text));
-    legendY = legendY + ROW_GAP + legendFS;
-  }
-
-  const headerBottom = Math.max(subtitleY, legendY - ROW_GAP - legendFS) + ROW_GAP;
+  const headerBottom = subtitleY + ROW_GAP;
 
   // Two columns, each: panel title, key-facts text line, then 3 bar metrics
   // (tool calls, wall-clock, cost). Both columns share the same row Y's, so
@@ -312,15 +319,21 @@ export function computeScorecardLayout(summary, costEstimate) {
         items.push(textItem('notEstimated', col.id, col.x, neY, 13, 400, COLOR_SECONDARY, 'not estimated'));
         cy = neY + BAR_H + BAR_ROW_GAP; // reserve the same row height as a 2-bar block
       } else {
+        const barX = col.x + GUTTER_W;
+        const armLabelX = barX - 6;
+        const valueLabelX = col.x + BAR_AREA_W + VALUE_LABEL_X_OFFSET;
+
         const bar1Top = cy;
         const bar1CenterY = bar1Top + BAR_H / 2;
-        items.push({ kind: 'bar', column: col.id, x: col.x, y: bar1Top, w: Math.max(metric.withFrac * BAR_MAX_W, 2), h: BAR_H, rx: 3, fill: COLOR_WITH });
-        items.push(textItem('barValue', col.id, col.x + BAR_MAX_W + VALUE_LABEL_X_OFFSET, bar1CenterY + 4, 13, 600, COLOR_TEXT, metric.withLabel));
+        items.push(textItem('armLabel', col.id, armLabelX, bar1CenterY + 4, ARM_LABEL_FS, 400, COLOR_SECONDARY, 'with', 'end'));
+        items.push({ kind: 'bar', column: col.id, x: barX, y: bar1Top, w: Math.max(metric.withFrac * BAR_MAX_W, 2), h: BAR_H, rx: 3, fill: COLOR_WITH });
+        items.push(textItem('barValue', col.id, valueLabelX, bar1CenterY + 4, 13, 600, COLOR_TEXT, metric.withLabel));
 
         const bar2Top = bar1Top + BAR_H + BAR_ROW_GAP;
         const bar2CenterY = bar2Top + BAR_H / 2;
-        items.push({ kind: 'bar', column: col.id, x: col.x, y: bar2Top, w: Math.max(metric.withoutFrac * BAR_MAX_W, 2), h: BAR_H, rx: 3, fill: COLOR_WITHOUT });
-        items.push(textItem('barValue', col.id, col.x + BAR_MAX_W + VALUE_LABEL_X_OFFSET, bar2CenterY + 4, 13, 600, COLOR_TEXT, metric.withoutLabel));
+        items.push(textItem('armLabel', col.id, armLabelX, bar2CenterY + 4, ARM_LABEL_FS, 400, COLOR_SECONDARY, 'without', 'end'));
+        items.push({ kind: 'bar', column: col.id, x: barX, y: bar2Top, w: Math.max(metric.withoutFrac * BAR_MAX_W, 2), h: BAR_H, rx: 3, fill: COLOR_WITHOUT });
+        items.push(textItem('barValue', col.id, valueLabelX, bar2CenterY + 4, 13, 600, COLOR_TEXT, metric.withoutLabel));
 
         cy = bar2Top + BAR_H;
       }
@@ -380,12 +393,31 @@ export function buildScorecardAlt(summary, costEstimate) {
 // ---------------------------------------------------------------------------
 // README bullets -- three data-driven sentences, no hard-coded numbers.
 
-function wallClockPhrase(withMinutes, withoutMinutes) {
+// The evidence doc's own "## Results — campaign (16 sessions)" heading, hand-authored (not
+// generated) at tools/runs/evidence1-agentic-benchmark-<date>/README.md. Anchor slug per GitHub's
+// own algorithm: lowercase, strip characters outside [\w\- ], turn each remaining space into a
+// hyphen -- the em-dash is stripped (not converted), so "Results — campaign" leaves two adjacent
+// spaces and therefore a DOUBLE hyphen: "results--campaign-16-sessions".
+const RESULTS_HEADING_ANCHOR = 'results--campaign-16-sessions';
+
+function durationRangeMinutes(cells) {
+  const minutes = cells.map(c => c.duration_ms / 60000);
+  return `${Math.min(...minutes).toFixed(1)}–${Math.max(...minutes).toFixed(1)}`;
+}
+
+// When the rounded medians are equal, "same" already tells the whole story -- no range needed.
+// When they differ, a bare "X vs Y min" on its own has misread as "kmp-test is slower" in review,
+// when the actual driver was a couple of long-tail sessions, not every session. The per-session
+// range plus a link into the evidence doc's full breakdown gives that context without asserting a
+// cause the generator can't derive from its own inputs (that stays in the doc, out of the README).
+function wallClockPhrase(withMinutes, withoutMinutes, withCells, withoutCells, runsPath) {
   const w = withMinutes.toFixed(1);
   const wo = withoutMinutes.toFixed(1);
-  return w === wo
-    ? `same median wall-clock (${w} min)`
-    : `median wall-clock ${w} vs ${wo} min`;
+  if (w === wo) return `same median wall-clock (${w} min)`;
+  const withRange = durationRangeMinutes(withCells);
+  const withoutRange = durationRangeMinutes(withoutCells);
+  const breakdownLink = `${runsPath}/README.md#${RESULTS_HEADING_ANCHOR}`;
+  return `median wall-clock ${w} vs ${wo} min (per-session range ${withRange} vs ${withoutRange} min; [breakdown](${breakdownLink}))`;
 }
 
 function buildKeyFactsBullet(summary) {
@@ -407,7 +439,7 @@ function buildKeyFactsBullet(summary) {
   return bits.join('; ') + '.';
 }
 
-function buildClaudeBullet(summary, costEstimate) {
+function buildClaudeBullet(summary, costEstimate, runsPath) {
   const gp = findGroup(summary, 'claude-code', 'product');
   const gf = findGroup(summary, 'claude-code', 'free');
   const toolsWith = fmtToolCallsMedian(gp.tool_calls_total.median);
@@ -416,21 +448,23 @@ function buildClaudeBullet(summary, costEstimate) {
   const wallWithout = gf.duration_ms.median / 60000;
   const costWith = fmtCostRange(claudeCostRange(costEstimate, 'product'));
   const costWithout = fmtCostRange(claudeCostRange(costEstimate, 'free'));
-  return `Claude Code (Sonnet 5) with kmp-test: median ${toolsWith} tool calls vs ${toolsWithout} without, ${wallClockPhrase(wallWith, wallWithout)}, estimated API cost ${costWith} vs ${costWithout} per session.`;
+  const wallPhrase = wallClockPhrase(wallWith, wallWithout, findCells(summary, 'claude-code', 'product'), findCells(summary, 'claude-code', 'free'), runsPath);
+  return `Claude Code (Sonnet 5) with kmp-test: median ${toolsWith} tool calls vs ${toolsWithout} without, ${wallPhrase}, estimated API cost ${costWith} vs ${costWithout} per session.`;
 }
 
-function buildCodexBullet(summary) {
+function buildCodexBullet(summary, runsPath) {
   const gp = findGroup(summary, 'codex-cli', 'product');
   const gf = findGroup(summary, 'codex-cli', 'free');
   const toolsWith = fmtToolCallsMedian(gp.tool_calls_total.median);
   const toolsWithout = fmtToolCallsMedian(gf.tool_calls_total.median);
   const wallWith = gp.duration_ms.median / 60000;
   const wallWithout = gf.duration_ms.median / 60000;
-  return `Codex CLI (gpt-5.6-terra, low reasoning effort): median ${toolsWith} tool calls with kmp-test vs ${toolsWithout} without; ${wallClockPhrase(wallWith, wallWithout)}.`;
+  const wallPhrase = wallClockPhrase(wallWith, wallWithout, findCells(summary, 'codex-cli', 'product'), findCells(summary, 'codex-cli', 'free'), runsPath);
+  return `Codex CLI (gpt-5.6-terra, low reasoning effort): median ${toolsWith} tool calls with kmp-test vs ${toolsWithout} without; ${wallPhrase}.`;
 }
 
-export function buildBullets(summary, costEstimate) {
-  return [buildKeyFactsBullet(summary), buildClaudeBullet(summary, costEstimate), buildCodexBullet(summary)];
+export function buildBullets(summary, costEstimate, runsPath) {
+  return [buildKeyFactsBullet(summary), buildClaudeBullet(summary, costEstimate, runsPath), buildCodexBullet(summary, runsPath)];
 }
 
 // ---------------------------------------------------------------------------
@@ -438,7 +472,8 @@ export function buildBullets(summary, costEstimate) {
 
 export function renderReadmeBlock(summary, campaignDate, costEstimate) {
   const runsPath = `tools/runs/evidence1-agentic-benchmark-${campaignDate}`;
-  const [bullet1, bullet2, bullet3] = buildBullets(summary, costEstimate);
+  const [bullet1, bullet2, bullet3] = buildBullets(summary, costEstimate, runsPath);
+  const kmpTestVersion = kmpTestVersionOf(summary);
 
   return `<!-- agentic-benchmark:start (generated by tools/agentic-eval/readme-evidence.mjs from ${runsPath}/campaign-summary.json; edit the generator, not this block) -->
 ### Agent sessions with and without kmp-test
@@ -451,7 +486,7 @@ kmp-test hands an agent the test and coverage verdict as one JSON envelope inste
 - ${bullet2}
 - ${bullet3}
 
-**Scope:** one scenario, tagged \`train\` (the skill was tuned on this task family); n=4 sessions per arm per agent in counterbalanced order; Windows 11 in an isolated VM with a restricted network (provider APIs only); design and metrics fixed before any live session. Claude Code 2.1.238 · claude-sonnet-5 · effort not set by the harness (docs default: high). Codex CLI 0.154.0 · gpt-5.6-terra · reasoning effort low. Key facts = module, outcome, coverage numbers. [Evidence, per-session detail and limitations](${runsPath}/README.md) · [controls audit](${runsPath}/controls-audit.md) · [pre-registration](${runsPath}/preregistration.md)
+**Scope:** one scenario, tagged \`train\` (the skill was tuned on this task family); n=4 sessions per arm per agent in counterbalanced order; Windows 11 in an isolated VM with a restricted network (provider APIs only); design and metrics fixed before any live session. kmp-test ${kmpTestVersion}. Claude Code 2.1.238 · claude-sonnet-5 · effort not set by the harness (docs default: high). Codex CLI 0.154.0 · gpt-5.6-terra · reasoning effort low. Key facts = module, outcome, coverage numbers. [Evidence, per-session detail and limitations](${runsPath}/README.md) · [controls audit](${runsPath}/controls-audit.md) · [pre-registration](${runsPath}/preregistration.md)
 <!-- agentic-benchmark:end -->`;
 }
 

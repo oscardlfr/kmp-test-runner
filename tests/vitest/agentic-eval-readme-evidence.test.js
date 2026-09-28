@@ -57,6 +57,7 @@ describe('validateSummary', () => {
       { runtime_id: 'codex-cli', arm: 'product', declared: 4 },
       { runtime_id: 'codex-cli', arm: 'free', declared: 4 },
     ],
+    provenance: { kmp_test_cli_version: { values: ['0.15.0'], mixed: false } },
   });
 
   it('accepts a complete, live, schema-1 summary with all 4 groups at declared:4', () => {
@@ -89,6 +90,21 @@ describe('validateSummary', () => {
   it('rejects a group with declared !== 4', () => {
     const s = complete(); s.by_runtime_arm[0].declared = 3;
     expect(validateSummary(s).some(e => e.includes('declared must be 4'))).toBe(true);
+  });
+
+  it('rejects provenance.kmp_test_cli_version.mixed: true (a campaign must never silently pick one of several versions)', () => {
+    const s = complete(); s.provenance.kmp_test_cli_version = { values: ['0.14.0', '0.15.0'], mixed: true };
+    expect(validateSummary(s).some(e => e.includes('kmp_test_cli_version'))).toBe(true);
+  });
+
+  it('rejects provenance.kmp_test_cli_version.values.length !== 1 (0 or 2+ recorded values)', () => {
+    const s = complete(); s.provenance.kmp_test_cli_version = { values: [], mixed: false };
+    expect(validateSummary(s).some(e => e.includes('kmp_test_cli_version'))).toBe(true);
+  });
+
+  it('rejects a missing provenance.kmp_test_cli_version entirely', () => {
+    const s = complete(); delete s.provenance;
+    expect(validateSummary(s).some(e => e.includes('kmp_test_cli_version'))).toBe(true);
   });
 
   it('loadSummary throws (does not silently proceed) on an incomplete summary file on disk', () => {
@@ -234,6 +250,19 @@ describe('the committed evidence1-agentic-benchmark-2026-09-28 campaign', () => 
     expect(existsSync(`${RUNS_DIR}.md`)).toBe(false);
   });
 
+  it('no file in the bundle except preregistration.md still names the old top-level evidence file', () => {
+    // preregistration.md is hash-locked verbatim text (see the describe block below) -- its own
+    // internal mention of a planning-doc filename is part of the immutable original and must
+    // never be "fixed" by this or any future sweep, even if it happened to contain a similar
+    // string. It doesn't today (verified: this loop's own exclusion is defensive, not covering a
+    // known current match), but the exclusion documents the rule regardless.
+    const staleRef = 'evidence1-agentic-benchmark-2026-09-28.md';
+    for (const name of ['README.md', 'controls-audit.md', 'campaign-summary.json', 'cost-estimate.json']) {
+      const content = readFileSync(join(RUNS_DIR, name), 'utf8');
+      expect(content, `${name} should not reference the pre-consolidation top-level filename`).not.toContain(staleRef);
+    }
+  });
+
   it('the README block has no markdown table (dropped per review: it conveyed nothing clearly)', () => {
     const block = renderReadmeBlock(summary, CAMPAIGN_DATE, costEstimate);
     expect(block).not.toMatch(/\|---/);
@@ -286,6 +315,19 @@ describe('the committed evidence1-agentic-benchmark-2026-09-28 campaign', () => 
     expect(block.toLowerCase()).not.toContain('sealed');
   });
 
+  it('the Scope line names the kmp-test version measured, read from provenance.kmp_test_cli_version, never hardcoded', () => {
+    const block = renderReadmeBlock(summary, CAMPAIGN_DATE, costEstimate);
+    expect(block).toContain('kmp-test 0.15.0');
+    expect(summary.provenance.kmp_test_cli_version.values).toEqual(['0.15.0']); // the real committed data
+    // Mutating the fixture's version changes the output -- proves this is read from the data,
+    // not a literal baked into the generator (unlike the Claude Code/Codex CLI version strings,
+    // which this review round did not ask to change).
+    const mutated = { ...summary, provenance: { ...summary.provenance, kmp_test_cli_version: { values: ['0.16.0'], mixed: false } } };
+    const mutatedBlock = renderReadmeBlock(mutated, CAMPAIGN_DATE, costEstimate);
+    expect(mutatedBlock).toContain('kmp-test 0.16.0');
+    expect(mutatedBlock).not.toContain('kmp-test 0.15.0');
+  });
+
   it('drops the test-invocations/retries clause entirely (schema 1 carries neither field)', () => {
     const block = renderReadmeBlock(summary, CAMPAIGN_DATE, costEstimate);
     expect(block).not.toMatch(/test runs per session/);
@@ -302,8 +344,10 @@ describe('the committed evidence1-agentic-benchmark-2026-09-28 campaign', () => 
     // Recomputes from the raw committed JSON without calling any of the module's own
     // helpers for the numbers -- this proves the FORMULAS are right, not just that the
     // module agrees with itself.
+    const RUNS_PATH_REL = `tools/runs/evidence1-agentic-benchmark-${CAMPAIGN_DATE}`;
     const gp = r => summary.by_runtime_arm.find(g => g.runtime_id === r && g.arm === 'product');
     const gf = r => summary.by_runtime_arm.find(g => g.runtime_id === r && g.arm === 'free');
+    const cellsOf = (r, arm) => summary.cells.filter(c => c.runtime_id === r && c.arm === arm);
     const allGroups = summary.by_runtime_arm;
     const totalMatched = allGroups.reduce((s, g) => s + g.key_facts_match.matched, 0);
     const totalOf = allGroups.reduce((s, g) => s + g.key_facts_match.of, 0);
@@ -317,21 +361,28 @@ describe('the committed evidence1-agentic-benchmark-2026-09-28 campaign', () => 
       const high = Math.max(...cells.map(c => cost(c.tokens, 'cache_write_1h')));
       return `$${low.toFixed(2)}–$${high.toFixed(2)}`;
     };
+    // Independent per-session duration range, straight from cells[].duration_ms -- not via any
+    // module helper -- so this test can't pass just because it agrees with the generator's own bug.
+    const durationRange = (r, arm) => {
+      const minutes = cellsOf(r, arm).map(c => c.duration_ms / 60000);
+      return `${Math.min(...minutes).toFixed(1)}–${Math.max(...minutes).toFixed(1)}`;
+    };
+
     const claudeWallWith = (gp('claude-code').duration_ms.median / 60000).toFixed(1);
     const claudeWallWithout = (gf('claude-code').duration_ms.median / 60000).toFixed(1);
     const claudeWallPhrase = claudeWallWith === claudeWallWithout
       ? `same median wall-clock (${claudeWallWith} min)`
-      : `median wall-clock ${claudeWallWith} vs ${claudeWallWithout} min`;
+      : `median wall-clock ${claudeWallWith} vs ${claudeWallWithout} min (per-session range ${durationRange('claude-code', 'product')} vs ${durationRange('claude-code', 'free')} min; [breakdown](${RUNS_PATH_REL}/README.md#results--campaign-16-sessions))`;
     const bullet2 = `Claude Code (Sonnet 5) with kmp-test: median ${Math.round(gp('claude-code').tool_calls_total.median)} tool calls vs ${Math.round(gf('claude-code').tool_calls_total.median)} without, ${claudeWallPhrase}, estimated API cost ${range('product')} vs ${range('free')} per session.`;
 
     const codexWallWith = (gp('codex-cli').duration_ms.median / 60000).toFixed(1);
     const codexWallWithout = (gf('codex-cli').duration_ms.median / 60000).toFixed(1);
     const codexWallPhrase = codexWallWith === codexWallWithout
       ? `same median wall-clock (${codexWallWith} min)`
-      : `median wall-clock ${codexWallWith} vs ${codexWallWithout} min`;
+      : `median wall-clock ${codexWallWith} vs ${codexWallWithout} min (per-session range ${durationRange('codex-cli', 'product')} vs ${durationRange('codex-cli', 'free')} min; [breakdown](${RUNS_PATH_REL}/README.md#results--campaign-16-sessions))`;
     const bullet3 = `Codex CLI (gpt-5.6-terra, low reasoning effort): median ${Math.round(gp('codex-cli').tool_calls_total.median)} tool calls with kmp-test vs ${Math.round(gf('codex-cli').tool_calls_total.median)} without; ${codexWallPhrase}.`;
 
-    expect(buildBullets(summary, costEstimate)).toEqual([bullet1, bullet2, bullet3]);
+    expect(buildBullets(summary, costEstimate, RUNS_PATH_REL)).toEqual([bullet1, bullet2, bullet3]);
 
     const block = renderReadmeBlock(summary, CAMPAIGN_DATE, costEstimate);
     expect(block).toContain(`- ${bullet1}`);
@@ -339,11 +390,31 @@ describe('the committed evidence1-agentic-benchmark-2026-09-28 campaign', () => 
     expect(block).toContain(`- ${bullet3}`);
 
     // This campaign's real data hits both branches this test cares about: the
-    // ceiling case for bullet 1, and an EQUAL Claude median (forcing "same") vs a
-    // DIFFERENT Codex median (forcing "vs") for the wall-clock phrase -- so this one
-    // assertion, against real data, already exercises both wallClockPhrase branches.
+    // ceiling case for bullet 1, and an EQUAL Claude median (forcing "same", no range
+    // appended) vs a DIFFERENT Codex median (forcing "vs" plus the range+link) for the
+    // wall-clock phrase -- so this one assertion, against real data, already exercises
+    // both wallClockPhrase branches.
     expect(bullet2).toContain('same median wall-clock');
-    expect(bullet3).toMatch(/median wall-clock \d+\.\d vs \d+\.\d min/);
+    expect(bullet2).not.toContain('per-session range'); // equal-medians branch appends no range
+    expect(bullet3).toMatch(/median wall-clock \d+\.\d vs \d+\.\d min \(per-session range \d+\.\d–\d+\.\d vs \d+\.\d–\d+\.\d min; \[breakdown\]\(.+#results--campaign-16-sessions\)\)/);
+    // The auditor's own independently verified target text for this exact campaign's data.
+    expect(bullet3).toBe(
+      'Codex CLI (gpt-5.6-terra, low reasoning effort): median 13 tool calls with kmp-test vs 12 without; ' +
+      'median wall-clock 4.8 vs 3.7 min (per-session range 3.3–7.9 vs 3.3–4.2 min; ' +
+      `[breakdown](${RUNS_PATH_REL}/README.md#results--campaign-16-sessions)).`
+    );
+  });
+
+  it('the linked "Results — campaign (16 sessions)" heading actually exists in the evidence doc', () => {
+    const evidenceDoc = readFileSync(join(RUNS_DIR, 'README.md'), 'utf8');
+    expect(evidenceDoc).toMatch(/^## Results — campaign \(16 sessions\)$/m);
+  });
+
+  it('the README block never asserts a cause for the Codex wall-clock difference (that stays in the evidence doc, behind the link)', () => {
+    const block = renderReadmeBlock(summary, CAMPAIGN_DATE, costEstimate);
+    expect(block).not.toMatch(/re-ran kmp-test/i);
+    expect(block).not.toMatch(/because/i);
+    expect(block).not.toMatch(/caused by/i);
   });
 });
 
@@ -362,18 +433,26 @@ describe('bullet fallback branches (synthetic fixtures)', () => {
     tool_calls_total: { n: 4, median: 10 },
     ...overrides,
   });
-  const baseSummary = (overrides) => ({
-    schema: 1,
-    summary_status: 'ok',
-    provider_mode: 'live',
-    by_runtime_arm: [
+  // 4 degenerate cells per group, each exactly at that group's own median (min=max=median) --
+  // deterministic and sufficient for these tests, none of which assert a specific range value.
+  // Callers that DO mutate by_runtime_arm after baseSummary() must call this again to keep
+  // summary.cells consistent with the group they just changed.
+  const cellsFromGroups = (groups) => groups.flatMap((g) =>
+    Array.from({ length: 4 }, (_, i) => ({ runtime_id: g.runtime_id, arm: g.arm, round_index: i, duration_ms: g.duration_ms.median }))
+  );
+  const baseSummary = (overrides) => {
+    const by_runtime_arm = [
       baseGroup('claude-code', 'product'),
       baseGroup('claude-code', 'free'),
       baseGroup('codex-cli', 'product'),
       baseGroup('codex-cli', 'free'),
       ...(overrides || []),
-    ].filter((g, i, arr) => arr.findIndex(x => x.runtime_id === g.runtime_id && x.arm === g.arm) === i),
-  });
+    ].filter((g, i, arr) => arr.findIndex(x => x.runtime_id === g.runtime_id && x.arm === g.arm) === i);
+    return {
+      schema: 1, summary_status: 'ok', provider_mode: 'live', by_runtime_arm, cells: cellsFromGroups(by_runtime_arm),
+      provenance: { kmp_test_cli_version: { values: ['0.15.0'], mixed: false } },
+    };
+  };
   const baseCostEstimate = () => {
     const cells = [];
     for (const arm of ['product', 'free']) {
@@ -388,6 +467,8 @@ describe('bullet fallback branches (synthetic fixtures)', () => {
     };
   };
 
+  const FAKE_RUNS_PATH = 'tools/runs/evidence1-agentic-benchmark-fake-date';
+
   it('bullet 1 falls back to per-agent k/n phrasing when not every group is at the key-facts ceiling', () => {
     const summary = baseSummary([
       { ...baseGroup('claude-code', 'product'), key_facts_match: { matched: 3, of: 4 } },
@@ -396,7 +477,7 @@ describe('bullet fallback branches (synthetic fixtures)', () => {
     summary.by_runtime_arm = summary.by_runtime_arm.map(g =>
       g.runtime_id === 'claude-code' && g.arm === 'product' ? { ...g, key_facts_match: { matched: 3, of: 4 } } : g
     );
-    const [bullet1] = buildBullets(summary, baseCostEstimate());
+    const [bullet1] = buildBullets(summary, baseCostEstimate(), FAKE_RUNS_PATH);
     expect(bullet1).toBe(
       'Claude Code · claude-sonnet-5 reported the key facts correctly in 3/4 sessions with kmp-test and 4/4 without; ' +
       'Codex CLI · gpt-5.6-terra reported the key facts correctly in 4/4 sessions with kmp-test and 4/4 without.'
@@ -405,20 +486,27 @@ describe('bullet fallback branches (synthetic fixtures)', () => {
     expect(bullet1).not.toContain('every session');
   });
 
-  it('the Claude bullet uses the "vs" wall-clock phrase (not "same") when its two medians differ', () => {
+  it('the Claude bullet uses the "vs" wall-clock phrase (not "same") when its two medians differ, with a per-session range and breakdown link', () => {
     const summary = baseSummary();
     summary.by_runtime_arm = summary.by_runtime_arm.map(g =>
       g.runtime_id === 'claude-code' && g.arm === 'free' ? { ...g, duration_ms: { n: 4, median: 240000 } } : g
     );
-    const [, bullet2] = buildBullets(summary, baseCostEstimate());
+    summary.cells = cellsFromGroups(summary.by_runtime_arm); // keep cells consistent with the override above
+    const [, bullet2] = buildBullets(summary, baseCostEstimate(), FAKE_RUNS_PATH);
     expect(bullet2).toContain('median wall-clock 3.0 vs 4.0 min');
     expect(bullet2).not.toContain('same median wall-clock');
+    // Degenerate synthetic cells (all 4 equal the group's own median) -> a degenerate but
+    // well-defined range, proving the range/link machinery actually fires on this branch.
+    expect(bullet2).toContain('(per-session range 3.0–3.0 vs 4.0–4.0 min; ' +
+      `[breakdown](${FAKE_RUNS_PATH}/README.md#results--campaign-16-sessions))`);
   });
 
-  it('the Codex bullet uses the "same" wall-clock phrase when its two medians are equal at 1 decimal', () => {
+  it('the Codex bullet uses the "same" wall-clock phrase when its two medians are equal at 1 decimal, with no range appended', () => {
     const summary = baseSummary();
-    const [, , bullet3] = buildBullets(summary, baseCostEstimate());
+    const [, , bullet3] = buildBullets(summary, baseCostEstimate(), FAKE_RUNS_PATH);
     expect(bullet3).toContain('same median wall-clock (3.0 min)');
+    expect(bullet3).not.toContain('per-session range');
+    expect(bullet3).not.toContain('breakdown');
     // The bullet's tool-calls clause legitimately says "... vs ..." too (a
     // different comparison) -- assert against the specific wall-clock "vs"
     // shape, not a blanket "no vs anywhere in the bullet".
@@ -439,14 +527,35 @@ describe('scorecard layout: no overlapping text', () => {
     costEstimate = loadCostEstimate(join(RUNS_DIR, 'cost-estimate.json'));
   });
 
-  it('every text baseline y within a column is >= the previous row\'s y + its font-size + 4', () => {
+  // Geometric bounding-box check, not just a sequential-Y-order check: since an arm label
+  // ("with"/"without") now sits on the SAME row as its bar and value label (by design -- see the
+  // gutter layout below), a same-row pair legitimately shares one y with a different x, which a
+  // pure Y-order check can't distinguish from a real collision. Approximate text width per the
+  // review's own formula (chars x fontSize x 0.6); approximate vertical extent as ascent above the
+  // baseline and a small descent below, which is what "y" means for SVG <text>.
+  function approxTextBox(item) {
+    const width = item.text.length * item.fontSize * 0.6;
+    const x0 = item.anchor === 'end' ? item.x - width : item.x;
+    return { x0, x1: x0 + width, y0: item.y - item.fontSize * 0.8, y1: item.y + item.fontSize * 0.25 };
+  }
+  function barBox(item) {
+    return { x0: item.x, x1: item.x + item.w, y0: item.y, y1: item.y + item.h };
+  }
+  function boxesOverlap(a, b) {
+    return a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
+  }
+
+  it('no two text boxes, and no text box and bar, overlap within a column (geometric check)', () => {
     const layout = computeScorecardLayout(summary, costEstimate);
     for (const columnId of ['claude-code', 'codex-cli']) {
-      const rows = layout.items.filter(i => i.kind === 'text' && i.column === columnId);
-      expect(rows.length).toBeGreaterThan(0);
-      for (let i = 1; i < rows.length; i++) {
-        const prev = rows[i - 1], cur = rows[i];
-        expect(cur.y, `row ${i} ("${cur.text}") in column ${columnId}`).toBeGreaterThanOrEqual(prev.y + prev.fontSize + 4);
+      const texts = layout.items.filter(i => i.kind === 'text' && i.column === columnId).map(i => ({ ...approxTextBox(i), label: i.text }));
+      const bars = layout.items.filter(i => i.kind === 'bar' && i.column === columnId).map(i => ({ ...barBox(i), label: `bar(${i.fill})@${i.y}` }));
+      const boxes = [...texts, ...bars];
+      expect(boxes.length).toBeGreaterThan(0);
+      for (let i = 0; i < boxes.length; i++) {
+        for (let j = i + 1; j < boxes.length; j++) {
+          expect(boxesOverlap(boxes[i], boxes[j]), `${columnId}: "${boxes[i].label}" overlaps "${boxes[j].label}"`).toBe(false);
+        }
       }
     }
   });
@@ -539,19 +648,41 @@ describe('SVG authoring rules (github/markup sanitizer safety)', () => {
     expect(renderScorecardSvg(summary, costEstimate)).toBe(renderScorecardSvg(summary, costEstimate));
   });
 
-  it('the "without kmp-test" color has at least 3:1 contrast against white (WCAG non-text UI floor)', () => {
-    const m = scorecardSvg.match(/fill="(#[0-9a-fA-F]{6})"\/>\s*<text[^>]*>without kmp-test<\/text>/);
+  it('the "without" bar color has at least 3:1 contrast against white (WCAG non-text UI floor)', () => {
+    // Each bar's own arm-label text (">without</text>") immediately precedes its <rect> in render
+    // order -- reads the color directly off a real bar, not a legend (removed per review: it sat
+    // far from the many bar rows it was meant to explain).
+    const m = scorecardSvg.match(/>without<\/text>\s*<rect[^>]*fill="(#[0-9a-fA-F]{6})"/);
     expect(m).not.toBeNull();
     const withoutColor = m[1];
     expect(contrastRatio(withoutColor, '#ffffff')).toBeGreaterThanOrEqual(3.0);
   });
 
-  it('the "with kmp-test" and "without kmp-test" bar colors are distinct', () => {
-    const withM = scorecardSvg.match(/fill="(#[0-9a-fA-F]{6})"\/>\s*<text[^>]*>with kmp-test<\/text>/);
-    const withoutM = scorecardSvg.match(/fill="(#[0-9a-fA-F]{6})"\/>\s*<text[^>]*>without kmp-test<\/text>/);
+  it('the "with" and "without" bar colors are distinct', () => {
+    const withM = scorecardSvg.match(/>with<\/text>\s*<rect[^>]*fill="(#[0-9a-fA-F]{6})"/);
+    const withoutM = scorecardSvg.match(/>without<\/text>\s*<rect[^>]*fill="(#[0-9a-fA-F]{6})"/);
     expect(withM).not.toBeNull();
     expect(withoutM).not.toBeNull();
     expect(withM[1]).not.toBe(withoutM[1]);
+  });
+
+  it('every bar row is labelled with exactly one matching arm label ("with" next to a with-color bar, "without" next to a without-color bar), and no legend remains', () => {
+    // The legend's own swatch used rx="2" (bars use rx="3") -- its unique structural signature,
+    // now gone entirely. Not a bare substring ban on "with kmp-test": that phrase legitimately
+    // still appears in the <desc> alt text's key-facts line ("key facts 4/4 with kmp-test, ..."),
+    // which has nothing to do with the removed corner legend.
+    expect(scorecardSvg).not.toMatch(/rx="2"/);
+    const withCount = (scorecardSvg.match(/>with<\/text>/g) || []).length;
+    const withoutCount = (scorecardSvg.match(/>without<\/text>/g) || []).length;
+    const barCount = (scorecardSvg.match(/<rect x="\d+(?:\.\d+)?" y="\d+(?:\.\d+)?" width="[\d.]+" height="14"/g) || []).length;
+    // 2 columns x 3 bar metrics (tool calls, wall-clock, cost) x 2 arms = 12 "with"/"without" bars
+    // each, minus Codex's cost metric (no bars, "not estimated" instead) = 5 bars per arm per column
+    // pairing... expressed simply: every "with" bar has a "with" label, every "without" bar has a
+    // "without" label, one each, so the counts must be equal to each other and to the number of
+    // 14px-tall bar rects actually rendered.
+    expect(withCount).toBe(withoutCount);
+    expect(withCount).toBeGreaterThan(0);
+    expect(barCount).toBe(withCount + withoutCount);
   });
 });
 
