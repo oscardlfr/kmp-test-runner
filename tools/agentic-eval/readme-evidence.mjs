@@ -530,6 +530,311 @@ export function buildScorecardAlt(summary, costEstimate) {
 }
 
 // ---------------------------------------------------------------------------
+// metrics-grid.svg -- small multiples beyond the scorecard's pre-registered
+// key facts / tool calls / wall-clock / cost. Everything in this grid is
+// DESCRIPTIVE (not part of the pre-registered design) and labeled as such.
+//
+// Every session is a mark: a scalar metric (wall-clock, cost, turns) gets a
+// dot; a composite metric (tokens by type, tool calls by kind) gets a thin
+// stacked bar. campaign-summary.mjs does not aggregate every metric this
+// grid wants at per-session granularity today -- only duration_ms and
+// tool_calls_total live in cells[] (everything else is a run-level aggregate
+// in by_runtime_arm, or (tokens by type, reasoning tokens, turns,
+// output_bytes, command identity) not present at all yet). Rather than
+// fabricate n identical fake dots from a single aggregate number, a metric
+// with no per-session data renders ONE range mark (min-median-max) visually
+// distinct from a dot cluster, clearly labeled "campaign aggregate, not
+// per-session"; a metric with no data at all renders "not available for this
+// campaign" text, and tool-result volume (the one metric explicitly gated on
+// availability) is omitted from the grid entirely rather than showing either.
+
+const GRID_W = SCORECARD_W;
+const GRID_ROW_LABEL_W = 190;
+const GRID_LANE_W = 120;
+const GRID_LANE_GAP = 18;
+const GRID_ROW_H = 64;
+const GRID_DOT_R = 3;
+const GRID_STACK_W = 10;
+const TOKEN_TYPE_COLORS = {
+  input: '#8250df', cached_input: '#0969da', cache_write: '#1a7f37', output: '#bc4c00', reasoning_output: '#cf222e',
+};
+const TOKEN_TYPE_ORDER = ['input', 'cached_input', 'cache_write', 'reasoning_output', 'output'];
+const COMMAND_KIND_COLORS = { kmp_test: '#0969da', gradle: '#bc4c00', other: '#59636e' };
+
+function medianOf(values) {
+  if (!values || values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+// Counted cells (accepted or negative-D3; never 'missing') for one (runtime, arm) -- the same
+// population by_runtime_arm's own aggregate stats are computed over, so a per-session mark set and
+// an aggregate fallback for the SAME metric are never comparing different denominators.
+function countedCells(summary, runtimeId, arm) {
+  return (summary.cells || []).filter((c) => c.runtime_id === runtimeId && c.arm === arm && c.status !== 'missing');
+}
+
+// A scalar metric's per-session values when every counted cell carries `cellField`; otherwise the
+// run-level aggregate (median/min/max) `aggregateField` already provides. Never a partial mix of
+// some real dots and some inferred ones for the same lane.
+function scalarMetric(summary, group, runtimeId, arm, cellField, aggregateOf) {
+  const cells = countedCells(summary, runtimeId, arm);
+  if (cells.length > 0 && cells.every((c) => typeof c[cellField] === 'number')) {
+    const values = cells.map((c) => c[cellField]);
+    return { kind: 'per-session', values, median: medianOf(values) };
+  }
+  const agg = aggregateOf(group);
+  if (agg && typeof agg.median === 'number' && typeof agg.min === 'number' && typeof agg.max === 'number') {
+    return { kind: 'aggregate', min: agg.min, median: agg.median, max: agg.max };
+  }
+  return { kind: 'unavailable' };
+}
+
+// A composite metric's per-session segments (one {type,value} array per session) when every
+// counted cell carries `cellField` as an object; otherwise ONE segment array built from the
+// run-level aggregate's own per-type medians (by_runtime_arm.tokens.<type>.median), when that
+// aggregate exists.
+// Distinct kind labels from scalarMetric()'s 'per-session'/'aggregate' -- a stacked result's
+// payload shape (sessions: array-of-segment-arrays, or segments: one segment array) is structurally
+// different from a scalar's (values: number[], or min/median/max), and reusing the same kind
+// strings for both was a real bug caught in the real-data preview: yScaleFor's scalar branch read
+// stacked payloads through the wrong shape and silently produced a NaN/1 scale, exploding every
+// bar's height by orders of magnitude. Keeping the labels distinct makes that class of mismatch a
+// missing-branch/undefined error instead of a silent wrong number.
+function stackedMetric(summary, group, runtimeId, arm, cellField, types, aggregateOf) {
+  const cells = countedCells(summary, runtimeId, arm);
+  if (cells.length > 0 && cells.every((c) => c[cellField] && typeof c[cellField] === 'object')) {
+    const sessions = cells.map((c) => types.map((t) => ({ type: t, value: Number(c[cellField][t]) || 0 })));
+    return { kind: 'stack-per-session', sessions };
+  }
+  const agg = aggregateOf(group);
+  if (agg) {
+    const segments = types.map((t) => ({ type: t, value: agg[t] && typeof agg[t].median === 'number' ? agg[t].median : 0 }));
+    if (segments.some((s) => s.value > 0)) return { kind: 'stack-aggregate', segments };
+  }
+  return { kind: 'unavailable' };
+}
+
+function commandKindAggregate(group) {
+  const mix = group.kmp_test_vs_gradle;
+  if (!mix || mix.available === false) return null;
+  const n = Math.max(group.counted, 1);
+  return {
+    kmp_test: { median: mix.kmp_test_count / n },
+    gradle: { median: mix.gradle_count / n },
+    other: { median: 0 }, // campaign-summary.mjs does not currently track a 3rd bucket -- see inventory
+  };
+}
+
+// Claude/Codex per-session cost from cost-estimate.json's own cells[] (already per-session,
+// independent of whether campaign-summary aggregates tokens per-session) -- provider-reported
+// total_cost_usd is preferred when every counted cell carries it, matching the design's "Claude
+// from the provider-reported value where present, otherwise the estimate" rule generalized to any
+// runtime; Codex (and Claude with no provider figure) uses the existing estimate mechanism.
+function costMetric(summary, group, runtimeId, arm, costEstimate) {
+  const cells = countedCells(summary, runtimeId, arm);
+  if (cells.length > 0 && cells.every((c) => typeof c.total_cost_usd === 'number')) {
+    const values = cells.map((c) => c.total_cost_usd);
+    return { kind: 'per-session', values, median: medianOf(values), provider: true };
+  }
+  const priced = costEstimate.schema === 1 && runtimeId === 'claude-code'
+    ? costEstimate.cells.filter((c) => c.runtime_id === 'claude-code' && c.arm === arm)
+    : hasV2Cost(costEstimate, runtimeId) ? costEstimate.runtimes[runtimeId].cells.filter((c) => c.arm === arm) : null;
+  if (!priced || priced.length === 0) return { kind: 'unavailable' };
+  const price = costEstimate.schema === 1 ? costEstimate.pricing.per_million_tokens : costEstimate.runtimes[runtimeId].per_million_tokens;
+  const uncachedMayBeCacheWrites = costEstimate.schema === 2 && costEstimate.runtimes[runtimeId].uncached_input_may_be_cache_writes === true;
+  const highInputPrice = uncachedMayBeCacheWrites ? Math.max(price.cache_write_5m, price.cache_write_1h) : price.input;
+  // Point estimate per session (not the existing low/high range): the 5m/1h cache-write TTL
+  // ambiguity is a single-number uncertainty band already shown on the scorecard's own cost bar,
+  // not a per-session distribution -- this grid plots the mid-TTL price so n dots is a real
+  // per-session spread, not n copies of the same range collapsed to one number.
+  const values = priced.map((c) => sessionCost(c.tokens, price, 'cache_write_5m', highInputPrice));
+  return { kind: 'per-session', values, median: medianOf(values), provider: false };
+}
+
+function yScaleFor(marks) {
+  let max = 0;
+  for (const m of marks) {
+    if (m.kind === 'per-session') max = Math.max(max, ...m.values);
+    else if (m.kind === 'aggregate') max = Math.max(max, m.max);
+    else if (m.kind === 'stack-per-session') max = Math.max(max, ...m.sessions.map((s) => s.reduce((a, b) => a + b.value, 0)));
+    else if (m.kind === 'stack-aggregate') max = Math.max(max, m.segments.reduce((a, b) => a + b.value, 0));
+  }
+  return max > 0 ? max : 1;
+}
+
+// One row's SVG items for one runtime column: a dot cluster / stacked-bar cluster / range mark /
+// "not available" text, for each of the with/without lanes, sharing one y-scale across both lanes
+// (and, for stacked metrics, one color legend) so the two lanes are visually comparable.
+function renderMetricRow(colX, rowY, label, unit, descriptive, withMetric, withoutMetric, isStack, typeColors) {
+  const items = [];
+  const labelFS = 13;
+  items.push(textItem('gridRowLabel', null, colX, rowY + 13, labelFS, 500, COLOR_TEXT, descriptive ? `${label} (descriptive)` : label));
+
+  if (withMetric.kind === 'unavailable' && withoutMetric.kind === 'unavailable') {
+    items.push(textItem('gridNotAvailable', null, colX, rowY + 32, 12, 400, COLOR_SECONDARY, 'not available for this campaign'));
+    return { items, rowHeight: 48 };
+  }
+
+  const laneTop = rowY + 22;
+  const laneH = GRID_ROW_H - 30;
+  const scale = yScaleFor([withMetric, withoutMetric]);
+  const yFor = (v) => laneTop + laneH - (v / scale) * laneH;
+
+  const lanes = [{ x: colX, m: withMetric, arm: 'with' }, { x: colX + GRID_LANE_W + GRID_LANE_GAP, m: withoutMetric, arm: 'without' }];
+  for (const lane of lanes) {
+    items.push(textItem('gridLaneLabel', null, lane.x, laneTop + laneH + 14, 11, 400, COLOR_SECONDARY, lane.arm));
+    if (lane.m.kind === 'unavailable') {
+      items.push(textItem('gridNotAvailable', null, lane.x, laneTop + laneH / 2, 11, 400, COLOR_SECONDARY, 'n/a'));
+      continue;
+    }
+    if (isStack) {
+      const sessionsToPlot = lane.m.kind === 'stack-per-session' ? lane.m.sessions : [lane.m.segments];
+      const n = sessionsToPlot.length;
+      const spacing = Math.min(GRID_STACK_W + 4, GRID_LANE_W / Math.max(n, 1));
+      const startX = lane.x + GRID_LANE_W / 2 - (n - 1) * spacing / 2;
+      sessionsToPlot.forEach((segments, i) => {
+        let yCursor = laneTop + laneH;
+        for (const seg of segments) {
+          if (seg.value <= 0) continue;
+          const segH = (seg.value / scale) * laneH;
+          items.push({ kind: 'bar', column: null, x: startX + i * spacing - GRID_STACK_W / 2, y: yCursor - segH, w: GRID_STACK_W, h: segH, rx: 1, fill: typeColors[seg.type] || COLOR_SECONDARY });
+          yCursor -= segH;
+        }
+      });
+      if (lane.m.kind === 'stack-aggregate') {
+        items.push(textItem('gridAggregateNote', null, lane.x, laneTop - 4, 10, 400, COLOR_SECONDARY, 'campaign median (not per-session)'));
+      }
+    } else if (lane.m.kind === 'per-session') {
+      const n = lane.m.values.length;
+      const spacing = Math.min(24, GRID_LANE_W / Math.max(n, 1));
+      const startX = lane.x + GRID_LANE_W / 2 - (n - 1) * spacing / 2;
+      lane.m.values.forEach((v, i) => {
+        items.push({ kind: 'dot', column: null, cx: startX + i * spacing, cy: yFor(v), r: GRID_DOT_R, fill: COLOR_WITH });
+      });
+      const medianY = yFor(lane.m.median);
+      items.push({ kind: 'medianTick', column: null, x1: lane.x + 4, x2: lane.x + GRID_LANE_W - 4, y: medianY });
+    } else if (lane.m.kind === 'aggregate') {
+      const yMin = yFor(lane.m.min), yMax = yFor(lane.m.max), yMed = yFor(lane.m.median);
+      const cx = lane.x + GRID_LANE_W / 2;
+      items.push({ kind: 'rangeLine', column: null, x: cx, y1: yMin, y2: yMax });
+      items.push({ kind: 'medianTick', column: null, x1: cx - 14, x2: cx + 14, y: yMed });
+      items.push(textItem('gridAggregateNote', null, lane.x, laneTop - 4, 10, 400, COLOR_SECONDARY, 'campaign range (not per-session)'));
+    }
+  }
+
+  const valueLabel = isStack ? '' : `median ${fmtGridValue(withMetric)} vs ${fmtGridValue(withoutMetric)}${unit ? ' ' + unit : ''}`;
+  if (valueLabel) items.push(textItem('gridValueLabel', null, colX, rowY + GRID_ROW_H - 4, 11, 400, COLOR_SECONDARY, valueLabel));
+
+  return { items, rowHeight: GRID_ROW_H };
+}
+
+function fmtGridValue(metric) {
+  if (metric.kind === 'unavailable') return 'n/a';
+  const v = metric.kind === 'per-session' ? metric.median : metric.median;
+  return typeof v === 'number' ? (Number.isInteger(v) ? String(v) : v.toFixed(2)) : 'n/a';
+}
+
+// One runtime's full row set: tokens (stack), tool calls by kind (stack), wall-clock (dot), cost
+// (dot), turns (dot). Tool-result volume is appended by the caller only when at least one runtime
+// actually has it, per the design's explicit "chart only if reliably measurable" rule.
+function buildMetricRowsForRuntime(runtimeId, summary, costEstimate) {
+  const gp = findGroup(summary, runtimeId, 'product');
+  const gf = findGroup(summary, runtimeId, 'free');
+  const tokenTypes = runtimeId === 'claude-code' ? ['input', 'cached_input', 'cache_write', 'output'] : TOKEN_TYPE_ORDER;
+  const rows = [
+    {
+      label: 'Tokens per session, by type', isStack: true, typeColors: TOKEN_TYPE_COLORS,
+      with: stackedMetric(summary, gp, runtimeId, 'product', 'tokens', tokenTypes, (g) => g.tokens),
+      without: stackedMetric(summary, gf, runtimeId, 'free', 'tokens', tokenTypes, (g) => g.tokens),
+    },
+    {
+      label: 'Tool calls by kind', isStack: true, typeColors: COMMAND_KIND_COLORS,
+      with: stackedMetric(summary, gp, runtimeId, 'product', 'command_kind_counts', ['kmp_test', 'gradle', 'other'], commandKindAggregate),
+      without: stackedMetric(summary, gf, runtimeId, 'free', 'command_kind_counts', ['kmp_test', 'gradle', 'other'], commandKindAggregate),
+    },
+    {
+      label: 'Wall-clock', unit: 'ms', isStack: false,
+      with: scalarMetric(summary, gp, runtimeId, 'product', 'duration_ms', (g) => g.duration_ms),
+      without: scalarMetric(summary, gf, runtimeId, 'free', 'duration_ms', (g) => g.duration_ms),
+    },
+    {
+      label: 'Estimated API cost', unit: 'USD', isStack: false,
+      with: costMetric(summary, gp, runtimeId, 'product', costEstimate),
+      without: costMetric(summary, gf, runtimeId, 'free', costEstimate),
+    },
+    {
+      label: 'Turns', unit: '', isStack: false,
+      with: scalarMetric(summary, gp, runtimeId, 'product', 'num_turns', () => null),
+      without: scalarMetric(summary, gf, runtimeId, 'free', 'num_turns', () => null),
+    },
+  ];
+  const toolResultVolume = {
+    label: 'Tool-result bytes fed back to the model', unit: 'bytes', isStack: false,
+    with: scalarMetric(summary, gp, runtimeId, 'product', 'output_bytes', () => null),
+    without: scalarMetric(summary, gf, runtimeId, 'free', 'output_bytes', () => null),
+  };
+  const hasToolResultVolume = toolResultVolume.with.kind !== 'unavailable' || toolResultVolume.without.kind !== 'unavailable';
+  return hasToolResultVolume ? [...rows, toolResultVolume] : rows;
+}
+
+export function computeMetricsGridLayout(summary, costEstimate) {
+  const items = [];
+  const titleFS = 20;
+  const titleY = PAD + titleFS;
+  items.push(textItem('gridTitle', null, PAD, titleY, titleFS, 600, COLOR_TEXT, 'Session detail (descriptive)'));
+  const subtitleFS = 13;
+  const subtitleY = titleY + ROW_GAP + subtitleFS;
+  items.push(textItem('gridSubtitle', null, PAD, subtitleY, subtitleFS, 400, COLOR_SECONDARY,
+    'Every metric below is descriptive, not part of the pre-registered design. Dots are real sessions; a range mark is a campaign aggregate, not per-session.'));
+  const headerBottom = subtitleY + ROW_GAP + 8;
+
+  const columns = RUNTIME_ORDER.map((id, i) => ({ id, x: i === 0 ? PAD : PAD + COLUMN_W + COLUMN_GAP }));
+  const columnBottoms = [];
+  for (const col of columns) {
+    let cy = headerBottom;
+    const panelTitleFS = 14;
+    items.push(textItem('gridPanelTitle', col.id, col.x, cy + panelTitleFS, panelTitleFS, 600, COLOR_TEXT,
+      summary.schema === 2 ? `${RUNTIME_DISPLAY_NAME[col.id]} · ${provenanceValue(summary, 'model_resolved', col.id)}` : RUNTIME_DISPLAY_NAME[col.id]));
+    cy += panelTitleFS + ROW_GAP;
+    for (const row of buildMetricRowsForRuntime(col.id, summary, costEstimate)) {
+      const { items: rowItems, rowHeight } = renderMetricRow(col.x, cy, row.label, row.unit, true, row.with, row.without, row.isStack, row.typeColors);
+      items.push(...rowItems);
+      cy += rowHeight;
+    }
+    columnBottoms.push(cy);
+  }
+  const height = Math.round(Math.max(...columnBottoms) + PAD);
+  return { width: GRID_W, height, items };
+}
+
+export function renderMetricsGridSvg(summary, costEstimate) {
+  const layout = computeMetricsGridLayout(summary, costEstimate);
+  const parts = [];
+  for (const item of layout.items) {
+    if (item.kind === 'text') {
+      const anchorAttr = item.anchor !== 'start' ? ` text-anchor="${item.anchor}"` : '';
+      parts.push(`<text x="${item.x}" y="${item.y.toFixed(1)}" font-size="${item.fontSize}" font-weight="${item.fontWeight}" fill="${item.fill}"${anchorAttr}>${escapeXml(item.text)}</text>`);
+    } else if (item.kind === 'bar') {
+      parts.push(`<rect x="${item.x.toFixed(1)}" y="${item.y.toFixed(1)}" width="${item.w}" height="${item.h.toFixed(1)}" rx="${item.rx}" fill="${item.fill}"/>`);
+    } else if (item.kind === 'dot') {
+      parts.push(`<circle cx="${item.cx.toFixed(1)}" cy="${item.cy.toFixed(1)}" r="${item.r}" fill="${item.fill}"/>`);
+    } else if (item.kind === 'medianTick') {
+      parts.push(`<line x1="${item.x1.toFixed(1)}" x2="${item.x2.toFixed(1)}" y1="${item.y.toFixed(1)}" y2="${item.y.toFixed(1)}" stroke="${COLOR_TEXT}" stroke-width="2"/>`);
+    } else if (item.kind === 'rangeLine') {
+      parts.push(`<line x1="${item.x.toFixed(1)}" x2="${item.x.toFixed(1)}" y1="${item.y1.toFixed(1)}" y2="${item.y2.toFixed(1)}" stroke="${COLOR_SECONDARY}" stroke-width="2"/>`);
+    }
+  }
+  return `<svg viewBox="0 0 ${layout.width} ${layout.height}" width="${layout.width}" height="${layout.height}" xmlns="http://www.w3.org/2000/svg" role="img" font-family="${FONT_STACK}">
+  <title>Session detail (descriptive)</title>
+  <rect x="1" y="1" width="${layout.width - 2}" height="${layout.height - 2}" rx="12" fill="${COLOR_CARD_FILL}" stroke="${COLOR_CARD_STROKE}" stroke-width="1"/>
+  ${parts.join('\n  ')}
+</svg>
+`;
+}
+
+// ---------------------------------------------------------------------------
 // README bullets -- three data-driven sentences, no hard-coded numbers.
 
 // The evidence doc's own "## Results — campaign (16 sessions)" heading, hand-authored (not
@@ -666,6 +971,8 @@ kmp-test hands an agent the test and coverage verdict as one JSON envelope inste
 
 ![${buildScorecardAlt(summary, costEstimate)}](${runsPath}/scorecard.svg)
 
+![Session detail (descriptive, not part of the pre-registered design): per-session tokens, tool calls, wall-clock, cost and turns for both agents, with vs without kmp-test.](${runsPath}/metrics-grid.svg)
+
 - ${bullet1}
 - ${bullet2}
 - ${bullet3}
@@ -709,13 +1016,16 @@ function main(argv) {
   }
 
   const scorecardSvg = renderScorecardSvg(summary, costEstimate);
+  const metricsGridSvg = renderMetricsGridSvg(summary, costEstimate);
   const block = renderReadmeBlock(summary, campaignDate, costEstimate);
 
   const scorecardPath = join(runsDir, 'scorecard.svg');
+  const metricsGridPath = join(runsDir, 'metrics-grid.svg');
   const readmePath = join(REPO_ROOT, 'README.md');
 
   if (mode === 'write') {
     writeFileSync(scorecardPath, scorecardSvg);
+    writeFileSync(metricsGridPath, metricsGridSvg);
     const readme = readFileSync(readmePath, 'utf8');
     const startMarker = '<!-- agentic-benchmark:start';
     const endMarker = '<!-- agentic-benchmark:end -->';
@@ -728,13 +1038,14 @@ function main(argv) {
     const before = readme.slice(0, startIdx);
     const after = readme.slice(endIdx + endMarker.length);
     writeFileSync(readmePath, before + block + after);
-    console.log(`Wrote ${scorecardPath}\nUpdated README.md block`);
+    console.log(`Wrote ${scorecardPath}\nWrote ${metricsGridPath}\nUpdated README.md block`);
     return;
   }
 
   // check mode: regenerate and diff against what's committed
   let mismatches = [];
   if (!existsSync(scorecardPath) || readFileSync(scorecardPath, 'utf8') !== scorecardSvg) mismatches.push(scorecardPath);
+  if (!existsSync(metricsGridPath) || readFileSync(metricsGridPath, 'utf8') !== metricsGridSvg) mismatches.push(metricsGridPath);
   const readme = existsSync(readmePath) ? readFileSync(readmePath, 'utf8') : '';
   const startMarker = '<!-- agentic-benchmark:start';
   const endMarker = '<!-- agentic-benchmark:end -->';

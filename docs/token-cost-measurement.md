@@ -5,6 +5,19 @@ is intentionally more detailed than the README: definitions, sample selection,
 tokenizers, chunking, provenance, reproduction commands, and caveats all live
 here so the README can stay short and timeless.
 
+## Summary table
+
+The measurements compare three strategies: **A** raw `./gradlew` plus generated report files, **B** `kmp-test <feature>` markdown, and **C** `kmp-test <feature> --json`. Approach C is the intended agent path.
+
+| Measurement | Sample | A baseline | C JSON | A:C reduction | Evidence |
+|-------------|--------|-----------:|-------:|--------------:|----------|
+| `parallel`, small projects | 3 OSS projects, 1-5 modules | 24,454 | 338 | 56.6x median | [aggregate](../tools/runs/multi-project-token-cost-2026-05-18/aggregate-2026-05-18.md) |
+| `parallel`, medium projects | 2 OSS projects, 6-20 modules | 427,586 | 4,499 | 90.0x median | [aggregate](../tools/runs/multi-project-token-cost-2026-05-18/aggregate-2026-05-18.md) |
+| `parallel`, large project | NowInAndroid, 36 modules | 226,291 | 1,839 | 123.1x | [aggregate](../tools/runs/multi-project-token-cost-2026-05-18/aggregate-2026-05-18.md), [cross-model](../tools/runs/cross-model-results-parallel.txt) |
+| `coverage`, large configured composite | `private-large-A`, ~70 modules with Kover | 28,754,177 | 734 | 39,175x | [cross-model](../tools/runs/cross-model-results-coverage.txt) |
+
+The `coverage` row is the outlier and the clearest stress case: raw Gradle plus Kover HTML/XML produced a 74 MB capture that Anthropic's token-count endpoint rejected as too large in one request; chunked counting recovered the value. The same run through `kmp-test coverage --json` fit in 734 `cl100k_base` tokens. That is a within-project comparison, not a cross-project ratio.
+
 ## Measurement status
 
 The current README numbers reuse committed evidence rather than a fresh full

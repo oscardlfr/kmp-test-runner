@@ -13,6 +13,8 @@ kmp-test hands an agent the test and coverage verdict as one JSON envelope inste
 
 ![Claude Code · claude-sonnet-5 — key facts 4/4 with kmp-test, 4/4 without; tool calls per session (median): 4 with kmp-test, 13 without; wall-clock per session (median): 3.2 min with kmp-test, 3.2 min without; estimated API cost per session: $0.09–$0.14 with kmp-test, $0.15–$0.22 without. Codex CLI · gpt-5.6-terra — key facts 4/4 with kmp-test, 4/4 without; tool calls per session (median): 13 with kmp-test, 12 without; wall-clock per session (median): 4.8 min with kmp-test, 3.7 min without; estimated API cost per session: not estimated.](tools/runs/evidence1-agentic-benchmark-2026-09-28/scorecard.svg)
 
+![Session detail (descriptive, not part of the pre-registered design): per-session tokens, tool calls, wall-clock, cost and turns for both agents, with vs without kmp-test.](tools/runs/evidence1-agentic-benchmark-2026-09-28/metrics-grid.svg)
+
 - Both agents reported the key facts correctly in every session, with and without kmp-test (16/16).
 - Claude Code (Sonnet 5) with kmp-test: median 4 tool calls vs 13 without, same median wall-clock (3.2 min), estimated API cost $0.09–$0.14 vs $0.15–$0.22 per session.
 - Codex CLI (gpt-5.6-terra, low reasoning effort): median 13 tool calls with kmp-test vs 12 without; median wall-clock 4.8 vs 3.7 min (per-session range 3.3–7.9 vs 3.3–4.2 min; [breakdown](tools/runs/evidence1-agentic-benchmark-2026-09-28/README.md#results--campaign-16-sessions)).
@@ -22,18 +24,7 @@ kmp-test hands an agent the test and coverage verdict as one JSON envelope inste
 
 ### Command output size: raw Gradle vs `kmp-test --json`
 
-The measurements compare three strategies: **A** raw `./gradlew` plus generated report files, **B** `kmp-test <feature>` markdown, and **C** `kmp-test <feature> --json`. Approach C is the intended agent path.
-
-| Measurement | Sample | A baseline | C JSON | A:C reduction | Evidence |
-|-------------|--------|-----------:|-------:|--------------:|----------|
-| `parallel`, small projects | 3 OSS projects, 1-5 modules | 24,454 | 338 | 56.6x median | [aggregate](tools/runs/multi-project-token-cost-2026-05-18/aggregate-2026-05-18.md) |
-| `parallel`, medium projects | 2 OSS projects, 6-20 modules | 427,586 | 4,499 | 90.0x median | [aggregate](tools/runs/multi-project-token-cost-2026-05-18/aggregate-2026-05-18.md) |
-| `parallel`, large project | NowInAndroid, 36 modules | 226,291 | 1,839 | 123.1x | [aggregate](tools/runs/multi-project-token-cost-2026-05-18/aggregate-2026-05-18.md), [cross-model](tools/runs/cross-model-results-parallel.txt) |
-| `coverage`, large configured composite | `private-large-A`, ~70 modules with Kover | 28,754,177 | 734 | 39,175x | [cross-model](tools/runs/cross-model-results-coverage.txt) |
-
-The `coverage` row is the outlier and the clearest stress case: raw Gradle plus Kover HTML/XML produced a 74 MB capture that Anthropic's token-count endpoint rejected as too large in one request; chunked counting recovered the value. The same run through `kmp-test coverage --json` fit in 734 `cl100k_base` tokens. That is a within-project comparison, not a cross-project ratio.
-
-Full methodology, provenance, tokenizer notes, reproduction commands, caveats, and the anonymized/private-reference rules live in [docs/token-cost-measurement.md](docs/token-cost-measurement.md). The README keeps only the decision-grade numbers.
+Raw Gradle output is large enough to blow past a model's context window on some commands; `kmp-test --json` collapses it to a single-line envelope. Measured reduction ranges from 56x on small projects to 39,175x on a large Kover coverage capture — full comparison table, methodology, provenance, and reproduction commands are in [docs/token-cost-measurement.md](docs/token-cost-measurement.md).
 
 Per-version detail and migration notes are in [`CHANGELOG.md`](CHANGELOG.md).
 
