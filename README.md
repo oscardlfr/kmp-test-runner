@@ -760,7 +760,7 @@ pluginManagement {
 In `build.gradle.kts`:
 ```kotlin
 plugins {
-    id("io.github.oscardlfr.kmp-test-runner") version "0.15.0"
+    id("io.github.oscardlfr.kmp-test-runner") version "0.15.1"
 }
 
 kmpTestRunner {

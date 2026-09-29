@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.1] — 2026-09-29
+
+0.15.0 reached GitHub Releases and GitHub Packages but never npm (see "Fixed — 0.15.0 never
+reached npm" below), so for npm users this release carries the 0.15.0 changes for the first time —
+read the [0.15.0 upgrade notes](#0150--2026-09-28) before upgrading from 0.14.x. No product
+behavior change under `lib/`, `bin/` or `scripts/` since the `v0.15.0` tag: the only edits are
+comments.
+
 ### Added — README publishes one pre-registered agentic benchmark scenario
 
 Claude Code and Codex CLI each ran the same pre-registered coverage-gate scenario on a pinned
