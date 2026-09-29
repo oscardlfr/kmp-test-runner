@@ -450,6 +450,27 @@ describe('evidence2-tables.mjs (WO-C16): golden n=4-per-arm campaign, real summa
       expect(block).toContain('Excluded cells: none.'); // real classifier output on this fixture: every cell "unknown"
     });
   });
+
+  // WO-C16 follow-up: every table-row builder here used ['', ...fields, ''].join(' | '), producing
+  // " | a | b | c | " (leading space, trailing "| ") instead of a clean "| a | b | c |". Checked
+  // across all four row-producing tables (per-cell, aggregate, sensitivity -- which reuses the
+  // aggregate builder -- and cost), on the TRIMMED line (a still-buggy row still trims to start
+  // with '|', so filtering on the raw line would silently exclude exactly the rows this exists to
+  // catch, the same mistake almost made in campaign-summary.mjs's own version of this test).
+  it('every data row in every table has no leading space and no trailing "| "', () => {
+    withTempDir((dir) => {
+      writeGoldenCampaign(dir);
+      const costResult = buildCostEstimate(dir);
+      const infraFlake = classifyCampaign(dir);
+      const block = buildEvidence2TablesFromCampaign(dir, costResult.doc, infraFlake);
+      const dataRows = block.split('\n').filter((l) => l.trim().startsWith('|') && !l.includes('---') && !l.trim().startsWith('| runtime'));
+      expect(dataRows.length).toBeGreaterThan(0);
+      for (const row of dataRows) {
+        expect(row, `row "${row}" does not start exactly with "| "`).toMatch(/^\| \S/);
+        expect(row, `row "${row}" does not end exactly with " |"`).toMatch(/\S \|$/);
+      }
+    });
+  });
 });
 
 describe('CLI entry point -- real `node evidence2-tables.mjs <campaign-dir> <target-doc>` subprocess invocation', () => {
@@ -491,12 +512,58 @@ describe('CLI entry point -- real `node evidence2-tables.mjs <campaign-dir> <tar
     });
   });
 
-  it('exits 1 with usage text when the target-doc argument is missing -- never a silent no-op', () => {
+  // WO-C16 follow-up: target-doc is now optional, defaulting to
+  // tools/runs/evidence2-agentic-benchmark-<date>/README.md (REPO_ROOT-relative, mirroring
+  // Evidence1's own layout -- the auditor's own instruction; that path doesn't exist in this repo
+  // checkout yet, confirmed directly, since the real campaign it's built from hasn't run). Checked
+  // via the check-mode error message naming the exact computed path, not by requiring the file to
+  // exist -- this test only needs to prove the DEFAULT PATH ITSELF is computed correctly.
+  it('omitting target-doc falls back to the default tools/runs/evidence2-agentic-benchmark-<date>/README.md path', () => {
     withTempDir((dir) => {
       writeGoldenCampaign(dir);
       const result = spawnSync(process.execPath, [EVIDENCE2_TABLES_SCRIPT, dir], { encoding: 'utf8' });
+      expect(result.status).toBe(1); // that default doc doesn't exist pre-campaign -- "out of date", not a crash
+      expect(result.stderr).toContain(path.join('tools', 'runs', 'evidence2-agentic-benchmark-2026-09-30', 'README.md'));
+    });
+  });
+
+  it('--date=<yyyy-mm-dd> changes the default target-doc path to that date', () => {
+    withTempDir((dir) => {
+      writeGoldenCampaign(dir);
+      const result = spawnSync(process.execPath, [EVIDENCE2_TABLES_SCRIPT, dir, '--date=2027-01-01'], { encoding: 'utf8' });
       expect(result.status).toBe(1);
-      expect(result.stderr).toContain('usage:');
+      expect(result.stderr).toContain(path.join('tools', 'runs', 'evidence2-agentic-benchmark-2027-01-01', 'README.md'));
+    });
+  });
+
+  it('an explicit target-doc argument still overrides the default', () => {
+    withTempDir((dir) => {
+      writeGoldenCampaign(dir);
+      const explicitDoc = path.join(dir, 'explicit-target.md');
+      const result = spawnSync(process.execPath, [EVIDENCE2_TABLES_SCRIPT, dir, explicitDoc], { encoding: 'utf8' });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(explicitDoc);
+      expect(result.stderr).not.toContain('evidence2-agentic-benchmark-2026-09-30');
+    });
+  });
+
+  it('exits 1 with usage text when campaign-dir itself is missing -- never a silent no-op', () => {
+    const result = spawnSync(process.execPath, [EVIDENCE2_TABLES_SCRIPT], { encoding: 'utf8' });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('usage:');
+  });
+
+  it('--cost-estimate/--infra-flake value tokens never leak into the positional target-doc slot when target-doc is omitted', () => {
+    withTempDir((dir) => {
+      writeGoldenCampaign(dir);
+      const costResult = buildCostEstimate(dir);
+      const costPath = path.join(dir, 'cost-estimate.json');
+      writeFileSync(costPath, JSON.stringify(costResult.doc, null, 2));
+      // No target-doc given -- --cost-estimate's OWN value (costPath) must never be mistaken for it.
+      const result = spawnSync(process.execPath, [EVIDENCE2_TABLES_SCRIPT, dir, '--cost-estimate', costPath], { encoding: 'utf8' });
+      expect(result.status).toBe(1);
+      expect(result.stderr).not.toContain(costPath);
+      expect(result.stderr).toContain(path.join('tools', 'runs', 'evidence2-agentic-benchmark-2026-09-30', 'README.md'));
     });
   });
 

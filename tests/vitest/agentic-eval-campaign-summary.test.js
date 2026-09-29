@@ -575,6 +575,29 @@ describe('summarizeCampaign -- determinism and privacy', () => {
       expect(markdown).not.toMatch(/C:\\/);
     });
   });
+
+  // WO-C16 follow-up: both table row builders used ['', ...fields, ''].join(' | '), producing
+  // " | a | b | c | " (a leading space, a trailing "| ") instead of the clean "| a | b | c |" every
+  // other Markdown table in this file family (readme-evidence.mjs's own scorecard/grid legends,
+  // evidence2-tables.mjs) already produces. Cosmetic, but the auditor flagged it as unprofessional
+  // in the generated evidence doc -- checked here on a real row, not just "doesn't crash".
+  it('every data row in both tables (By runtime/arm, Per-cell detail) has no leading space and no trailing "| " -- starts "| ", ends "|" with no space before it', () => {
+    withTempDir((dir) => {
+      writeManifest(dir, { runtimes: [{ runtime_id: 'claude-code', model_id: 'claude-sonnet-5', campaign_design_id: 'claude-product-vs-free-baseline-v1', campaign_cell_indices: [0] }] });
+      writeAcceptedCell(dir, 'claude-code-0', { runtimeId: 'claude-code', condition: 'current-skill', roundIndex: 0 });
+      const markdown = renderMarkdown(summarizeCampaign(dir));
+      // Filtered by the TRIMMED line starting with '|' (a leading-space bug would still trim to
+      // that), so a still-buggy row is caught by the assertions below rather than filtered out --
+      // filtering on the raw, untrimmed line would silently exclude exactly the buggy rows this
+      // test exists to catch (they start with a space, not '|').
+      const dataRows = markdown.split('\n').filter((l) => l.trim().startsWith('|') && !l.includes('---') && !l.includes('runtime | arm'));
+      expect(dataRows.length).toBe(2); // one By-runtime/arm row + one Per-cell-detail row
+      for (const row of dataRows) {
+        expect(row, `row "${row}" does not start exactly with "| " (no leading space, no double space)`).toMatch(/^\| \S/);
+        expect(row, `row "${row}" does not end exactly with " |" (no trailing "| ", no double space)`).toMatch(/\S \|$/);
+      }
+    });
+  });
 });
 
 describe('summarizeCampaign -- provenance and limitations', () => {

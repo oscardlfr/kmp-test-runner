@@ -629,11 +629,11 @@ export function renderMarkdown(summary) {
   lines.push('| runtime | arm | declared | accepted | negative (D3) | missing | key facts | full answer | success (product only) | duration ms | tool calls |');
   lines.push('|---|---|---|---|---|---|---|---|---|---|---|');
   for (const g of summary.by_runtime_arm) {
-    lines.push([
-      '', g.runtime_id, g.arm, g.declared, g.accepted, g.negative_d3, g.missing,
+    lines.push(`| ${[
+      g.runtime_id, g.arm, g.declared, g.accepted, g.negative_d3, g.missing,
       fmtRate(g.key_facts_match), fmtRate(g.full_answer_match),
-      g.success ? fmtRate(g.success) : 'n/a', fmtStats(g.duration_ms), fmtStats(g.tool_calls_total), '',
-    ].join(' | '));
+      g.success ? fmtRate(g.success) : 'n/a', fmtStats(g.duration_ms), fmtStats(g.tool_calls_total),
+    ].join(' | ')} |`);
   }
   lines.push('');
   lines.push('## Per-cell detail');
@@ -642,13 +642,13 @@ export function renderMarkdown(summary) {
   lines.push('|---|---|---|---|---|---|---|---|---|');
   for (const c of summary.cells) {
     const statusLabel = c.status === 'negative-d3' ? 'negative (D3: agent abandoned an in-progress command)' : c.status === 'missing' ? `missing: ${c.reason}` : 'accepted';
-    lines.push([
-      '', c.runtime_id, c.arm ?? 'unknown', c.round_index, statusLabel,
+    lines.push(`| ${[
+      c.runtime_id, c.arm ?? 'unknown', c.round_index, statusLabel,
       c.key_facts_match == null ? 'n/a' : c.key_facts_match ? 'yes' : 'no',
       c.full_answer_match == null ? 'n/a' : c.full_answer_match ? 'yes' : 'no',
       c.success == null ? 'n/a' : c.success ? 'yes' : 'no',
-      c.duration_ms ?? 'n/a', c.tool_calls_total ?? 'n/a', '',
-    ].join(' | '));
+      c.duration_ms ?? 'n/a', c.tool_calls_total ?? 'n/a',
+    ].join(' | ')} |`);
   }
   lines.push('');
   lines.push('## Limitations');
