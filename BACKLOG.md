@@ -111,32 +111,19 @@
   `missing` contexts are listed when `release-gate.mjs poll-checks` times out; a context stuck at
   verdict `wait` (a real check-run that exists but never concluded) isn't named either, only
   implied by the generic "Timed out..." line.
-- **Agentic eval v2 — design phase underway** (started 2026-09-29, directed by the auditor under a
-  direct, separate user authorization; successor to the closed Evidence1 benchmark). The published
-  Evidence1 result (`tools/runs/evidence1-agentic-benchmark-2026-09-28/`) is descriptive and
-  bounded by its own threats-to-validity list; v2's design targets exactly those gaps before any
-  live session: more scenarios including held-out ones (Evidence1 had one, tagged `train`);
-  reasoning effort pinned and recorded per runtime; per-cell records of argv, executed commands,
-  env key set and delivered-prompt hash; a hash of the treatment text (skill snapshot) each cell
-  actually received; isolation (no scenario answer, preregistration or harness checkout readable
-  from the guest, no skill snapshot or `kmp-test` shim on free-arm cells); command recording
-  complete enough to rule out answer-reading; a command classifier recognizing free-arm Gradle
-  invocations for every runtime (Codex's free arm recorded `gradle_count: 0` in Evidence1); an
-  unambiguous answer protocol for `total` (unique tests vs task executions); a powered n with full
-  within-round counterbalancing and recorded per-cell truncation caps.
-- **19 tracked files starting with `#!` have no `.gitattributes` LF pin** — surfaced by #533's
-  hosted-CI failure (vitest couldn't import a CRLF shebang module after a Windows checkout).
-  Unpinned: `bin/kmp-test.js` (the published npm CLI entry point itself), `gradle-plugin/gradlew`,
-  7 `tests/fixtures/*/gradlew` wrappers (`build-logic-convention-jacoco`, `build-logic-noise-jacoco`,
-  `build-logic-selective-jacoco`, `build-logic-self-jacoco`, `kmp-with-js`, `root-convention-jacoco`,
-  `version-catalog-alias-plugins`), 2 PowerShell scripts (`scripts/ps1/run-parallel-coverage-suite.ps1`,
-  `tests/installer/Install.Tests.ps1`), `tools/check-bundle-size.mjs`, `tools/wet-audit-v0.9.mjs`,
-  5 `tools/wide-smoke-pass-{7,8,9,9-mac,10}.mjs` scripts, and
-  `tools/runs/agentic-usage-benchmark-v2-2026-07-17/harness.mjs`. Every other shebang file already
-  carries an explicit `eol=lf` pin (or, for `.bat`-paired wrappers, a deliberate `eol=crlf`). Needs
-  both the `.gitattributes` pins and a run of the local-ci Windows lane on a fresh
-  `core.autocrlf=true` clone — the bug only manifests after a real checkout conversion, not in an
-  already-LF working tree.
+- **Agentic eval v2 — status: in progress** (started 2026-09-29; successor to the closed Evidence1
+  benchmark). Tonight's actual scope: re-measure the same anchor scenario
+  (`coverage-threshold-failure-v2`) under closed controls — isolation (no scenario answer,
+  preregistration or harness checkout readable from the guest; no skill snapshot or `kmp-test`
+  shim on free-arm cells), per-cell records of argv, executed commands, env key set and
+  delivered-prompt hash, a hash of the treatment text (skill snapshot) each cell actually
+  received, command recording complete enough to rule out answer-reading, a command classifier
+  recognizing free-arm Gradle invocations for every runtime (Codex's free arm recorded
+  `gradle_count: 0` in Evidence1), reasoning effort pinned and recorded per runtime, and an
+  unambiguous answer protocol for `total` (unique tests vs task executions). n=4 is descriptive,
+  not a powered sample. Held-out scenarios move to v2.1: the guest's offline Gradle seed lacks
+  `:core:common`'s test dependencies, so a held-out scenario needing that module can't run
+  isolated yet.
 - 🔍 **Machine-check the `squash_merge_commit_title=PR_TITLE` repository setting** — documented as
   an invariant in `CONTRIBUTING.md` and `.claude/rules/docs-ci-release.md`, but not verified by CI.
   A check in `tools/validate-required-checks.mjs --check-drift` was drafted and dropped before

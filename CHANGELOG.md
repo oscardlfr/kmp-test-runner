@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Upgrade notes
+
+Read this section before upgrading if you have any automation parsing `kmp-test`'s `--json`
+output or branching on its exit codes.
+
+- **`coverage_data_unavailable` (exit `3`) is now also returned when explicit coverage evidence
+  is missing**: `parallel`/`changed` with an explicit `--coverage-tool auto|kover|jacoco` and zero
+  real contributing modules used to exit `0` with `coverage.missed_lines: null`; it now fails
+  closed the same way a positive `--min-missed-lines` budget already did.
+- **`schema_version` is now `3`** (was `2`) for this exit/error semantic change.
+- **New `contracts` object** on every JSON envelope — `"contracts":{"coverage_evidence":1}` — lets
+  a consumer detect whether the installed binary enforces the rule above.
+- **New `kmp-test --version --json`** identity preflight:
+  `{"tool":"kmp-test","version":"<semver>","schema_version":3,"contracts":{"coverage_evidence":1}}`,
+  so a consumer can reject an incompatible global installation before invoking Gradle at all.
+  Plain `kmp-test --version` is unchanged.
+- **Consumer preflight requirement**: a caller that depends on fail-closed coverage must
+  JSON-parse the identity and require `tool === "kmp-test"` plus integer
+  `contracts.coverage_evidence >= 1` — missing, non-JSON, malformed, or lower values are
+  incompatible. The same `contracts` object also appears on every execution envelope so the
+  contract can be re-verified after the fact; a migrated wrapper that falls back to the coarse
+  legacy text parser deliberately reports `coverage_evidence: 0` on that envelope, since that
+  parser cannot reconstruct the rich coverage fields.
+
+### Fixed — explicit coverage requests fail closed without real XML evidence
+
+`parallel` and `changed` now return `coverage_data_unavailable` (exit `3`) when an explicit
+`--coverage-tool auto|kover|jacoco` request produces zero real contributing modules, including
+the all-`no_xml` case. Numeric coverage totals remain `null` at zero contributors and are derived
+only from parsed XML rows; a mixed contributing/non-contributing selection keeps the real aggregate
+while preserving the missing modules in `module_buckets.no_xml`. Coverage errors, warnings, and
+buckets survive the `coverage → parallel → changed` delegation unchanged.
+
+This exit/error semantic change bumps the envelope to `schema_version: 3`. Every JSON envelope and
+the new cheap `kmp-test --version --json` identity include
+`contracts:{"coverage_evidence":1}` so consumers can reject an incompatible global installation
+before running Gradle. Plain `kmp-test --version` remains unchanged.
+
 ## [0.15.1] — 2026-09-29
 
 0.15.0 reached GitHub Releases and GitHub Packages but never npm (see "Fixed — 0.15.0 never
@@ -51,20 +89,6 @@ adapter, rules, role policy, or memory hygiene from drifting back.
 The validator also pins the canonical rule inventory and critical product,
 workflow, project-model, installer, and release contracts so a syntactically
 valid rewrite cannot silently discard them.
-
-### Fixed — explicit coverage requests fail closed without real XML evidence
-
-`parallel` and `changed` now return `coverage_data_unavailable` (exit `3`) when an explicit
-`--coverage-tool auto|kover|jacoco` request produces zero real contributing modules, including
-the all-`no_xml` case. Numeric coverage totals remain `null` at zero contributors and are derived
-only from parsed XML rows; a mixed contributing/non-contributing selection keeps the real aggregate
-while preserving the missing modules in `module_buckets.no_xml`. Coverage errors, warnings, and
-buckets survive the `coverage → parallel → changed` delegation unchanged.
-
-This exit/error semantic change bumps the envelope to `schema_version: 3`. Every JSON envelope and
-the new cheap `kmp-test --version --json` identity include
-`contracts:{"coverage_evidence":1}` so consumers can reject an incompatible global installation
-before running Gradle. Plain `kmp-test --version` remains unchanged.
 
 ### Fixed — 0.15.0 never reached npm; publish now uses a Node/npm pin that meets Trusted Publishing's own floor
 

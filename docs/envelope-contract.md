@@ -12,7 +12,7 @@ kmp-test --version --json
 ```
 
 ```json
-{"tool":"kmp-test","version":"0.15.0","schema_version":3,"contracts":{"coverage_evidence":1}}
+{"tool":"kmp-test","version":"0.16.0","schema_version":3,"contracts":{"coverage_evidence":1}}
 ```
 
 Plain `kmp-test --version` remains the semver-only text form. A consumer that
