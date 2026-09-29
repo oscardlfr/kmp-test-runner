@@ -26,7 +26,8 @@
 // is already there; it never invokes a copy itself.
 
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export const INFRA_FLAKE_CLASSIFIER_SCHEMA = 1;
 
@@ -222,6 +223,11 @@ async function main() {
   process.stdout.write(JSON.stringify(result, null, 2) + '\n');
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// import.meta.url is always a file:// URL (file:///C:/... on Windows); a bare `file://${argv[1]}`
+// string comparison never matches on Windows (no leading slash before the drive letter, backslash
+// path separators) -- confirmed live: running this script directly exited 0 with zero output, main()
+// never called. Same fix already applied to campaign-summary.mjs and cost-estimate.mjs; this file
+// was missed when that fix landed.
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main();
 }

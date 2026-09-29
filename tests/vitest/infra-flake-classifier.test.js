@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 import {
   INFRA_FLAKE_CLASSIFIER_SCHEMA,
@@ -11,6 +13,8 @@ import {
   classifyCellTranscript,
   classifyCampaign,
 } from '../../tools/agentic-eval/infra-flake-classifier.mjs';
+
+const INFRA_FLAKE_CLASSIFIER_SCRIPT = fileURLToPath(new URL('../../tools/agentic-eval/infra-flake-classifier.mjs', import.meta.url));
 import { buildProbeFailureWarning } from '../../lib/orchestrators/orchestrator-utils.js';
 import { buildProbeFailureExcerpt } from '../../lib/project/cache.js';
 
@@ -336,5 +340,44 @@ describe('classifyCampaign (end to end against a real fixture campaign directory
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+// Real subprocess invocation, not an imported-function call -- same rationale as
+// agentic-eval-campaign-summary.test.js's and agentic-eval-cost-estimate.test.js's own identical
+// describe blocks: a bare `file://${argv[1]}` guard never matches on Windows (import.meta.url is
+// file:///C:/..., argv[1] is a bare backslash path), so main() silently never ran there -- confirmed
+// live (WO-C14 dry run: `node infra-flake-classifier.mjs <dir>` exited 0 with zero stdout and no
+// error). This file was missed when campaign-summary.mjs and cost-estimate.mjs got the same fix;
+// it now copies their FIXED guard (resolve(process.argv[1]) === fileURLToPath(import.meta.url)).
+// Proves the claim by executing the real script, not by pattern-matching the source.
+describe('CLI entry point -- real `node infra-flake-classifier.mjs <dir>` subprocess invocation', () => {
+  it('prints non-empty, schema-1 JSON and exits 0 for a minimal real campaign directory', () => {
+    const root = mkdtempSync(join(tmpdir(), 'infra-flake-classifier-cli-'));
+    try {
+      writeFileSync(join(root, 'manifest.json'), JSON.stringify({
+        runtimes: [{ runtime_id: 'claude-code', campaign_cell_indices: [0] }],
+      }));
+      const cell0 = join(root, 'private', 'claude-code-0');
+      mkdirSync(cell0, { recursive: true });
+      writeFileSync(join(cell0, 'record.json'), JSON.stringify({ condition: 'current-skill' }));
+      writeFileSync(join(cell0, 'audit.json'), JSON.stringify({}));
+
+      const result = spawnSync(process.execPath, [INFRA_FLAKE_CLASSIFIER_SCRIPT, root], { encoding: 'utf8' });
+      expect(result.status, `stderr: ${result.stderr}`).toBe(0);
+      expect(result.stdout.trim().length).toBeGreaterThan(0);
+      const parsed = JSON.parse(result.stdout);
+      expect(parsed.schema).toBe(INFRA_FLAKE_CLASSIFIER_SCHEMA);
+      expect(parsed.cells).toHaveLength(1);
+      expect(parsed.cells[0].cell_key).toBe('claude-code-0');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('exits 2 with no campaign-dir argument, printing usage -- never a silent no-op', () => {
+    const result = spawnSync(process.execPath, [INFRA_FLAKE_CLASSIFIER_SCRIPT], { encoding: 'utf8' });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('usage:');
   });
 });
