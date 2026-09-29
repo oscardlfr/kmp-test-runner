@@ -390,4 +390,18 @@ describe('metrics-grid.svg: WO-C10 no-overlap layout (headless-Edge-verified reg
     const layout = computeMetricsGridLayout(summary, schema1CostEstimate());
     checkNoOverlapLayout(layout);
   });
+
+  it('WO-C11: wall-clock ms values are shown as seconds with 1 decimal ("125.0 s"), not raw milliseconds -- the fixture\'s per-session median is 125000 ms', () => {
+    const svg = renderMetricsGridSvg(schema1Summary(), schema1CostEstimate());
+    expect(svg).toContain('median 125.0 s vs 125.0 s');
+    expect(svg).not.toMatch(/median 125000(\.\d+)? vs 125000(\.\d+)? ms/);
+  });
+
+  it('WO-C11: other units (USD, unitless turns) are unaffected by the ms-to-seconds conversion', () => {
+    const svg = renderMetricsGridSvg(schema1Summary(), schema1CostEstimate());
+    const costIdx = svg.indexOf('API cost');
+    const turnsIdx = svg.indexOf('Turns');
+    const costSection = svg.slice(costIdx, turnsIdx);
+    expect(costSection).toMatch(/median \d+\.\d{2} vs \d+\.\d{2} USD/);
+  });
 });

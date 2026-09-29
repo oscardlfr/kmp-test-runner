@@ -808,7 +808,10 @@ function renderMetricRow(colX, rowY, label, unit, descriptive, withMetric, witho
       legendX += GRID_LEGEND_SWATCH + 3 + labelText.length * GRID_LEGEND_FS * 0.6 + 10;
     }
   } else {
-    const valueLabel = `median ${fmtGridValue(withMetric)} vs ${fmtGridValue(withoutMetric)}${unit ? ' ' + unit : ''}`;
+    // ms carries its converted "s" unit on each value ("median 125.0 s vs 125.0 s"); every other
+    // unit keeps the existing single trailing suffix ("median 0.11 vs 0.17 USD").
+    const trailingUnit = unit && unit !== 'ms' ? ' ' + unit : '';
+    const valueLabel = `median ${fmtGridValue(withMetric, unit)} vs ${fmtGridValue(withoutMetric, unit)}${trailingUnit}`;
     items.push(textItem('gridValueLabel', null, colX, bottomBandTop + GRID_VALUE_LABEL_FS + 4, GRID_VALUE_LABEL_FS, 400, COLOR_SECONDARY, valueLabel));
   }
   cursor += GRID_BOTTOM_H + GRID_ROW_GAP;
@@ -816,10 +819,16 @@ function renderMetricRow(colX, rowY, label, unit, descriptive, withMetric, witho
   return { items, rowHeight: cursor - rowY };
 }
 
-function fmtGridValue(metric) {
+// Milliseconds read as seconds (1 decimal) -- "190.0 s vs 191.2 s" is legible at a glance; raw
+// millisecond medians ("189954.5 vs 191216.5 ms") are not. Every other unit (USD, unitless turns)
+// is unaffected. Only the printed value-line text changes; the plotted dot/tick geometry above it
+// still scales off the raw metric values, which carry no unit label of their own.
+function fmtGridValue(metric, unit) {
   if (metric.kind === 'unavailable') return 'n/a';
-  const v = metric.kind === 'per-session' ? metric.median : metric.median;
-  return typeof v === 'number' ? (Number.isInteger(v) ? String(v) : v.toFixed(2)) : 'n/a';
+  const v = metric.median;
+  if (typeof v !== 'number') return 'n/a';
+  if (unit === 'ms') return `${(v / 1000).toFixed(1)} s`;
+  return Number.isInteger(v) ? String(v) : v.toFixed(2);
 }
 
 // One runtime's full row set: tokens (stack), tool calls by kind (stack), wall-clock (dot), cost

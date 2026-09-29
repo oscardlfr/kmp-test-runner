@@ -49,7 +49,7 @@
   <circle cx="238.0" cy="436.7" r="3" fill="#0969da"/>
   <circle cx="262.0" cy="437.5" r="3" fill="#0969da"/>
   <line x1="170.0" x2="282.0" y1="437.1" y2="437.1" stroke="#1f2328" stroke-width="2"/>
-  <text x="28" y="489.0" font-size="11" font-weight="400" fill="#59636e">median 189954.50 vs 191216.50 ms</text>
+  <text x="28" y="489.0" font-size="11" font-weight="400" fill="#59636e">median 190.0 s vs 191.2 s</text>
   <text x="28" y="517.0" font-size="13" font-weight="500" fill="#1f2328">API cost (midpoint of low/high) (descriptive)</text>
   <text x="28" y="533.0" font-size="11" font-weight="400" fill="#59636e">with</text>
   <text x="166" y="533.0" font-size="11" font-weight="400" fill="#59636e">without</text>
@@ -106,7 +106,7 @@
   <circle cx="666.0" cy="450.8" r="3" fill="#0969da"/>
   <circle cx="690.0" cy="452.1" r="3" fill="#0969da"/>
   <line x1="598.0" x2="710.0" y1="453.5" y2="453.5" stroke="#1f2328" stroke-width="2"/>
-  <text x="456" y="489.0" font-size="11" font-weight="400" fill="#59636e">median 290090 vs 221991 ms</text>
+  <text x="456" y="489.0" font-size="11" font-weight="400" fill="#59636e">median 290.1 s vs 222.0 s</text>
   <text x="456" y="517.0" font-size="13" font-weight="500" fill="#1f2328">API cost (midpoint of low/high) (descriptive)</text>
   <text x="456" y="534.0" font-size="12" font-weight="400" fill="#59636e">not available for this campaign</text>
   <text x="456" y="563.0" font-size="13" font-weight="500" fill="#1f2328">Turns (descriptive)</text>
