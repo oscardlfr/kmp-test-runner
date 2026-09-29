@@ -1,93 +1,114 @@
-<svg viewBox="0 0 880 457" width="880" height="457" xmlns="http://www.w3.org/2000/svg" role="img" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif">
+<svg viewBox="0 0 880 688" width="880" height="688" xmlns="http://www.w3.org/2000/svg" role="img" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif">
   <title>Session detail (descriptive)</title>
-  <rect x="1" y="1" width="878" height="455" rx="12" fill="#ffffff" stroke="#d0d7de" stroke-width="1"/>
+  <desc>Stacked-bar color legend. Token type: input (#8250df), cached input (#0969da), cache write (#1a7f37), reasoning output (#cf222e), output (#bc4c00). Command kind: kmp-test (#0969da), gradle (#bc4c00), other (#59636e).</desc>
+  <rect x="1" y="1" width="878" height="686" rx="12" fill="#ffffff" stroke="#d0d7de" stroke-width="1"/>
   <text x="28" y="48.0" font-size="20" font-weight="600" fill="#1f2328">Session detail (descriptive)</text>
-  <text x="28" y="75.0" font-size="13" font-weight="400" fill="#59636e">Every metric below is descriptive, not part of the pre-registered design. Dots are real sessions; a range mark is a campaign aggregate, not per-session.</text>
-  <text x="28" y="111.0" font-size="14" font-weight="600" fill="#1f2328">Claude Code</text>
-  <text x="28" y="138.0" font-size="13" font-weight="500" fill="#1f2328">Tokens per session, by type (descriptive)</text>
-  <text x="28" y="195.0" font-size="11" font-weight="400" fill="#59636e">with</text>
-  <rect x="83.0" y="181.0" width="10" height="0.0" rx="1" fill="#8250df"/>
-  <rect x="83.0" y="169.9" width="10" height="11.1" rx="1" fill="#0969da"/>
-  <rect x="83.0" y="167.4" width="10" height="2.5" rx="1" fill="#1a7f37"/>
-  <rect x="83.0" y="167.3" width="10" height="0.2" rx="1" fill="#bc4c00"/>
-  <text x="28" y="143.0" font-size="10" font-weight="400" fill="#59636e">campaign median (not per-session)</text>
-  <text x="166" y="195.0" font-size="11" font-weight="400" fill="#59636e">without</text>
-  <rect x="221.0" y="181.0" width="10" height="0.0" rx="1" fill="#8250df"/>
-  <rect x="221.0" y="150.1" width="10" height="30.9" rx="1" fill="#0969da"/>
-  <rect x="221.0" y="147.4" width="10" height="2.7" rx="1" fill="#1a7f37"/>
-  <rect x="221.0" y="147.0" width="10" height="0.4" rx="1" fill="#bc4c00"/>
-  <text x="166" y="143.0" font-size="10" font-weight="400" fill="#59636e">campaign median (not per-session)</text>
-  <text x="28" y="202.0" font-size="13" font-weight="500" fill="#1f2328">Tool calls by kind (descriptive)</text>
-  <text x="28" y="259.0" font-size="11" font-weight="400" fill="#59636e">with</text>
-  <rect x="83.0" y="220.3" width="10" height="24.7" rx="1" fill="#0969da"/>
-  <text x="28" y="207.0" font-size="10" font-weight="400" fill="#59636e">campaign median (not per-session)</text>
-  <text x="166" y="259.0" font-size="11" font-weight="400" fill="#59636e">without</text>
-  <rect x="221.0" y="211.0" width="10" height="34.0" rx="1" fill="#bc4c00"/>
-  <text x="166" y="207.0" font-size="10" font-weight="400" fill="#59636e">campaign median (not per-session)</text>
-  <text x="28" y="266.0" font-size="13" font-weight="500" fill="#1f2328">Wall-clock (descriptive)</text>
-  <text x="28" y="323.0" font-size="11" font-weight="400" fill="#59636e">with</text>
-  <circle cx="52.0" cy="278.4" r="3" fill="#0969da"/>
-  <circle cx="76.0" cy="280.9" r="3" fill="#0969da"/>
-  <circle cx="100.0" cy="280.5" r="3" fill="#0969da"/>
-  <circle cx="124.0" cy="281.7" r="3" fill="#0969da"/>
-  <line x1="32.0" x2="144.0" y1="280.7" y2="280.7" stroke="#1f2328" stroke-width="2"/>
-  <text x="166" y="323.0" font-size="11" font-weight="400" fill="#59636e">without</text>
-  <circle cx="190.0" cy="282.7" r="3" fill="#0969da"/>
-  <circle cx="214.0" cy="275.0" r="3" fill="#0969da"/>
-  <circle cx="238.0" cy="280.2" r="3" fill="#0969da"/>
-  <circle cx="262.0" cy="280.8" r="3" fill="#0969da"/>
-  <line x1="170.0" x2="282.0" y1="280.5" y2="280.5" stroke="#1f2328" stroke-width="2"/>
-  <text x="28" y="313.0" font-size="11" font-weight="400" fill="#59636e">median 189954.50 vs 191216.50 ms</text>
-  <text x="28" y="330.0" font-size="13" font-weight="500" fill="#1f2328">Estimated API cost (descriptive)</text>
-  <text x="28" y="387.0" font-size="11" font-weight="400" fill="#59636e">with</text>
-  <circle cx="52.0" cy="354.8" r="3" fill="#0969da"/>
-  <circle cx="76.0" cy="353.4" r="3" fill="#0969da"/>
-  <circle cx="100.0" cy="352.9" r="3" fill="#0969da"/>
-  <circle cx="124.0" cy="356.0" r="3" fill="#0969da"/>
-  <line x1="32.0" x2="144.0" y1="354.1" y2="354.1" stroke="#1f2328" stroke-width="2"/>
-  <text x="166" y="387.0" font-size="11" font-weight="400" fill="#59636e">without</text>
-  <circle cx="190.0" cy="341.7" r="3" fill="#0969da"/>
-  <circle cx="214.0" cy="343.0" r="3" fill="#0969da"/>
-  <circle cx="238.0" cy="339.0" r="3" fill="#0969da"/>
-  <circle cx="262.0" cy="344.0" r="3" fill="#0969da"/>
-  <line x1="170.0" x2="282.0" y1="342.4" y2="342.4" stroke="#1f2328" stroke-width="2"/>
-  <text x="28" y="377.0" font-size="11" font-weight="400" fill="#59636e">median 0.10 vs 0.15 USD</text>
-  <text x="28" y="394.0" font-size="13" font-weight="500" fill="#1f2328">Turns (descriptive)</text>
-  <text x="28" y="413.0" font-size="12" font-weight="400" fill="#59636e">not available for this campaign</text>
-  <text x="456" y="111.0" font-size="14" font-weight="600" fill="#1f2328">Codex CLI</text>
-  <text x="456" y="138.0" font-size="13" font-weight="500" fill="#1f2328">Tokens per session, by type (descriptive)</text>
-  <text x="456" y="195.0" font-size="11" font-weight="400" fill="#59636e">with</text>
-  <rect x="511.0" y="163.3" width="10" height="17.7" rx="1" fill="#8250df"/>
-  <rect x="511.0" y="147.1" width="10" height="16.1" rx="1" fill="#0969da"/>
-  <rect x="511.0" y="147.0" width="10" height="0.1" rx="1" fill="#bc4c00"/>
-  <text x="456" y="143.0" font-size="10" font-weight="400" fill="#59636e">campaign median (not per-session)</text>
-  <text x="594" y="195.0" font-size="11" font-weight="400" fill="#59636e">without</text>
-  <rect x="649.0" y="164.1" width="10" height="16.9" rx="1" fill="#8250df"/>
-  <rect x="649.0" y="149.3" width="10" height="14.8" rx="1" fill="#0969da"/>
-  <rect x="649.0" y="149.2" width="10" height="0.1" rx="1" fill="#bc4c00"/>
-  <text x="594" y="143.0" font-size="10" font-weight="400" fill="#59636e">campaign median (not per-session)</text>
-  <text x="456" y="202.0" font-size="13" font-weight="500" fill="#1f2328">Tool calls by kind (descriptive)</text>
-  <text x="456" y="259.0" font-size="11" font-weight="400" fill="#59636e">with</text>
-  <rect x="511.0" y="211.0" width="10" height="34.0" rx="1" fill="#0969da"/>
-  <text x="456" y="207.0" font-size="10" font-weight="400" fill="#59636e">campaign median (not per-session)</text>
-  <text x="594" y="259.0" font-size="11" font-weight="400" fill="#59636e">without</text>
-  <text x="594" y="228.0" font-size="11" font-weight="400" fill="#59636e">n/a</text>
-  <text x="456" y="266.0" font-size="13" font-weight="500" fill="#1f2328">Wall-clock (descriptive)</text>
-  <text x="456" y="323.0" font-size="11" font-weight="400" fill="#59636e">with</text>
-  <circle cx="480.0" cy="275.0" r="3" fill="#0969da"/>
-  <circle cx="504.0" cy="293.0" r="3" fill="#0969da"/>
-  <circle cx="528.0" cy="294.9" r="3" fill="#0969da"/>
-  <circle cx="552.0" cy="283.6" r="3" fill="#0969da"/>
-  <line x1="460.0" x2="572.0" y1="288.3" y2="288.3" stroke="#1f2328" stroke-width="2"/>
-  <text x="594" y="323.0" font-size="11" font-weight="400" fill="#59636e">without</text>
-  <circle cx="618.0" cy="294.3" r="3" fill="#0969da"/>
-  <circle cx="642.0" cy="295.1" r="3" fill="#0969da"/>
-  <circle cx="666.0" cy="291.1" r="3" fill="#0969da"/>
-  <circle cx="690.0" cy="292.1" r="3" fill="#0969da"/>
-  <line x1="598.0" x2="710.0" y1="293.2" y2="293.2" stroke="#1f2328" stroke-width="2"/>
-  <text x="456" y="313.0" font-size="11" font-weight="400" fill="#59636e">median 290090 vs 221991 ms</text>
-  <text x="456" y="330.0" font-size="13" font-weight="500" fill="#1f2328">Estimated API cost (descriptive)</text>
-  <text x="456" y="349.0" font-size="12" font-weight="400" fill="#59636e">not available for this campaign</text>
-  <text x="456" y="378.0" font-size="13" font-weight="500" fill="#1f2328">Turns (descriptive)</text>
-  <text x="456" y="397.0" font-size="12" font-weight="400" fill="#59636e">not available for this campaign</text>
+  <text x="28" y="75.0" font-size="13" font-weight="400" fill="#59636e">Every metric below is descriptive, not part of the pre-registered design.</text>
+  <text x="28" y="92.0" font-size="13" font-weight="400" fill="#59636e">Dots are real sessions; a range mark is a campaign aggregate, not per-session.</text>
+  <text x="28" y="128.0" font-size="14" font-weight="600" fill="#1f2328">Claude Code</text>
+  <text x="28" y="155.0" font-size="13" font-weight="500" fill="#1f2328">Tokens per session, by type (descriptive)</text>
+  <text x="28" y="170.0" font-size="10" font-weight="400" fill="#59636e">bars: campaign median, not per-session</text>
+  <text x="28" y="187.0" font-size="11" font-weight="400" fill="#59636e">with</text>
+  <text x="166" y="187.0" font-size="11" font-weight="400" fill="#59636e">without</text>
+  <rect x="83.0" y="238.0" width="10" height="0.0" rx="1" fill="#8250df"/>
+  <rect x="83.0" y="223.6" width="10" height="14.4" rx="1" fill="#0969da"/>
+  <rect x="83.0" y="220.4" width="10" height="3.2" rx="1" fill="#1a7f37"/>
+  <rect x="83.0" y="220.2" width="10" height="0.2" rx="1" fill="#bc4c00"/>
+  <rect x="221.0" y="238.0" width="10" height="0.0" rx="1" fill="#8250df"/>
+  <rect x="221.0" y="198.0" width="10" height="40.0" rx="1" fill="#0969da"/>
+  <rect x="221.0" y="194.5" width="10" height="3.5" rx="1" fill="#1a7f37"/>
+  <rect x="221.0" y="194.0" width="10" height="0.5" rx="1" fill="#bc4c00"/>
+  <rect x="28.0" y="243.0" width="8" height="8" fill="#8250df"/>
+  <text x="39" y="251.0" font-size="9" font-weight="400" fill="#59636e">input</text>
+  <rect x="76.0" y="243.0" width="8" height="8" fill="#0969da"/>
+  <text x="87" y="251.0" font-size="9" font-weight="400" fill="#59636e">cached input</text>
+  <rect x="161.8" y="243.0" width="8" height="8" fill="#1a7f37"/>
+  <text x="172.8" y="251.0" font-size="9" font-weight="400" fill="#59636e">cache write</text>
+  <rect x="242.2" y="243.0" width="8" height="8" fill="#bc4c00"/>
+  <text x="253.20000000000002" y="251.0" font-size="9" font-weight="400" fill="#59636e">output</text>
+  <text x="28" y="281.0" font-size="13" font-weight="500" fill="#1f2328">Tool calls by kind (descriptive)</text>
+  <text x="28" y="296.0" font-size="10" font-weight="400" fill="#59636e">bars: campaign mean per session, not per-session</text>
+  <text x="28" y="313.0" font-size="11" font-weight="400" fill="#59636e">with</text>
+  <text x="166" y="313.0" font-size="11" font-weight="400" fill="#59636e">without</text>
+  <rect x="83.0" y="332.0" width="10" height="32.0" rx="1" fill="#0969da"/>
+  <rect x="221.0" y="320.0" width="10" height="44.0" rx="1" fill="#bc4c00"/>
+  <rect x="28.0" y="369.0" width="8" height="8" fill="#0969da"/>
+  <text x="39" y="377.0" font-size="9" font-weight="400" fill="#59636e">kmp-test</text>
+  <rect x="92.2" y="369.0" width="8" height="8" fill="#bc4c00"/>
+  <text x="103.19999999999999" y="377.0" font-size="9" font-weight="400" fill="#59636e">gradle</text>
+  <text x="28" y="407.0" font-size="13" font-weight="500" fill="#1f2328">Wall-clock (descriptive)</text>
+  <text x="28" y="423.0" font-size="11" font-weight="400" fill="#59636e">with</text>
+  <text x="166" y="423.0" font-size="11" font-weight="400" fill="#59636e">without</text>
+  <circle cx="52.0" cy="434.4" r="3" fill="#0969da"/>
+  <circle cx="76.0" cy="437.6" r="3" fill="#0969da"/>
+  <circle cx="100.0" cy="437.1" r="3" fill="#0969da"/>
+  <circle cx="124.0" cy="438.7" r="3" fill="#0969da"/>
+  <line x1="32.0" x2="144.0" y1="437.4" y2="437.4" stroke="#1f2328" stroke-width="2"/>
+  <circle cx="190.0" cy="440.0" r="3" fill="#0969da"/>
+  <circle cx="214.0" cy="430.0" r="3" fill="#0969da"/>
+  <circle cx="238.0" cy="436.7" r="3" fill="#0969da"/>
+  <circle cx="262.0" cy="437.5" r="3" fill="#0969da"/>
+  <line x1="170.0" x2="282.0" y1="437.1" y2="437.1" stroke="#1f2328" stroke-width="2"/>
+  <text x="28" y="489.0" font-size="11" font-weight="400" fill="#59636e">median 189954.50 vs 191216.50 ms</text>
+  <text x="28" y="517.0" font-size="13" font-weight="500" fill="#1f2328">API cost (midpoint of low/high) (descriptive)</text>
+  <text x="28" y="533.0" font-size="11" font-weight="400" fill="#59636e">with</text>
+  <text x="166" y="533.0" font-size="11" font-weight="400" fill="#59636e">without</text>
+  <circle cx="52.0" cy="559.3" r="3" fill="#0969da"/>
+  <circle cx="76.0" cy="557.7" r="3" fill="#0969da"/>
+  <circle cx="100.0" cy="557.1" r="3" fill="#0969da"/>
+  <circle cx="124.0" cy="560.8" r="3" fill="#0969da"/>
+  <line x1="32.0" x2="144.0" y1="558.5" y2="558.5" stroke="#1f2328" stroke-width="2"/>
+  <circle cx="190.0" cy="544.0" r="3" fill="#0969da"/>
+  <circle cx="214.0" cy="546.3" r="3" fill="#0969da"/>
+  <circle cx="238.0" cy="540.0" r="3" fill="#0969da"/>
+  <circle cx="262.0" cy="546.7" r="3" fill="#0969da"/>
+  <line x1="170.0" x2="282.0" y1="545.2" y2="545.2" stroke="#1f2328" stroke-width="2"/>
+  <text x="28" y="599.0" font-size="11" font-weight="400" fill="#59636e">median 0.11 vs 0.17 USD</text>
+  <text x="28" y="627.0" font-size="13" font-weight="500" fill="#1f2328">Turns (descriptive)</text>
+  <text x="28" y="644.0" font-size="12" font-weight="400" fill="#59636e">not available for this campaign</text>
+  <text x="456" y="128.0" font-size="14" font-weight="600" fill="#1f2328">Codex CLI</text>
+  <text x="456" y="155.0" font-size="13" font-weight="500" fill="#1f2328">Tokens per session, by type (descriptive)</text>
+  <text x="456" y="170.0" font-size="10" font-weight="400" fill="#59636e">bars: campaign median, not per-session</text>
+  <text x="456" y="187.0" font-size="11" font-weight="400" fill="#59636e">with</text>
+  <text x="594" y="187.0" font-size="11" font-weight="400" fill="#59636e">without</text>
+  <rect x="511.0" y="215.0" width="10" height="23.0" rx="1" fill="#8250df"/>
+  <rect x="511.0" y="194.2" width="10" height="20.9" rx="1" fill="#0969da"/>
+  <rect x="511.0" y="194.0" width="10" height="0.2" rx="1" fill="#bc4c00"/>
+  <rect x="649.0" y="216.2" width="10" height="21.8" rx="1" fill="#8250df"/>
+  <rect x="649.0" y="197.0" width="10" height="19.2" rx="1" fill="#0969da"/>
+  <rect x="649.0" y="196.8" width="10" height="0.2" rx="1" fill="#bc4c00"/>
+  <rect x="456.0" y="243.0" width="8" height="8" fill="#8250df"/>
+  <text x="467" y="251.0" font-size="9" font-weight="400" fill="#59636e">input</text>
+  <rect x="504.0" y="243.0" width="8" height="8" fill="#0969da"/>
+  <text x="515" y="251.0" font-size="9" font-weight="400" fill="#59636e">cached input</text>
+  <rect x="589.8" y="243.0" width="8" height="8" fill="#bc4c00"/>
+  <text x="600.8" y="251.0" font-size="9" font-weight="400" fill="#59636e">output</text>
+  <text x="456" y="281.0" font-size="13" font-weight="500" fill="#1f2328">Tool calls by kind (descriptive)</text>
+  <text x="456" y="296.0" font-size="10" font-weight="400" fill="#59636e">bars: campaign mean per session, not per-session</text>
+  <text x="456" y="313.0" font-size="11" font-weight="400" fill="#59636e">with</text>
+  <text x="594" y="313.0" font-size="11" font-weight="400" fill="#59636e">without</text>
+  <rect x="511.0" y="320.0" width="10" height="44.0" rx="1" fill="#0969da"/>
+  <text x="594" y="346.0" font-size="11" font-weight="400" fill="#59636e">n/a</text>
+  <rect x="456.0" y="369.0" width="8" height="8" fill="#0969da"/>
+  <text x="467" y="377.0" font-size="9" font-weight="400" fill="#59636e">kmp-test</text>
+  <rect x="520.2" y="369.0" width="8" height="8" fill="#bc4c00"/>
+  <text x="531.2" y="377.0" font-size="9" font-weight="400" fill="#59636e">gradle</text>
+  <text x="456" y="407.0" font-size="13" font-weight="500" fill="#1f2328">Wall-clock (descriptive)</text>
+  <text x="456" y="423.0" font-size="11" font-weight="400" fill="#59636e">with</text>
+  <text x="594" y="423.0" font-size="11" font-weight="400" fill="#59636e">without</text>
+  <circle cx="480.0" cy="430.0" r="3" fill="#0969da"/>
+  <circle cx="504.0" cy="453.3" r="3" fill="#0969da"/>
+  <circle cx="528.0" cy="455.7" r="3" fill="#0969da"/>
+  <circle cx="552.0" cy="441.2" r="3" fill="#0969da"/>
+  <line x1="460.0" x2="572.0" y1="447.2" y2="447.2" stroke="#1f2328" stroke-width="2"/>
+  <circle cx="618.0" cy="455.0" r="3" fill="#0969da"/>
+  <circle cx="642.0" cy="456.0" r="3" fill="#0969da"/>
+  <circle cx="666.0" cy="450.8" r="3" fill="#0969da"/>
+  <circle cx="690.0" cy="452.1" r="3" fill="#0969da"/>
+  <line x1="598.0" x2="710.0" y1="453.5" y2="453.5" stroke="#1f2328" stroke-width="2"/>
+  <text x="456" y="489.0" font-size="11" font-weight="400" fill="#59636e">median 290090 vs 221991 ms</text>
+  <text x="456" y="517.0" font-size="13" font-weight="500" fill="#1f2328">API cost (midpoint of low/high) (descriptive)</text>
+  <text x="456" y="534.0" font-size="12" font-weight="400" fill="#59636e">not available for this campaign</text>
+  <text x="456" y="563.0" font-size="13" font-weight="500" fill="#1f2328">Turns (descriptive)</text>
+  <text x="456" y="580.0" font-size="12" font-weight="400" fill="#59636e">not available for this campaign</text>
 </svg>

@@ -552,9 +552,24 @@ const GRID_W = SCORECARD_W;
 const GRID_ROW_LABEL_W = 190;
 const GRID_LANE_W = 120;
 const GRID_LANE_GAP = 18;
-const GRID_ROW_H = 64;
 const GRID_DOT_R = 3;
 const GRID_STACK_W = 10;
+// Row layout: each row is a stack of non-overlapping bands (label, optional note, lane header,
+// plot, bottom line), each with a fixed height; a row's TOTAL height is the sum of only the bands
+// it actually uses (see renderMetricRow). Never a single flat per-row constant -- that was the
+// WO-C10 bug: a fixed 64px slot for content that needed ~110-126px, so every band silently bled
+// into its neighbor (row label under the previous row's legend, "with"/"without" under the next
+// row's label, the aggregate note drawn over the row label it was meant to sit below).
+const GRID_ROW_LABEL_FS = 13;
+const GRID_NOTE_FS = 10;
+const GRID_LANE_HEADER_FS = 11;
+const GRID_VALUE_LABEL_FS = 11;
+const GRID_ROW_LABEL_H = 18;
+const GRID_NOTE_H = 16;
+const GRID_LANE_HEADER_H = 18;
+const GRID_PLOT_H = 44;
+const GRID_BOTTOM_H = 18;
+const GRID_ROW_GAP = 12; // clearance before the next row -- WO-C10 requires >= 10px
 const TOKEN_TYPE_COLORS = {
   input: '#8250df', cached_input: '#0969da', cache_write: '#1a7f37', output: '#bc4c00', reasoning_output: '#cf222e',
 };
@@ -695,29 +710,57 @@ function presentStackTypes(metric) {
   return new Set();
 }
 
-// One row's SVG items for one runtime column: a dot cluster / stacked-bar cluster / range mark /
-// "not available" text, for each of the with/without lanes, sharing one y-scale across both lanes
-// (and, for stacked metrics, one color legend) so the two lanes are visually comparable.
+// A row needs its one aggregate-disclaimer note line when either lane fell back to an aggregate
+// (stack-aggregate: a per-type median/mean built from by_runtime_arm, not per-cell data; aggregate:
+// a scalar min/median/max range) -- never for a row where every plotted lane is real per-session data.
+function rowNeedsNote(withMetric, withoutMetric) {
+  return [withMetric, withoutMetric].some((m) => m.kind === 'stack-aggregate' || m.kind === 'aggregate');
+}
+
+function rowNoteText(withMetric, withoutMetric) {
+  const stackAgg = [withMetric, withoutMetric].find((m) => m.kind === 'stack-aggregate');
+  if (stackAgg) {
+    return stackAgg.stat === 'mean' ? 'bars: campaign mean per session, not per-session' : 'bars: campaign median, not per-session';
+  }
+  return 'campaign range, not per-session';
+}
+
+// One row's SVG items for one runtime column, laid out as stacked, non-overlapping bands: row
+// label -> optional aggregate note -> lane header ("with"/"without", ABOVE their lanes) -> plot
+// area (dot cluster / stacked-bar cluster / range mark / "n/a") -> bottom line (color legend for
+// stacked rows, the median value line for scalar rows) -> gap. Each band advances a single cursor,
+// so no band can silently overlap another the way the old fixed-GRID_ROW_H layout did.
 function renderMetricRow(colX, rowY, label, unit, descriptive, withMetric, withoutMetric, isStack, typeColors, types, typeLabels) {
   const items = [];
-  const labelFS = 13;
-  items.push(textItem('gridRowLabel', null, colX, rowY + 13, labelFS, 500, COLOR_TEXT, descriptive ? `${label} (descriptive)` : label));
+  let cursor = rowY;
+
+  items.push(textItem('gridRowLabel', null, colX, cursor + GRID_ROW_LABEL_FS, GRID_ROW_LABEL_FS, 500, COLOR_TEXT, descriptive ? `${label} (descriptive)` : label));
+  cursor += GRID_ROW_LABEL_H;
 
   if (withMetric.kind === 'unavailable' && withoutMetric.kind === 'unavailable') {
-    items.push(textItem('gridNotAvailable', null, colX, rowY + 32, 12, 400, COLOR_SECONDARY, 'not available for this campaign'));
-    return { items, rowHeight: 48 };
+    items.push(textItem('gridNotAvailable', null, colX, cursor + 12, 12, 400, COLOR_SECONDARY, 'not available for this campaign'));
+    cursor += 16 + GRID_ROW_GAP;
+    return { items, rowHeight: cursor - rowY };
   }
 
-  const laneTop = rowY + 22;
-  const laneH = GRID_ROW_H - 30;
-  const scale = yScaleFor([withMetric, withoutMetric]);
-  const yFor = (v) => laneTop + laneH - (v / scale) * laneH;
+  if (rowNeedsNote(withMetric, withoutMetric)) {
+    items.push(textItem('gridAggregateNote', null, colX, cursor + GRID_NOTE_FS, GRID_NOTE_FS, 400, COLOR_SECONDARY, rowNoteText(withMetric, withoutMetric)));
+    cursor += GRID_NOTE_H;
+  }
 
   const lanes = [{ x: colX, m: withMetric, arm: 'with' }, { x: colX + GRID_LANE_W + GRID_LANE_GAP, m: withoutMetric, arm: 'without' }];
   for (const lane of lanes) {
-    items.push(textItem('gridLaneLabel', null, lane.x, laneTop + laneH + 14, 11, 400, COLOR_SECONDARY, lane.arm));
+    items.push(textItem('gridLaneLabel', null, lane.x, cursor + GRID_LANE_HEADER_FS, GRID_LANE_HEADER_FS, 400, COLOR_SECONDARY, lane.arm));
+  }
+  cursor += GRID_LANE_HEADER_H;
+
+  const plotTop = cursor;
+  const scale = yScaleFor([withMetric, withoutMetric]);
+  const yFor = (v) => plotTop + GRID_PLOT_H - (v / scale) * GRID_PLOT_H;
+
+  for (const lane of lanes) {
     if (lane.m.kind === 'unavailable') {
-      items.push(textItem('gridNotAvailable', null, lane.x, laneTop + laneH / 2, 11, 400, COLOR_SECONDARY, 'n/a'));
+      items.push(textItem('gridNotAvailable', null, lane.x, plotTop + GRID_PLOT_H / 2 + 4, 11, 400, COLOR_SECONDARY, 'n/a'));
       continue;
     }
     if (isStack) {
@@ -726,18 +769,14 @@ function renderMetricRow(colX, rowY, label, unit, descriptive, withMetric, witho
       const spacing = Math.min(GRID_STACK_W + 4, GRID_LANE_W / Math.max(n, 1));
       const startX = lane.x + GRID_LANE_W / 2 - (n - 1) * spacing / 2;
       sessionsToPlot.forEach((segments, i) => {
-        let yCursor = laneTop + laneH;
+        let yCursor = plotTop + GRID_PLOT_H;
         for (const seg of segments) {
           if (seg.value <= 0) continue;
-          const segH = (seg.value / scale) * laneH;
+          const segH = (seg.value / scale) * GRID_PLOT_H;
           items.push({ kind: 'bar', column: null, x: startX + i * spacing - GRID_STACK_W / 2, y: yCursor - segH, w: GRID_STACK_W, h: segH, rx: 1, fill: typeColors[seg.type] || COLOR_SECONDARY });
           yCursor -= segH;
         }
       });
-      if (lane.m.kind === 'stack-aggregate') {
-        const note = lane.m.stat === 'mean' ? 'campaign mean per session (not per-session)' : 'campaign median (not per-session)';
-        items.push(textItem('gridAggregateNote', null, lane.x, laneTop - 4, 10, 400, COLOR_SECONDARY, note));
-      }
     } else if (lane.m.kind === 'per-session') {
       const n = lane.m.values.length;
       const spacing = Math.min(24, GRID_LANE_W / Math.max(n, 1));
@@ -752,13 +791,14 @@ function renderMetricRow(colX, rowY, label, unit, descriptive, withMetric, witho
       const cx = lane.x + GRID_LANE_W / 2;
       items.push({ kind: 'rangeLine', column: null, x: cx, y1: yMin, y2: yMax });
       items.push({ kind: 'medianTick', column: null, x1: cx - 14, x2: cx + 14, y: yMed });
-      items.push(textItem('gridAggregateNote', null, lane.x, laneTop - 4, 10, 400, COLOR_SECONDARY, 'campaign range (not per-session)'));
     }
   }
+  cursor += GRID_PLOT_H;
 
+  const bottomBandTop = cursor;
   if (isStack) {
     const present = new Set([...presentStackTypes(withMetric), ...presentStackTypes(withoutMetric)]);
-    const legendY = rowY + GRID_ROW_H - 4;
+    const legendY = bottomBandTop + GRID_LEGEND_FS + 4;
     let legendX = colX;
     for (const t of types.filter((type) => present.has(type))) {
       const swatchFill = typeColors[t] || COLOR_SECONDARY;
@@ -769,10 +809,11 @@ function renderMetricRow(colX, rowY, label, unit, descriptive, withMetric, witho
     }
   } else {
     const valueLabel = `median ${fmtGridValue(withMetric)} vs ${fmtGridValue(withoutMetric)}${unit ? ' ' + unit : ''}`;
-    items.push(textItem('gridValueLabel', null, colX, rowY + GRID_ROW_H - 4, 11, 400, COLOR_SECONDARY, valueLabel));
+    items.push(textItem('gridValueLabel', null, colX, bottomBandTop + GRID_VALUE_LABEL_FS + 4, GRID_VALUE_LABEL_FS, 400, COLOR_SECONDARY, valueLabel));
   }
+  cursor += GRID_BOTTOM_H + GRID_ROW_GAP;
 
-  return { items, rowHeight: GRID_ROW_H };
+  return { items, rowHeight: cursor - rowY };
 }
 
 function fmtGridValue(metric) {

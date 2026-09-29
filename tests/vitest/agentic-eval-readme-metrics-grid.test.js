@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
-  computeMetricsGridLayout, renderMetricsGridSvg, costMetric,
+  computeMetricsGridLayout, renderMetricsGridSvg, costMetric, loadSummary, loadCostEstimate,
 } from '../../tools/agentic-eval/readme-evidence.mjs';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = join(__dirname, '..', '..');
+const RUNS_DIR = join(REPO_ROOT, 'tools', 'runs', 'evidence1-agentic-benchmark-2026-09-28');
 
 // Minimal, valid schema-1 summary/cost-estimate: 4 groups, real duration_ms/tool_calls_total
 // stats and a `cells` array shaped exactly like campaign-summary.mjs's real output (per-cell
@@ -173,11 +179,12 @@ describe('metrics-grid.svg', () => {
     const toolsIdx = svg.indexOf('Tool calls by kind');
     const nextRowIdx = svg.indexOf('Wall-clock');
     const toolsSection = svg.slice(toolsIdx, nextRowIdx);
-    expect(toolsSection).toContain('campaign mean per session (not per-session)');
-    expect(toolsSection).not.toContain('campaign median (not per-session)');
+    // Wording per WO-C10's row-level note redesign: "bars: campaign mean per session, not per-session".
+    expect(toolsSection).toContain('bars: campaign mean per session, not per-session');
+    expect(toolsSection).not.toContain('bars: campaign median, not per-session');
     // Tokens-by-type is unaffected -- it's a real per-type median from by_runtime_arm, still labeled "median".
     const tokensIdx = svg.indexOf('Tokens per session, by type');
-    expect(svg.slice(tokensIdx, toolsIdx)).toContain('campaign median (not per-session)');
+    expect(svg.slice(tokensIdx, toolsIdx)).toContain('bars: campaign median, not per-session');
   });
 
   it('CodeRabbit finding 1b: never fabricates a measured-zero "other" bucket in the tool-calls-by-kind aggregate -- campaign-summary.mjs does not track it at the aggregate level, so it must be absent, not a fake 0', () => {
@@ -279,5 +286,108 @@ describe('metrics-grid.svg', () => {
       expect(x0 + estWidth, `"${item.text}" overflows: x=${item.x} estWidth=${estWidth.toFixed(0)} viewBox=${layout.width}`).toBeLessThanOrEqual(layout.width);
       expect(x0, `"${item.text}" starts left of x=0`).toBeGreaterThanOrEqual(0);
     }
+  });
+});
+
+// WO-C10: headless-Edge screenshots of 64bb1e3 AND 23fab2c (still using the old fixed
+// GRID_ROW_H=64 layout) showed real overlap the "estimated width stays in the viewBox" test above
+// could not catch: the aggregate note drawn over the row label, the with/without notes overlapping
+// each other, lane labels colliding with the NEXT row's label, and the legend sitting on top of
+// the bars. These tests check actual geometry, not just horizontal viewBox containment.
+
+// Same estimator as the scorecard's own "no overlapping text" describe block above in
+// agentic-eval-readme-evidence.test.js (chars x fontSize x 0.6 for width; SVG <text> ascent/descent
+// approximated as 0.8*fs above the baseline and 0.25*fs below it).
+function textBBox(item) {
+  const width = item.text.length * item.fontSize * 0.6;
+  const x0 = item.anchor === 'end' ? item.x - width : item.x;
+  return { x0, x1: x0 + width, y0: item.y - item.fontSize * 0.8, y1: item.y + item.fontSize * 0.25 };
+}
+
+// Bars/swatches are exact rects. Dots get their real radius. Tick/range lines have no thickness of
+// their own, so they get a small (+-2px) fudge -- enough to catch a real collision, not so much
+// that two merely-adjacent marks false-positive.
+function markBBox(item) {
+  if (item.kind === 'bar' || item.kind === 'legendSwatch') return { x0: item.x, x1: item.x + item.w, y0: item.y, y1: item.y + item.h };
+  if (item.kind === 'dot') return { x0: item.cx - item.r, x1: item.cx + item.r, y0: item.cy - item.r, y1: item.cy + item.r };
+  if (item.kind === 'medianTick') return { x0: Math.min(item.x1, item.x2), x1: Math.max(item.x1, item.x2), y0: item.y - 2, y1: item.y + 2 };
+  if (item.kind === 'rangeLine') return { x0: item.x - 2, x1: item.x + 2, y0: Math.min(item.y1, item.y2), y1: Math.max(item.y1, item.y2) };
+  return null;
+}
+
+function bboxesOverlap(a, b) {
+  return a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
+}
+
+function checkNoOverlapLayout(layout) {
+  const textItems = layout.items.filter((i) => i.kind === 'text');
+  const markItems = layout.items.map(markBBox).filter(Boolean);
+
+  const textBoxes = textItems.map((i) => ({ ...textBBox(i), label: i.text }));
+  for (let i = 0; i < textBoxes.length; i++) {
+    for (let j = i + 1; j < textBoxes.length; j++) {
+      expect(bboxesOverlap(textBoxes[i], textBoxes[j]), `text "${textBoxes[i].label}" (y=${textItems[i].y}) overlaps text "${textBoxes[j].label}" (y=${textItems[j].y})`).toBe(false);
+    }
+  }
+  for (const t of textBoxes) {
+    for (const m of markItems) {
+      expect(bboxesOverlap(t, m), `text "${t.label}" overlaps a mark: ${JSON.stringify(m)}`).toBe(false);
+    }
+  }
+  for (const item of layout.items) {
+    const box = item.kind === 'text' ? textBBox(item) : markBBox(item);
+    if (!box) continue;
+    const label = item.text || item.kind;
+    expect(box.x0, `"${label}" x0 < 0`).toBeGreaterThanOrEqual(0);
+    expect(box.x1, `"${label}" x1 (${box.x1}) exceeds viewBox width ${layout.width}`).toBeLessThanOrEqual(layout.width);
+    expect(box.y0, `"${label}" y0 < 0`).toBeGreaterThanOrEqual(0);
+    expect(box.y1, `"${label}" y1 (${box.y1}) exceeds viewBox height ${layout.height}`).toBeLessThanOrEqual(layout.height);
+  }
+
+  const PAD_ = 28, COLUMN_GAP_ = 32;
+  const COLUMN_W_ = (layout.width - 2 * PAD_ - COLUMN_GAP_) / 2;
+  const columnLefts = [PAD_, PAD_ + COLUMN_W_ + COLUMN_GAP_];
+  const legendItems = layout.items.filter((i) => i.kind === 'legendSwatch' || i.role === 'gridLegendLabel');
+  for (const colLeft of columnLefts) {
+    const inColumn = legendItems.filter((i) => i.x >= colLeft && i.x < colLeft + COLUMN_W_ + COLUMN_GAP_);
+    for (const item of inColumn) {
+      const box = item.kind === 'legendSwatch' ? markBBox(item) : textBBox(item);
+      expect(box.x1, `legend item at x=${item.x} (column left ${colLeft}) reaches ${box.x1}, past the column's own right edge ${colLeft + COLUMN_W_} (COLUMN_W, not just the viewBox)`).toBeLessThanOrEqual(colLeft + COLUMN_W_);
+    }
+  }
+}
+
+describe('metrics-grid.svg: WO-C10 no-overlap layout (headless-Edge-verified regression)', () => {
+  it('(a)+(b)+(c)+(d): the synthetic schema-1 fixture (stack-aggregate + per-session + unavailable rows, the same mix real campaigns have) has no text-vs-text overlap, no text/legend-vs-mark overlap, everything inside the viewBox including the vertical bound, and every legend fits its own COLUMN_W', () => {
+    const layout = computeMetricsGridLayout(schema1Summary(), schema1CostEstimate());
+    checkNoOverlapLayout(layout);
+  });
+
+  it('(a)+(b)+(c)+(d): the REAL committed Evidence1 campaign data -- the exact shape the auditor\'s headless-Edge render of 64bb1e3/23fab2c exposed the overlap against', () => {
+    const summary = loadSummary(join(RUNS_DIR, 'campaign-summary.json'));
+    const costEstimate = loadCostEstimate(join(RUNS_DIR, 'cost-estimate.json'));
+    const layout = computeMetricsGridLayout(summary, costEstimate);
+    checkNoOverlapLayout(layout);
+  });
+
+  it('a stack-aggregate row\'s one note line reflects the true stat, and never duplicates per-lane (with/without share ONE note, not two that can overlap each other)', () => {
+    const svg = renderMetricsGridSvg(schema1Summary(), schema1CostEstimate());
+    const toolsIdx = svg.indexOf('Tool calls by kind');
+    const wallIdx = svg.indexOf('Wall-clock');
+    const section = svg.slice(toolsIdx, wallIdx);
+    const noteOccurrences = section.split('campaign mean per session, not per-session').length - 1;
+    expect(noteOccurrences).toBe(1);
+  });
+
+  it('a scalar row that falls back to a campaign range (min/median/max, no per-cell data) gets the same one-line note treatment, not the old per-lane "campaign range (not per-session)" text drawn over the plot', () => {
+    const summary = schema1Summary();
+    // Strip per-cell duration_ms so wall-clock falls back to the aggregate range, exercising the
+    // scalar 'aggregate' branch of rowNeedsNote/rowNoteText instead of 'stack-aggregate'.
+    for (const cell of summary.cells) delete cell.duration_ms;
+    const svg = renderMetricsGridSvg(summary, schema1CostEstimate());
+    expect(svg).toContain('campaign range, not per-session');
+    expect(svg).not.toContain('campaign range (not per-session)');
+    const layout = computeMetricsGridLayout(summary, schema1CostEstimate());
+    checkNoOverlapLayout(layout);
   });
 });
