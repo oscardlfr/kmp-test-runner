@@ -24,7 +24,7 @@ kmp-test hands an agent the test and coverage verdict as one JSON envelope inste
 
 ### Command output size: raw Gradle vs `kmp-test --json`
 
-Raw Gradle output is large enough to blow past a model's context window on some commands; `kmp-test --json` collapses it to a single-line envelope. Measured reduction ranges from 56x on small projects to 39,175x on a large Kover coverage capture — full comparison table, methodology, provenance, and reproduction commands are in [docs/token-cost-measurement.md](docs/token-cost-measurement.md).
+Raw Gradle output is large enough to blow past a model's context window on some commands; `kmp-test --json` collapses it to a single-line envelope. Measured reduction ranges from 56x (median, `parallel`, small projects) to 39,175x (`coverage`, one large Kover project); each ratio compares raw Gradle with `kmp-test --json` on the same project and run, never across projects. Full comparison table, methodology, provenance, and reproduction commands are in [docs/token-cost-measurement.md](docs/token-cost-measurement.md).
 
 Per-version detail and migration notes are in [`CHANGELOG.md`](CHANGELOG.md).
 

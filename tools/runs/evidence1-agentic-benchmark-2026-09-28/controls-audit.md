@@ -4,7 +4,8 @@ Date: 2026-09-28. Checkout: `agentic-eval-codex-runtime` @ `15ad0dd` (branch
 `codex/agentic-eval-codex-runtime`). No repository file was modified.
 
 The commits cited in this audit (`bbefc600`, `15ad0dd`) are on the maintainers' evaluation branch,
-which is not public yet; see the main document's Reproducibility › Availability note.
+which was not public at the time of this audit; the harness is now published in place -- see the
+main document's Reproducibility › Availability note.
 
 This is the full backing detail for the "Experimental controls and threats to validity" section of
 the main evidence document (`README.md` in this directory), which distills this into a

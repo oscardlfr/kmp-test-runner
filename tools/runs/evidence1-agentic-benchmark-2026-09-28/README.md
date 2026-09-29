@@ -527,11 +527,18 @@ list summarizes.
 
 ## Reproducibility
 
-**Availability:** the harness commits cited below live on the maintainers' evaluation branch,
-which is not public yet — it must first pass this repository's privacy audit. Until a sanitized
-harness is published (tracked in `BACKLOG.md`), the commit-based checks below can be run only by
-the maintainers; the product-code parity result they report is stated here as verified on
-2026-09-28.
+**Availability:** the harness cited below is published in place — `docs/audits/` (the
+provisioning, broker-status, and dual-condition canary modules) and `tools/evidence1/`
+(entry points `evidence1-install.ps1` and `evidence1-run.ps1`, plus the Windows/Hyper-V
+base under `tools/evidence1/provisioning/`, its own [README](../../evidence1/provisioning/README.md)).
+Reproducing a run requires supplying your own: a Windows host with the Hyper-V role enabled, a
+Windows 11 ISO, and your own Claude Code and Codex CLI accounts — each authenticated with a
+one-time interactive OAuth login inside the guest VM before any unattended session runs. The
+guest VM is fixed at 4 virtual processors and 12 GiB of memory, and the harness requires about
+131 GiB free on the VM's volume for a freshly provisioned VM. From there, `evidence1-install.ps1`
+(one elevated, one-time install that provisions the broker and guest toolchain) and
+`evidence1-run.ps1` (the campaign driver) are the two entry points; no credential, token, or
+private identifier is embedded in the published harness itself.
 
 - Harness commit (canary): `bbefc600b9399a22803c88a29def5a50934106fe` — this is NOT the `v0.15.0` tag's
   underlying commit (`git cat-file -t c458e6ad10ee2dddd57b0a787935e959e5498676` is `tag`: that SHA is

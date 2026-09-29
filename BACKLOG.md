@@ -3455,6 +3455,66 @@ All five gaps shipped in v0.5.2 (PRs #63 / #64 / #65 / #66 / #67). One scope red
 
 ## QUEUED — post-v0.3.4 ideas (newest first)
 
+### 💡 IDEA — VmReady disk-space guard and AutomaticStopAction=ShutDown change (deferred, post-campaign hardening)
+
+**Status: IDEA, no CLI milestone.** Amendment A6 (2026-09-29) traced the harness's ~12 GiB host-disk gap to Hyper-V's `AutomaticStopAction=Save` default (`New-VM`'s own default, never overridden by this repo) -- a VM in the Saved state reserves a VMRS save-state file sized exactly to `MemoryStartup`. The A6 addendum resolved the immediate host risk directly (the user freed host space, from an order of magnitude below A6's own worst-case bound to well above it) rather than via a code change, since no campaign data depends on either fix. A principled `VmReady` guard (drafted mid-session as WO-A7: fail closed unless the volume holding the VM has free space >= max(15 GiB, the leaf disk's unallocated remainder + 3 GiB)) and switching the VM's `AutomaticStopAction` to `ShutDown` (avoiding the Save-state reservation entirely) were both deferred to a post-campaign publication-hardening work order.
+
+**Proposal:** implement the deferred `VmReady` guard and the `AutomaticStopAction=ShutDown` change in the post-campaign hardening pass, per amendment A6 / A6-addendum in `docs/audits/evidence2-preregistration.md`.
+
+**Why captured here:** so the deferral doesn't get silently forgotten once the campaign itself is done -- the root cause (the Save-state VMRS reservation) is real and will recur for any future re-provision unless addressed.
+
+---
+
+### 💡 IDEA — Elevated runner's canonical self-install path is a code literal, not install-time config
+
+**Status: IDEA, no CLI milestone.** Surfaced during the WO-C1 harness publication dry run (2026-09-29): `evidence1-host-elevated-runner.ps1`'s `Assert-E1SelfInstallRunnerArguments` hardcodes its own trusted `-AllowedRoot`/`-RunnerPath` comparison value as a literal (`$canonicalAudits`, currently the checkout's absolute path). This is deliberate — it pins the ONE trusted self-install location so a copied/relocated runner can't self-validate against wherever it currently sits — but it also means any OTHER host that legitimately wants to deploy this broker (a different machine, a different checkout root) has to edit the script itself to change it, rather than setting an install-time value.
+
+**Proposal:** make the canonical path an admin-owned configuration value set at install time (e.g. written by `evidence1-install.ps1` into a protected config file or registry value the elevated runner reads at dispatch time), instead of a literal baked into the script. Document the new install-time step in the runner's own README/install docs.
+
+**Why captured here:** found in passing while validating a security-relevant `$PSScriptRoot`-vs-literal question for the harness publication; out of scope for that publication itself (no test currently exercises a second-host install), but worth a deliberate look.
+
+---
+
+### 💡 IDEA — Host/VM layout roots (`C:\kmp-eval`, `C:\Evidence1Toolchain`, `C:\Evidence1Private`) are hardcoded literals, not configurable
+
+**Status: IDEA, no CLI milestone.** Surfaced during the WO-C1 harness publication dry run (2026-09-29): the Evidence1 harness hardcodes 3 machine-root paths throughout `docs/audits/*.ps1` as literal `C:\...` constants. An earlier pass in this same publication attempted genericizing them to `$env:KMP_EVAL_ROOT`/`$env:EVIDENCE1_TOOLCHAIN_ROOT`/`$env:EVIDENCE1_PRIVATE_ROOT` — reverted, because a meaningful fraction of this code runs INSIDE the guest VM via PowerShell remoting, where an env-var substitution resolves in the guest session (which doesn't have these vars set) and silently breaks rather than failing loudly.
+
+**Proposal:** a real fix needs to distinguish HOST-side code (where env-var/config-file substitution is safe) from GUEST-side code (where the value must already be resolved before crossing the remoting boundary, e.g. baked into the remoting command's own arguments rather than read from env at the far end) — not a blanket find/replace. Worth a dedicated design pass rather than a mechanical genericization.
+
+**Why captured here:** any host other than the original development machine currently can't run this harness without hand-editing dozens of literal path occurrences.
+
+---
+
+### 💡 IDEA — Broader genericization sweep of legacy `docs/audits/` content
+
+**Status: IDEA, no CLI milestone.** The WO-C1 harness publication (2026-09-29) genericized the account identifier in exactly 5 files (the 4 originally-identified auth/account-mapping scripts, plus `evidence1-hyperv-verify-guest-dual-auth-direct.ps1`, found only because a newly-published test exercised it) — each found individually, via a specific failing test or an explicit account-identifier sweep of files entering PUBLISH, not via an exhaustive audit of the whole `docs/audits/` tree. The publication's own scope (which files are PUBLISH vs still-EXCLUDE) is now settled, but nothing has swept the full published tree end-to-end asking "does ANY file here still hardcode an identity, host-specific detail, or other value that should be a parameter/config instead" independent of whether a current test happens to exercise it.
+
+**Proposal:** a dedicated pass over the full published `docs/audits/` tree (now stable post-publication) specifically hunting for this class of issue, rather than relying on test coverage to surface each instance one at a time.
+
+**Why captured here:** the pattern (a hardcoded value that "happens" to work because no test currently checks it) already produced one real gap this session (the `evidence1-hyperv-verify-guest-dual-auth-direct.ps1` account check) — worth checking there isn't a second one nothing has exercised yet.
+
+---
+
+### 💡 IDEA — README's Codex base version is stale relative to what the harness actually requires
+
+**Status: IDEA, no CLI milestone.** `README.md` and `evidence1-windows-approved-inputs.schema.json` state Codex CLI base version `0.153.4`; the harness's own operational code requires `0.154.0` and upgrades to it via `evidence1-hyperv-upgrade-canonical-codex-cli-direct.ps1` as a normal part of provisioning. The README doesn't currently document that upgrade step, so a reader following it literally would end up on a version the harness doesn't actually run against.
+
+**Proposal:** document the upgrade step explicitly in the README, either as an explicit prerequisite ("provision at 0.153.4, then run the upgrade script before first use") or by updating the stated base version to 0.154.0 directly if that's the intended baseline going forward.
+
+**Why captured here:** found during the WO-C1 harness publication dry run (2026-09-29) while tracing the provisioning JSON files; a documentation-accuracy fix, not a code change, so it belongs in the next docs pass rather than blocking the publication itself.
+
+---
+
+### 💡 IDEA — Documentation restructure (re-derive closed draft #520 against current develop)
+
+**Status: IDEA, no CLI milestone.** The closed draft #520 (branch `codex/docs-evidence1-audit`, kept for reference) proposed splitting `docs/usage.md` / `docs/installation.md` / `docs/cli-reference.md` / `docs/gradle-plugin.md` out of the README, plus documentation guard tests (`documentation-links`, `documentation-help-contract`). It went stale against #533 and 0.15.x.
+
+**Proposal:** rebuild it on current develop, keeping `AGENTS.md`'s sources of truth intact (`package.json` owns version/scripts, `README.md` owns the current CLI/Gradle/installer surface, `PRODUCT.md` owns principles/architecture) — the restructure should relocate content, not create a second source of truth for anything `AGENTS.md` already assigns.
+
+**Why captured here:** surfaced during the WO-C1 harness publication dry run (2026-09-29) as a docs item to fold into the same BACKLOG pass as the other 4 entries above.
+
+---
+
 ### ✅ DONE 2026-06-07 — `.gitattributes` LF-pin gap on `scripts/*.sh` + `scripts/sh/**/*.sh` (surfaced 2026-05-25 during cross-platform parity audit)
 
 **Fix:** added `scripts/*.sh` + `scripts/**/*.sh` → `text eol=lf` to `.gitattributes` (mirroring the `.skills/**/*.sh` pin). Covers install / uninstall / build-artifact + every bundled `scripts/sh/**/*.sh` wrapper. `git add --renormalize` confirmed the in-repo scripts were already LF (the entries are preventive — they stop a Windows `core.autocrlf=true` checkout from corrupting `set -euo pipefail` locally AND stop `build-artifact.sh` from baking CRLF into the release tarball). Was HIGH (Windows-local-dev + cross-host-tarball corruption vector).

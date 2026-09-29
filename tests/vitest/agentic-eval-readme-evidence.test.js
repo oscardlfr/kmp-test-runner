@@ -446,31 +446,36 @@ describe('the committed evidence1-agentic-benchmark-2026-09-28 campaign', () => 
     expect(evidenceDoc).toMatch(/^## Results — campaign \(16 sessions\)$/m);
   });
 
-  it('the Reproducibility section discloses that the cited harness commits are not on a public branch yet', () => {
-    // The harness commits cited in Reproducibility live only on the maintainers' local evaluation
-    // branch (375 commits ahead of origin/develop, verified: `git branch -r --contains <sha>` is
-    // empty for both cited SHAs) and that branch itself fails decouple-audit (9 hits) -- so it
-    // cannot be published as-is. The doc must say so, not just cite commands a reader can't run.
+  it('the Reproducibility section discloses the harness is published in place, names both entry points, and states the no-credential guarantee', () => {
+    // The harness is published in place as of this commit (docs/audits/, tools/evidence1/) -- the
+    // doc must say so, name both entry points, and state the no-credential guarantee, not the
+    // earlier "not public yet" disclosure this replaced.
     const evidenceDoc = readFileSync(join(RUNS_DIR, 'README.md'), 'utf8');
     const reproStart = evidenceDoc.indexOf('## Reproducibility');
     expect(reproStart).toBeGreaterThan(-1);
     const reproSection = evidenceDoc.slice(reproStart, evidenceDoc.indexOf('\n## ', reproStart + 1));
-    // Markdown re-wraps this paragraph across multiple lines in the committed doc, so match with
-    // \s+ between words (not a literal multi-line string) -- a future re-wrap that changes no word
-    // must not break this test the way a literal string would.
-    expect(reproSection).toMatch(
-      /\*\*Availability:\*\*\s+the\s+harness\s+commits\s+cited\s+below\s+live\s+on\s+the\s+maintainers['’]\s+evaluation\s+branch,\s+which\s+is\s+not\s+public\s+yet\s*—\s*it\s+must\s+first\s+pass\s+this\s+repository['’]s\s+privacy\s+audit\.\s+Until\s+a\s+sanitized\s+harness\s+is\s+published\s+\(tracked\s+in\s+`BACKLOG\.md`\),\s+the\s+commit-based\s+checks\s+below\s+can\s+be\s+run\s+only\s+by\s+the\s+maintainers;\s+the\s+product-code\s+parity\s+result\s+they\s+report\s+is\s+stated\s+here\s+as\s+verified\s+on\s+2026-09-28\./
-    );
+    // Collapse whitespace runs (incl. the source markdown's own line-wraps) to a single space so a
+    // multi-word toContain() check doesn't break on a wrap point that changes no word -- same
+    // reasoning as the \s+ regexes elsewhere in this describe block, applied once here instead of
+    // per-assertion.
+    const reproFlat = reproSection.replace(/\s+/g, ' ');
+    expect(reproFlat).toContain('**Availability:** the harness cited below is published in place');
+    expect(reproFlat).toContain('`evidence1-install.ps1`');
+    expect(reproFlat).toContain('`evidence1-run.ps1`');
+    expect(reproFlat).toContain('no credential, token, or private identifier is embedded in the published harness itself');
+    expect(reproFlat).toContain('fixed at 4 virtual processors and 12 GiB of memory');
+    expect(reproFlat).toContain('about 131 GiB free');
+    expect(reproFlat).not.toMatch(/not\s+public\s+yet/);
   });
 
   it('controls-audit.md points back to the Reproducibility Availability note, right after its own provenance line', () => {
     // The audit's own citation lines (bbefc600, 15ad0dd used as "run this diff" commands) are left
     // exactly as written -- they're the record of what was actually run, and rewriting them would
-    // falsify provenance. This pointer, not a rewrite, is how a reader learns those commits aren't
-    // public yet.
+    // falsify provenance. This pointer, not a rewrite, is how a reader learns those commits are now
+    // published (they were not public AT THE TIME of this specific audit).
     const controlsAudit = readFileSync(join(RUNS_DIR, 'controls-audit.md'), 'utf8');
     expect(controlsAudit).toMatch(
-      /The\s+commits\s+cited\s+in\s+this\s+audit\s+\(`bbefc600`,\s+`15ad0dd`\)\s+are\s+on\s+the\s+maintainers['’]\s+evaluation\s+branch,\s+which\s+is\s+not\s+public\s+yet;\s+see\s+the\s+main\s+document['’]s\s+Reproducibility\s*›\s*Availability\s+note\./
+      /The\s+commits\s+cited\s+in\s+this\s+audit\s+\(`bbefc600`,\s+`15ad0dd`\)\s+are\s+on\s+the\s+maintainers['’]\s+evaluation\s+branch,\s+which\s+was\s+not\s+public\s+at\s+the\s+time\s+of\s+this\s+audit;\s+the\s+harness\s+is\s+now\s+published\s+in\s+place\s*--\s*see\s+the\s+main\s+document['’]s\s+Reproducibility\s*›\s*Availability\s+note\./
     );
   });
 
