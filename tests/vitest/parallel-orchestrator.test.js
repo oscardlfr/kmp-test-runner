@@ -41,7 +41,7 @@
 //  35.  Empty modules list → no_test_modules error, exit 3
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, utimesSync, cpSync } from 'node:fs';
+import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, utimesSync, cpSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { isGradleCall, effectiveGradleArgs, isStopCall } from './_spawn-helpers.js';
@@ -3901,6 +3901,247 @@ describe('runParallel — flavored-unit-only fixture (end-to-end probe + dispatc
     const taskArgs = spawn.calls.filter(isGradleCall).flatMap(effectiveGradleArgs);
     expect(taskArgs).toContain(':app:testDemoDebugUnitTest');
     expect((envelope.errors || []).map(e => e.code)).not.toContain('flavor_unused');
+  });
+});
+
+// ===========================================================================
+// Gradle-tasks probe failure handling (fix: structured probeFailure + retry).
+// Pre-fix, a failed `gradlew tasks --all` probe returned null SILENTLY;
+// buildProjectModel built a "probe-blind" model and dispatch guessed task
+// names statically -- for a module whose flavors come from a convention
+// plugin (like :app below, mirroring tests/fixtures/convention-flavors) that
+// guess is `testDebugUnitTest` instead of the flavor-agnostic umbrella
+// `test`, and gradle reports a confusing task_not_found with no trace of the
+// real cause. These tests reproduce that exact live scenario end-to-end
+// through runParallel, using a REAL fake gradlew that fails the model's own
+// probe (a live subprocess, unrelated to the `spawn` param injected below,
+// which only stands in for the actual test-dispatch gradle calls) — model-
+// level probeFailure shape/retry/cache assertions live in
+// project-model.test.js.
+// ===========================================================================
+describe('runParallel — gradle-tasks probe failure (fix: retry + surfaced warning + probe_failed)', () => {
+  // :app declares no product flavors in its OWN build file (mirrors
+  // tests/fixtures/convention-flavors) -- static hasFlavor is false
+  // regardless of probe outcome -- and has a bare src/test/ dir so static
+  // unit-test-source detection succeeds even when the probe never recovers.
+  // This isolates "which task got picked" (the bug) from "was the module
+  // skipped" (a different, unrelated code path).
+  function makeConventionFlavoredProbeProject({ gradlewSh, gradlewBat }) {
+    const dir = mkdtempSync(path.join(tmpdir(), 'kmp-parallel-probe-retry-'));
+    workDir = dir;
+    writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "probe-retry-fixture"\ninclude(":app")\n');
+    const gradlewPath = path.join(dir, 'gradlew');
+    writeFileSync(gradlewPath, gradlewSh);
+    // POSIX: the model's probe spawns this file directly (no cmd.exe wrapper
+    // as on Windows) — writeFileSync's default mode has no execute bit,
+    // which would make the probe fail at the Node spawn layer (EACCES,
+    // classified as spawn_error) instead of running the script's intended
+    // exit_nonzero/success behavior.
+    chmodSync(gradlewPath, 0o755);
+    writeFileSync(path.join(dir, 'gradlew.bat'), gradlewBat);
+    const appTestDir = path.join(dir, 'app', 'src', 'test');
+    mkdirSync(appTestDir, { recursive: true });
+    writeFileSync(path.join(appTestDir, '.gitkeep'), '');
+    writeFileSync(path.join(dir, 'app', 'build.gradle.kts'), 'plugins {\n    id("com.android.application")\n}\n');
+    return dir;
+  }
+
+  // Always fails `tasks --all` with the same canned Gradle-shaped failure —
+  // used for the fail-then-fail case.
+  const ALWAYS_FAIL_SH = `#!/usr/bin/env bash
+for arg in "$@"; do
+  case "$arg" in
+    tasks)
+      echo "FAILURE: Build failed with an exception." 1>&2
+      exit 1
+      ;;
+  esac
+done
+exit 1
+`;
+  const ALWAYS_FAIL_BAT = `@echo off
+setlocal enabledelayedexpansion
+for %%a in (%*) do (
+  set "arg=%%~a"
+  if "!arg!"=="tasks" (
+    echo FAILURE: Build failed with an exception. 1>&2
+    exit /b 1
+  )
+)
+exit /b 1
+`;
+
+  // Fails the FIRST `tasks --all` invocation, then succeeds on the second
+  // with a flavored task graph -- used for the fail-then-pass (recovery)
+  // case, the live-case regression.
+  function failThenSucceedSh(markerName) {
+    return `#!/usr/bin/env bash
+MARKER="$(dirname "$0")/${markerName}"
+for arg in "$@"; do
+  case "$arg" in
+    tasks)
+      if [ -f "$MARKER" ]; then
+        cat <<'EOF'
+app:testDemoDebugUnitTest - Runs the demoDebug unit tests.
+app:testProdDebugUnitTest - Runs the prodDebug unit tests.
+app:test - Runs all unit tests.
+EOF
+        exit 0
+      fi
+      touch "$MARKER"
+      echo "FAILURE: Build failed with an exception." 1>&2
+      exit 1
+      ;;
+  esac
+done
+exit 1
+`;
+  }
+  function failThenSucceedBat(markerName) {
+    return `@echo off
+setlocal enabledelayedexpansion
+set "MARKER=%~dp0${markerName}"
+for %%a in (%*) do (
+  set "arg=%%~a"
+  if "!arg!"=="tasks" (
+    if exist "%MARKER%" (
+      echo app:testDemoDebugUnitTest - Runs the demoDebug unit tests.
+      echo app:testProdDebugUnitTest - Runs the prodDebug unit tests.
+      echo app:test - Runs all unit tests.
+      exit /b 0
+    )
+    echo done> "%MARKER%"
+    echo FAILURE: Build failed with an exception. 1>&2
+    exit /b 1
+  )
+)
+exit /b 1
+`;
+  }
+
+  // Succeeds immediately -- the healthy-probe case, unchanged post-fix
+  // (regression guard).
+  const SUCCEED_FIRST_TRY_SH = `#!/usr/bin/env bash
+for arg in "$@"; do
+  case "$arg" in
+    tasks)
+      cat <<'EOF'
+app:testDemoDebugUnitTest - Runs the demoDebug unit tests.
+app:testProdDebugUnitTest - Runs the prodDebug unit tests.
+app:test - Runs all unit tests.
+EOF
+      exit 0
+      ;;
+  esac
+done
+echo "BUILD SUCCESSFUL in 1s"
+exit 0
+`;
+  const SUCCEED_FIRST_TRY_BAT = `@echo off
+setlocal enabledelayedexpansion
+for %%a in (%*) do (
+  set "arg=%%~a"
+  if "!arg!"=="tasks" (
+    echo app:testDemoDebugUnitTest - Runs the demoDebug unit tests.
+    echo app:testProdDebugUnitTest - Runs the prodDebug unit tests.
+    echo app:test - Runs all unit tests.
+    exit /b 0
+  )
+)
+echo BUILD SUCCESSFUL in 1s
+exit /b 0
+`;
+
+  it('fail-then-fail: the model probe never recovers -> task_not_found gains probe_failed:true, gradle_probe_failed warning has recovered:false/attempts:2', async () => {
+    const dir = makeConventionFlavoredProbeProject({ gradlewSh: ALWAYS_FAIL_SH, gradlewBat: ALWAYS_FAIL_BAT });
+    // The DISPATCH spawn (separate from the model's own real probe above) is
+    // stubbed to report gradle's own "Cannot locate tasks that match" —
+    // dispatch guessed :app:testDebugUnitTest statically (no recovered
+    // flavor data), which a real flavored project would indeed reject.
+    const spawn = makeSpawnStub({ resolutionFail: true });
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidUnit'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const taskArgs = spawn.calls.filter(isGradleCall).flatMap(effectiveGradleArgs);
+    expect(taskArgs).toContain(':app:testDebugUnitTest'); // the wrong, ambiguous guess
+    expect(exitCode).toBe(3);
+
+    const taskNotFound = envelope.errors.find(e => e.code === 'task_not_found');
+    expect(taskNotFound).toBeTruthy();
+    expect(taskNotFound.probe_failed).toBe(true);
+
+    const probeWarning = envelope.warnings.find(w => w.code === 'gradle_probe_failed');
+    expect(probeWarning).toMatchObject({ reason: 'exit_nonzero', attempts: 2, recovered: false });
+  });
+
+  it('fail-then-pass: the model probe recovers on retry -> a flavored module dispatches the umbrella :app:test task, NOT testDebugUnitTest (the live-case regression)', async () => {
+    const dir = makeConventionFlavoredProbeProject({
+      gradlewSh: failThenSucceedSh('.probe-marker-parallel-a'),
+      gradlewBat: failThenSucceedBat('.probe-marker-parallel-a'),
+    });
+    const spawn = makeSpawnStub();
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidUnit'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    const taskArgs = spawn.calls.filter(isGradleCall).flatMap(effectiveGradleArgs);
+    expect(taskArgs).toContain(':app:test');                 // umbrella (correct, post-recovery)
+    expect(taskArgs).not.toContain(':app:testDebugUnitTest'); // the pre-fix wrong guess
+    expect(envelope.errors.find(e => e.code === 'task_not_found')).toBeUndefined();
+    expect(exitCode).toBe(0);
+
+    const probeWarning = envelope.warnings.find(w => w.code === 'gradle_probe_failed');
+    expect(probeWarning).toMatchObject({ reason: 'exit_nonzero', attempts: 2, recovered: true });
+    // Recovered probe data resolved real flavors, so the normal
+    // flavor_defaulted_umbrella advisory fires too (candidates from the
+    // recovered probe, not a static regex).
+    const flavorWarning = envelope.warnings.find(w => w.code === 'flavor_defaulted_umbrella');
+    expect(flavorWarning?.candidates).toEqual(['demo', 'prod']);
+  });
+
+  it('fail-then-fail with the REAL in-process coverage call (no runCoverageInjection): only ONE gradle_probe_failed warning, not two', async () => {
+    // runCoverage (called in-process for the coverage hand-off) independently
+    // rebuilds the project model and probes gradle again. When this run's own
+    // probe never recovers, that model is never cached, so coverage's rebuild
+    // hits the identical failure a second time -- without the dedup fix this
+    // pushed a second, redundant gradle_probe_failed warning for the exact
+    // same underlying condition.
+    const dir = makeConventionFlavoredProbeProject({ gradlewSh: ALWAYS_FAIL_SH, gradlewBat: ALWAYS_FAIL_BAT });
+    const spawn = makeSpawnStub({ resolutionFail: true });
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidUnit'],
+      spawn,
+      log: () => {},
+      // Deliberately NO runCoverageInjection -- exercises the real
+      // coverage-orchestrator.js#runCoverage in-process call.
+    });
+    const probeWarnings = envelope.warnings.filter(w => w.code === 'gradle_probe_failed');
+    expect(probeWarnings).toHaveLength(1);
+    expect(probeWarnings[0]).toMatchObject({ recovered: false, attempts: 2 });
+  });
+
+  it('success on the first try: no gradle_probe_failed warning fires (regression guard)', async () => {
+    const dir = makeConventionFlavoredProbeProject({ gradlewSh: SUCCEED_FIRST_TRY_SH, gradlewBat: SUCCEED_FIRST_TRY_BAT });
+    const spawn = makeSpawnStub();
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidUnit'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    expect(exitCode).toBe(0);
+    expect(envelope.warnings.find(w => w.code === 'gradle_probe_failed')).toBeUndefined();
+    const taskArgs = spawn.calls.filter(isGradleCall).flatMap(effectiveGradleArgs);
+    expect(taskArgs).toContain(':app:test'); // flavors resolved from the first-try probe, same as fail-then-pass
   });
 });
 

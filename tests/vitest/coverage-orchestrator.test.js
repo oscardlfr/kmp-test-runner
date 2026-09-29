@@ -502,7 +502,13 @@ describe('runCoverage', () => {
     expect(envelope.coverage.modules_contributing).toBe(1);
     expect(envelope.coverage.missed_lines).toBe(2);
     expect(envelope.errors).toEqual([]);
-    expect(envelope.warnings).toEqual([]);
+    // This fixture's gradlew stub exits 0 with no output, which the gradle-
+    // tasks probe now (correctly) reports as a failed probe (`empty_output`);
+    // that's an unrelated, expected `gradle_probe_failed` warning (see
+    // project-model.test.js's dedicated probe-failure tests). This assertion
+    // stays scoped to what the test actually cares about: no OTHER warning
+    // fired while classifying kover/jacoco modules.
+    expect(envelope.warnings.filter(w => w.code !== 'gradle_probe_failed')).toEqual([]);
   });
 
   it('JaCoCo-only project: modules_with_jacoco_plugin populated', async () => {

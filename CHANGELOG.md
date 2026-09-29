@@ -45,6 +45,20 @@ the new cheap `kmp-test --version --json` identity include
 `contracts:{"coverage_evidence":1}` so consumers can reject an incompatible global installation
 before running Gradle. Plain `kmp-test --version` remains unchanged.
 
+### Fixed — a failed gradle-tasks probe no longer fails silently
+
+The internal `gradlew tasks --all --quiet` probe that resolves real per-module task names could
+previously fail (a non-zero exit, no output, a timeout, or a spawn-layer error) and return
+silently, leaving module discovery to guess task names statically — for a module whose flavors or
+targets come from a build-logic convention plugin, that guess can dispatch the wrong task and
+report a confusing `task_not_found` with no trace of the real cause. The probe now retries once on
+a transient failure (a non-zero exit or empty output; a timeout or spawn error is never retried),
+and `parallel`, `coverage`, `android`, `benchmark`, and `describe` all surface a `gradle_probe_failed`
+warning carrying the failure reason, exit code, attempt count, whether the retry recovered, and a
+bounded excerpt of the probe's stderr. When the probe never recovers, any resulting `task_not_found`
+error is additionally flagged `probe_failed:true` so agents can tell a guessed task name apart from
+a genuinely missing one. This never changes `exit_code`.
+
 ## [0.15.1] — 2026-09-29
 
 0.15.0 reached GitHub Releases and GitHub Packages but never npm (see "Fixed — 0.15.0 never

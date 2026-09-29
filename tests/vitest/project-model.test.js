@@ -6,7 +6,7 @@
 // invoke real gradle from these tests.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -27,6 +27,12 @@ import {
   parseBuildLogicPluginDescriptors,
 } from '../../lib/project-model.js';
 import { extractAppliedPluginsFromConventionSource, stripGradleComments } from '../../lib/project/kotlin-dsl.js';
+import {
+  probeGradleTasksCached,
+  classifyProbeFailure,
+  buildProbeFailureExcerpt,
+  CACHE_DIR_NAME,
+} from '../../lib/project/cache.js';
 
 let workDir;
 
@@ -3154,6 +3160,434 @@ describe('probeGradleTasksCached spawn wrapper (regression for v0.9 EINVAL bug)'
     expect(probeBlock).toBeTruthy();
     expect(probeBlock[0]).toMatch(/spawnGradle\s*\(\s*spawnSync\s*,\s*wrapperPath\s*,/);
     expect(probeBlock[0]).not.toMatch(/spawnSync\s*\(\s*wrapperPath\s*,/);
+  });
+});
+
+// ------------------------------------------------------------------
+// Gradle-tasks probe failure handling (fix: structured probeFailure + retry)
+//
+// Pre-fix, probeGradleTasksCached returned a bare `null` on
+// `result.error || result.status !== 0 || !result.stdout` with no further
+// detail and no retry — a transient gradle failure during task discovery
+// (e.g. a Kotlin build-script compilation crash) left buildProjectModel
+// "probe-blind" with no trace of why, and dispatch fell back to statically
+// guessing task names (wrong for a module whose flavors/targets come from a
+// convention plugin). This section tests the fix: a structured
+// `probeFailure` shape, exactly one retry on a transient reason, and the
+// orchestrator-level surfacing (parallel-orchestrator.test.js covers the
+// dispatch-level "live case" regression: a flavored module actually
+// dispatching the umbrella task once the retry recovers).
+// ------------------------------------------------------------------
+
+// Bounded retry for a Windows-only quirk: the timeout test below kills a
+// PowerShell grandchild process mid-sleep. cmd.exe's own termination doesn't
+// always propagate to that grandchild instantly, so the temp directory can
+// still be transiently locked (EPERM/EBUSY) for a few ms right after
+// buildProjectModel returns. Mirrors lib/project/artifact-sweep.js's own
+// renameWithRetrySync retry-on-transient-lock pattern.
+function rmSyncWithRetry(dir, delays = [50, 100, 200, 400]) {
+  for (let i = 0; i <= delays.length; i++) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch (e) {
+      const retriable = e && (e.code === 'EPERM' || e.code === 'EBUSY' || e.code === 'EACCES');
+      if (!retriable || i === delays.length) return; // best-effort — a leaked temp dir is harmless
+      try {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delays[i]);
+      } catch { /* SharedArrayBuffer unavailable — retry immediately */ }
+    }
+  }
+}
+
+// Fresh temp project with a single `:app` android module. Its OWN build file
+// declares no product flavors (mirrors tests/fixtures/convention-flavors) —
+// static hasFlavor is false regardless of probe outcome — and a bare
+// `src/test/` dir so static unit-test-source detection succeeds even when
+// the probe never recovers (isolates "which task got picked" from "was the
+// module skipped entirely", matching the bug's exact reported shape: a wrong
+// task guess, not a skip). No pre-existing `.kmp-test-runner/` cache dir, so
+// every test below exercises a REAL spawn of the fixture's own gradlew.
+function makeProbeRetryProject({ gradlewSh, gradlewBat }) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'kmp-probe-retry-'));
+  writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "probe-retry-fixture"\ninclude(":app")\n');
+  const gradlewPath = path.join(dir, 'gradlew');
+  writeFileSync(gradlewPath, gradlewSh);
+  // POSIX: spawnGradle spawns this file directly (no cmd.exe wrapper as on
+  // Windows) — writeFileSync's default mode has no execute bit, which would
+  // make the probe fail at the Node spawn layer (EACCES, classified as
+  // spawn_error) instead of actually running the script's intended
+  // exit_nonzero/empty_output/timeout behavior.
+  chmodSync(gradlewPath, 0o755);
+  writeFileSync(path.join(dir, 'gradlew.bat'), gradlewBat);
+  const appTestDir = path.join(dir, 'app', 'src', 'test');
+  mkdirSync(appTestDir, { recursive: true });
+  writeFileSync(path.join(appTestDir, '.gitkeep'), '');
+  writeFileSync(path.join(dir, 'app', 'build.gradle.kts'), 'plugins {\n    id("com.android.application")\n}\n');
+  return dir;
+}
+
+// Always fails `tasks --all` with a Gradle-shaped failure banner (same
+// canned stderr on every invocation) — used for the fail-then-fail case.
+const ALWAYS_FAIL_SH = `#!/usr/bin/env bash
+for arg in "$@"; do
+  case "$arg" in
+    tasks)
+      echo "FAILURE: Build failed with an exception." 1>&2
+      echo "" 1>&2
+      echo "What went wrong:" 1>&2
+      echo "Execution failed for task ':app:compileKotlin'." 1>&2
+      exit 1
+      ;;
+  esac
+done
+exit 1
+`;
+const ALWAYS_FAIL_BAT = `@echo off
+setlocal enabledelayedexpansion
+for %%a in (%*) do (
+  set "arg=%%~a"
+  if "!arg!"=="tasks" (
+    echo FAILURE: Build failed with an exception. 1>&2
+    echo. 1>&2
+    echo What went wrong: 1>&2
+    echo Execution failed for task app:compileKotlin. 1>&2
+    exit /b 1
+  )
+)
+exit /b 1
+`;
+
+// Fails the FIRST `tasks --all` invocation (a marker file records the
+// attempt), then succeeds on the second with a flavored task graph — used
+// for the fail-then-pass (recovery) case. The failure's stderr also carries
+// a "Script compilation error:" banner followed several lines later by a
+// "cannot be cast to class" line, mirroring the live bug's Kotlin
+// script-compilation crash signature.
+function failThenSucceedSh(markerName) {
+  return `#!/usr/bin/env bash
+MARKER="$(dirname "$0")/${markerName}"
+for arg in "$@"; do
+  case "$arg" in
+    tasks)
+      if [ -f "$MARKER" ]; then
+        cat <<'EOF'
+app:testDemoDebugUnitTest - Runs the demoDebug unit tests.
+app:testProdDebugUnitTest - Runs the prodDebug unit tests.
+app:test - Runs all unit tests.
+EOF
+        exit 0
+      fi
+      touch "$MARKER"
+      echo "FAILURE: Build failed with an exception." 1>&2
+      echo "" 1>&2
+      echo "What went wrong:" 1>&2
+      echo "Execution failed for task ':app:compileKotlin'." 1>&2
+      echo "" 1>&2
+      echo "Script compilation error:" 1>&2
+      echo "" 1>&2
+      echo "SomeType cannot be cast to class OtherType" 1>&2
+      exit 1
+      ;;
+  esac
+done
+exit 1
+`;
+}
+function failThenSucceedBat(markerName) {
+  return `@echo off
+setlocal enabledelayedexpansion
+set "MARKER=%~dp0${markerName}"
+for %%a in (%*) do (
+  set "arg=%%~a"
+  if "!arg!"=="tasks" (
+    if exist "%MARKER%" (
+      echo app:testDemoDebugUnitTest - Runs the demoDebug unit tests.
+      echo app:testProdDebugUnitTest - Runs the prodDebug unit tests.
+      echo app:test - Runs all unit tests.
+      exit /b 0
+    )
+    echo done> "%MARKER%"
+    echo FAILURE: Build failed with an exception. 1>&2
+    echo. 1>&2
+    echo What went wrong: 1>&2
+    echo Execution failed for task app:compileKotlin. 1>&2
+    echo. 1>&2
+    echo Script compilation error: 1>&2
+    echo. 1>&2
+    echo SomeType cannot be cast to class OtherType 1>&2
+    exit /b 1
+  )
+)
+exit /b 1
+`;
+}
+
+// Succeeds immediately (no retry needed) — the pre-fix behavior for a
+// healthy probe, kept identical post-fix (regression guard).
+const SUCCEED_FIRST_TRY_SH = `#!/usr/bin/env bash
+for arg in "$@"; do
+  case "$arg" in
+    tasks)
+      cat <<'EOF'
+app:testDebugUnitTest - Runs the debug unit tests.
+app:test - Runs all unit tests.
+EOF
+      exit 0
+      ;;
+  esac
+done
+echo "BUILD SUCCESSFUL in 1s"
+exit 0
+`;
+const SUCCEED_FIRST_TRY_BAT = `@echo off
+setlocal enabledelayedexpansion
+for %%a in (%*) do (
+  set "arg=%%~a"
+  if "!arg!"=="tasks" (
+    echo app:testDebugUnitTest - Runs the debug unit tests.
+    echo app:test - Runs all unit tests.
+    exit /b 0
+  )
+)
+echo BUILD SUCCESSFUL in 1s
+exit /b 0
+`;
+
+describe('classifyProbeFailure — reason discrimination (pure)', () => {
+  // Mirrors parallel-orchestrator.test.js's own T1/T2/T8 gradle_timeout tests
+  // (synthetic spawnSync-shaped result objects) — the same technique applied
+  // to the probe's own timeout/spawn_error discrimination, which has no
+  // injectable spawn seam (probeGradleTasksCached always calls the real
+  // spawnSync — see the structural test above). Portable and deterministic,
+  // unlike coercing a genuine OS-level timeout/spawn failure.
+  it('POSIX timeout shape (signal SIGTERM, status null) -> "timeout"', () => {
+    expect(classifyProbeFailure({ status: null, signal: 'SIGTERM', stdout: '', stderr: '', error: null })).toBe('timeout');
+  });
+  it('Windows timeout shape (error.code ETIMEDOUT) -> "timeout"', () => {
+    const err = Object.assign(new Error('ETIMEDOUT'), { code: 'ETIMEDOUT' });
+    expect(classifyProbeFailure({ status: null, signal: null, stdout: '', stderr: '', error: err })).toBe('timeout');
+  });
+  it('a non-timeout spawn-layer error -> "spawn_error"', () => {
+    const err = Object.assign(new Error('ENOMEM'), { code: 'ENOMEM' });
+    expect(classifyProbeFailure({ status: null, signal: null, stdout: '', stderr: '', error: err })).toBe('spawn_error');
+  });
+  it('non-zero exit, no spawn-layer error -> "exit_nonzero"', () => {
+    expect(classifyProbeFailure({ status: 1, signal: null, stdout: '', stderr: 'boom', error: null })).toBe('exit_nonzero');
+  });
+  it('clean exit with empty stdout -> "empty_output"', () => {
+    expect(classifyProbeFailure({ status: 0, signal: null, stdout: '', stderr: '', error: null })).toBe('empty_output');
+  });
+  it('clean exit with real output -> null (success)', () => {
+    expect(classifyProbeFailure({ status: 0, signal: null, stdout: 'app:test - x\n', stderr: '', error: null })).toBeNull();
+  });
+});
+
+describe('buildProbeFailureExcerpt — bounded, de-duplicated, in-order three-window excerpt', () => {
+  it('keeps the What-went-wrong line, a cannot-be-cast line several lines below a Script-compilation-error banner, and the last 10 lines of a 100+-line tail — de-duplicated, in order, and <=2 KB', () => {
+    const lines = [];
+    lines.push('FAILURE: Build failed with an exception.');
+    lines.push('');
+    lines.push('* What went wrong:');
+    lines.push("Execution failed for task ':app:compileKotlin'.");
+    lines.push('');
+    lines.push('> Script compilation error:');
+    // The cast line sits several lines BELOW the compilation-error banner —
+    // exactly the live bug's reported shape — and well outside the last-10
+    // tail window once the padding below is appended.
+    lines.push('  build.gradle.kts:12:5: error: type mismatch');
+    lines.push('  build.gradle.kts:13:5: error: unresolved reference');
+    lines.push('  at SomeClass.doThing(SomeClass.kt:42)');
+    lines.push('java.lang.ClassCastException: com.example.Foo cannot be cast to class com.example.Bar');
+    for (let i = 0; i < 90; i++) lines.push(`padding line ${i} of filler stack trace content`);
+    const stderr = lines.join('\n');
+    expect(lines.length).toBeGreaterThanOrEqual(100);
+
+    const excerpt = buildProbeFailureExcerpt(stderr);
+
+    expect(excerpt).toContain('What went wrong:');
+    expect(excerpt).toContain('cannot be cast to class');
+    expect(excerpt).toContain('padding line 89 of filler stack trace content'); // last line
+    expect(excerpt).toContain('padding line 80 of filler stack trace content'); // within last 10
+    // A line that is in none of the three windows must be dropped.
+    expect(excerpt).not.toContain('padding line 50 of filler stack trace content');
+
+    // In-order (by original position), not grouped by discovery order.
+    const iWhatWentWrong = excerpt.indexOf('What went wrong:');
+    const iCast = excerpt.indexOf('cannot be cast to class');
+    const iTail = excerpt.indexOf('padding line 80');
+    expect(iWhatWentWrong).toBeGreaterThanOrEqual(0);
+    expect(iCast).toBeGreaterThan(iWhatWentWrong);
+    expect(iTail).toBeGreaterThan(iCast);
+
+    // De-duplicated: no accidental double-insertion of a line.
+    expect(excerpt.split('cannot be cast to class').length - 1).toBe(1);
+
+    expect(Buffer.byteLength(excerpt, 'utf8')).toBeLessThanOrEqual(2048);
+  });
+
+  it('returns an empty string for empty/absent stderr', () => {
+    expect(buildProbeFailureExcerpt('')).toBe('');
+    expect(buildProbeFailureExcerpt(null)).toBe('');
+    expect(buildProbeFailureExcerpt(undefined)).toBe('');
+  });
+
+  it('caps the assembled excerpt at 2 KB even when the selected lines are individually long', () => {
+    const longLine = 'x'.repeat(500);
+    const lines = [`What went wrong: ${longLine}`];
+    for (let i = 0; i < 30; i++) lines.push(`${longLine} tail-${i}`);
+    const excerpt = buildProbeFailureExcerpt(lines.join('\n'));
+    expect(Buffer.byteLength(excerpt, 'utf8')).toBeLessThanOrEqual(2048);
+  });
+});
+
+describe('probeGradleTasksCached / buildProjectModel — probe-failure retry (fix)', () => {
+  let dir;
+  afterEach(() => {
+    if (dir && existsSync(dir)) rmSyncWithRetry(dir);
+    dir = null;
+  });
+
+  it('fail-then-fail: exit_nonzero on both attempts -> recovered:false, attempts:2, tasks stay null', () => {
+    dir = makeProbeRetryProject({ gradlewSh: ALWAYS_FAIL_SH, gradlewBat: ALWAYS_FAIL_BAT });
+    const m = buildProjectModel(dir, { skipProbe: false, useCache: false });
+    expect(m.probed).toBe(false);
+    expect(m.probeFailure).toMatchObject({ reason: 'exit_nonzero', exit_code: 1, attempts: 2, recovered: false });
+    expect(m.probeFailure.excerpt).toContain('What went wrong');
+    expect(m.modules[':app'].gradleTasks).toBeNull();
+    expect(m.modules[':app'].resolved.flavors).toEqual([]);
+  });
+
+  it('fail-then-pass: exit_nonzero then success -> recovered:true, attempts:2, real flavors resolved (probe data wins)', () => {
+    dir = makeProbeRetryProject({
+      gradlewSh: failThenSucceedSh('.probe-marker-a'),
+      gradlewBat: failThenSucceedBat('.probe-marker-a'),
+    });
+    const m = buildProjectModel(dir, { skipProbe: false, useCache: false });
+    expect(m.probed).toBe(true);
+    expect(m.probeFailure).toMatchObject({ reason: 'exit_nonzero', exit_code: 1, attempts: 2, recovered: true });
+    expect(m.probeFailure.excerpt).toContain('cannot be cast');
+    expect(m.modules[':app'].gradleTasks).toEqual(
+      expect.arrayContaining(['testDemoDebugUnitTest', 'testProdDebugUnitTest', 'test']),
+    );
+    // The whole point of the fix: recovered probe data resolves the SAME
+    // real flavors a first-try success would have. The dispatch-level "does
+    // it actually pick the umbrella task" proof lives in
+    // parallel-orchestrator.test.js (the live-case regression).
+    expect(m.modules[':app'].resolved.flavors).toEqual(['demo', 'prod']);
+  });
+
+  it('timeout: never retried -- attempts:1, reason "timeout", exactly one real spawn', () => {
+    const invokeCounter = '.probe-invoke-count';
+    const sleepSh = `#!/usr/bin/env bash
+for arg in "$@"; do
+  case "$arg" in
+    tasks)
+      echo x >> "$(dirname "$0")/${invokeCounter}"
+      sleep 5
+      echo "app:test - Runs all unit tests."
+      exit 0
+      ;;
+  esac
+done
+exit 0
+`;
+    // Absolute path to powershell.exe: this host's child cmd.exe processes
+    // get an EMPTY PATH (see AGENTS.md/CLAUDE.md setup notes), so a bare
+    // `powershell` invocation fails instantly with "not recognized" instead
+    // of sleeping -- which would make this test pass for the wrong reason
+    // (the script exiting immediately, not a real timeout kill). SystemRoot
+    // is a separate env var, unaffected by the stripped PATH.
+    const sleepBat = `@echo off
+setlocal enabledelayedexpansion
+for %%a in (%*) do (
+  set "arg=%%~a"
+  if "!arg!"=="tasks" (
+    echo x>> "%~dp0${invokeCounter}"
+    "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -Command "Start-Sleep -Milliseconds 5000"
+    echo app:test - Runs all unit tests.
+    exit /b 0
+  )
+)
+exit /b 0
+`;
+    dir = makeProbeRetryProject({ gradlewSh: sleepSh, gradlewBat: sleepBat });
+    const m = buildProjectModel(dir, { skipProbe: false, useCache: false, probeTimeoutMs: 800 });
+    expect(m.probed).toBe(false);
+    expect(m.probeFailure).toMatchObject({ reason: 'timeout', exit_code: null, attempts: 1, recovered: false });
+    const invokeLog = path.join(dir, invokeCounter);
+    const invokeCount = existsSync(invokeLog)
+      ? readFileSync(invokeLog, 'utf8').split('\n').filter(Boolean).length
+      : 0;
+    expect(invokeCount).toBe(1); // proves the retryable-looking failure was NOT retried
+  }, 10_000);
+
+  // Windows-only: exploits spawnGradle's JAR-direct branch (a `.bat` wrapper
+  // with a `gradle/wrapper/gradle-wrapper.jar` beside it invokes `java.exe`
+  // directly instead of cmd.exe). Pointing JAVA_HOME at a directory that
+  // doesn't exist makes the resolved java.exe path itself not exist, so
+  // spawnSync fails at the Node spawn layer (a genuine ENOENT `result.error`)
+  // — the real shape of "spawn_error" — rather than gradle merely exiting
+  // non-zero. Not portable to the POSIX direct-spawn branch (no java
+  // resolution happens there); classifyProbeFailure's own unit tests above
+  // cover the reason discrimination portably on every platform.
+  it.skipIf(process.platform !== 'win32')('spawn_error (Windows JAR-direct path): never retried -- attempts:1', () => {
+    const savedJavaHome = process.env.JAVA_HOME;
+    dir = mkdtempSync(path.join(tmpdir(), 'kmp-probe-spawnerr-'));
+    try {
+      writeFileSync(path.join(dir, 'settings.gradle.kts'), 'rootProject.name = "spawnerr-fixture"\ninclude(":app")\n');
+      writeFileSync(path.join(dir, 'gradlew'), '#!/usr/bin/env bash\nexit 1\n');
+      chmodSync(path.join(dir, 'gradlew'), 0o755);
+      writeFileSync(path.join(dir, 'gradlew.bat'), '@echo off\r\nexit /b 1\r\n');
+      mkdirSync(path.join(dir, 'app'), { recursive: true });
+      writeFileSync(path.join(dir, 'app', 'build.gradle.kts'), 'plugins { kotlin("jvm") }\n');
+      mkdirSync(path.join(dir, 'gradle', 'wrapper'), { recursive: true });
+      writeFileSync(path.join(dir, 'gradle', 'wrapper', 'gradle-wrapper.jar'), 'not a real jar');
+      process.env.JAVA_HOME = path.join(dir, 'no-such-jdk');
+
+      const key = computeCacheKey(dir);
+      const result = probeGradleTasksCached(dir, key, { skipProbe: false });
+      expect(result.tasks).toBeNull();
+      expect(result.probeFailure).toMatchObject({ reason: 'spawn_error', exit_code: null, attempts: 1, recovered: false });
+    } finally {
+      if (savedJavaHome === undefined) delete process.env.JAVA_HOME;
+      else process.env.JAVA_HOME = savedJavaHome;
+    }
+  });
+
+  it('success on the first try: probeFailure stays null and gradleTasks/resolved are unchanged (regression guard)', () => {
+    dir = makeProbeRetryProject({ gradlewSh: SUCCEED_FIRST_TRY_SH, gradlewBat: SUCCEED_FIRST_TRY_BAT });
+    const m = buildProjectModel(dir, { skipProbe: false, useCache: false });
+    expect(m.probed).toBe(true);
+    expect(m.probeFailure).toBeNull();
+    expect(m.modules[':app'].gradleTasks).toEqual(expect.arrayContaining(['testDebugUnitTest', 'test']));
+    // resolveTasksFor's own candidate-chain preference for an android module
+    // is orthogonal to this fix — just confirm resolution succeeded from the
+    // live (non-empty, first-try) probe data.
+    expect(m.modules[':app'].resolved.unitTestTask).toBeTruthy();
+  });
+
+  it('cache: a failed probe writes no tasks-<sha>.txt; a recovered retry writes it exactly as a first-try success would', () => {
+    dir = makeProbeRetryProject({ gradlewSh: ALWAYS_FAIL_SH, gradlewBat: ALWAYS_FAIL_BAT });
+    const key = computeCacheKey(dir);
+    const cacheFile = path.join(dir, CACHE_DIR_NAME, `tasks-${key}.txt`);
+
+    const failed = probeGradleTasksCached(dir, key, { skipProbe: false });
+    expect(failed.tasks).toBeNull();
+    expect(existsSync(cacheFile)).toBe(false);
+
+    // Same directory/cache-key (computeCacheKey never hashes gradlew content)
+    // — swap in a fail-then-pass script and probe again.
+    rmSync(path.join(dir, 'gradlew'));
+    rmSync(path.join(dir, 'gradlew.bat'));
+    writeFileSync(path.join(dir, 'gradlew'), failThenSucceedSh('.probe-marker-b'));
+    chmodSync(path.join(dir, 'gradlew'), 0o755); // POSIX: re-apply after the rewrite (see makeProbeRetryProject)
+    writeFileSync(path.join(dir, 'gradlew.bat'), failThenSucceedBat('.probe-marker-b'));
+
+    const recovered = probeGradleTasksCached(dir, key, { skipProbe: false });
+    expect(recovered.probeFailure).toMatchObject({ recovered: true });
+    expect(existsSync(cacheFile)).toBe(true);
+    expect(readFileSync(cacheFile, 'utf8')).toContain('app:test');
   });
 });
 
