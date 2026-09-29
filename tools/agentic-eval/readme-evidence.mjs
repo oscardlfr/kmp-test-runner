@@ -559,7 +559,13 @@ const TOKEN_TYPE_COLORS = {
   input: '#8250df', cached_input: '#0969da', cache_write: '#1a7f37', output: '#bc4c00', reasoning_output: '#cf222e',
 };
 const TOKEN_TYPE_ORDER = ['input', 'cached_input', 'cache_write', 'reasoning_output', 'output'];
+const TOKEN_TYPE_LABEL = {
+  input: 'input', cached_input: 'cached input', cache_write: 'cache write', output: 'output', reasoning_output: 'reasoning output',
+};
 const COMMAND_KIND_COLORS = { kmp_test: '#0969da', gradle: '#bc4c00', other: '#59636e' };
+const COMMAND_KIND_LABEL = { kmp_test: 'kmp-test', gradle: 'gradle', other: 'other' };
+const GRID_LEGEND_FS = 9;
+const GRID_LEGEND_SWATCH = 8;
 
 function medianOf(values) {
   if (!values || values.length === 0) return null;
@@ -610,8 +616,13 @@ function stackedMetric(summary, group, runtimeId, arm, cellField, types, aggrega
   }
   const agg = aggregateOf(group);
   if (agg) {
-    const segments = types.map((t) => ({ type: t, value: agg[t] && typeof agg[t].median === 'number' ? agg[t].median : 0 }));
-    if (segments.some((s) => s.value > 0)) return { kind: 'stack-aggregate', segments };
+    // Only types aggregateOf actually tracks become a segment -- a type it doesn't track (e.g.
+    // commandKindAggregate's 'other') is omitted rather than defaulted to a fabricated 0, so a
+    // genuinely-untracked bucket is never indistinguishable from one that measured zero.
+    const segments = types
+      .filter((t) => agg[t] && typeof agg[t].median === 'number')
+      .map((t) => ({ type: t, value: agg[t].median }));
+    if (segments.some((s) => s.value > 0)) return { kind: 'stack-aggregate', segments, stat: agg.stat || 'median' };
   }
   return { kind: 'unavailable' };
 }
@@ -621,9 +632,15 @@ function commandKindAggregate(group) {
   if (!mix || mix.available === false) return null;
   const n = Math.max(group.counted, 1);
   return {
+    // Per-session MEAN (total / n), not a median -- campaign-summary.mjs exposes only totals for
+    // this bucket, so `.median` here is stackedMetric's generic per-type value field, not a claim
+    // this specific number is a median (see `stat` below, which renderMetricRow reads for the note).
     kmp_test: { median: mix.kmp_test_count / n },
     gradle: { median: mix.gradle_count / n },
-    other: { median: 0 }, // campaign-summary.mjs does not currently track a 3rd bucket -- see inventory
+    stat: 'mean',
+    // 'other' intentionally absent: campaign-summary.mjs does not currently track a 3rd bucket at
+    // the aggregate level -- see inventory. Per-cell command_kind_counts (the stack-per-session
+    // path above) still carries all 3.
   };
 }
 
@@ -632,7 +649,7 @@ function commandKindAggregate(group) {
 // total_cost_usd is preferred when every counted cell carries it, matching the design's "Claude
 // from the provider-reported value where present, otherwise the estimate" rule generalized to any
 // runtime; Codex (and Claude with no provider figure) uses the existing estimate mechanism.
-function costMetric(summary, group, runtimeId, arm, costEstimate) {
+export function costMetric(summary, group, runtimeId, arm, costEstimate) {
   const cells = countedCells(summary, runtimeId, arm);
   if (cells.length > 0 && cells.every((c) => typeof c.total_cost_usd === 'number')) {
     const values = cells.map((c) => c.total_cost_usd);
@@ -645,11 +662,16 @@ function costMetric(summary, group, runtimeId, arm, costEstimate) {
   const price = costEstimate.schema === 1 ? costEstimate.pricing.per_million_tokens : costEstimate.runtimes[runtimeId].per_million_tokens;
   const uncachedMayBeCacheWrites = costEstimate.schema === 2 && costEstimate.runtimes[runtimeId].uncached_input_may_be_cache_writes === true;
   const highInputPrice = uncachedMayBeCacheWrites ? Math.max(price.cache_write_5m, price.cache_write_1h) : price.input;
-  // Point estimate per session (not the existing low/high range): the 5m/1h cache-write TTL
-  // ambiguity is a single-number uncertainty band already shown on the scorecard's own cost bar,
-  // not a per-session distribution -- this grid plots the mid-TTL price so n dots is a real
-  // per-session spread, not n copies of the same range collapsed to one number.
-  const values = priced.map((c) => sessionCost(c.tokens, price, 'cache_write_5m', highInputPrice));
+  // Midpoint of the low/high estimate per session, using the SAME low/high assumptions as
+  // armCostRange's own arm-level range (low: cache_write_5m + plain input price; high:
+  // cache_write_1h + highInputPrice) -- not a separate single "mid-TTL" price point, so each
+  // session's dot is consistent with the scorecard's own cost bar, just resolved to one number
+  // per session instead of one range per arm.
+  const values = priced.map((c) => {
+    const low = sessionCost(c.tokens, price, 'cache_write_5m');
+    const high = sessionCost(c.tokens, price, 'cache_write_1h', highInputPrice);
+    return (low + high) / 2;
+  });
   return { kind: 'per-session', values, median: medianOf(values), provider: false };
 }
 
@@ -664,10 +686,19 @@ function yScaleFor(marks) {
   return max > 0 ? max : 1;
 }
 
+// The set of type keys actually present in a metric's segments/sessions -- never every key
+// typeColors happens to define, so a legend built from this never shows a swatch for a type the
+// underlying data never tracked (mirrors stackedMetric's own "omit, don't fabricate" rule).
+function presentStackTypes(metric) {
+  if (metric.kind === 'stack-per-session') return new Set(metric.sessions.flatMap((s) => s.map((seg) => seg.type)));
+  if (metric.kind === 'stack-aggregate') return new Set(metric.segments.map((seg) => seg.type));
+  return new Set();
+}
+
 // One row's SVG items for one runtime column: a dot cluster / stacked-bar cluster / range mark /
 // "not available" text, for each of the with/without lanes, sharing one y-scale across both lanes
 // (and, for stacked metrics, one color legend) so the two lanes are visually comparable.
-function renderMetricRow(colX, rowY, label, unit, descriptive, withMetric, withoutMetric, isStack, typeColors) {
+function renderMetricRow(colX, rowY, label, unit, descriptive, withMetric, withoutMetric, isStack, typeColors, types, typeLabels) {
   const items = [];
   const labelFS = 13;
   items.push(textItem('gridRowLabel', null, colX, rowY + 13, labelFS, 500, COLOR_TEXT, descriptive ? `${label} (descriptive)` : label));
@@ -704,7 +735,8 @@ function renderMetricRow(colX, rowY, label, unit, descriptive, withMetric, witho
         }
       });
       if (lane.m.kind === 'stack-aggregate') {
-        items.push(textItem('gridAggregateNote', null, lane.x, laneTop - 4, 10, 400, COLOR_SECONDARY, 'campaign median (not per-session)'));
+        const note = lane.m.stat === 'mean' ? 'campaign mean per session (not per-session)' : 'campaign median (not per-session)';
+        items.push(textItem('gridAggregateNote', null, lane.x, laneTop - 4, 10, 400, COLOR_SECONDARY, note));
       }
     } else if (lane.m.kind === 'per-session') {
       const n = lane.m.values.length;
@@ -724,8 +756,21 @@ function renderMetricRow(colX, rowY, label, unit, descriptive, withMetric, witho
     }
   }
 
-  const valueLabel = isStack ? '' : `median ${fmtGridValue(withMetric)} vs ${fmtGridValue(withoutMetric)}${unit ? ' ' + unit : ''}`;
-  if (valueLabel) items.push(textItem('gridValueLabel', null, colX, rowY + GRID_ROW_H - 4, 11, 400, COLOR_SECONDARY, valueLabel));
+  if (isStack) {
+    const present = new Set([...presentStackTypes(withMetric), ...presentStackTypes(withoutMetric)]);
+    const legendY = rowY + GRID_ROW_H - 4;
+    let legendX = colX;
+    for (const t of types.filter((type) => present.has(type))) {
+      const swatchFill = typeColors[t] || COLOR_SECONDARY;
+      items.push({ kind: 'legendSwatch', column: null, x: legendX, y: legendY - GRID_LEGEND_SWATCH, w: GRID_LEGEND_SWATCH, h: GRID_LEGEND_SWATCH, fill: swatchFill });
+      const labelText = (typeLabels && typeLabels[t]) || t;
+      items.push(textItem('gridLegendLabel', null, legendX + GRID_LEGEND_SWATCH + 3, legendY, GRID_LEGEND_FS, 400, COLOR_SECONDARY, labelText));
+      legendX += GRID_LEGEND_SWATCH + 3 + labelText.length * GRID_LEGEND_FS * 0.6 + 10;
+    }
+  } else {
+    const valueLabel = `median ${fmtGridValue(withMetric)} vs ${fmtGridValue(withoutMetric)}${unit ? ' ' + unit : ''}`;
+    items.push(textItem('gridValueLabel', null, colX, rowY + GRID_ROW_H - 4, 11, 400, COLOR_SECONDARY, valueLabel));
+  }
 
   return { items, rowHeight: GRID_ROW_H };
 }
@@ -745,12 +790,12 @@ function buildMetricRowsForRuntime(runtimeId, summary, costEstimate) {
   const tokenTypes = runtimeId === 'claude-code' ? ['input', 'cached_input', 'cache_write', 'output'] : TOKEN_TYPE_ORDER;
   const rows = [
     {
-      label: 'Tokens per session, by type', isStack: true, typeColors: TOKEN_TYPE_COLORS,
+      label: 'Tokens per session, by type', isStack: true, typeColors: TOKEN_TYPE_COLORS, types: tokenTypes, typeLabels: TOKEN_TYPE_LABEL,
       with: stackedMetric(summary, gp, runtimeId, 'product', 'tokens', tokenTypes, (g) => g.tokens),
       without: stackedMetric(summary, gf, runtimeId, 'free', 'tokens', tokenTypes, (g) => g.tokens),
     },
     {
-      label: 'Tool calls by kind', isStack: true, typeColors: COMMAND_KIND_COLORS,
+      label: 'Tool calls by kind', isStack: true, typeColors: COMMAND_KIND_COLORS, types: ['kmp_test', 'gradle', 'other'], typeLabels: COMMAND_KIND_LABEL,
       with: stackedMetric(summary, gp, runtimeId, 'product', 'command_kind_counts', ['kmp_test', 'gradle', 'other'], commandKindAggregate),
       without: stackedMetric(summary, gf, runtimeId, 'free', 'command_kind_counts', ['kmp_test', 'gradle', 'other'], commandKindAggregate),
     },
@@ -760,7 +805,7 @@ function buildMetricRowsForRuntime(runtimeId, summary, costEstimate) {
       without: scalarMetric(summary, gf, runtimeId, 'free', 'duration_ms', (g) => g.duration_ms),
     },
     {
-      label: 'Estimated API cost', unit: 'USD', isStack: false,
+      label: 'API cost (midpoint of low/high)', unit: 'USD', isStack: false,
       with: costMetric(summary, gp, runtimeId, 'product', costEstimate),
       without: costMetric(summary, gf, runtimeId, 'free', costEstimate),
     },
@@ -785,10 +830,13 @@ export function computeMetricsGridLayout(summary, costEstimate) {
   const titleY = PAD + titleFS;
   items.push(textItem('gridTitle', null, PAD, titleY, titleFS, 600, COLOR_TEXT, 'Session detail (descriptive)'));
   const subtitleFS = 13;
-  const subtitleY = titleY + ROW_GAP + subtitleFS;
-  items.push(textItem('gridSubtitle', null, PAD, subtitleY, subtitleFS, 400, COLOR_SECONDARY,
-    'Every metric below is descriptive, not part of the pre-registered design. Dots are real sessions; a range mark is a campaign aggregate, not per-session.'));
-  const headerBottom = subtitleY + ROW_GAP + 8;
+  const subtitleY1 = titleY + ROW_GAP + subtitleFS;
+  const subtitleY2 = subtitleY1 + subtitleFS + 4;
+  items.push(textItem('gridSubtitle', null, PAD, subtitleY1, subtitleFS, 400, COLOR_SECONDARY,
+    'Every metric below is descriptive, not part of the pre-registered design.'));
+  items.push(textItem('gridSubtitle', null, PAD, subtitleY2, subtitleFS, 400, COLOR_SECONDARY,
+    'Dots are real sessions; a range mark is a campaign aggregate, not per-session.'));
+  const headerBottom = subtitleY2 + ROW_GAP + 8;
 
   const columns = RUNTIME_ORDER.map((id, i) => ({ id, x: i === 0 ? PAD : PAD + COLUMN_W + COLUMN_GAP }));
   const columnBottoms = [];
@@ -799,7 +847,7 @@ export function computeMetricsGridLayout(summary, costEstimate) {
       summary.schema === 2 ? `${RUNTIME_DISPLAY_NAME[col.id]} · ${provenanceValue(summary, 'model_resolved', col.id)}` : RUNTIME_DISPLAY_NAME[col.id]));
     cy += panelTitleFS + ROW_GAP;
     for (const row of buildMetricRowsForRuntime(col.id, summary, costEstimate)) {
-      const { items: rowItems, rowHeight } = renderMetricRow(col.x, cy, row.label, row.unit, true, row.with, row.without, row.isStack, row.typeColors);
+      const { items: rowItems, rowHeight } = renderMetricRow(col.x, cy, row.label, row.unit, true, row.with, row.without, row.isStack, row.typeColors, row.types, row.typeLabels);
       items.push(...rowItems);
       cy += rowHeight;
     }
@@ -818,6 +866,8 @@ export function renderMetricsGridSvg(summary, costEstimate) {
       parts.push(`<text x="${item.x}" y="${item.y.toFixed(1)}" font-size="${item.fontSize}" font-weight="${item.fontWeight}" fill="${item.fill}"${anchorAttr}>${escapeXml(item.text)}</text>`);
     } else if (item.kind === 'bar') {
       parts.push(`<rect x="${item.x.toFixed(1)}" y="${item.y.toFixed(1)}" width="${item.w}" height="${item.h.toFixed(1)}" rx="${item.rx}" fill="${item.fill}"/>`);
+    } else if (item.kind === 'legendSwatch') {
+      parts.push(`<rect x="${item.x.toFixed(1)}" y="${item.y.toFixed(1)}" width="${item.w}" height="${item.h}" fill="${item.fill}"/>`);
     } else if (item.kind === 'dot') {
       parts.push(`<circle cx="${item.cx.toFixed(1)}" cy="${item.cy.toFixed(1)}" r="${item.r}" fill="${item.fill}"/>`);
     } else if (item.kind === 'medianTick') {
@@ -826,8 +876,12 @@ export function renderMetricsGridSvg(summary, costEstimate) {
       parts.push(`<line x1="${item.x.toFixed(1)}" x2="${item.x.toFixed(1)}" y1="${item.y1.toFixed(1)}" y2="${item.y2.toFixed(1)}" stroke="${COLOR_SECONDARY}" stroke-width="2"/>`);
     }
   }
+  const tokenLegendDesc = TOKEN_TYPE_ORDER.map((t) => `${TOKEN_TYPE_LABEL[t]} (${TOKEN_TYPE_COLORS[t]})`).join(', ');
+  const commandLegendDesc = ['kmp_test', 'gradle', 'other'].map((t) => `${COMMAND_KIND_LABEL[t]} (${COMMAND_KIND_COLORS[t]})`).join(', ');
+  const desc = `Stacked-bar color legend. Token type: ${tokenLegendDesc}. Command kind: ${commandLegendDesc}.`;
   return `<svg viewBox="0 0 ${layout.width} ${layout.height}" width="${layout.width}" height="${layout.height}" xmlns="http://www.w3.org/2000/svg" role="img" font-family="${FONT_STACK}">
   <title>Session detail (descriptive)</title>
+  <desc>${escapeXml(desc)}</desc>
   <rect x="1" y="1" width="${layout.width - 2}" height="${layout.height - 2}" rx="12" fill="${COLOR_CARD_FILL}" stroke="${COLOR_CARD_STROKE}" stroke-width="1"/>
   ${parts.join('\n  ')}
 </svg>

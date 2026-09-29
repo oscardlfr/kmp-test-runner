@@ -16,7 +16,7 @@ The measurements compare three strategies: **A** raw `./gradlew` plus generated 
 | `parallel`, large project | NowInAndroid, 36 modules | 226,291 | 1,839 | 123.1x | [aggregate](../tools/runs/multi-project-token-cost-2026-05-18/aggregate-2026-05-18.md), [cross-model](../tools/runs/cross-model-results-parallel.txt) |
 | `coverage`, large configured composite | `private-large-A`, ~70 modules with Kover | 28,754,177 | 734 | 39,175x | [cross-model](../tools/runs/cross-model-results-coverage.txt) |
 
-The `coverage` row is the outlier and the clearest stress case: raw Gradle plus Kover HTML/XML produced a 74 MB capture that Anthropic's token-count endpoint rejected as too large in one request; chunked counting recovered the value. The same run through `kmp-test coverage --json` fit in 734 `cl100k_base` tokens. That is a within-project comparison, not a cross-project ratio.
+The `coverage` row is the outlier and the clearest stress case: raw Gradle plus Kover HTML/XML produced a 74 MB capture. The row's two headline numbers have different origins, per [`cross-model-results-coverage.txt`](../tools/runs/cross-model-results-coverage.txt): Anthropic's token-count endpoint rejected the full capture as too large in one request, so the per-model Anthropic counts come from chunked counting (23 chunks at file-record boundaries); the `cl100k_base` baseline (28,754,177) instead comes from the gradle-mode capture streamed during the run itself, since `cl100k_base` crashes outright on the full 74 MB string rather than returning a request-size error. The same run through `kmp-test coverage --json` fit in 734 `cl100k_base` tokens. That is a within-project comparison, not a cross-project ratio.
 
 ## Measurement status
 

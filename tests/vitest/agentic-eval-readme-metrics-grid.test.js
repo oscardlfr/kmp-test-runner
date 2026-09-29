@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  computeMetricsGridLayout, renderMetricsGridSvg,
+  computeMetricsGridLayout, renderMetricsGridSvg, costMetric,
 } from '../../tools/agentic-eval/readme-evidence.mjs';
 
 // Minimal, valid schema-1 summary/cost-estimate: 4 groups, real duration_ms/tool_calls_total
@@ -106,8 +106,10 @@ describe('metrics-grid.svg', () => {
 
   it('falls back to a campaign-aggregate stacked bar (not per-session dots) when cells[] carries no per-cell tokens -- the real shape every campaign has produced so far', () => {
     const layout = computeMetricsGridLayout(schema1Summary(), schema1CostEstimate());
+    // Tokens is a true per-type median (by_runtime_arm.tokens.<type>.median); tool-calls-by-kind is
+    // a per-session MEAN (see the "campaign mean per session" test below) -- only tokens contributes
+    // "campaign median" notes here, 2 runtimes x 2 arms of them, still > 0.
     const aggregateNotes = layout.items.filter((i) => i.role === 'gridAggregateNote' && i.text.includes('campaign median'));
-    // 2 runtimes x 2 arms x (tokens + tool-calls-by-kind rows that have data) -- at least one per column/row combination that has an aggregate, not zero.
     expect(aggregateNotes.length).toBeGreaterThan(0);
   });
 
@@ -162,5 +164,120 @@ describe('metrics-grid.svg', () => {
     summary.by_runtime_arm[0].tokens.input = { n: 4, min: 20, max: 30, mean: 26, median: 26, stddev_sample: 1 };
     const layout = computeMetricsGridLayout(summary, schema1CostEstimate());
     assertAllFiniteNonNegativeGeometry(layout.items);
+  });
+
+  // CodeRabbit round on #537 (WO-C9), 5 findings against 64bb1e3 -- one it() per finding below.
+
+  it('CodeRabbit finding 1a: the tool-calls-by-kind aggregate note says "mean", not "median" -- kmp_test_count/gradle_count are per-session totals divided by n, never a true median', () => {
+    const svg = renderMetricsGridSvg(schema1Summary(), schema1CostEstimate());
+    const toolsIdx = svg.indexOf('Tool calls by kind');
+    const nextRowIdx = svg.indexOf('Wall-clock');
+    const toolsSection = svg.slice(toolsIdx, nextRowIdx);
+    expect(toolsSection).toContain('campaign mean per session (not per-session)');
+    expect(toolsSection).not.toContain('campaign median (not per-session)');
+    // Tokens-by-type is unaffected -- it's a real per-type median from by_runtime_arm, still labeled "median".
+    const tokensIdx = svg.indexOf('Tokens per session, by type');
+    expect(svg.slice(tokensIdx, toolsIdx)).toContain('campaign median (not per-session)');
+  });
+
+  it('CodeRabbit finding 1b: never fabricates a measured-zero "other" bucket in the tool-calls-by-kind aggregate -- campaign-summary.mjs does not track it at the aggregate level, so it must be absent, not a fake 0', () => {
+    const svg = renderMetricsGridSvg(schema1Summary(), schema1CostEstimate());
+    const toolsIdx = svg.indexOf('Tool calls by kind');
+    const nextRowIdx = svg.indexOf('Wall-clock');
+    const toolsSection = svg.slice(toolsIdx, nextRowIdx);
+    expect(toolsSection).toContain('>kmp-test<');
+    expect(toolsSection).toContain('>gradle<');
+    expect(toolsSection).not.toMatch(/>other</);
+  });
+
+  it('CodeRabbit finding 1b (per-cell path unaffected): per-cell command_kind_counts still carries all 3 buckets once cells[] has per-cell data', () => {
+    const summary = schema1Summary();
+    for (const cell of summary.cells) cell.command_kind_counts = { kmp_test: 6, gradle: 2, other: 1 };
+    const svg = renderMetricsGridSvg(summary, schema1CostEstimate());
+    const toolsIdx = svg.indexOf('Tool calls by kind');
+    const nextRowIdx = svg.indexOf('Wall-clock');
+    expect(svg.slice(toolsIdx, nextRowIdx)).toContain('>other<');
+  });
+
+  it('CodeRabbit finding 2: the cost row plots each session\'s midpoint of low/high, using the SAME low/high assumptions armCostRange uses for the scorecard (not the old mixed "5m cache-write + max input price" single point)', () => {
+    const costEstimate = schema1CostEstimate();
+    const price = costEstimate.pricing.per_million_tokens;
+    const expectedSessionCost = (tokens, cacheWriteKey, inputPrice) =>
+      (tokens.input * inputPrice + tokens.cache_creation * price[cacheWriteKey] + tokens.cache_read * price.cache_read + tokens.output * price.output) / 1e6;
+    const summary = schema1Summary();
+    const group = summary.by_runtime_arm.find((g) => g.runtime_id === 'claude-code' && g.arm === 'product');
+    const metric = costMetric(summary, group, 'claude-code', 'product', costEstimate);
+    expect(metric.kind).toBe('per-session');
+    expect(metric.provider).toBe(false);
+    expect(metric.values.length).toBe(4);
+    const productCells = costEstimate.cells.filter((c) => c.arm === 'product');
+    productCells.forEach((cell, i) => {
+      const low = expectedSessionCost(cell.tokens, 'cache_write_5m', price.input);
+      const high = expectedSessionCost(cell.tokens, 'cache_write_1h', price.input); // schema 1: no uncached-may-be-cache-write ambiguity
+      const midpoint = (low + high) / 2;
+      expect(metric.values[i]).toBeCloseTo(midpoint, 9);
+      // Old bug: sessionCost(tokens, price, 'cache_write_5m', highInputPrice) with highInputPrice===price.input
+      // for schema 1 -- collapses to exactly `low`, strictly below the true midpoint since cache_write_1h > cache_write_5m.
+      expect(metric.values[i]).toBeGreaterThan(low);
+    });
+  });
+
+  it('CodeRabbit finding 2: the cost row label says it is a midpoint estimate', () => {
+    const svg = renderMetricsGridSvg(schema1Summary(), schema1CostEstimate());
+    expect(svg).toContain('API cost (midpoint of low/high)');
+  });
+
+  it('CodeRabbit finding 3: stacked rows get a per-type color legend (swatch + label), showing only the types actually present -- not the full color-map key set', () => {
+    const layout = computeMetricsGridLayout(schema1Summary(), schema1CostEstimate());
+    const swatches = layout.items.filter((i) => i.kind === 'legendSwatch');
+    expect(swatches.length).toBeGreaterThan(0);
+    for (const s of swatches) expect(s.fill).toMatch(/^#[0-9a-f]{6}$/);
+
+    const svg = renderMetricsGridSvg(schema1Summary(), schema1CostEstimate());
+    const toolsIdx = svg.indexOf('Tool calls by kind');
+    const wallIdx = svg.indexOf('Wall-clock');
+    expect(svg.slice(toolsIdx, wallIdx)).toContain('>kmp-test<');
+    expect(svg.slice(toolsIdx, wallIdx)).toContain('>gradle<');
+
+    // claude-code's token types exclude reasoning_output entirely (not just "untracked this campaign").
+    const tokensIdx = svg.indexOf('Tokens per session, by type');
+    const claudeTokensSection = svg.slice(tokensIdx, toolsIdx);
+    expect(claudeTokensSection).toContain('>cached input<');
+    expect(claudeTokensSection).not.toContain('>reasoning output<');
+  });
+
+  it('CodeRabbit finding 3: the SVG <desc> lists the full color-to-type mapping for both stacked categories', () => {
+    const svg = renderMetricsGridSvg(schema1Summary(), schema1CostEstimate());
+    const descMatch = svg.match(/<desc>([\s\S]*?)<\/desc>/);
+    expect(descMatch).not.toBeNull();
+    const desc = descMatch[1];
+    for (const pair of ['input (#8250df)', 'cached input (#0969da)', 'cache write (#1a7f37)', 'reasoning output (#cf222e)', 'output (#bc4c00)']) {
+      expect(desc).toContain(pair);
+    }
+    for (const pair of ['kmp-test (#0969da)', 'gradle (#bc4c00)', 'other (#59636e)']) {
+      expect(desc).toContain(pair);
+    }
+  });
+
+  it('CodeRabbit finding 4: the header subtitle is split across 2 lines, each starting after the previous one (was a single 152-char line overflowing the 880px viewBox at 13px)', () => {
+    const layout = computeMetricsGridLayout(schema1Summary(), schema1CostEstimate());
+    const subtitleItems = layout.items.filter((i) => i.role === 'gridSubtitle');
+    expect(subtitleItems.length).toBe(2);
+    expect(subtitleItems[1].y).toBeGreaterThan(subtitleItems[0].y);
+    for (const item of subtitleItems) {
+      const estWidth = item.text.length * item.fontSize * 0.6;
+      expect(item.x + estWidth, `"${item.text}" (~${estWidth.toFixed(0)}px) overflows the ${layout.width}px viewBox`).toBeLessThanOrEqual(layout.width);
+    }
+  });
+
+  it('CodeRabbit finding 4: every text item in the grid stays within the viewBox width at its estimated width (chars x fontSize x 0.6, the same formula the scorecard layout tests use)', () => {
+    const layout = computeMetricsGridLayout(schema1Summary(), schema1CostEstimate());
+    for (const item of layout.items) {
+      if (item.kind !== 'text') continue;
+      const estWidth = item.text.length * item.fontSize * 0.6;
+      const x0 = item.anchor === 'end' ? item.x - estWidth : item.x;
+      expect(x0 + estWidth, `"${item.text}" overflows: x=${item.x} estWidth=${estWidth.toFixed(0)} viewBox=${layout.width}`).toBeLessThanOrEqual(layout.width);
+      expect(x0, `"${item.text}" starts left of x=0`).toBeGreaterThanOrEqual(0);
+    }
   });
 });

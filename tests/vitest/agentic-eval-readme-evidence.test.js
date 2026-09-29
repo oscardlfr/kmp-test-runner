@@ -1198,3 +1198,17 @@ describe('preregistration.md: locked body is byte-for-byte the pre-registered bl
     expect(body).toContain('Phase 4 canary');
   });
 });
+
+// CodeRabbit round on #537 (WO-C9), finding 5 against 64bb1e3: the coverage row's prose blurred two
+// different-origin numbers into one "chunked counting recovered the value" claim.
+describe('docs/token-cost-measurement.md: coverage-row origin wording', () => {
+  const TOKEN_COST_DOC_PATH = join(REPO_ROOT, 'docs', 'token-cost-measurement.md');
+
+  it('states the two different origins for the coverage row\'s headline numbers, citing cross-model-results-coverage.txt directly (not one blurred "chunked counting recovered the value" claim)', () => {
+    const doc = crlfNormalize(readFileSync(TOKEN_COST_DOC_PATH, 'utf8'));
+    expect(doc).toContain('cross-model-results-coverage.txt');
+    expect(doc).toContain('chunked counting (23 chunks');
+    expect(doc).toContain('gradle-mode capture streamed during the run itself');
+    expect(doc).not.toContain('chunked counting recovered the value');
+  });
+});
