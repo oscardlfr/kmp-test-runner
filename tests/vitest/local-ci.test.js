@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, writeFileSync, rmSync, cpSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 
 const root = resolve(import.meta.dirname, '../..');
@@ -152,6 +153,42 @@ describe('local CI cost gate', () => {
     expect(runner).toContain("ValidateSet('All', 'Linux', 'LinuxNode24', 'LinuxNode18', 'Windows')");
     expect(runner).toContain("'LinuxNode24' { 'node24' }");
     expect(runner).toContain("'LinuxNode18' { 'node18' }");
+  });
+
+  // Regression: run.ps1 invoked windows-gate.ps1 via a bare `&` call with no exit-code check,
+  // unlike the Linux lane a few lines above it (wrapped in Invoke-Checked). Confirmed live: a plain
+  // top-level `throw` in a `&`-invoked script DOES normally propagate and stop the caller under
+  // $ErrorActionPreference='Stop' -- but when windows-gate.ps1's own `throw "Pester failed: ..."`
+  // fires (from Invoke-Pester's -CI -PassThru result), execution continues past the `&` call anyway
+  // (a confirmed Invoke-Pester interaction, not a general `&`-invocation quirk), even though
+  // $LASTEXITCODE reliably ends up non-zero either way. So run.ps1 fell through to its own
+  // "requested lane ... passed" line and exited 0 regardless of what windows-gate.ps1 actually did.
+  // Proven against the REAL run.ps1 (copied verbatim into an isolated temp dir, not a reproduction of
+  // the pattern elsewhere) with a stub windows-gate.ps1 standing in for the real one, so this test
+  // exercises run.ps1's own invocation code, not just the general Invoke-Checked pattern.
+  it.skipIf(process.platform !== 'win32')('propagates a Windows-lane failure as a non-zero exit code, and a success as exit 0', () => {
+    const tmpDir = mkdtempSync(resolve(tmpdir(), 'local-ci-run-ps1-windows-lane-'));
+    try {
+      cpSync(resolve(root, 'tools/local-ci/run.ps1'), resolve(tmpDir, 'run.ps1'));
+      cpSync(resolve(root, 'tools/local-ci/path-utils.ps1'), resolve(tmpDir, 'path-utils.ps1'));
+      const runnerArgs = ['-NoProfile', '-File', resolve(tmpDir, 'run.ps1'), '-Lane', 'Windows', '-RepoRoot', root];
+
+      // exit 1/0, not throw/Write-Host: confirmed live that an uncaught throw from Invoke-Pester's
+      // own call chain does not actually stop the CALLING script under $ErrorActionPreference='Stop'
+      // the way a plain top-level throw does (a Pester-internal quirk, not a `&`-invocation quirk in
+      // general) -- but $LASTEXITCODE reliably ends up non-zero either way, which is what the fix
+      // below must check. An explicit exit is the faithful, unambiguous way to express "the gate
+      // failed" for this test, and matches how the Linux lane's own native-command exit codes work.
+      writeFileSync(resolve(tmpDir, 'windows-gate.ps1'), 'param([string]$RepoRoot)\nexit 1\n');
+      const failing = spawnSync('pwsh', runnerArgs, { encoding: 'utf8' });
+      expect(failing.status, `expected a non-zero exit when the gate fails: ${failing.stdout}${failing.stderr}`).not.toBe(0);
+
+      writeFileSync(resolve(tmpDir, 'windows-gate.ps1'), 'param([string]$RepoRoot)\nWrite-Host \'stub gate success\'\nexit 0\n');
+      const passing = spawnSync('pwsh', runnerArgs, { encoding: 'utf8' });
+      expect(passing.status, `expected exit 0 when the gate succeeds: ${passing.stdout}${passing.stderr}`).toBe(0);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it('defers hosted PR jobs while draft and runs them on ready_for_review', () => {
