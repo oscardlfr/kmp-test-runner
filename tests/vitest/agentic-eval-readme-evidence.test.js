@@ -65,8 +65,8 @@ describe('validateSummary', () => {
     expect(validateSummary(complete())).toEqual([]);
   });
 
-  it('rejects schema !== 1', () => {
-    const s = complete(); s.schema = 2;
+  it('rejects a schema value that is neither 1 nor 2', () => {
+    const s = complete(); s.schema = 3;
     const errors = validateSummary(s);
     expect(errors.length).toBeGreaterThan(0);
     expect(errors.join(' ')).toContain('schema');
@@ -169,8 +169,8 @@ describe('validateCostEstimate', () => {
     expect(validateCostEstimate(complete())).toEqual([]);
   });
 
-  it('rejects schema !== 1', () => {
-    const d = complete(); d.schema = 2;
+  it('rejects a schema value that is neither 1 nor 2', () => {
+    const d = complete(); d.schema = 3;
     expect(validateCostEstimate(d).join(' ')).toContain('schema');
   });
 
@@ -190,7 +190,7 @@ describe('validateCostEstimate', () => {
     const path = join(dir, 'cost-estimate.json');
     try {
       const incomplete = complete();
-      incomplete.schema = 2;
+      incomplete.schema = 3;
       writeFileSync(path, JSON.stringify(incomplete));
       expect(() => loadCostEstimate(path)).toThrow(/schema/);
     } finally {
@@ -578,6 +578,195 @@ describe('bullet fallback branches (synthetic fixtures)', () => {
     // different comparison) -- assert against the specific wall-clock "vs"
     // shape, not a blanket "no vs anywhere in the bullet".
     expect(bullet3).not.toMatch(/median wall-clock \d+\.\d vs \d+\.\d min/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Schema 2 (Evidence2): multi-runtime cost + reasoning effort. Synthetic fixtures only -- the real
+// Evidence2 bundle lands separately and regenerates the committed README then, not here. Schema 1
+// keeps its exact original behavior throughout (see the describe blocks above, all still schema 1
+// and all still passing unmodified); every test below is schema-2-only, new coverage.
+
+describe('schema 2 (Evidence2): multi-runtime cost + reasoning effort', () => {
+  const v2Group = (runtime, arm) => ({
+    runtime_id: runtime,
+    arm,
+    declared: 4,
+    key_facts_match: { matched: 4, of: 4 },
+    duration_ms: { n: 4, median: 180000, min: 180000, max: 180000 },
+    tool_calls_total: { n: 4, median: 10 },
+  });
+
+  function baseSummaryV2() {
+    return {
+      schema: 2,
+      summary_status: 'ok',
+      provider_mode: 'live',
+      by_runtime_arm: [
+        v2Group('claude-code', 'product'),
+        v2Group('claude-code', 'free'),
+        v2Group('codex-cli', 'product'),
+        v2Group('codex-cli', 'free'),
+      ],
+      provenance: {
+        kmp_test_cli_version: { values: ['0.16.0'], mixed: false },
+        runtime_cli_version: {
+          'claude-code': { values: ['2.1.238'], mixed: false },
+          'codex-cli': { values: ['0.154.0'], mixed: false },
+        },
+        model_resolved: {
+          'claude-code': { values: ['claude-sonnet-5'], mixed: false },
+          'codex-cli': { values: ['gpt-5.6-terra'], mixed: false },
+        },
+        reasoning_effort: {
+          'claude-code': { values: ['high'], mixed: false },
+          'codex-cli': { values: ['low'], mixed: false },
+        },
+      },
+    };
+  }
+
+  function v2Cells() {
+    const cells = [];
+    for (const arm of ['product', 'free']) {
+      for (let i = 0; i < 4; i++) {
+        cells.push({ arm, order_index: i, tokens: { input: 10, output: 1000, cache_read: 100000, cache_creation: 20000 } });
+      }
+    }
+    return cells;
+  }
+
+  function baseCostEstimateV2() {
+    return {
+      schema: 2,
+      runtimes: {
+        'claude-code': {
+          model: 'claude-sonnet-5',
+          per_million_tokens: { input: 2, cache_write_5m: 2.5, cache_write_1h: 4, cache_read: 0.2, output: 10 },
+          source: 'https://example.test/claude-pricing',
+          retrieved: '2026-09-28',
+          cells: v2Cells(),
+        },
+        'codex-cli': {
+          model: 'gpt-5.6-terra',
+          per_million_tokens: { input: 1, cache_write_5m: 1, cache_write_1h: 1, cache_read: 0.1, output: 5 },
+          source: 'https://example.test/codex-pricing',
+          retrieved: '2026-09-28',
+          cells: v2Cells(),
+        },
+      },
+    };
+  }
+
+  const FAKE_RUNS_PATH = 'tools/runs/evidence2-agentic-benchmark-fake-date';
+
+  it('a complete v2 summary and v2 cost-estimate both validate cleanly', () => {
+    expect(validateSummary(baseSummaryV2())).toEqual([]);
+    expect(validateCostEstimate(baseCostEstimateV2())).toEqual([]);
+  });
+
+  it('does not require reasoning_effort/runtime_cli_version/model_resolved for a schema-1 summary (no regression)', () => {
+    const s = baseSummaryV2();
+    s.schema = 1;
+    delete s.provenance.runtime_cli_version;
+    delete s.provenance.model_resolved;
+    delete s.provenance.reasoning_effort;
+    expect(validateSummary(s)).toEqual([]);
+  });
+
+  it('renders a real cost bar for both runtimes (no "not estimated") when cost-estimate v2 covers both', () => {
+    const layout = computeScorecardLayout(baseSummaryV2(), baseCostEstimateV2());
+    expect(layout.items.filter(i => i.role === 'notEstimated')).toHaveLength(0);
+    // 2 columns x 3 metrics (tool calls, wall-clock, cost) x 2 arms = 12 bars when neither column
+    // falls back to "not estimated".
+    expect(layout.items.filter(i => i.kind === 'bar')).toHaveLength(12);
+  });
+
+  it('a runtime present in the summary but absent from cost-estimate.runtimes still renders "not estimated" for that runtime only', () => {
+    const costEstimate = baseCostEstimateV2();
+    delete costEstimate.runtimes['codex-cli'];
+    const layout = computeScorecardLayout(baseSummaryV2(), costEstimate);
+    expect(layout.items.filter(i => i.role === 'notEstimated' && i.column === 'codex-cli')).toHaveLength(1);
+    expect(layout.items.filter(i => i.role === 'notEstimated' && i.column === 'claude-code')).toHaveLength(0);
+    expect(layout.items.filter(i => i.kind === 'bar' && i.column === 'claude-code').length).toBeGreaterThan(0);
+  });
+
+  it('scorecard panel titles read the model from provenance for schema 2, not hardcoded text', () => {
+    const layout = computeScorecardLayout(baseSummaryV2(), baseCostEstimateV2());
+    const titles = layout.items.filter(i => i.role === 'panelTitle').map(i => i.text);
+    expect(titles).toEqual(['Claude Code · claude-sonnet-5', 'Codex CLI · gpt-5.6-terra']);
+  });
+
+  it('both README bullets include an estimated API cost clause when cost-estimate v2 covers both runtimes', () => {
+    const [, claudeBullet, codexBullet] = buildBullets(baseSummaryV2(), baseCostEstimateV2(), FAKE_RUNS_PATH);
+    expect(claudeBullet).toContain('Claude Code (claude-sonnet-5) with kmp-test');
+    expect(claudeBullet).toContain('estimated API cost');
+    expect(codexBullet).toContain('Codex CLI (gpt-5.6-terra) with kmp-test');
+    expect(codexBullet).toContain('estimated API cost');
+  });
+
+  it('the Codex bullet omits the cost clause when cost-estimate.runtimes does not cover codex-cli', () => {
+    const costEstimate = baseCostEstimateV2();
+    delete costEstimate.runtimes['codex-cli'];
+    const [, , codexBullet] = buildBullets(baseSummaryV2(), costEstimate, FAKE_RUNS_PATH);
+    expect(codexBullet).not.toContain('estimated API cost');
+  });
+
+  it('the Scope line reads per-runtime CLI version, model, and reasoning effort from provenance, not hardcoded text', () => {
+    const block = renderReadmeBlock(baseSummaryV2(), 'fake-date', baseCostEstimateV2());
+    expect(block).toContain('Claude Code 2.1.238 · claude-sonnet-5 · reasoning effort high.');
+    expect(block).toContain('Codex CLI 0.154.0 · gpt-5.6-terra · reasoning effort low.');
+    expect(block).not.toContain('effort not set by the harness');
+  });
+
+  it('the scorecard alt text reads the model from provenance for schema 2, not hardcoded RUNTIME_LABELS', () => {
+    const alt = buildScorecardAlt(baseSummaryV2(), baseCostEstimateV2());
+    expect(alt).toContain('Claude Code · claude-sonnet-5 —');
+    expect(alt).toContain('Codex CLI · gpt-5.6-terra —');
+  });
+
+  it('rejects mixed reasoning_effort for a runtime', () => {
+    const s = baseSummaryV2();
+    s.provenance.reasoning_effort['claude-code'] = { values: ['low', 'high'], mixed: true };
+    expect(validateSummary(s).some(e => e.includes('reasoning_effort.claude-code'))).toBe(true);
+  });
+
+  it('rejects a v2 summary missing reasoning_effort entirely for a runtime', () => {
+    const s = baseSummaryV2();
+    delete s.provenance.reasoning_effort['codex-cli'];
+    expect(validateSummary(s).some(e => e.includes('reasoning_effort.codex-cli'))).toBe(true);
+  });
+
+  it('rejects mixed model_resolved for a runtime', () => {
+    const s = baseSummaryV2();
+    s.provenance.model_resolved['claude-code'] = { values: ['a', 'b'], mixed: true };
+    expect(validateSummary(s).some(e => e.includes('model_resolved.claude-code'))).toBe(true);
+  });
+
+  it('rejects a v2 summary missing runtime_cli_version entirely for a runtime', () => {
+    const s = baseSummaryV2();
+    delete s.provenance.runtime_cli_version['claude-code'];
+    expect(validateSummary(s).some(e => e.includes('runtime_cli_version.claude-code'))).toBe(true);
+  });
+
+  it('rejects a v2 cost-estimate missing a price key for one runtime', () => {
+    const c = baseCostEstimateV2();
+    delete c.runtimes['codex-cli'].per_million_tokens.output;
+    expect(validateCostEstimate(c).some(e => e.includes('runtimes.codex-cli.per_million_tokens.output'))).toBe(true);
+  });
+
+  it('rejects a v2 cost-estimate with fewer than 4 cells for one arm of one runtime', () => {
+    const c = baseCostEstimateV2();
+    c.runtimes['codex-cli'].cells = c.runtimes['codex-cli'].cells.filter(cell => !(cell.arm === 'free' && cell.order_index === 3));
+    expect(validateCostEstimate(c).some(e => e.includes('runtimes.codex-cli') && e.includes('free'))).toBe(true);
+  });
+
+  it('rejects a v2 cost-estimate with an empty runtimes object', () => {
+    expect(validateCostEstimate({ schema: 2, runtimes: {} }).length).toBeGreaterThan(0);
+  });
+
+  it('rejects a v2 cost-estimate missing runtimes entirely', () => {
+    expect(validateCostEstimate({ schema: 2 }).length).toBeGreaterThan(0);
   });
 });
 

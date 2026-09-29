@@ -45,6 +45,7 @@ const RUNTIME_LABELS = {
   'codex-cli': 'Codex CLI · gpt-5.6-terra',
 };
 const RUNTIME_KEY = { 'claude-code': 'CLAUDE', 'codex-cli': 'CODEX' };
+const RUNTIME_DISPLAY_NAME = { 'claude-code': 'Claude Code', 'codex-cli': 'Codex CLI' };
 const RUNTIME_ORDER = ['claude-code', 'codex-cli'];
 const ARM_ORDER = ['product', 'free']; // "with kmp-test" before "without kmp-test"
 const ARM_LABEL = { product: 'with kmp-test', free: 'without kmp-test' };
@@ -55,7 +56,7 @@ const ARM_LABEL = { product: 'with kmp-test', free: 'without kmp-test' };
 export function validateSummary(summary) {
   const errors = [];
   if (!summary || typeof summary !== 'object') return ['summary is not an object'];
-  if (summary.schema !== 1) errors.push(`schema must be 1, got ${JSON.stringify(summary.schema)}`);
+  if (summary.schema !== 1 && summary.schema !== 2) errors.push(`schema must be 1 or 2, got ${JSON.stringify(summary.schema)}`);
   if (summary.summary_status !== 'ok') errors.push(`summary_status must be "ok", got ${JSON.stringify(summary.summary_status)}`);
   if (summary.provider_mode !== 'live') errors.push(`provider_mode must be "live", got ${JSON.stringify(summary.provider_mode)}`);
   const groups = Array.isArray(summary.by_runtime_arm) ? summary.by_runtime_arm : [];
@@ -84,11 +85,29 @@ export function validateSummary(summary) {
   if (!kmpTestVersion || kmpTestVersion.mixed === true || !Array.isArray(kmpTestVersion.values) || kmpTestVersion.values.length !== 1) {
     errors.push(`provenance.kmp_test_cli_version must be a single, non-mixed value, got ${JSON.stringify(kmpTestVersion)}`);
   }
+  // Schema 2 only: the Scope line and each scorecard panel title read runtime_cli_version /
+  // model_resolved / reasoning_effort per runtime directly from provenance instead of hardcoded
+  // text, so an ambiguous or missing value here must fail closed, not render "undefined" or the
+  // wrong agent's numbers under the wrong heading.
+  if (summary.schema === 2) {
+    for (const runtime of RUNTIME_ORDER) {
+      for (const field of ['runtime_cli_version', 'model_resolved', 'reasoning_effort']) {
+        const v = summary.provenance && summary.provenance[field] && summary.provenance[field][runtime];
+        if (!v || v.mixed === true || !Array.isArray(v.values) || v.values.length !== 1) {
+          errors.push(`provenance.${field}.${runtime} must be a single, non-mixed value, got ${JSON.stringify(v)}`);
+        }
+      }
+    }
+  }
   return errors;
 }
 
 function kmpTestVersionOf(summary) {
   return summary.provenance.kmp_test_cli_version.values[0];
+}
+
+function provenanceValue(summary, field, runtime) {
+  return summary.provenance[field][runtime].values[0];
 }
 
 export function loadSummary(path) {
@@ -115,16 +134,41 @@ const COST_ESTIMATE_PRICE_KEYS = ['input', 'cache_write_5m', 'cache_write_1h', '
 export function validateCostEstimate(doc) {
   const errors = [];
   if (!doc || typeof doc !== 'object') return ['cost estimate is not an object'];
-  if (doc.schema !== 1) errors.push(`schema must be 1, got ${JSON.stringify(doc.schema)}`);
-  const price = doc.pricing && doc.pricing.per_million_tokens;
-  for (const key of COST_ESTIMATE_PRICE_KEYS) {
-    if (!price || typeof price[key] !== 'number') errors.push(`pricing.per_million_tokens.${key} must be a number`);
+  if (doc.schema === 1) {
+    const price = doc.pricing && doc.pricing.per_million_tokens;
+    for (const key of COST_ESTIMATE_PRICE_KEYS) {
+      if (!price || typeof price[key] !== 'number') errors.push(`pricing.per_million_tokens.${key} must be a number`);
+    }
+    const cells = Array.isArray(doc.cells) ? doc.cells : [];
+    for (const arm of ARM_ORDER) {
+      const n = cells.filter(c => c.runtime_id === 'claude-code' && c.arm === arm).length;
+      if (n !== 4) errors.push(`expected 4 claude-code/${arm} cells, got ${n}`);
+    }
+    return errors;
   }
-  const cells = Array.isArray(doc.cells) ? doc.cells : [];
-  for (const arm of ARM_ORDER) {
-    const n = cells.filter(c => c.runtime_id === 'claude-code' && c.arm === arm).length;
-    if (n !== 4) errors.push(`expected 4 claude-code/${arm} cells, got ${n}`);
+  if (doc.schema === 2) {
+    const runtimes = doc.runtimes && typeof doc.runtimes === 'object' ? doc.runtimes : null;
+    if (!runtimes || Object.keys(runtimes).length === 0) {
+      errors.push('runtimes must be a non-empty object');
+      return errors;
+    }
+    for (const [runtimeId, entry] of Object.entries(runtimes)) {
+      if (!entry || typeof entry.model !== 'string' || entry.model === '') {
+        errors.push(`runtimes.${runtimeId}.model must be a non-empty string`);
+      }
+      const price = entry && entry.per_million_tokens;
+      for (const key of COST_ESTIMATE_PRICE_KEYS) {
+        if (!price || typeof price[key] !== 'number') errors.push(`runtimes.${runtimeId}.per_million_tokens.${key} must be a number`);
+      }
+      const cells = Array.isArray(entry && entry.cells) ? entry.cells : [];
+      for (const arm of ARM_ORDER) {
+        const n = cells.filter(c => c.arm === arm).length;
+        if (n !== 4) errors.push(`runtimes.${runtimeId}: expected 4 ${arm} cells, got ${n}`);
+      }
+    }
+    return errors;
   }
+  errors.push(`schema must be 1 or 2, got ${JSON.stringify(doc.schema)}`);
   return errors;
 }
 
@@ -162,6 +206,18 @@ function claudeCostRange(costEstimate, arm) {
   const price = costEstimate.pricing.per_million_tokens;
   const cells = costEstimate.cells.filter(c => c.runtime_id === 'claude-code' && c.arm === arm);
   return armCostRange(cells, price);
+}
+
+// Schema 2 only: any runtime present in cost-estimate.runtimes, not just claude-code. Reuses
+// armCostRange/sessionCost unchanged -- only the source of price + cells is runtime-parameterized.
+function hasV2Cost(costEstimate, runtimeId) {
+  return costEstimate.schema === 2 && !!(costEstimate.runtimes && costEstimate.runtimes[runtimeId]);
+}
+
+function runtimeCostRange(costEstimate, runtimeId, arm) {
+  const entry = costEstimate.runtimes[runtimeId];
+  const cells = entry.cells.filter(c => c.arm === arm);
+  return armCostRange(cells, entry.per_million_tokens);
 }
 
 // 2 decimal places: matches the scorecard chart's and the README bullets'
@@ -222,9 +278,23 @@ function buildBarMetrics(runtimeId, summary, costEstimate) {
     },
   ];
 
-  if (runtimeId === 'claude-code') {
+  // Schema 1 keeps its original claude-code-only path byte-for-byte. Schema 2 renders a real cost
+  // bar for every runtime cost-estimate.runtimes actually covers -- Codex included, once Evidence2
+  // supplies its pricing/cells, without touching the schema-1 behavior above it.
+  if (costEstimate.schema === 1 && runtimeId === 'claude-code') {
     const withRange = claudeCostRange(costEstimate, 'product');
     const withoutRange = claudeCostRange(costEstimate, 'free');
+    const costMax = Math.max(withRange.high, withoutRange.high, 1e-9);
+    metrics.push({
+      label: 'Estimated API cost per session',
+      withFrac: withRange.high / costMax,
+      withoutFrac: withoutRange.high / costMax,
+      withLabel: fmtCostRange(withRange),
+      withoutLabel: fmtCostRange(withoutRange),
+    });
+  } else if (hasV2Cost(costEstimate, runtimeId)) {
+    const withRange = runtimeCostRange(costEstimate, runtimeId, 'product');
+    const withoutRange = runtimeCostRange(costEstimate, runtimeId, 'free');
     const costMax = Math.max(withRange.high, withoutRange.high, 1e-9);
     metrics.push({
       label: 'Estimated API cost per session',
@@ -287,10 +357,19 @@ export function computeScorecardLayout(summary, costEstimate) {
   // (tool calls, wall-clock, cost). Both columns share the same row Y's, so
   // they align horizontally -- Codex's "not estimated" cost row occupies the
   // same vertical space a 2-bar block would.
-  const columns = [
-    { id: 'claude-code', x: PAD, title: 'Claude Code · Sonnet 5' },
-    { id: 'codex-cli', x: PAD + COLUMN_W + COLUMN_GAP, title: 'Codex CLI · gpt-5.6-terra (low effort)' },
-  ];
+  // Schema 1 keeps its original hardcoded titles byte-for-byte. Schema 2 reads the model per
+  // runtime from provenance instead -- avoids a panel title going stale against a Scope line that
+  // now renders its own model/effort text from the same data.
+  const columns = summary.schema === 2
+    ? RUNTIME_ORDER.map((id, i) => ({
+        id,
+        x: i === 0 ? PAD : PAD + COLUMN_W + COLUMN_GAP,
+        title: `${RUNTIME_DISPLAY_NAME[id]} · ${provenanceValue(summary, 'model_resolved', id)}`,
+      }))
+    : [
+        { id: 'claude-code', x: PAD, title: 'Claude Code · Sonnet 5' },
+        { id: 'codex-cli', x: PAD + COLUMN_W + COLUMN_GAP, title: 'Codex CLI · gpt-5.6-terra (low effort)' },
+      ];
 
   const columnBottoms = [];
 
@@ -388,7 +467,10 @@ export function buildScorecardAlt(summary, costEstimate) {
         ? `${label}: not estimated`
         : `${label}: ${metric.withLabel} with kmp-test, ${metric.withoutLabel} without`);
     }
-    parts.push(`${RUNTIME_LABELS[runtimeId]} — ${bits.join('; ')}`);
+    const runtimeLabel = summary.schema === 2
+      ? `${RUNTIME_DISPLAY_NAME[runtimeId]} · ${provenanceValue(summary, 'model_resolved', runtimeId)}`
+      : RUNTIME_LABELS[runtimeId];
+    parts.push(`${runtimeLabel} — ${bits.join('; ')}`);
   }
   return parts.join('. ') + '.';
 }
@@ -468,17 +550,60 @@ function buildCodexBullet(summary, runsPath) {
   return `Codex CLI (gpt-5.6-terra, low reasoning effort): median ${toolsWith} tool calls with kmp-test vs ${toolsWithout} without; ${wallPhrase}.`;
 }
 
+// Schema 2 only: one shape for either runtime, cost included whenever cost-estimate.runtimes
+// covers it -- this is what lets Codex's bullet gain the same cost clause Claude's already has,
+// without a second hardcoded, cost-shaped template to keep in sync by hand.
+function buildRuntimeBullet(runtimeId, summary, costEstimate, runsPath) {
+  const gp = findGroup(summary, runtimeId, 'product');
+  const gf = findGroup(summary, runtimeId, 'free');
+  const toolsWith = fmtToolCallsMedian(gp.tool_calls_total.median);
+  const toolsWithout = fmtToolCallsMedian(gf.tool_calls_total.median);
+  const wallWith = gp.duration_ms.median / 60000;
+  const wallWithout = gf.duration_ms.median / 60000;
+  const wallPhrase = wallClockPhrase(wallWith, wallWithout, gp.duration_ms, gf.duration_ms, runsPath);
+  const displayName = RUNTIME_DISPLAY_NAME[runtimeId];
+  const model = provenanceValue(summary, 'model_resolved', runtimeId);
+  if (hasV2Cost(costEstimate, runtimeId)) {
+    const costWith = fmtCostRange(runtimeCostRange(costEstimate, runtimeId, 'product'));
+    const costWithout = fmtCostRange(runtimeCostRange(costEstimate, runtimeId, 'free'));
+    return `${displayName} (${model}) with kmp-test: median ${toolsWith} tool calls vs ${toolsWithout} without, ${wallPhrase}, estimated API cost ${costWith} vs ${costWithout} per session.`;
+  }
+  return `${displayName} (${model}): median ${toolsWith} tool calls with kmp-test vs ${toolsWithout} without; ${wallPhrase}.`;
+}
+
 export function buildBullets(summary, costEstimate, runsPath) {
-  return [buildKeyFactsBullet(summary), buildClaudeBullet(summary, costEstimate, runsPath), buildCodexBullet(summary, runsPath)];
+  const keyFactsBullet = buildKeyFactsBullet(summary);
+  if (summary.schema === 2) {
+    return [
+      keyFactsBullet,
+      buildRuntimeBullet('claude-code', summary, costEstimate, runsPath),
+      buildRuntimeBullet('codex-cli', summary, costEstimate, runsPath),
+    ];
+  }
+  return [keyFactsBullet, buildClaudeBullet(summary, costEstimate, runsPath), buildCodexBullet(summary, runsPath)];
 }
 
 // ---------------------------------------------------------------------------
 // README block
 
+// Schema 2 only: "<DisplayName> <cli-version> · <model> · reasoning effort <value>" per runtime,
+// read from provenance -- replaces schema 1's hand-typed equivalent so the Scope line can never
+// drift from the model/effort a v2 campaign actually recorded.
+function runtimeScopeClause(summary, runtimeId) {
+  const displayName = RUNTIME_DISPLAY_NAME[runtimeId];
+  const version = provenanceValue(summary, 'runtime_cli_version', runtimeId);
+  const model = provenanceValue(summary, 'model_resolved', runtimeId);
+  const effort = provenanceValue(summary, 'reasoning_effort', runtimeId);
+  return `${displayName} ${version} · ${model} · reasoning effort ${effort}`;
+}
+
 export function renderReadmeBlock(summary, campaignDate, costEstimate) {
   const runsPath = `tools/runs/evidence1-agentic-benchmark-${campaignDate}`;
   const [bullet1, bullet2, bullet3] = buildBullets(summary, costEstimate, runsPath);
   const kmpTestVersion = kmpTestVersionOf(summary);
+  const runtimeScopeText = summary.schema === 2
+    ? `${runtimeScopeClause(summary, 'claude-code')}. ${runtimeScopeClause(summary, 'codex-cli')}.`
+    : `Claude Code 2.1.238 · claude-sonnet-5 · effort not set by the harness (docs default: high). Codex CLI 0.154.0 · gpt-5.6-terra · reasoning effort low.`;
 
   return `<!-- agentic-benchmark:start (generated by tools/agentic-eval/readme-evidence.mjs from ${runsPath}/campaign-summary.json; edit the generator, not this block) -->
 ### Agent sessions with and without kmp-test
@@ -491,7 +616,7 @@ kmp-test hands an agent the test and coverage verdict as one JSON envelope inste
 - ${bullet2}
 - ${bullet3}
 
-**Scope:** one scenario, tagged \`train\` (the skill was tuned on this task family); n=4 sessions per arm per agent in counterbalanced order; Windows 11 in an isolated VM with a restricted network (provider APIs only); design and metrics fixed before any live session. kmp-test ${kmpTestVersion}. Claude Code 2.1.238 · claude-sonnet-5 · effort not set by the harness (docs default: high). Codex CLI 0.154.0 · gpt-5.6-terra · reasoning effort low. Key facts = module, outcome, coverage numbers. [Evidence, per-session detail and limitations](${runsPath}/README.md) · [controls audit](${runsPath}/controls-audit.md) · [pre-registration](${runsPath}/preregistration.md)
+**Scope:** one scenario, tagged \`train\` (the skill was tuned on this task family); n=4 sessions per arm per agent in counterbalanced order; Windows 11 in an isolated VM with a restricted network (provider APIs only); design and metrics fixed before any live session. kmp-test ${kmpTestVersion}. ${runtimeScopeText} Key facts = module, outcome, coverage numbers. [Evidence, per-session detail and limitations](${runsPath}/README.md) · [controls audit](${runsPath}/controls-audit.md) · [pre-registration](${runsPath}/preregistration.md)
 <!-- agentic-benchmark:end -->`;
 }
 
