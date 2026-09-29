@@ -41,10 +41,16 @@ privacy/version checks. A Git-selected source archive is mounted read-only and c
 ephemeral synthetic Git repository. The container never receives the full host checkout or its
 ignored files. Host credentials and API keys are not forwarded.
 
-The Windows lane runs Pester, the `gradlew.bat` TaskAction smoke, Vitest under Node 24 and Node
-18, line-ending checks, and dependency audits on the native host. Docker cannot emulate
-`cmd.exe`, PowerShell process behavior, or Windows filesystem semantics, so this lane is not
-optional for a full pre-push gate.
+The Windows lane runs Pester, the `gradlew.bat` TaskAction smoke, line-ending checks, and
+dependency audits against the worktree in place, and Vitest under Node 24 and Node 18 inside a
+fresh `git clone --config core.autocrlf=true` of committed HEAD. Only a real checkout applies
+CRLF conversion — an already-checked-out worktree's on-disk bytes can't exhibit it no matter how
+complete `.gitattributes` is — so this is the one way to prove the `eol=lf` pins actually hold on
+a Windows clone, the same class of failure that broke hosted CI before those pins existed. The
+clone sees only committed history, so a dirty worktree prints a warning that these two vitest runs
+validate committed HEAD, not any uncommitted change — the same way the Linux lanes bundle a HEAD
+snapshot for their own container run. Docker cannot emulate `cmd.exe`, PowerShell process
+behavior, or Windows filesystem semantics, so this lane is not optional for a full pre-push gate.
 
 Remote-only checks remain: GitHub App branch-protection drift, TruffleHog's verified-secret
 lookup, commit-title status, CodeRabbit, and the final hosted-runner confirmation. macOS remains
