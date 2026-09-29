@@ -19,6 +19,7 @@ import {
   buildScorecardAlt,
   buildBullets,
   armCostRange,
+  validatePairing,
 } from '../../tools/agentic-eval/readme-evidence.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -829,6 +830,103 @@ describe('schema 2 (Evidence2): multi-runtime cost + reasoning effort', () => {
 
     expect(claudeBulletFlagged).toBe(claudeBulletUnflagged);
     expect(codexBulletFlagged).not.toBe(codexBulletUnflagged);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validatePairing -- validateSummary/validateCostEstimate each accept schema 1/2 independently, so
+// nothing previously checked that the TWO documents agree. Confirmed by reproduction before this
+// existed: buildBullets(schema-1 summary, schema-2 cost-estimate) threw a bare
+// "TypeError: Cannot read properties of undefined (reading 'per_million_tokens')" -- claudeCostRange
+// assumes costEstimate.pricing exists unconditionally, which is only true for schema 1.
+
+describe('validatePairing', () => {
+  const v1Summary = () => ({
+    schema: 1, summary_status: 'ok', provider_mode: 'live',
+    by_runtime_arm: [
+      { runtime_id: 'claude-code', arm: 'product', declared: 4, key_facts_match: { matched: 4, of: 4 }, duration_ms: { n: 4, min: 1, median: 2, max: 3 }, tool_calls_total: { n: 4, median: 5 } },
+      { runtime_id: 'claude-code', arm: 'free', declared: 4, key_facts_match: { matched: 4, of: 4 }, duration_ms: { n: 4, min: 1, median: 2, max: 3 }, tool_calls_total: { n: 4, median: 5 } },
+      { runtime_id: 'codex-cli', arm: 'product', declared: 4, key_facts_match: { matched: 4, of: 4 }, duration_ms: { n: 4, min: 1, median: 2, max: 3 }, tool_calls_total: { n: 4, median: 5 } },
+      { runtime_id: 'codex-cli', arm: 'free', declared: 4, key_facts_match: { matched: 4, of: 4 }, duration_ms: { n: 4, min: 1, median: 2, max: 3 }, tool_calls_total: { n: 4, median: 5 } },
+    ],
+    provenance: { kmp_test_cli_version: { values: ['0.16.0'], mixed: false } },
+  });
+  const v1CostEstimate = () => ({
+    schema: 1,
+    pricing: { per_million_tokens: { input: 2, cache_write_5m: 2.5, cache_write_1h: 4, cache_read: 0.2, output: 10 } },
+    cells: [],
+  });
+  const v2Group = (runtime, arm) => ({
+    runtime_id: runtime, arm, declared: 4, key_facts_match: { matched: 4, of: 4 },
+    duration_ms: { n: 4, median: 180000, min: 180000, max: 180000 }, tool_calls_total: { n: 4, median: 10 },
+  });
+  const v2Summary = () => ({
+    schema: 2, summary_status: 'ok', provider_mode: 'live',
+    by_runtime_arm: [v2Group('claude-code', 'product'), v2Group('claude-code', 'free'), v2Group('codex-cli', 'product'), v2Group('codex-cli', 'free')],
+    provenance: {
+      kmp_test_cli_version: { values: ['0.16.0'], mixed: false },
+      runtime_cli_version: { 'claude-code': { values: ['2.1.238'], mixed: false }, 'codex-cli': { values: ['0.154.0'], mixed: false } },
+      model_resolved: { 'claude-code': { values: ['claude-sonnet-5'], mixed: false }, 'codex-cli': { values: ['gpt-5.6-terra'], mixed: false } },
+      reasoning_effort: { 'claude-code': { values: ['high'], mixed: false }, 'codex-cli': { values: ['low'], mixed: false } },
+    },
+  });
+  const v2CostEstimate = () => ({
+    schema: 2,
+    runtimes: {
+      'claude-code': { model: 'claude-sonnet-5', per_million_tokens: { input: 2, cache_write_5m: 2.5, cache_write_1h: 4, cache_read: 0.2, output: 10 }, cells: [] },
+      'codex-cli': { model: 'gpt-5.6-terra', per_million_tokens: { input: 2, cache_write_5m: 2.5, cache_write_1h: 2.5, cache_read: 0.2, output: 12 }, cells: [] },
+    },
+  });
+
+  it('accepts a matching schema-1/schema-1 pair (unchanged from before this validator existed)', () => {
+    expect(validatePairing(v1Summary(), v1CostEstimate())).toEqual([]);
+  });
+
+  it('accepts a fully consistent schema-2/schema-2 pair', () => {
+    expect(validatePairing(v2Summary(), v2CostEstimate())).toEqual([]);
+  });
+
+  it('accepts PARTIAL schema-2 cost coverage -- only one runtime present in cost-estimate.runtimes -- as valid, not a mismatch', () => {
+    const c = v2CostEstimate();
+    delete c.runtimes['codex-cli'];
+    expect(validatePairing(v2Summary(), c)).toEqual([]);
+  });
+
+  it('rejects a schema-1 summary paired with a schema-2 cost-estimate -- the exact combination that crashed buildBullets with a bare TypeError before this fix', () => {
+    const errors = validatePairing(v1Summary(), v2CostEstimate());
+    expect(errors.length).toBeGreaterThan(0);
+    expect(errors.join(' ')).toContain('schema');
+    // And confirm the crash this prevents actually was real, on the unfixed path (buildBullets
+    // itself is unchanged -- validation happens in main(), before it's called).
+    expect(() => buildBullets(v1Summary(), v2CostEstimate(), 'fake/path')).toThrow(TypeError);
+  });
+
+  it('rejects a schema-2 summary paired with a schema-1 cost-estimate', () => {
+    const errors = validatePairing(v2Summary(), v1CostEstimate());
+    expect(errors.length).toBeGreaterThan(0);
+    expect(errors.join(' ')).toContain('schema');
+  });
+
+  it('rejects a cost-estimate runtime id that is not a known runtime', () => {
+    const c = v2CostEstimate();
+    c.runtimes['gpt-unknown-runtime'] = { ...c.runtimes['codex-cli'] };
+    expect(validatePairing(v2Summary(), c).some(e => e.includes('gpt-unknown-runtime'))).toBe(true);
+  });
+
+  it('rejects a runtime model mismatch between cost-estimate.runtimes[id].model and provenance.model_resolved[id] -- otherwise the README would show one model\'s name priced at another model\'s rates', () => {
+    const c = v2CostEstimate();
+    c.runtimes['claude-code'].model = 'claude-opus-5'; // provenance says claude-sonnet-5
+    const errors = validatePairing(v2Summary(), c);
+    expect(errors.some(e => e.includes('claude-code') && e.includes('claude-opus-5') && e.includes('claude-sonnet-5'))).toBe(true);
+  });
+
+  it('main() calls validatePairing before either render function runs (static wiring check)', () => {
+    const source = readFileSync(join(REPO_ROOT, 'tools/agentic-eval/readme-evidence.mjs'), 'utf8');
+    const pairingCallIdx = source.indexOf('validatePairing(summary, costEstimate)');
+    const renderScorecardCallIdx = source.indexOf('renderScorecardSvg(summary, costEstimate)');
+    expect(pairingCallIdx).toBeGreaterThan(-1);
+    expect(renderScorecardCallIdx).toBeGreaterThan(-1);
+    expect(pairingCallIdx).toBeLessThan(renderScorecardCallIdx);
   });
 });
 

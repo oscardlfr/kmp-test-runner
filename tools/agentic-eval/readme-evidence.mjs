@@ -188,6 +188,38 @@ export function loadCostEstimate(path) {
   return raw;
 }
 
+// validateSummary/validateCostEstimate each accept schema 1/2 independently -- neither checks that
+// the pair AGREES. Left unchecked, a schema-1 summary paired with a schema-2 cost-estimate reaches
+// buildClaudeBullet, which assumes costEstimate.pricing exists unconditionally and throws a bare
+// TypeError; a schema-2 summary paired with a schema-1 cost-estimate makes hasV2Cost report false
+// for every runtime, silently dropping cost data a schema-1 estimate actually has; and even with
+// matching schema-2/schema-2 documents, nothing previously confirmed that a runtime's priced model
+// (cost-estimate.runtimes[id].model) is the same model the Scope line/panel title actually display
+// (provenance.model_resolved[id]) -- a mismatch would show one model's name priced at another
+// model's rates. Partial schema-2 cost coverage (a runtime present in the summary but absent from
+// cost-estimate.runtimes) stays valid -- that is not a mismatch, it is the documented "not
+// estimated" fallback.
+export function validatePairing(summary, costEstimate) {
+  const errors = [];
+  if (summary.schema !== costEstimate.schema) {
+    errors.push(`summary schema ${JSON.stringify(summary.schema)} does not match cost-estimate schema ${JSON.stringify(costEstimate.schema)}`);
+    return errors;
+  }
+  if (summary.schema === 2 && costEstimate.schema === 2) {
+    for (const [runtimeId, entry] of Object.entries(costEstimate.runtimes || {})) {
+      if (!RUNTIME_ORDER.includes(runtimeId)) {
+        errors.push(`cost-estimate.runtimes.${runtimeId} is not a known runtime (expected one of ${RUNTIME_ORDER.join(', ')})`);
+        continue;
+      }
+      const provenanceModel = provenanceValue(summary, 'model_resolved', runtimeId);
+      if (entry.model !== provenanceModel) {
+        errors.push(`cost-estimate.runtimes.${runtimeId}.model (${JSON.stringify(entry.model)}) does not match provenance.model_resolved.${runtimeId} (${JSON.stringify(provenanceModel)})`);
+      }
+    }
+  }
+  return errors;
+}
+
 // One session's cost at a given per-million-token price table. inputPrice defaults to the plain
 // input rate; a runtime whose usage events can't distinguish a cache write from a plain input
 // token (see armCostRange below) overrides it for the high bound only.
@@ -667,6 +699,12 @@ function main(argv) {
     costEstimate = loadCostEstimate(costEstimatePath);
   } catch (err) {
     console.error(`::error::${err.message}`);
+    process.exit(1);
+  }
+
+  const pairingErrors = validatePairing(summary, costEstimate);
+  if (pairingErrors.length > 0) {
+    console.error(`::error::campaign-summary.json / cost-estimate.json mismatch:\n  ${pairingErrors.join('\n  ')}`);
     process.exit(1);
   }
 
