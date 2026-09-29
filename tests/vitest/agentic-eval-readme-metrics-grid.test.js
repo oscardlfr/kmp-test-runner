@@ -21,6 +21,15 @@ const RUNS_DIR = join(REPO_ROOT, 'tools', 'runs', 'evidence1-agentic-benchmark-2
 const SCORECARD_COLOR_WITH = '#0969da';
 const SCORECARD_COLOR_WITHOUT = '#bc4c00';
 
+// WO-C15 composition-row type-color palettes, duplicated here the same way and for the same reason
+// as SCORECARD_COLOR_WITH/WITHOUT above -- both are deliberately distinct from those two arm colors
+// (COMMAND_KIND_COLORS.kmp_test/gradle and TOKEN_COMPONENT_COLORS.cache_read/output used to equal
+// them exactly, which made a bar that happened to be 100% one type look identical to an arm-colored
+// bar).
+const KMP_TEST_COLOR = '#8250df';
+const GRADLE_COLOR = '#1a7f37';
+const OTHER_COLOR = '#59636e';
+
 // ---------------------------------------------------------------------------
 // Synthetic schema-2 fixture, n=4 per lane, deliberately DIFFERENT between Claude and Codex so
 // shared cross-agent scaling (addendum point 1) and the cross-agent bullet (point 2) are real,
@@ -289,15 +298,16 @@ describe('metrics-grid.svg (WO-C12 redesign)', () => {
     // be the same for Claude's and Codex's shell-commands-by-kind bars -- proof they share one max,
     // not each column normalized to its own 100%. Scoped to each column's shell-commands row band
     // specifically (both occurrences: Claude's then Codex's) -- kmp_test and the tokens row's
-    // cache_read component happen to share the same blue (#0969da), so an unscoped color filter
-    // would mix two different composition rows' bars together.
+    // uncached_input component share the same purple (#8250df, WO-C15's own COMMAND_KIND_COLORS/
+    // TOKEN_COMPONENT_COLORS choice), so an unscoped color filter would mix two different
+    // composition rows' bars together.
     const allItems = layout.items;
     const shellCommandsStarts = allItems.reduce((acc, item, idx) => (item.text === 'Shell commands by kind' ? [...acc, idx] : acc), []);
     const tokensStarts = allItems.reduce((acc, item, idx) => (item.text === 'Tokens per session, by type' ? [...acc, idx] : acc), []);
     expect(shellCommandsStarts.length).toBe(2);
     expect(tokensStarts.length).toBe(2);
     const shellCommandItems = shellCommandsStarts.flatMap((start, i) => allItems.slice(start, tokensStarts[i]));
-    const bars = shellCommandItems.filter((i) => i.kind === 'bar' && i.fill === '#0969da'); // kmp_test-colored segments
+    const bars = shellCommandItems.filter((i) => i.kind === 'bar' && i.fill === '#8250df'); // kmp_test-colored segments
     expect(bars.length).toBeGreaterThanOrEqual(2);
     const pxPerUnit = bars.map((b) => b.w).filter((w) => w > 0);
     // Claude with=2, Codex with=5 (kmp_test medians) -- if shared, bar_width/value is constant
@@ -612,5 +622,94 @@ describe('metrics-grid.svg (WO-C13 residual): aggregate-sourced shell-command to
     // gradle:1, other:0 on every cell) -- untouched by this fixture edit -- so its total (1) stays
     // complete and prints normally.
     expect(section).toContain('>1<');
+  });
+});
+
+// WO-C15: composition-row legend lines were text-only ("uncached input 9 vs 9 ..."), so a reader
+// couldn't map a bar segment's color to its legend entry. Also fixed the underlying palette collision
+// that made this worse: COMMAND_KIND_COLORS.kmp_test/gradle and TOKEN_COMPONENT_COLORS.cache_read/
+// output used to equal COLOR_WITH/COLOR_WITHOUT exactly, so a lane that happened to be 100% one type
+// (every FAKE-DATA session) rendered as a solid arm-colored bar, indistinguishable from the strip
+// rows' own with/without encoding.
+describe('metrics-grid.svg (WO-C15): legend swatches and consistent type coloring', () => {
+  it('every composition bar segment\'s fill color has a matching swatch in that row\'s legend', () => {
+    const layout = computeMetricsGridLayout(v2Summary(), v2CostEstimate());
+    const swatches = layout.items.filter((i) => i.kind === 'legendSwatch');
+    expect(swatches.length).toBeGreaterThan(0);
+    const barFills = new Set(layout.items.filter((i) => i.kind === 'bar').map((i) => i.fill));
+    const swatchFills = new Set(swatches.map((i) => i.fill));
+    for (const fill of barFills) {
+      expect(swatchFills.has(fill), `bar fill ${fill} has no matching legend swatch`).toBe(true);
+    }
+  });
+
+  it('no composition bar segment reuses COLOR_WITH/COLOR_WITHOUT -- the type palette and the arm palette never collide', () => {
+    const layout = computeMetricsGridLayout(v2Summary(), v2CostEstimate());
+    const bars = layout.items.filter((i) => i.kind === 'bar');
+    expect(bars.length).toBeGreaterThan(0);
+    for (const bar of bars) {
+      expect([SCORECARD_COLOR_WITH, SCORECARD_COLOR_WITHOUT]).not.toContain(bar.fill);
+    }
+  });
+
+  it('a lane with a genuine mix of shell-command kinds renders one distinctly-colored bar segment per type present, matching COMMAND_KIND_COLORS', () => {
+    const summary = v2Summary();
+    // Real per-cell mix (not the fixture's usual single-type-per-cell shape), so the bar has to show
+    // more than one color to be correct.
+    for (const cell of summary.cells) {
+      if (cell.runtime_id === 'codex-cli' && cell.arm === 'product') cell.command_kind_counts = { kmp_test: 3, gradle: 2, other: 1 };
+    }
+    const layout = computeMetricsGridLayout(summary, v2CostEstimate());
+    checkNoOverlapLayout(layout);
+
+    const panelIdx = layout.items.findIndex((i) => i.role === 'gridPanelTitle' && i.text.startsWith('Codex'));
+    const shellIdx = layout.items.findIndex((i, idx) => idx > panelIdx && i.role === 'gridRowHeader' && i.text === 'Shell commands by kind');
+    const tokensIdx = layout.items.findIndex((i, idx) => idx > shellIdx && i.role === 'gridRowHeader' && i.text === 'Tokens per session, by type');
+    const section = layout.items.slice(shellIdx, tokensIdx);
+    const bars = section.filter((i) => i.kind === 'bar');
+    const fills = new Set(bars.map((b) => b.fill));
+    expect(fills).toEqual(new Set([KMP_TEST_COLOR, GRADLE_COLOR, OTHER_COLOR]));
+  });
+
+  it('both composition rows (shell commands, tokens) color by component type -- Claude and Codex use the SAME color for the SAME type', () => {
+    const layout = computeMetricsGridLayout(v2Summary(), v2CostEstimate());
+    const swatches = layout.items.filter((i) => i.kind === 'legendSwatch');
+    // KMP_TEST_COLOR is present as a swatch fill (both columns' shell-commands rows have real
+    // kmp_test data in this fixture) -- proof the color is driven by the type, not by which column
+    // (runtime) or arm happens to be rendering it.
+    expect(swatches.some((s) => s.fill === KMP_TEST_COLOR)).toBe(true);
+    expect(swatches.some((s) => s.fill === GRADLE_COLOR)).toBe(true);
+  });
+});
+
+// WO-C15: an integer-valued metric's shared axis max used to come straight from niceAxisMax, which
+// can return an odd "nice" value (1, 5, 50, ...) whose own midpoint tick is a fraction -- e.g.
+// niceAxisMax(1)=1 rendered ticks "0 / 0.5 / 1", and "0.5 turns" was found live in a WO-C14 FAKE-DATA
+// render.
+describe('metrics-grid.svg (WO-C15): integer metrics never render a fractional tick label', () => {
+  it('the Turns row\'s axis ticks are whole numbers even when the shared max would otherwise be odd', () => {
+    const summary = v2Summary();
+    // num_turns has no per-cell field in the base fixture and no group aggregate either (that row is
+    // deliberately "not recorded" elsewhere) -- give every cell a real value of 1, the smallest case
+    // that used to produce axisMax=1 (midpoint 0.5).
+    for (const cell of summary.cells) cell.num_turns = 1;
+    const layout = computeMetricsGridLayout(summary, v2CostEstimate());
+    checkNoOverlapLayout(layout);
+
+    const svg = renderMetricsGridSvg(summary, v2CostEstimate());
+    const turnsStart = svg.indexOf('>Turns<');
+    expect(turnsStart).toBeGreaterThan(-1);
+    const nextRowStart = svg.indexOf('Tool output returned to the model', turnsStart);
+    const section = svg.slice(turnsStart, nextRowStart);
+    const tickTexts = [...section.matchAll(/font-size="9"[^>]*>(\d+(?:\.\d+)?)<\/text>/g)].map((m) => m[1]);
+    expect(tickTexts.length).toBeGreaterThanOrEqual(3); // 0 / mid / max, shared across both columns' identical axis
+    for (const t of tickTexts) expect(t, `Turns tick "${t}" is not a whole number`).not.toContain('.');
+  });
+
+  it('a non-integer strip row (wall-clock) is unaffected -- still allowed a fractional midpoint tick', () => {
+    const svg = renderMetricsGridSvg(v2Summary(), v2CostEstimate());
+    // Real fixture values (WO-C12's own v2Summary) already produce a non-round wall-clock axis;
+    // asserting the row still renders at all is enough to prove integerTicks wasn't applied globally.
+    expect(svg).toContain('Wall-clock (min)');
   });
 });

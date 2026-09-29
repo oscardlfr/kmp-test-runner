@@ -591,7 +591,12 @@ const GRID_COMP_BAR_GAP = 4;
 const GRID_COMP_TOTAL_LABEL_W = 46;
 const GRID_COMP_BAR_W = COLUMN_W - GRID_LANE_LABEL_W - GRID_COMP_TOTAL_LABEL_W;
 const GRID_ROW_GAP = 14; // clearance before the next row (WO-C10 required >= 10px; kept generous)
-const COMMAND_KIND_COLORS = { kmp_test: '#0969da', gradle: '#bc4c00', other: '#59636e' };
+// WO-C15: distinct from COLOR_WITH/COLOR_WITHOUT (#0969da/#bc4c00) on purpose -- kmp_test and gradle
+// used to reuse those exact hex values, so a lane whose bar happened to be 100% one type (every FAKE
+// -DATA session this campaign) rendered as a solid blue/orange bar indistinguishable from "this is
+// just the arm's own color". With real, mixed-type data the two encodings (arm color in strip rows /
+// scorecard, component-type color here) would otherwise collide and mislead a reader.
+const COMMAND_KIND_COLORS = { kmp_test: '#8250df', gradle: '#1a7f37', other: '#59636e' };
 const COMMAND_KIND_LABEL = { kmp_test: 'kmp-test', gradle: 'gradle', other: 'other' };
 const GRID_LEGEND_FS = 9;
 const GRID_LEGEND_SWATCH = 8;
@@ -677,7 +682,9 @@ const TOKEN_COMPONENT_TYPES = {
   'claude-code': ['uncached_input', 'cache_read', 'cache_write', 'output'],
   'codex-cli': ['uncached_input', 'cache_read', 'output', 'reasoning'], // Codex never has a cache-write token count (cost-estimate.mjs: cache_creation = 0 always)
 };
-const TOKEN_COMPONENT_COLORS = { uncached_input: '#8250df', cache_read: '#0969da', cache_write: '#1a7f37', output: '#bc4c00', reasoning: '#cf222e' };
+// WO-C15: cache_read and output used to reuse COLOR_WITH/COLOR_WITHOUT exactly (#0969da/#bc4c00) --
+// same collision as COMMAND_KIND_COLORS above, fixed the same way.
+const TOKEN_COMPONENT_COLORS = { uncached_input: '#8250df', cache_read: '#1b7c83', cache_write: '#1a7f37', output: '#bf3989', reasoning: '#cf222e' };
 const TOKEN_COMPONENT_LABEL = { uncached_input: 'uncached input', cache_read: 'cache read', cache_write: 'cache write', output: 'output', reasoning: 'reasoning' };
 
 // A `reasoning_output` that is null/undefined means "not tracked" (schema-1's own by_runtime_arm
@@ -784,14 +791,23 @@ export function costMetric(summary, group, runtimeId, arm, costEstimate) {
 }
 
 // Rounds up to a "nice" axis max (1/2/5 x 10^n) so the 3 tick labels (0/mid/max) are clean
-// numbers, not e.g. "0 / 96.3 / 192.7".
-function niceAxisMax(rawMax) {
-  if (!(rawMax > 0)) return 1;
+// numbers, not e.g. "0 / 96.3 / 192.7". For an integer-valued metric (turns, byte/tool-call counts)
+// that alone isn't enough -- axisMax/2 (the middle tick) is only a whole number when axisMax itself
+// is even, and the "nice" sequence includes odd values (1, 5, 50, 500, ...) whenever fraction<=1 or
+// fraction<=5 lands on a base of 1 -- e.g. niceAxisMax(1)=1, whose own midpoint 0.5 rendered as
+// "0.5 turns" (WO-C15). integerTicks rounds up to the nearest even integer >= 2 so axisMax/2 is
+// always a whole number too; every base for exp>=1 (10, 100, ...) is already even, so this only
+// ever adjusts the exp===0 cases (1->2, 5->6).
+function niceAxisMax(rawMax, integerTicks = false) {
+  if (!(rawMax > 0)) return integerTicks ? 2 : 1;
   const exp = Math.floor(Math.log10(rawMax));
   const base = Math.pow(10, exp);
   const fraction = rawMax / base;
   const niceFraction = fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10;
-  return niceFraction * base;
+  const nice = niceFraction * base;
+  if (!integerTicks) return nice;
+  const rounded = Math.max(2, Math.ceil(nice));
+  return rounded % 2 === 0 ? rounded : rounded + 1;
 }
 
 // A strip row's shared axis max: the addendum requires the SAME 0..max scale for both agent
@@ -803,9 +819,9 @@ function scalarLaneMax(metric) {
   if (metric.kind === 'aggregate') return metric.max;
   return 0;
 }
-function sharedStripAxisMax(...metrics) {
+function sharedStripAxisMax(integerTicks, ...metrics) {
   const raw = Math.max(...metrics.map(scalarLaneMax), 1e-9);
-  return niceAxisMax(raw);
+  return niceAxisMax(raw, integerTicks);
 }
 
 // A composition row's shared bar-total max, same cross-agent reasoning as sharedStripAxisMax --
@@ -932,50 +948,77 @@ function renderCompositionRow(colX, rowY, headerText, agentLabel, withComp, with
   }
 
   const presentTypes = types.filter((t) => presentCompositionTypes(withComp, withoutComp).has(t));
-  const legendParts = presentTypes.map((t) => {
+  const legendTokens = presentTypes.map((t) => {
     const wv = compositionValueFor(withComp, t);
     const wov = compositionValueFor(withoutComp, t);
     const label = (typeLabels && typeLabels[t]) || t;
-    return `${label} ${wv === null ? 'n/a' : fmtValue(wv)} vs ${wov === null ? 'n/a' : fmtValue(wov)}`;
+    return {
+      color: typeColors[t] || COLOR_SECONDARY,
+      text: `${label} ${wv === null ? 'n/a' : fmtValue(wv)} vs ${wov === null ? 'n/a' : fmtValue(wov)}`,
+    };
   });
-  // Greedily wrap parts across lines within COLUMN_W (tokens-by-type, up to 5 components, easily
+  // Greedily wrap tokens across lines within COLUMN_W (tokens-by-type, up to 5 components, easily
   // overflows one line -- confirmed by the real overlap this produced against Codex's own column
-  // before this fix existed). Same chars x fontSize x 0.6 estimator as the layout tests.
-  const SEP = ' · ';
+  // before this fix existed). Same chars x fontSize x 0.6 estimator as the layout tests, plus each
+  // token's own swatch + gap (WO-C15: a color swatch in front of each component so a reader can map
+  // a bar segment's color to its legend entry, instead of a text-only line).
+  const SEP_TEXT = ' · ';
+  const SEP_W = SEP_TEXT.length * GRID_LEGEND_FS * 0.6;
+  const SWATCH_TEXT_GAP = 4;
+  const swatchTokenWidth = (text) => GRID_LEGEND_SWATCH + SWATCH_TEXT_GAP + text.length * GRID_LEGEND_FS * 0.6;
   const maxLineWidth = COLUMN_W;
-  const legendLines = [];
-  let currentLine = '';
-  for (const part of legendParts) {
-    const candidate = currentLine ? currentLine + SEP + part : part;
-    if (currentLine && candidate.length * GRID_LEGEND_FS * 0.6 > maxLineWidth) {
-      legendLines.push(currentLine);
-      currentLine = part;
+  const legendLines = []; // each entry: {tokens:[{color,text}]} or {note:'plain text'}
+  let currentLine = [];
+  let currentLineWidth = 0;
+  for (const tok of legendTokens) {
+    const tokWidth = swatchTokenWidth(tok.text);
+    const addedWidth = (currentLine.length > 0 ? SEP_W : 0) + tokWidth;
+    if (currentLine.length > 0 && currentLineWidth + addedWidth > maxLineWidth) {
+      legendLines.push({ tokens: currentLine });
+      currentLine = [tok];
+      currentLineWidth = tokWidth;
     } else {
-      currentLine = candidate;
+      currentLine.push(tok);
+      currentLineWidth += addedWidth;
     }
   }
-  if (currentLine) legendLines.push(currentLine);
+  if (currentLine.length > 0) legendLines.push({ tokens: currentLine });
+
   const anyPartialTotal = [withComp, withoutComp].some((c) => c && c.totalIsComplete === false);
   if (anyPartialTotal && partialTotalNote) {
-    // Word-wrapped separately from the component parts above (it's one long sentence, not a list of
-    // short "label N vs M" parts) -- at ~76 chars it exceeds one COLUMN_W line on its own (estimated
-    // ~410px vs 396px), so it needs the same greedy wrapping, just split on spaces instead of SEP.
+    // Word-wrapped separately from the component tokens above (it's one long sentence, not a list of
+    // short "label N vs M" parts, and carries no swatch) -- at ~76 chars it exceeds one COLUMN_W line
+    // on its own (estimated ~410px vs 396px), so it needs the same greedy wrapping, split on spaces.
     let noteLine = '';
     for (const word of partialTotalNote.split(' ')) {
       const candidate = noteLine ? `${noteLine} ${word}` : word;
       if (noteLine && candidate.length * GRID_LEGEND_FS * 0.6 > maxLineWidth) {
-        legendLines.push(noteLine);
+        legendLines.push({ note: noteLine });
         noteLine = word;
       } else {
         noteLine = candidate;
       }
     }
-    if (noteLine) legendLines.push(noteLine);
+    if (noteLine) legendLines.push({ note: noteLine });
   }
 
   let legendY = cursor + GRID_LEGEND_FS + 2;
   for (const line of legendLines) {
-    items.push(textItem('gridLegendLine', null, colX, legendY, GRID_LEGEND_FS, 400, COLOR_SECONDARY, line));
+    if (line.note !== undefined) {
+      items.push(textItem('gridLegendLine', null, colX, legendY, GRID_LEGEND_FS, 400, COLOR_SECONDARY, line.note));
+    } else {
+      let x = colX;
+      line.tokens.forEach((tok, i) => {
+        if (i > 0) {
+          items.push(textItem('gridLegendLine', null, x, legendY, GRID_LEGEND_FS, 400, COLOR_SECONDARY, SEP_TEXT));
+          x += SEP_W;
+        }
+        items.push({ kind: 'legendSwatch', column: null, x, y: legendY - 7, w: GRID_LEGEND_SWATCH, h: GRID_LEGEND_SWATCH, fill: tok.color });
+        x += GRID_LEGEND_SWATCH + SWATCH_TEXT_GAP;
+        items.push(textItem('gridLegendLine', null, x, legendY, GRID_LEGEND_FS, 400, COLOR_SECONDARY, tok.text));
+        x += tok.text.length * GRID_LEGEND_FS * 0.6;
+      });
+    }
     legendY += GRID_LEGEND_FS + 4;
   }
   cursor = legendY + 2 + GRID_ROW_GAP;
@@ -1067,12 +1110,12 @@ function buildGridRowData(runtimeId, summary, costEstimate) {
     { kind: 'strip', label: 'Wall-clock', unit: 'min', fmtValue: fmtMinutesGrid, sourceNote: null, with: wallWith, without: wallWithout },
     { kind: 'strip', label: 'API cost', unit: 'USD', fmtValue: fmtUsdGrid, sourceNote: costSourceNote, with: costWith, without: costWithout },
     {
-      kind: 'strip', label: 'Turns', unit: '', fmtValue: fmtCount, sourceNote: null,
+      kind: 'strip', label: 'Turns', unit: '', fmtValue: fmtCount, sourceNote: null, integerTicks: true,
       with: scalarMetric(summary, gp, runtimeId, 'product', 'num_turns', () => null),
       without: scalarMetric(summary, gf, runtimeId, 'free', 'num_turns', () => null),
     },
     {
-      kind: 'strip', label: 'Tool output returned to the model', unit: 'bytes', fmtValue: fmtBytesCompact, sourceNote: null,
+      kind: 'strip', label: 'Tool output returned to the model', unit: 'bytes', fmtValue: fmtBytesCompact, sourceNote: null, integerTicks: true,
       with: scalarMetric(summary, gp, runtimeId, 'product', 'output_bytes', () => null),
       without: scalarMetric(summary, gf, runtimeId, 'free', 'output_bytes', () => null),
     },
@@ -1114,7 +1157,7 @@ export function computeMetricsGridLayout(summary, costEstimate) {
       const agentLabel = RUNTIME_DISPLAY_NAME[col.id];
       let rendered;
       if (row.kind === 'strip') {
-        const axisMax = sharedStripAxisMax(row.with, row.without, otherData[ri].with, otherData[ri].without);
+        const axisMax = sharedStripAxisMax(!!row.integerTicks, row.with, row.without, otherData[ri].with, otherData[ri].without);
         const diffPct = stripDiffPct(row.with, row.without);
         const { mainText, diffText } = stripHeaderLines(row.label, row.unit, diffPct, row.sourceNote);
         rendered = renderStripRow(col.x, cy, mainText, diffText, agentLabel, row.with, row.without, axisMax, row.fmtValue);
