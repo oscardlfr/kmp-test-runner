@@ -591,13 +591,6 @@ const GRID_COMP_BAR_GAP = 4;
 const GRID_COMP_TOTAL_LABEL_W = 46;
 const GRID_COMP_BAR_W = COLUMN_W - GRID_LANE_LABEL_W - GRID_COMP_TOTAL_LABEL_W;
 const GRID_ROW_GAP = 14; // clearance before the next row (WO-C10 required >= 10px; kept generous)
-const TOKEN_TYPE_COLORS = {
-  input: '#8250df', cached_input: '#0969da', cache_write: '#1a7f37', output: '#bc4c00', reasoning_output: '#cf222e',
-};
-const TOKEN_TYPE_ORDER = ['input', 'cached_input', 'cache_write', 'reasoning_output', 'output'];
-const TOKEN_TYPE_LABEL = {
-  input: 'input', cached_input: 'cached input', cache_write: 'cache write', output: 'output', reasoning_output: 'reasoning output',
-};
 const COMMAND_KIND_COLORS = { kmp_test: '#0969da', gradle: '#bc4c00', other: '#59636e' };
 const COMMAND_KIND_LABEL = { kmp_test: 'kmp-test', gradle: 'gradle', other: 'other' };
 const GRID_LEGEND_FS = 9;
@@ -658,6 +651,56 @@ function compositionMedians(summary, group, runtimeId, arm, cellField, types, ag
     if (segments.length > 0) return { segments, stat: agg.stat || 'median', total: segments.reduce((a, s) => a + s.value, 0) };
   }
   return null;
+}
+
+// Runtime-specific DISJOINT token components, replacing the raw ingestion's overlapping pairs --
+// same BINDING mapping cost-estimate.mjs documents and applies for pricing (verified against that
+// file's own header comment, not assumed): Codex's raw `input` INCLUDES `cached_input` (OpenAI's
+// input_tokens is the TOTAL prompt size, cached_input_tokens a SUBSET, not additive), and raw
+// `output` INCLUDES `reasoning_output`. Claude's four raw fields (input/cached_input/cache_write/
+// output) are already disjoint -- Anthropic reports them as separate, non-overlapping, additive
+// charges. Stacking the raw fields as-is (the pre-WO-C13 bug) double-counted Codex's cached and
+// reasoning tokens into its own totals. Identical canonical labels across both runtimes (WO-C13):
+// "uncached input", "cache read", "cache write", "output", "reasoning".
+const TOKEN_COMPONENT_TYPES = {
+  'claude-code': ['uncached_input', 'cache_read', 'cache_write', 'output'],
+  'codex-cli': ['uncached_input', 'cache_read', 'output', 'reasoning'], // Codex never has a cache-write token count (cost-estimate.mjs: cache_creation = 0 always)
+};
+const TOKEN_COMPONENT_COLORS = { uncached_input: '#8250df', cache_read: '#0969da', cache_write: '#1a7f37', output: '#bc4c00', reasoning: '#cf222e' };
+const TOKEN_COMPONENT_LABEL = { uncached_input: 'uncached input', cache_read: 'cache read', cache_write: 'cache write', output: 'output', reasoning: 'reasoning' };
+
+function disjointTokens(raw, runtimeId) {
+  const input = Number(raw.input) || 0;
+  const cachedInput = Number(raw.cached_input) || 0;
+  const output = Number(raw.output) || 0;
+  if (runtimeId === 'codex-cli') {
+    const reasoning = Number(raw.reasoning_output) || 0;
+    return { uncached_input: input - cachedInput, cache_read: cachedInput, output: output - reasoning, reasoning };
+  }
+  return { uncached_input: input, cache_read: cachedInput, cache_write: Number(raw.cache_write) || 0, output };
+}
+
+// Tokens-by-type composition data, mirroring compositionMedians' two-source shape (per-cell median
+// across sessions, else the group aggregate) but applying disjointTokens() to whichever raw numbers
+// are about to be reduced -- per-cell values before their median, or the group's own already-reduced
+// medians before the fallback segments are built. Never mixes raw overlapping fields into a stack.
+function tokenCompositionMedians(summary, group, runtimeId, arm) {
+  const types = TOKEN_COMPONENT_TYPES[runtimeId];
+  const cells = countedCells(summary, runtimeId, arm);
+  if (cells.length > 0 && cells.every((c) => c.tokens && typeof c.tokens === 'object')) {
+    const perCellDisjoint = cells.map((c) => disjointTokens(c.tokens, runtimeId));
+    const segments = types.map((t) => ({ type: t, value: medianOf(perCellDisjoint.map((d) => d[t])) }));
+    return { segments, stat: 'median', total: segments.reduce((a, s) => a + s.value, 0) };
+  }
+  if (!group.tokens) return null;
+  const rawMedians = {};
+  for (const key of ['input', 'cached_input', 'cache_write', 'output', 'reasoning_output']) {
+    rawMedians[key] = group.tokens[key] && typeof group.tokens[key].median === 'number' ? group.tokens[key].median : 0;
+  }
+  const disjoint = disjointTokens(rawMedians, runtimeId);
+  const segments = types.map((t) => ({ type: t, value: disjoint[t] }));
+  if (!segments.some((s) => s.value > 0)) return null;
+  return { segments, stat: 'median', total: segments.reduce((a, s) => a + s.value, 0) };
 }
 
 function commandKindAggregate(group) {
@@ -934,7 +977,6 @@ function stripHeaderLines(label, unit, diffPct, sourceNote) {
 function buildGridRowData(runtimeId, summary, costEstimate) {
   const gp = findGroup(summary, runtimeId, 'product');
   const gf = findGroup(summary, runtimeId, 'free');
-  const tokenTypes = runtimeId === 'claude-code' ? ['input', 'cached_input', 'cache_write', 'output'] : TOKEN_TYPE_ORDER;
 
   const wallWith = scaleMetric(scalarMetric(summary, gp, runtimeId, 'product', 'duration_ms', (g) => g.duration_ms), 1 / 60000);
   const wallWithout = scaleMetric(scalarMetric(summary, gf, runtimeId, 'free', 'duration_ms', (g) => g.duration_ms), 1 / 60000);
@@ -952,14 +994,19 @@ function buildGridRowData(runtimeId, summary, costEstimate) {
 
   return [
     {
-      kind: 'composition', label: 'Tool calls by kind', types: ['kmp_test', 'gradle', 'other'], typeColors: COMMAND_KIND_COLORS, typeLabels: COMMAND_KIND_LABEL, fmtValue: fmtCount,
+      // WO-C13: this counts SHELL commands (product_cli_command_count / direct_build_tool_command_count
+      // -- campaign-summary.mjs's own kmp_test_vs_gradle), never ALL tool calls (Skill, Read, etc. are
+      // not counted here) -- the scorecard's own "Tool calls" bar (4 vs 13) is a different, larger
+      // population. Named precisely so a reader never reads the two side by side and thinks the chart
+      // is wrong.
+      kind: 'composition', label: 'Shell commands by kind', types: ['kmp_test', 'gradle', 'other'], typeColors: COMMAND_KIND_COLORS, typeLabels: COMMAND_KIND_LABEL, fmtValue: fmtCount,
       with: compositionMedians(summary, gp, runtimeId, 'product', 'command_kind_counts', ['kmp_test', 'gradle', 'other'], commandKindAggregate),
       without: compositionMedians(summary, gf, runtimeId, 'free', 'command_kind_counts', ['kmp_test', 'gradle', 'other'], commandKindAggregate),
     },
     {
-      kind: 'composition', label: 'Tokens per session, by type', types: tokenTypes, typeColors: TOKEN_TYPE_COLORS, typeLabels: TOKEN_TYPE_LABEL, fmtValue: fmtTokensCompact,
-      with: compositionMedians(summary, gp, runtimeId, 'product', 'tokens', tokenTypes, (g) => g.tokens),
-      without: compositionMedians(summary, gf, runtimeId, 'free', 'tokens', tokenTypes, (g) => g.tokens),
+      kind: 'composition', label: 'Tokens per session, by type', types: TOKEN_COMPONENT_TYPES[runtimeId], typeColors: TOKEN_COMPONENT_COLORS, typeLabels: TOKEN_COMPONENT_LABEL, fmtValue: fmtTokensCompact,
+      with: tokenCompositionMedians(summary, gp, runtimeId, 'product'),
+      without: tokenCompositionMedians(summary, gf, runtimeId, 'free'),
     },
     { kind: 'strip', label: 'Wall-clock', unit: 'min', fmtValue: fmtMinutesGrid, sourceNote: null, with: wallWith, without: wallWithout },
     { kind: 'strip', label: 'API cost', unit: 'USD', fmtValue: fmtUsdGrid, sourceNote: costSourceNote, with: costWith, without: costWithout },
@@ -1049,9 +1096,9 @@ export function renderMetricsGridSvg(summary, costEstimate) {
       parts.push(`<line x1="${item.x1.toFixed(1)}" x2="${item.x2.toFixed(1)}" y1="${item.y.toFixed(1)}" y2="${item.y.toFixed(1)}" stroke="${item.stroke}" stroke-width="2"/>`);
     }
   }
-  const tokenLegendDesc = TOKEN_TYPE_ORDER.map((t) => `${TOKEN_TYPE_LABEL[t]} (${TOKEN_TYPE_COLORS[t]})`).join(', ');
+  const tokenLegendDesc = Object.keys(TOKEN_COMPONENT_LABEL).map((t) => `${TOKEN_COMPONENT_LABEL[t]} (${TOKEN_COMPONENT_COLORS[t]})`).join(', ');
   const commandLegendDesc = ['kmp_test', 'gradle', 'other'].map((t) => `${COMMAND_KIND_LABEL[t]} (${COMMAND_KIND_COLORS[t]})`).join(', ');
-  const desc = `Color legend. With kmp-test (${COLOR_WITH}), without (${COLOR_WITHOUT}). Token type: ${tokenLegendDesc}. Command kind: ${commandLegendDesc}.`;
+  const desc = `Color legend. With kmp-test (${COLOR_WITH}), without (${COLOR_WITHOUT}). Token component: ${tokenLegendDesc}. Shell-command kind: ${commandLegendDesc}.`;
   return `<svg viewBox="0 0 ${layout.width} ${layout.height}" width="${layout.width}" height="${layout.height}" xmlns="http://www.w3.org/2000/svg" role="img" font-family="${FONT_STACK}">
   <title>Per-session detail (descriptive)</title>
   <desc>${escapeXml(desc)}</desc>

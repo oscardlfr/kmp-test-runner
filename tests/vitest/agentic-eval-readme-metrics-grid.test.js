@@ -66,8 +66,24 @@ function v2Summary() {
     { input: 13, cached_input: 115, cache_write: 23, output: 215 },
   ];
   const claudeTokensFree = claudeTokens.map((t) => ({ ...t, cached_input: t.cached_input * 2 }));
-  const codexTokens = claudeTokens.map((t) => ({ input: t.input * 6, cached_input: t.cached_input * 6, cache_write: t.cache_write * 6, output: t.output * 6 }));
-  const codexTokensFree = codexTokens.map((t) => ({ ...t, cached_input: t.cached_input * 1.2 }));
+  // Codex tokens are NOT derived from Claude's by a flat multiplier -- Codex's raw `input` MUST be
+  // >= raw `cached_input` (cached_input is a SUBSET of input, per cost-estimate.mjs's own BINDING
+  // mapping) and raw `output` MUST be >= `reasoning_output` (same subset relationship). A flat *6
+  // scale-up of Claude's numbers (where cached_input is already ~10x input) violated that and
+  // produced a NEGATIVE "uncached input" once the WO-C13 disjoint-token fix subtracted them --
+  // caught by the no-overlap tests, not assumed correct.
+  const codexTokens = [
+    { input: 400000, cached_input: 350000, output: 3000, reasoning_output: 500 },
+    { input: 410000, cached_input: 355000, output: 3100, reasoning_output: 520 },
+    { input: 405000, cached_input: 352000, output: 3050, reasoning_output: 510 },
+    { input: 415000, cached_input: 358000, output: 3150, reasoning_output: 530 },
+  ];
+  const codexTokensFree = [
+    { input: 380000, cached_input: 330000, output: 2800, reasoning_output: 400 },
+    { input: 390000, cached_input: 335000, output: 2900, reasoning_output: 420 },
+    { input: 385000, cached_input: 332000, output: 2850, reasoning_output: 410 },
+    { input: 395000, cached_input: 338000, output: 2950, reasoning_output: 430 },
+  ];
 
   return {
     schema: 2, summary_status: 'ok', provider_mode: 'live',
@@ -213,7 +229,7 @@ describe('metrics-grid.svg (WO-C12 redesign)', () => {
 
   it('(f): the composition legend line shows both arms\' values for every present component', () => {
     const svg = renderMetricsGridSvg(v2Summary(), v2CostEstimate());
-    const toolsIdx = svg.indexOf('Tool calls by kind');
+    const toolsIdx = svg.indexOf('Shell commands by kind');
     const tokensIdx = svg.indexOf('Tokens per session, by type');
     const section = svg.slice(toolsIdx, tokensIdx);
     // Claude: with kmp_test=2/gradle=0, without kmp_test=0/gradle=3 (medians of 4 identical cells).
@@ -270,9 +286,18 @@ describe('metrics-grid.svg (WO-C12 redesign)', () => {
     expect(distinctWallMax.size).toBe(1);
 
     // Composition: the widest single bar segment's implied per-unit pixel width (w / value) must
-    // be the same for Claude's and Codex's tool-calls-by-kind bars -- proof they share one max,
-    // not each column normalized to its own 100%.
-    const bars = layout.items.filter((i) => i.kind === 'bar' && i.fill === '#0969da'); // kmp_test-colored segments
+    // be the same for Claude's and Codex's shell-commands-by-kind bars -- proof they share one max,
+    // not each column normalized to its own 100%. Scoped to each column's shell-commands row band
+    // specifically (both occurrences: Claude's then Codex's) -- kmp_test and the tokens row's
+    // cache_read component happen to share the same blue (#0969da), so an unscoped color filter
+    // would mix two different composition rows' bars together.
+    const allItems = layout.items;
+    const shellCommandsStarts = allItems.reduce((acc, item, idx) => (item.text === 'Shell commands by kind' ? [...acc, idx] : acc), []);
+    const tokensStarts = allItems.reduce((acc, item, idx) => (item.text === 'Tokens per session, by type' ? [...acc, idx] : acc), []);
+    expect(shellCommandsStarts.length).toBe(2);
+    expect(tokensStarts.length).toBe(2);
+    const shellCommandItems = shellCommandsStarts.flatMap((start, i) => allItems.slice(start, tokensStarts[i]));
+    const bars = shellCommandItems.filter((i) => i.kind === 'bar' && i.fill === '#0969da'); // kmp_test-colored segments
     expect(bars.length).toBeGreaterThanOrEqual(2);
     const pxPerUnit = bars.map((b) => b.w).filter((w) => w > 0);
     // Claude with=2, Codex with=5 (kmp_test medians) -- if shared, bar_width/value is constant
@@ -359,5 +384,109 @@ describe('scorecard.svg: shared cross-agent scale (WO-C12 addendum point 1)', ()
     expect(codexToolsWith.w).toBeGreaterThan(claudeToolsWith.w);
     // Precisely: width ratio must equal the value ratio (2/6), not 2/3 (Claude's own independent max).
     expect(claudeToolsWith.w / codexToolsWith.w).toBeCloseTo(2 / 6, 2);
+  });
+});
+
+// WO-C13, bug 1: Codex's raw `input` INCLUDES `cached_input`, and raw `output` INCLUDES
+// `reasoning_output` (cost-estimate.mjs's own BINDING mapping, verified directly against that
+// file's header comment before writing this fix). Stacking the raw fields as-is double-counted.
+describe('metrics-grid.svg (WO-C13): disjoint token components, no double-counting', () => {
+  it('a Codex fixture\'s disjoint total equals input + output exactly, with no double count', () => {
+    const raw = { input: 100, cached_input: 40, output: 50, reasoning_output: 10 };
+    const summary = v2Summary();
+    const gp = summary.by_runtime_arm.find((g) => g.runtime_id === 'codex-cli' && g.arm === 'product');
+    for (const cell of summary.cells) {
+      if (cell.runtime_id === 'codex-cli' && cell.arm === 'product') cell.tokens = { ...raw };
+    }
+    gp.tokens = {
+      input: { median: raw.input }, cached_input: { median: raw.cached_input },
+      output: { median: raw.output }, cache_write: { median: 0 },
+    };
+    const layout = computeMetricsGridLayout(summary, v2CostEstimate());
+    const svg = renderMetricsGridSvg(summary, v2CostEstimate());
+    // uncached input (60) + cache read (40) + output-excl-reasoning (40) + reasoning (10) = 150 = input + output.
+    expect(svg).toContain('uncached input 60 vs');
+    expect(svg).toContain('cache read 40 vs');
+    expect(svg).toContain('reasoning 10 vs');
+    // Never the raw, overlapping input(100)/output(50) values stacked directly -- that would double-count.
+    expect(svg).not.toContain('uncached input 100 vs');
+    checkNoOverlapLayout(layout);
+  });
+
+  it('the Claude fixture stays fully additive (its 4 raw fields were already disjoint -- no subtraction applied)', () => {
+    const raw = { input: 100, cached_input: 40, cache_write: 20, output: 50 };
+    const summary = v2Summary();
+    const gp = summary.by_runtime_arm.find((g) => g.runtime_id === 'claude-code' && g.arm === 'product');
+    for (const cell of summary.cells) {
+      if (cell.runtime_id === 'claude-code' && cell.arm === 'product') cell.tokens = { ...raw };
+    }
+    gp.tokens = { input: { median: raw.input }, cached_input: { median: raw.cached_input }, cache_write: { median: raw.cache_write }, output: { median: raw.output } };
+    const svg = renderMetricsGridSvg(summary, v2CostEstimate());
+    // Claude's fields pass through unchanged, just relabeled: uncached input=input(100), cache read=cached_input(40).
+    expect(svg).toContain('uncached input 100 vs');
+    expect(svg).toContain('cache read 40 vs');
+    expect(svg).toContain('cache write 20 vs');
+  });
+
+  it('identical component labels are used for both runtimes: "uncached input", "cache read", "cache write", "output", "reasoning"', () => {
+    const svg = renderMetricsGridSvg(v2Summary(), v2CostEstimate());
+    for (const label of ['uncached input', 'cache read', 'output']) expect(svg).toContain(label);
+    expect(svg).not.toContain('>cached input<'); // the old, pre-WO-C13 label
+  });
+});
+
+// WO-C13, bug 2 (defensive coverage): a lane whose underlying kmp_test_vs_gradle is genuinely
+// available:false must render "not recorded", never a fabricated 0. Verified this is already
+// correct for a TRUE available:false group (commandKindAggregate already returns null there) --
+// flagged to the auditor separately that the REAL committed Codex free-arm data actually has
+// available:true (a real 0/0 measurement, not a false one), contradicting the specific example in
+// the work order; this test covers the general principle regardless.
+describe('metrics-grid.svg (WO-C13): unavailable command-kind data never renders as a fabricated 0', () => {
+  it('a group with kmp_test_vs_gradle.available:false renders "not recorded", never "0 vs 0" (row-level, both lanes unavailable)', () => {
+    const summary = v2Summary();
+    for (const arm of ['product', 'free']) {
+      const g = summary.by_runtime_arm.find((x) => x.runtime_id === 'codex-cli' && x.arm === arm);
+      g.kmp_test_vs_gradle = { available: false, reason: 'not available for D3-reclassified cells' };
+    }
+    // Also strip per-cell command_kind_counts so the per-session branch can't mask the aggregate's
+    // unavailability (compositionMedians must fall through to the aggregate, which must honor
+    // available:false).
+    for (const cell of summary.cells) {
+      if (cell.runtime_id === 'codex-cli') delete cell.command_kind_counts;
+    }
+    const svg = renderMetricsGridSvg(summary, v2CostEstimate());
+    const toolsIdx = svg.indexOf('Shell commands by kind', svg.indexOf('Codex CLI'));
+    const tokensIdx = svg.indexOf('Tokens per session, by type', toolsIdx);
+    const section = svg.slice(toolsIdx, tokensIdx);
+    expect(section).toContain('not recorded for Codex CLI');
+    expect(section).not.toMatch(/kmp-test \d+ vs \d+ . gradle \d+ vs \d+/);
+  });
+
+  it('a group with kmp_test_vs_gradle.available:false on only ONE arm renders "n/a" for that lane specifically, never a fabricated 0, while the other lane keeps its real data', () => {
+    const summary = v2Summary();
+    const gf = summary.by_runtime_arm.find((g) => g.runtime_id === 'codex-cli' && g.arm === 'free');
+    gf.kmp_test_vs_gradle = { available: false, reason: 'not available for D3-reclassified cells' };
+    for (const cell of summary.cells) {
+      if (cell.runtime_id === 'codex-cli' && cell.arm === 'free') delete cell.command_kind_counts;
+    }
+    const svg = renderMetricsGridSvg(summary, v2CostEstimate());
+    const toolsIdx = svg.indexOf('Shell commands by kind', svg.indexOf('Codex CLI'));
+    const tokensIdx = svg.indexOf('Tokens per session, by type', toolsIdx);
+    const section = svg.slice(toolsIdx, tokensIdx);
+    expect(section).toContain('>n/a<'); // the "without" lane
+    expect(section).not.toContain('not recorded for Codex CLI'); // the "with" lane still has real per-cell data
+    expect(section).not.toMatch(/gradle \d+ vs 0/); // never a fabricated 0 for the unavailable lane
+  });
+});
+
+// WO-C13, bug 3: this row counts SHELL commands (product_cli_command_count / direct_build_tool_
+// command_count), never ALL tool calls (Skill, Read, etc. aren't counted) -- the scorecard's own
+// "Tool calls" bar is a different, larger population. Mislabeling it invited a reader to see "2 vs
+// 2.8" next to the scorecard's "4 vs 13" and conclude the chart was wrong.
+describe('metrics-grid.svg (WO-C13): shell-command row label precision', () => {
+  it('the row is labeled "Shell commands by kind", not "Tool calls by kind"', () => {
+    const svg = renderMetricsGridSvg(v2Summary(), v2CostEstimate());
+    expect(svg).toContain('Shell commands by kind');
+    expect(svg).not.toContain('Tool calls by kind');
   });
 });
