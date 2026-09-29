@@ -3589,6 +3589,38 @@ exit /b 0
     expect(existsSync(cacheFile)).toBe(true);
     expect(readFileSync(cacheFile, 'utf8')).toContain('app:test');
   });
+
+  it('a MODEL cache hit never replays a stale probeFailure from a prior run (probeFailure is per-run data, not project data)', () => {
+    // probeFailure describes what happened during THIS call's own probe
+    // attempt. buildProjectModel persists the whole model (including
+    // probeFailure) to model-<key>.json when useCache is on; a later cache
+    // hit must not resurrect a past run's transient failure (even a
+    // recovered:true one) as if it happened just now — that call never
+    // touched gradle at all. describe's `useCache: !opts.noCache` default
+    // means every plain `kmp-test describe` after a flaky probe would
+    // otherwise keep re-reporting a `gradle_probe_failed` warning forever,
+    // long after the flake resolved.
+    dir = makeProbeRetryProject({
+      gradlewSh: failThenSucceedSh('.probe-marker-cachehit'),
+      gradlewBat: failThenSucceedBat('.probe-marker-cachehit'),
+    });
+    const first = buildProjectModel(dir, { skipProbe: false, useCache: true });
+    expect(first.probed).toBe(true);
+    expect(first.probeFailure).toMatchObject({ reason: 'exit_nonzero', recovered: true });
+
+    // Remove gradlew entirely. A genuine model-cache hit returns straight
+    // from the on-disk model.json and never reaches probeGradleTasksCached
+    // at all, so this doesn't matter to it — but if useCache somehow fell
+    // through to a rebuild instead, the missing wrapper would immediately
+    // show up as probed:false (no wrapper found). Checking probed:true below
+    // is therefore proof this really was a cache hit, not a lucky rebuild.
+    rmSync(path.join(dir, 'gradlew'));
+    rmSync(path.join(dir, 'gradlew.bat'));
+
+    const second = buildProjectModel(dir, { skipProbe: false, useCache: true });
+    expect(second.probed).toBe(true);
+    expect(second.probeFailure).toBeNull();
+  });
 });
 
 // ------------------------------------------------------------------
