@@ -4,6 +4,8 @@ param(
   [string]$VMName = 'Evidence1-Runner',
   [string]$GuestComputerName = 'Evidence1Runner',
   [string]$GuestCredentialPath = 'C:\kmp-eval\scratch\hyperv-create-runner\Evidence1-Runner.guest-credential.clixml',
+  [string]$ProfilePath = '',
+  [string]$CreatedInspectionReceiptPath = '',
   [string]$GuestNetworkSealScript = 'C:\Evidence1Ops\evidence1-stageb-network-seal.ps1',
   [string]$GuestReportPath = 'C:\kmp-eval\scratch\agentic-evidence1-claude-2x2-windows-stage-b-readiness-v1\NETWORK-SEAL.json',
   [string]$HostReportPath = 'C:\kmp-eval\scratch\hyperv-run-network-seal-direct\HYPERV-RUN-NETWORK-SEAL-DIRECT.json',
@@ -32,14 +34,28 @@ function Assert-PathInside([string]$Candidate, [string]$Root, [string]$Label) {
 
 Assert-PathInside $GuestCredentialPath 'C:\kmp-eval\scratch\' 'guest credential'
 Assert-PathInside $HostReportPath 'C:\kmp-eval\scratch\' 'host report'
-if ($VMName -cne 'Evidence1-Runner') {
-  Fail 'VMName is fixed to the dedicated Evidence1 runner'
+$hasProfile = -not [string]::IsNullOrWhiteSpace($ProfilePath)
+$hasReceipt = -not [string]::IsNullOrWhiteSpace($CreatedInspectionReceiptPath)
+if ($hasProfile -xor $hasReceipt) {
+  Fail 'canonical profile and created-inspection receipt must be supplied together'
 }
-if ($GuestComputerName -cne 'Evidence1Runner') {
-  Fail 'GuestComputerName is fixed to the dedicated Evidence1 guest'
-}
-if ($GuestCredentialPath -cne 'C:\kmp-eval\scratch\hyperv-create-runner\Evidence1-Runner.guest-credential.clixml') {
-  Fail 'guest credential path is fixed to the dedicated Evidence1 credential'
+$canonicalIdentity = $null
+if ($hasProfile) {
+  Import-Module (Join-Path $PSScriptRoot 'evidence1-vm-identity-contract.psm1') -Force -DisableNameChecking
+  $canonicalIdentity = Get-Evidence1CanonicalE2EVmIdentity -ProfilePath $ProfilePath `
+    -CreatedInspectionReceiptPath $CreatedInspectionReceiptPath -GuestCredentialPath $GuestCredentialPath
+  $VMName = $canonicalIdentity.vm_name
+  $GuestComputerName = $canonicalIdentity.guest_computer_name
+} else {
+  if ($VMName -cne 'Evidence1-Runner') {
+    Fail 'VMName is fixed to the dedicated Evidence1 runner'
+  }
+  if ($GuestComputerName -cne 'Evidence1Runner') {
+    Fail 'GuestComputerName is fixed to the dedicated Evidence1 guest'
+  }
+  if ($GuestCredentialPath -cne 'C:\kmp-eval\scratch\hyperv-create-runner\Evidence1-Runner.guest-credential.clixml') {
+    Fail 'guest credential path is fixed to the dedicated Evidence1 credential'
+  }
 }
 $NetworkSealSourcePath = Join-Path $PSScriptRoot 'evidence1-stageb-network-seal.ps1'
 if ($GuestNetworkSealScript -cne 'C:\Evidence1Ops\evidence1-stageb-network-seal.ps1') {
@@ -58,21 +74,52 @@ $networkSealSha256 = (Get-FileHash -LiteralPath $NetworkSealSourcePath -Algorith
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $HostReportPath) | Out-Null
 
 $vm = Get-VM -Name $VMName -ErrorAction Stop
+if ($canonicalIdentity -and ([string]$vm.Id).ToLowerInvariant() -cne $canonicalIdentity.vm_id) {
+  Fail 'E2E VM id mismatch'
+}
 if ($vm.State -ne 'Running') {
   Fail "$VMName must be running to reseal the guest network"
 }
 
+$adapters = @(Get-VMNetworkAdapter -VM $vm)
+if ($adapters.Count -ne 1) {
+  Fail 'the Evidence1 VM must have exactly one network adapter'
+}
+$adapter = $adapters[0]
+$connectedByReseal = $false
+$resealCompleted = $false
+try {
+if (-not $adapter.Connected -or [string]::IsNullOrWhiteSpace([string]$adapter.SwitchName)) {
+  Connect-VMNetworkAdapter -VMNetworkAdapter $adapter -SwitchName 'Default Switch' -Confirm:$false | Out-Null
+  $connectedByReseal = $true
+  Start-Sleep -Seconds 5
+  $adapter = @(Get-VMNetworkAdapter -VM $vm)[0]
+}
+if (-not $adapter.Connected -or [string]$adapter.SwitchName -cne 'Default Switch') {
+  if ($connectedByReseal) {
+    Disconnect-VMNetworkAdapter -VMNetworkAdapter $adapter -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
+  }
+  Fail 'the Evidence1 VM adapter is not attached to the sealed Default Switch topology'
+}
+
 $storedCredential = Import-Clixml -LiteralPath $GuestCredentialPath
 $simpleUser = [string]$storedCredential.UserName
-if ($simpleUser -cne 'Evidence1') {
+if ($canonicalIdentity -and $simpleUser -cne $canonicalIdentity.guest_user) {
+  Fail 'stored guest user does not match the canonical E2E identity'
+}
+if (-not $canonicalIdentity -and $simpleUser -cne 'Evidence1') {
   Fail 'stored guest user must be the dedicated Evidence1 account'
 }
 $candidates = @(
-  "$GuestComputerName\$simpleUser",
-  "$VMName\$simpleUser",
-  ".\$simpleUser",
-  $simpleUser,
-  "localhost\$simpleUser"
+  if ($canonicalIdentity) {
+    "$GuestComputerName\$simpleUser"
+  } else {
+    "$GuestComputerName\$simpleUser",
+    "$VMName\$simpleUser",
+    ".\$simpleUser",
+    $simpleUser,
+    "localhost\$simpleUser"
+  }
 )
 
 $attempts = @()
@@ -277,6 +324,7 @@ $report = [ordered]@{
   verdict = if ($probe -and $probe.verdict -eq 'PASS') { 'PASS' } else { 'FAIL' }
   generated_at_utc = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
   vm_name = $VMName
+  vm_id = if ($canonicalIdentity) { $canonicalIdentity.vm_id } else { ([string]$vm.Id).ToLowerInvariant() }
   vm_state = $vm.State.ToString()
   powershell_direct_candidate_index = $workingCandidateIndex
   network_seal_sha256 = $networkSealSha256
@@ -292,4 +340,13 @@ $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $HostReportPath -En
 if ($report.verdict -ne 'PASS') {
   Fail "network reseal failed; see $HostReportPath"
 }
+$resealCompleted = $true
 Write-Host "[hyperv-run-network-seal-direct] PASS: $HostReportPath"
+} finally {
+  if (-not $resealCompleted -and $connectedByReseal) {
+    $currentAdapter = @(Get-VMNetworkAdapter -VM $vm -ErrorAction SilentlyContinue) | Select-Object -First 1
+    if ($currentAdapter) {
+      Disconnect-VMNetworkAdapter -VMNetworkAdapter $currentAdapter -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
+    }
+  }
+}

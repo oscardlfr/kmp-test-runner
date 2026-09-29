@@ -315,7 +315,7 @@ function fieldAppliesToDeclaredOutcome(field, declaredOutcomeKind) {
  * mismatch names. `not-applicable` describes fields the declared outcome intentionally omits;
  * `not-observed` is reserved for historical/unevaluable claims. No expected or declared values are
  * copied into analysis output. */
-function buildTaskFieldCorrectness(outcomeAssessment, finalAnswerBlock) {
+export function buildTaskFieldCorrectness(outcomeAssessment, finalAnswerBlock) {
   const result = {};
   const assessmentAvailable = outcomeAssessment?.schema >= 2
     && typeof outcomeAssessment.task_outcome_matched === 'boolean'

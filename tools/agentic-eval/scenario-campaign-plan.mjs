@@ -38,6 +38,7 @@ const PRODUCT_CONTROL_CELLS = Object.freeze({
 const CAMPAIGN_DESIGNS = Object.freeze({
   'claude-2x2-williams-v1': Object.freeze({
     id: 'claude-2x2-williams-v1',
+    runtime_id: 'claude-code',
     repeats: 4,
     cellDefinitions: Object.freeze({
       A: Object.freeze({ execution_profile_id: 'strict-policy-v1', condition: 'no-skill', product_access_mode: 'product-visible-no-skill' }),
@@ -54,6 +55,41 @@ const CAMPAIGN_DESIGNS = Object.freeze({
   }),
   'claude-product-vs-free-baseline-v1': Object.freeze({
     id: 'claude-product-vs-free-baseline-v1',
+    runtime_id: 'claude-code',
+    repeats: 4,
+    cellDefinitions: PRODUCT_CONTROL_CELLS,
+    order: Object.freeze([
+      Object.freeze(['A', 'B']),
+      Object.freeze(['B', 'A']),
+      Object.freeze(['B', 'A']),
+      Object.freeze(['A', 'B']),
+    ]),
+  }),
+  'claude-product-vs-free-baseline-v2': Object.freeze({
+    id: 'claude-product-vs-free-baseline-v2',
+    runtime_id: 'claude-code',
+    repeats: 3,
+    cellDefinitions: PRODUCT_CONTROL_CELLS,
+    order: Object.freeze([
+      Object.freeze(['A', 'B']),
+      Object.freeze(['B', 'A']),
+      Object.freeze(['A', 'B']),
+    ]),
+  }),
+  'codex-product-vs-free-baseline-v1': Object.freeze({
+    id: 'codex-product-vs-free-baseline-v1',
+    runtime_id: 'codex-cli',
+    repeats: 3,
+    cellDefinitions: PRODUCT_CONTROL_CELLS,
+    order: Object.freeze([
+      Object.freeze(['A', 'B']),
+      Object.freeze(['B', 'A']),
+      Object.freeze(['A', 'B']),
+    ]),
+  }),
+  'codex-product-vs-free-baseline-v2': Object.freeze({
+    id: 'codex-product-vs-free-baseline-v2',
+    runtime_id: 'codex-cli',
     repeats: 4,
     cellDefinitions: PRODUCT_CONTROL_CELLS,
     order: Object.freeze([
@@ -65,6 +101,7 @@ const CAMPAIGN_DESIGNS = Object.freeze({
   }),
   'claude-product-canary-v1': Object.freeze({
     id: 'claude-product-canary-v1',
+    runtime_id: 'claude-code',
     scenario_id: 'coverage-threshold-failure-v2',
     repeats: 1,
     cellDefinitions: Object.freeze({ A: PRODUCT_CONTROL_CELLS.A }),
@@ -72,6 +109,23 @@ const CAMPAIGN_DESIGNS = Object.freeze({
   }),
   'claude-free-baseline-canary-v1': Object.freeze({
     id: 'claude-free-baseline-canary-v1',
+    runtime_id: 'claude-code',
+    scenario_id: 'coverage-threshold-failure-v2',
+    repeats: 1,
+    cellDefinitions: Object.freeze({ B: PRODUCT_CONTROL_CELLS.B }),
+    order: Object.freeze([Object.freeze(['B'])]),
+  }),
+  'codex-product-canary-v1': Object.freeze({
+    id: 'codex-product-canary-v1',
+    runtime_id: 'codex-cli',
+    scenario_id: 'coverage-threshold-failure-v2',
+    repeats: 1,
+    cellDefinitions: Object.freeze({ A: PRODUCT_CONTROL_CELLS.A }),
+    order: Object.freeze([Object.freeze(['A'])]),
+  }),
+  'codex-free-baseline-canary-v1': Object.freeze({
+    id: 'codex-free-baseline-canary-v1',
+    runtime_id: 'codex-cli',
     scenario_id: 'coverage-threshold-failure-v2',
     repeats: 1,
     cellDefinitions: Object.freeze({ B: PRODUCT_CONTROL_CELLS.B }),
@@ -88,6 +142,27 @@ export function resolveScenarioCampaignDesign(designId) {
     return { ok: false, reason: `unknown campaign design id ${JSON.stringify(designId)} (known: ${known})` };
   }
   return { ok: true, design };
+}
+
+/**
+ * Binds every registered campaign design to exactly one runtime family. This is deliberately
+ * design metadata rather than a cell field: historical cells remain byte-for-byte unchanged,
+ * while callers can reject a Claude design selected with Codex (and vice versa) before any
+ * runtime subprocess, source materialization, or dispatch. Never infers compatibility from a
+ * prefix at call time; the closed registry is the single source of truth.
+ * @param {{designId:string, runtimeId:string}} opts
+ * @returns {{ok:true}|{ok:false, reason:string}}
+ */
+export function validateScenarioCampaignRuntime({ designId, runtimeId }) {
+  const resolved = resolveScenarioCampaignDesign(designId);
+  if (!resolved.ok) return resolved;
+  if (runtimeId !== resolved.design.runtime_id) {
+    return {
+      ok: false,
+      reason: `campaign design ${JSON.stringify(designId)} requires runtime ${JSON.stringify(resolved.design.runtime_id)}, got ${JSON.stringify(runtimeId)}`,
+    };
+  }
+  return { ok: true };
 }
 
 /**

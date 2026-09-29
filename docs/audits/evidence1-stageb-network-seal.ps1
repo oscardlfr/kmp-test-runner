@@ -8,11 +8,14 @@ $ErrorActionPreference = 'Stop'
 $RulePrefix = 'Evidence1 StageB'
 $HostsMarker = '# Evidence1 StageB network seal'
 $DeadlineSeconds = 300
-$AllowedClaudeHosts = @(
+$AllowedInferenceHosts = @(
   'api.anthropic.com',
   'platform.claude.com',
   'claude.ai',
-  'claude.com'
+  'claude.com',
+  'auth.openai.com',
+  'chatgpt.com',
+  'ab.chatgpt.com'
 )
 $BlockedProbeHosts = @(
   'github.com',
@@ -97,18 +100,18 @@ try {
   Clear-DnsClientCache
 
   $resolvedByHost = [ordered]@{}
-  foreach ($hostName in $AllowedClaudeHosts) {
+  foreach ($hostName in $AllowedInferenceHosts) {
     $resolved = @(Resolve-DnsName -Name $hostName -ErrorAction Stop |
       Where-Object { $_.Type -in @('A','AAAA') -and $_.IPAddress } |
       Select-Object -ExpandProperty IPAddress -Unique)
     if ($resolved.Count -eq 0) {
-      Fail "could not resolve required Claude endpoint: $hostName"
+      Fail "could not resolve required inference endpoint: $hostName"
     }
     $resolvedByHost[$hostName] = $resolved
   }
   Set-PinnedHostsEntries $resolvedByHost
 
-  foreach ($hostName in $AllowedClaudeHosts) {
+  foreach ($hostName in $AllowedInferenceHosts) {
     New-NetFirewallRule `
       -DisplayName "$RulePrefix allow $hostName HTTPS" `
       -Direction Outbound `
@@ -118,7 +121,7 @@ try {
       -RemoteAddress $resolvedByHost[$hostName] | Out-Null
   }
 
-  foreach ($hostName in $AllowedClaudeHosts) {
+  foreach ($hostName in $AllowedInferenceHosts) {
     if ((Invoke-CurlProbe "https://$hostName" 12) -ne 0) {
       Fail "$hostName was not reachable before the outbound default block"
     }
@@ -127,7 +130,7 @@ try {
   Set-NetFirewallProfile -Profile Domain,Private,Public -DefaultInboundAction Block -DefaultOutboundAction Block
 
   $allowedSuccessCount = 0
-  foreach ($hostName in $AllowedClaudeHosts) {
+  foreach ($hostName in $AllowedInferenceHosts) {
     $ok = $false
     for ($attempt = 1; $attempt -le 3; $attempt++) {
       if ((Invoke-CurlProbe "https://$hostName" 12) -eq 0) {
@@ -167,9 +170,9 @@ try {
     verdict = 'PASS'
     generated_at_utc = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
     network_mode = 'restricted'
-    method = 'default outbound block with pinned Claude HTTPS endpoints and no runtime DNS egress'
+    method = 'default outbound block with pinned Claude and Codex HTTPS endpoints and no runtime DNS egress'
     profile_count = $profiles.Count
-    allowed_host_count = $AllowedClaudeHosts.Count
+    allowed_host_count = $AllowedInferenceHosts.Count
     allowed_probe_success_count = $allowedSuccessCount
     blocked_probe_count = $BlockedProbeHosts.Count
     blocked_probe_success_count = $blockedSuccessCount

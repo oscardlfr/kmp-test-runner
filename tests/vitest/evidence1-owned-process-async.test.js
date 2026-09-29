@@ -14,6 +14,7 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const idle = 'setInterval(()=>{},1000)';
 const grandchild = `const {spawn}=require('node:child_process');const g=spawn(process.execPath,['-e',${JSON.stringify(idle)}],{stdio:'ignore'});console.log(JSON.stringify({child:process.pid,grandchild:g.pid}));${idle}`;
 const tree = exit => `const {spawn}=require('node:child_process');const c=spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{stdio:['ignore','pipe','ignore']});c.stdout.once('data',b=>{console.log(JSON.stringify({parent:process.pid,...JSON.parse(b)}));${exit ? "setInterval(()=>{if(require('node:fs').existsSync('release'))process.exit(7)},20)" : ''}});${idle}`;
+const wideTree = `const {spawn}=require('node:child_process');const children=[];for(let i=0;i<32;i++)children.push(spawn(process.execPath,['-e',${JSON.stringify(idle)}],{stdio:'ignore'}).pid);console.log(JSON.stringify({parent:process.pid,children}));${idle}`;
 const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const shellEnv = shell => shell === 'powershell.exe'
   ? { ...process.env, PSModulePath: resolve(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/Modules') }
@@ -173,6 +174,41 @@ describe.skipIf(process.platform !== 'win32')('async Windows validation job', { 
       await unrelatedClosed;
       removeFixture(dir);
     }
+  });
+
+  it('does not report cleanup before every observed process handle is signaled', async () => {
+    const dir = mkdtempSync(resolve(tmpdir(), 'e1-async-wide-cancel-'));
+    try {
+      const result = await ps(`
+        $tracked=@()
+        $op=$null
+        try {
+          $op=Start-E1OwnedProcess ${invocation(dir, wideTree, 30)}
+          $deadline=[datetime]::UtcNow.AddSeconds(10)
+          $fixture=''
+          while (-not "$fixture".EndsWith([string][char]10)) {
+            if ([datetime]::UtcNow -gt $deadline) {throw 'fixture_not_ready'}
+            if (Test-Path -LiteralPath ${quote(resolve(dir, 'stdout.json'))}) {$fixture=[string](Get-Content -LiteralPath ${quote(resolve(dir, 'stdout.json'))} -Raw)}
+            if (-not "$fixture".EndsWith([string][char]10)) {Start-Sleep -Milliseconds 20}
+          }
+          $ids=$fixture | ConvertFrom-Json
+          foreach ($id in @($ids.parent)+@($ids.children)) {
+            $p=[Diagnostics.Process]::GetProcessById([int]$id)
+            $null=$p.Handle
+            $tracked+=$p
+          }
+          Stop-E1OwnedProcess $op
+          $r=Wait-E1OwnedProcess $op
+          @{cleanup=$r.CleanupOk;stopped=@($tracked | ForEach-Object {$_.WaitForExit(0)})} | ConvertTo-Json -Depth 4 -Compress
+        } finally {
+          if ($null -ne $op -and -not $op.Task.IsCompleted) {Stop-E1OwnedProcess $op; $null=Wait-E1OwnedProcess $op}
+          foreach ($p in $tracked) {$p.Dispose()}
+        }
+      `);
+      expect(result.cleanup).toBe(true);
+      expect(result.stopped).toHaveLength(33);
+      expect(result.stopped.every(Boolean)).toBe(true);
+    } finally { removeFixture(dir); }
   });
 
   it('captures the startup environment and preserves the synchronous result shape', async () => {

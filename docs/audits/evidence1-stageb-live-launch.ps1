@@ -3,6 +3,7 @@ param(
   [string]$TerminalRecordPath = '',
   [string]$CanaryArm = '',
   [string]$CanaryBindingSha256 = '',
+  [string]$RemoteAuthCanaryOperationId = '',
   [switch]$LoadOnly
 )
 
@@ -29,6 +30,7 @@ if ($RunId) {
 $HarnessCommit = ''
 $HarnessTree = ''
 $ClaudeVersion = '2.1.238'
+$CodexVersion = '0.154.0'
 $MaxBudgetUsd = '2.00'
 $CampaignDesignId = 'claude-product-vs-free-baseline-v1'
 $HarnessDir = 'C:\kmp-eval\agentic-evidence1-claude-2x2-windows-stage-b-readiness-v1'
@@ -38,8 +40,15 @@ $ScratchDir = 'C:\kmp-eval\scratch\agentic-evidence1-claude-2x2-windows-stage-b-
 $LogPath = Join-Path $ScratchDir 'STAGE-B-live.log'
 $GradleUserHomeSeedDir = Join-Path $env:USERPROFILE '.gradle'
 $ReadinessLedgerPath = Join-Path $ScratchDir 'READINESS.json'
-$RemoteAuthCanaryPath = 'C:\Evidence1Ops\STAGE-B-auth-canary.json'
+$remoteAuthOperationGuid = [guid]::Empty
+if (-not $LoadOnly -and (-not [guid]::TryParseExact($RemoteAuthCanaryOperationId, 'D', [ref]$remoteAuthOperationGuid) -or
+    $remoteAuthOperationGuid -eq [guid]::Empty -or $RemoteAuthCanaryOperationId -cne $remoteAuthOperationGuid.ToString('D'))) {
+  throw 'RemoteAuthCanaryOperationId must be a canonical non-empty GUID'
+}
+$RemoteAuthCanaryPath = Join-Path 'C:\Evidence1Ops\remote-auth-canary-v2' "$RemoteAuthCanaryOperationId\final.json"
 $RemoteAuthCanaryMaxAgeMinutes = 30
+$handoffContractPath = Join-Path $PSScriptRoot 'evidence1-live-handoff-contract.psm1'
+Import-Module $handoffContractPath -Force
 
 $ForbiddenCredentialOverrideNames = @(
   'ANTHROPIC_API_KEY',
@@ -47,7 +56,8 @@ $ForbiddenCredentialOverrideNames = @(
   'CLAUDE_CODE_OAUTH_TOKEN',
   'CLAUDE_CODE_USE_BEDROCK',
   'CLAUDE_CODE_USE_VERTEX',
-  'CLAUDE_CODE_USE_FOUNDRY'
+  'CLAUDE_CODE_USE_FOUNDRY',
+  'CODEX_API_KEY'
 )
 
 function Fail($Message) {
@@ -63,15 +73,37 @@ function Command-Source($Name) {
 
 function Refresh-StageBPath {
   $npmPrefix = Join-Path $env:USERPROFILE 'AppData\Roaming\npm'
+  $canonicalRoot = 'C:\Evidence1Toolchain'
+  $canonicalGit = Join-Path $canonicalRoot 'git\2.55.0.windows.5\cmd'
+  $canonicalNode = Join-Path $canonicalRoot 'node\24.19.0'
+  $canonicalJdk = Join-Path $canonicalRoot 'jdk\21.0.12.1+1'
+  $canonicalClaude = Join-Path $canonicalRoot 'claude-code\2.1.238'
+  $canonicalCodex = Join-Path $canonicalRoot 'codex-cli\0.154.0\bin'
+  $canonicalAndroid = Join-Path $canonicalRoot 'android-sdk\platform-36-build-tools-36.0.0'
   $paths = @(
     'C:\Windows\System32',
+    $canonicalGit,
+    (Join-Path $canonicalRoot 'git\2.55.0.windows.5\bin'),
+    $canonicalNode,
+    $canonicalClaude,
+    $canonicalCodex,
+    (Join-Path $canonicalAndroid 'platform-tools'),
     'C:\Program Files\Git\cmd',
     'C:\Program Files\Git\bin',
     $npmPrefix,
     'C:\Program Files\nodejs'
   )
-  $jdkRoot = 'C:\Program Files\Eclipse Adoptium'
-  if (Test-Path -LiteralPath $jdkRoot) {
+  if (Test-Path -LiteralPath (Join-Path $canonicalAndroid '.evidence1-artifact.json') -PathType Leaf) {
+    $env:ANDROID_HOME = $canonicalAndroid
+    $env:ANDROID_SDK_ROOT = $canonicalAndroid
+  }
+  if ((Test-Path -LiteralPath (Join-Path $canonicalJdk '.evidence1-artifact.json') -PathType Leaf) -and
+      (Test-Path -LiteralPath (Join-Path $canonicalJdk 'bin\java.exe') -PathType Leaf)) {
+    $env:JAVA_HOME = $canonicalJdk
+    $paths += (Join-Path $canonicalJdk 'bin')
+  } else {
+    $jdkRoot = 'C:\Program Files\Eclipse Adoptium'
+    if (Test-Path -LiteralPath $jdkRoot) {
     $jdk = Get-ChildItem -LiteralPath $jdkRoot -Directory -ErrorAction SilentlyContinue |
       Where-Object Name -like 'jdk-21*' |
       Sort-Object Name -Descending |
@@ -79,6 +111,7 @@ function Refresh-StageBPath {
     if ($jdk) {
       $env:JAVA_HOME = $jdk.FullName
       $paths += (Join-Path $jdk.FullName 'bin')
+    }
     }
   }
   $env:Path = @($paths + $env:Path | Where-Object { $_ }) -join ';'
@@ -121,12 +154,15 @@ function Assert-RestrictedNetwork {
     'https://api.anthropic.com',
     'https://platform.claude.com',
     'https://claude.ai',
-    'https://claude.com'
+    'https://claude.com',
+    'https://auth.openai.com',
+    'https://chatgpt.com',
+    'https://ab.chatgpt.com'
   )
   foreach ($uri in $allowedUris) {
     $allowedProbe = Invoke-CurlProbe $uri 15
     if ($allowedProbe.exit_code -ne 0) {
-      Fail "$uri is not reachable; live Claude Code sessions cannot run"
+      Fail "$uri is not reachable; live inference sessions cannot run"
     }
   }
 
@@ -185,7 +221,7 @@ function Assert-CredentialEnvironmentPosture {
   }
 }
 
-function Assert-RemoteAuthCanary([string]$ExpectedClaudeVersion) {
+function Assert-RemoteAuthCanary([string]$ExpectedClaudeVersion, [string]$ExpectedCodexVersion, $Readiness, [string]$ReadinessSha256) {
   if (-not (Test-Path -LiteralPath $RemoteAuthCanaryPath -PathType Leaf)) {
     Fail 'remote auth canary record is missing; run the separately authorized auth canary before live Evidence1'
   }
@@ -195,52 +231,41 @@ function Assert-RemoteAuthCanary([string]$ExpectedClaudeVersion) {
     Fail 'remote auth canary record is not valid JSON'
   }
 
-  foreach ($field in @(
-      'schema', 'state', 'completed_at_utc', 'claude_version', 'local_auth_status_exit_code',
-      'process_exit_code', 'http_statuses', 'terminal', 'credential_override_names', 'privacy'
-    )) {
-    if (-not ($canary.PSObject.Properties.Name -contains $field)) {
-      Fail "remote auth canary record is missing required property: $field"
-    }
-  }
-  if ($canary.schema -ne 1 -or $canary.state -ne 'passed') {
-    Fail 'remote auth canary did not pass'
-  }
-  if ($canary.claude_version -notmatch [regex]::Escape($ExpectedClaudeVersion)) {
-    Fail "remote auth canary Claude version mismatch: $($canary.claude_version)"
-  }
-  if ($canary.local_auth_status_exit_code -ne 0 -or $canary.process_exit_code -ne 0) {
-    Fail 'remote auth canary did not complete with successful local and process exit codes'
-  }
-  if (@($canary.credential_override_names).Count -ne 0) {
-    Fail 'remote auth canary observed credential override environment variables'
-  }
-  if ($canary.privacy.raw_content_persisted -ne $false -or
-      $canary.privacy.raw_content_printed -ne $false -or
-      $canary.privacy.raw_content_read_in_memory_for_sanitization -ne $true) {
-    Fail 'remote auth canary privacy contract drifted'
-  }
-  if ($canary.terminal.present -ne $true -or $canary.terminal.is_error -ne $false) {
-    Fail 'remote auth canary did not produce a successful terminal result'
-  }
-  if (@($canary.http_statuses | Where-Object { $_ -eq 401 }).Count -gt 0) {
-    Fail 'remote auth canary observed HTTP 401'
-  }
   try {
-    $completedAt = [DateTime]::Parse([string]$canary.completed_at_utc).ToUniversalTime()
+    $readinessAt = [DateTime]::MinValue
+    if (-not $Readiness.PSObject.Properties['generated_at_utc'] -or
+      -not [DateTime]::TryParse([string]$Readiness.generated_at_utc, [ref]$readinessAt)) { throw 'readiness_timestamp_invalid' }
+    if ($ReadinessSha256 -cnotmatch '^[a-f0-9]{64}$') { throw 'readiness_hash_invalid' }
+    if (-not $canary.PSObject.Properties['context']) { throw 'e2e_vm_identity_mismatch' }
+    $boundVmName = [string]$canary.context.vm_name
+    $boundVmId = ([string]$canary.context.vm_id).ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($boundVmName) -or
+        $boundVmId -cnotmatch '^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$') { throw 'e2e_vm_identity_mismatch' }
+    $actualVmId = [string](Get-ItemPropertyValue -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Virtual Machine\Guest\Parameters' -Name VirtualMachineId)
+    if ($actualVmId.ToLowerInvariant() -cne $boundVmId) {
+      throw 'e2e_vm_identity_mismatch'
+    }
+    $validated = Assert-Evidence1DualRemoteAuthCanary `
+      -Canary $canary `
+      -ExpectedClaudeVersion $ExpectedClaudeVersion `
+      -ExpectedCodexVersion $ExpectedCodexVersion `
+      -ExpectedVMName $boundVmName `
+      -ExpectedVMId $boundVmId `
+      -ExpectedCodexModel 'gpt-5.6-terra' `
+      -ExpectedGuestReadinessSha256 $ReadinessSha256 `
+      -NotBeforeUtc $readinessAt `
+      -MaxAgeMinutes $RemoteAuthCanaryMaxAgeMinutes
   } catch {
-    Fail 'remote auth canary completion timestamp is invalid'
-  }
-  $ageMinutes = ([DateTime]::UtcNow - $completedAt).TotalMinutes
-  if ($ageMinutes -lt 0 -or $ageMinutes -gt $RemoteAuthCanaryMaxAgeMinutes) {
-    Fail "remote auth canary is not fresh enough: age_minutes=$([Math]::Round($ageMinutes, 2)), max=$RemoteAuthCanaryMaxAgeMinutes"
+    Fail 'dual remote auth canary contract validation failed'
   }
   return [ordered]@{
     ok = $true
-    check_kind = 'remote_inference_auth_canary'
-    completed_at_utc = $completedAt.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
-    age_minutes = [Math]::Round($ageMinutes, 2)
-    http_statuses = @($canary.http_statuses)
+    check_kind = 'dual_remote_inference_auth_canary'
+    completed_at_utc = $validated.completed_at_utc
+    age_minutes = [Math]::Round(([double]$validated.age_seconds / 60), 2)
+    authorized_sessions = $validated.authorized_sessions
+    dispatched_sessions = $validated.dispatched_sessions
+    providers = @($validated.providers)
   }
 }
 
@@ -684,9 +709,10 @@ function Invoke-Evidence1CanaryLaunch {
     $null = Assert-CredentialEnvironmentPosture
     $null = Assert-ClaudeAuthReady $claude
     Assert-RestrictedNetwork
-    $null = Assert-RemoteAuthCanary $actualClaude
     # This remains the legacy eight-cell V1 check, not the selected V3 fingerprint.
-    $null = Read-ReadinessLedger
+    $readiness = Read-ReadinessLedger
+    $readinessSha256 = (Get-FileHash -LiteralPath $ReadinessLedgerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $null = Assert-RemoteAuthCanary $actualClaude $CodexVersion $readiness $readinessSha256
     if (-not (Test-Path -LiteralPath $GradleUserHomeSeedDir -PathType Container)) { throw 'canary_seed_missing' }
     $baseline = (Read-Evidence1CanaryJson (Join-Path $directory 'journal-baseline.json')).value
     if ($baseline.run_id -cne $RunId -or $baseline.binding_sha256 -cne $CanaryBindingSha256 -or $baseline.journal_ids -isnot [array]) { throw 'canary_journal_baseline' }
@@ -712,7 +738,7 @@ function Invoke-Evidence1CanaryLaunch {
     $phase = 'live_preflight'
     $bundle = Read-Evidence1CanaryBundle $directory $RunId $CanaryArm $CanaryBindingSha256
     Assert-Evidence1CanaryGuestEvidence $bundle $HarnessDir $ReadinessLedgerPath $AttestationFile $validationDirectory
-    $null = Assert-RemoteAuthCanary $actualClaude
+    $null = Assert-RemoteAuthCanary $actualClaude $CodexVersion $readiness $readinessSha256
     Assert-RestrictedNetwork
     Assert-E1NoGuestLive $SourceDir
     if ((Get-Evidence1CanaryValidationInventory $validationDirectory) -cne $inventoryBefore) { throw 'canary_validation_changed' }
@@ -874,8 +900,9 @@ try {
 
   $authCheck = Assert-ClaudeAuthReady $claude
   Assert-RestrictedNetwork
-  $remoteAuthCanary = Assert-RemoteAuthCanary $actualClaude
   $readiness = Read-ReadinessLedger
+  $readinessSha256 = (Get-FileHash -LiteralPath $ReadinessLedgerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  $remoteAuthCanary = Assert-RemoteAuthCanary $actualClaude $CodexVersion $readiness $readinessSha256
   $readinessCampaign = Require-JsonProperty $readiness '__live_campaign_dry_run' 'normalized readiness ledger'
 
   $attestationCheckRaw = & $node --input-type=module -e "import { loadIsolationAttestation } from './tools/agentic-eval/execution-profiles/isolation-attestation.mjs'; const r = loadIsolationAttestation('C:/kmp-eval/measurement-scopes/evidence1-claude-windows-isolation-attestation-stageb-v1.json', { profileId:'sandboxed-unrestricted-v1', runtimeId:'claude-code', platform:'windows', networkMode:'restricted', harnessSha:'$HarnessCommit' }); console.log(JSON.stringify({ok:r.ok,schema:r.schema,sha256:r.sha256})); if (!r.ok) process.exit(2);"

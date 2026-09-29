@@ -460,7 +460,10 @@ function Get-E1ForensicSourceReceiver {
         $harness=Resolve-E1Path 'C:\kmp-eval\agentic-evidence1-claude-2x2-windows-stage-b-readiness-v1'
         $source=Resolve-E1Path 'C:\kmp-eval\NowInAndroid-evidence1-coverage-threshold-windows-stageb-v1'
         function Assert-Anchor([string]$Root, [string]$Ref, [string]$Expected) {
-            $actual=@(& 'C:\Program Files\Git\cmd\git.exe' --no-optional-locks -C $Root rev-parse --verify $Ref 2>$null)
+            $canonical='C:\Evidence1Toolchain\git\2.55.0.windows.5\cmd\git.exe'
+            $marker='C:\Evidence1Toolchain\git\2.55.0.windows.5\.evidence1-artifact.json'
+            $git=if ((Test-Path -LiteralPath $marker -PathType Leaf) -and (Test-Path -LiteralPath $canonical -PathType Leaf)) { $canonical } else { 'C:\Program Files\Git\cmd\git.exe' }
+            $actual=@(& $git --no-optional-locks -C $Root rev-parse --verify $Ref 2>$null)
             if ($LASTEXITCODE -ne 0 -or $actual.Count -ne 1 -or $actual[0] -cne $Expected) { throw 'forensic_subject' }
         }
         Assert-Anchor $harness 'HEAD' $Config.Commit

@@ -3,6 +3,9 @@
 param(
     [Parameter(Mandatory = $true)][string]$ExpectedTargetCommit,
     [Parameter(Mandatory = $true)][string]$ExpectedTargetTree,
+    [Parameter(Mandatory = $true)][string]$ProfilePath,
+    [Parameter(Mandatory = $true)][string]$CreatedInspectionReceiptPath,
+    [Parameter(Mandatory = $true)][string]$GuestCredentialPath,
     [string]$LiveAuthorizationPhrase = '',
     [string]$CanaryArm = '',
     [string]$CanaryRunId = '',
@@ -10,6 +13,7 @@ param(
     [string]$DryReportPath = '',
     [string]$ExpectedWetReportSha256 = '',
     [string]$ExpectedDryReportSha256 = '',
+    [Parameter(Mandatory = $true)][string]$RemoteAuthCanaryOperationId,
     [ValidateRange(30, 900)][int]$GracefulShutdownTimeoutSeconds = 300,
     [ValidateRange(15, 300)][int]$StartTimeoutSeconds = 120
 )
@@ -21,21 +25,29 @@ $RequiredLivePhrase = (
     'AUTORIZO HASTA 8 SESIONES LIVE NUEVAS DEL EVIDENCE' +
     '1 CLAUDE WINDOWS PRODUCT-VS-FREE-BASELINE COVERAGE-THRESHOLD EN ESTE ENTORNO AISLADO, SIN REINTENTOS, REEMPLAZOS NI RESPAWNS'
 )
-$VMName = 'Evidence1-Runner'
 $ExpectedSourceCommit = '7d45eae4f8720a0c77f507712ba2437ff974b6ed'
 $ExpectedClaudeVersion = '2.1.238'
+$ExpectedCodexVersion = '0.154.0'
 $ExpectedPlannedSessions = 8
 $ExpectedAttestationPath = 'C:\kmp-eval\measurement-scopes\evidence1-claude-windows-isolation-attestation-stageb-v1.json'
-$ReadinessReportPath = 'C:\kmp-eval\scratch\hyperv-regenerate-readiness-direct\HYPERV-REGENERATE-READINESS-DIRECT.json'
-$AuthReportPath = 'C:\kmp-eval\scratch\hyperv-verify-guest-claude-auth-direct\HYPERV-VERIFY-GUEST-CLAUDE-AUTH-DIRECT.json'
-$PlacementReportPath = 'C:\kmp-eval\scratch\hyperv-place-live-autorun\HYPERV-PLACE-LIVE-AUTORUN.json'
-$CopyReportPath = 'C:\kmp-eval\scratch\hyperv-copy-live-artifacts\HYPERV-COPY-LIVE-ARTIFACTS.json'
-$HandoffReportPath = 'C:\kmp-eval\scratch\hyperv-start-authorized-live\HYPERV-START-AUTHORIZED-LIVE.json'
+$ReadinessReportPath = 'C:\kmp-eval\scratch\hyperv-e2e-regenerate-readiness-direct\HYPERV-REGENERATE-READINESS-DIRECT.json'
+$AuthReportPath = Join-Path 'C:\kmp-eval\scratch\evidence1-dual-auth-canary-e2e' "$RemoteAuthCanaryOperationId\host-final.json"
+$PlacementReportPath = 'C:\kmp-eval\scratch\hyperv-e2e-place-live-autorun\HYPERV-PLACE-LIVE-AUTORUN.json'
+$CopyReportPath = 'C:\kmp-eval\scratch\hyperv-e2e-copy-live-artifacts\HYPERV-COPY-LIVE-ARTIFACTS.json'
+$HandoffReportPath = 'C:\kmp-eval\scratch\hyperv-e2e-start-authorized-live\HYPERV-START-AUTHORIZED-LIVE.json'
 $PlaceScriptPath = Join-Path $PSScriptRoot 'evidence1-hyperv-place-live-autorun.ps1'
 $ReadinessMaxAgeMinutes = 60
 $RemoteAuthMaxAgeMinutes = 30
 $ContractPath = Join-Path $PSScriptRoot 'evidence1-live-handoff-contract.psm1'
 Import-Module $ContractPath -Force
+Import-Module (Join-Path $PSScriptRoot 'evidence1-vm-identity-contract.psm1') -Force -DisableNameChecking
+$vmIdentity=Get-Evidence1CanonicalE2EVmIdentity -ProfilePath $ProfilePath -CreatedInspectionReceiptPath $CreatedInspectionReceiptPath -GuestCredentialPath $GuestCredentialPath
+$VMName=$vmIdentity.vm_name;$ExpectedVMId=$vmIdentity.vm_id
+$remoteAuthOperationGuid = [guid]::Empty
+if (-not [guid]::TryParseExact($RemoteAuthCanaryOperationId, 'D', [ref]$remoteAuthOperationGuid) -or
+    $remoteAuthOperationGuid -eq [guid]::Empty -or $RemoteAuthCanaryOperationId -cne $remoteAuthOperationGuid.ToString('D')) {
+    throw 'RemoteAuthCanaryOperationId must be a canonical non-empty GUID'
+}
 $script:Canary = $null
 if ($CanaryArm -or $CanaryRunId -or $WetReportPath -or $DryReportPath -or $ExpectedWetReportSha256 -or $ExpectedDryReportSha256) {
     if ($CanaryArm -cnotin @('product','free-baseline') -or -not $CanaryRunId -or -not $WetReportPath -or -not $DryReportPath -or
@@ -131,8 +143,11 @@ function Invoke-PlaceLiveAutorun([string]$ClosedPriorRunId) {
         '-NoProfile',
         '-ExecutionPolicy', 'Bypass',
         '-File', $PlaceScriptPath,
-        '-VMName', $VMName,
+        '-ProfilePath', $ProfilePath,
+        '-CreatedInspectionReceiptPath', $CreatedInspectionReceiptPath,
+        '-GuestCredentialPath', $GuestCredentialPath,
         '-ReportPath', $PlacementReportPath,
+        '-RemoteAuthCanaryOperationId', $RemoteAuthCanaryOperationId,
         '-LiveAuthorizationPhrase', $LiveAuthorizationPhrase
     )
     if (-not [string]::IsNullOrWhiteSpace($ClosedPriorRunId)) {
@@ -192,9 +207,21 @@ if (-not $CanaryArm -and $LiveAuthorizationPhrase -ne $RequiredLivePhrase) {
 }
 
 $readiness = Read-JsonFile $ReadinessReportPath 'readiness report'
+$readinessSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $ReadinessReportPath).Hash.ToLowerInvariant()
+if([string]$readiness.vm_name-cne$VMName-or([string]$readiness.vm_id).ToLowerInvariant()-cne$ExpectedVMId-or
+  -not$readiness.PSObject.Properties['vm_identity']-or$readiness.vm_identity.created_inspection_receipt_sha256-cne$vmIdentity.created_inspection_receipt_sha256-or
+  $readiness.vm_identity.custody_marker_sha256-cne$vmIdentity.custody_marker_sha256){Fail 'readiness VM identity custody mismatch'}
 $auth = Read-JsonFile $AuthReportPath 'remote auth report'
 $placement = Read-JsonFile $PlacementReportPath 'prior placement report' -Optional
 $copy = Read-JsonFile $CopyReportPath 'prior copy report' -Optional
+# Task 2 (centralize dual-auth report parsing): verdict discriminated FIRST,
+# through the one shared parser, before any PASS-only field is ever touched.
+# A FAIL report now stops here with a clear "operation failed: <reason_code>"
+# rather than crashing inside Assert-Evidence1LiveHandoffEvidence's 12-key
+# shape check below.
+$hostVerdict = Resolve-Evidence1DualAuthHostReportVerdict -Report $auth -ExpectedVMName $VMName -ExpectedVMId $ExpectedVMId `
+    -ExpectedCodexModel 'gpt-5.6-terra' -ExpectedReadinessSha256 $readinessSha256
+if ($hostVerdict.verdict -cne 'PASS') { Fail "operation failed: $($hostVerdict.reason_code)" }
 $evidence = Assert-Evidence1LiveHandoffEvidence `
     -ReadinessReport $readiness `
     -AuthReport $auth `
@@ -203,6 +230,10 @@ $evidence = Assert-Evidence1LiveHandoffEvidence `
     -ExpectedTargetTree $ExpectedTargetTree `
     -ExpectedSourceCommit $ExpectedSourceCommit `
     -ExpectedClaudeVersion $ExpectedClaudeVersion `
+    -ExpectedCodexVersion $ExpectedCodexVersion `
+    -ExpectedVMId $ExpectedVMId `
+    -ExpectedCodexModel 'gpt-5.6-terra' `
+    -ExpectedReadinessSha256 $readinessSha256 `
     -ExpectedAttestationPath $ExpectedAttestationPath `
     -ExpectedPlannedSessions $ExpectedPlannedSessions `
     -ReadinessMaxAgeMinutes $ReadinessMaxAgeMinutes `
@@ -211,6 +242,8 @@ $script:PriorCustody = Assert-Evidence1PreviousRunCustody `
     -PlacementReport $placement `
     -CopyReport $copy `
     -ExpectedVMName $VMName
+$currentVm = Get-VM -Name $VMName -ErrorAction Stop
+if (([string]$currentVm.Id).ToLowerInvariant() -cne $ExpectedVMId) { Fail 'E2E VM id mismatch before authorized handoff' }
 $initialState = Get-VMStateName $VMName
 if ($initialState -ne 'Running') {
     Fail "authorized live handoff requires $VMName to be Running after readiness and auth verification, got $initialState"

@@ -24,27 +24,20 @@
 import { classifyTaskExecutionMode, classifyTaskResults } from '../../lib/orchestrators/parallel/result-rollup.js';
 import { selectShellAttempts } from './runtimes/contract.mjs';
 import { ENVELOPE_SCHEMA_VERSION, classifyExitCode } from '../../lib/envelope/exit-codes.js';
+import { supportsRunnerContract } from '../../lib/envelope/contracts.js';
 import { TEST_TYPE_VALUES, COVERAGE_TOOL_VALUES } from '../../lib/parsers/argv-constants.js';
 import { classifyBashCommand, normalizeModuleName } from './command-classify.mjs';
 import { matchModuleFilter } from '../../lib/orchestrators/module-filter.js';
 import { summarizeCoverageGateErrors } from './coverage-gate-observability.mjs';
 import { LATEST_OUTCOME_ASSESSMENT_SCHEMA } from './outcome-assessment-contract.mjs';
+import { GRADING_CHECK_NAMES } from './grading-contract.mjs';
+
+export { GRADING_CHECK_NAMES } from './grading-contract.mjs';
 
 /** The fixed, canonical set of check names every gradeScenarioCondition() result's `checks` array
  * must contain -- exactly these 8, no more, no fewer, enforced by schemas.mjs's validateRun() for
  * any committed run record. Exported so the schema validator and this module can never drift
  * apart into two independently-maintained lists. */
-export const GRADING_CHECK_NAMES = [
-  'no_transcript_structural_issues',
-  'bash_tool_use_present',
-  'tool_result_correlated',
-  'authoritative_evidence_well_formed',
-  'authoritative_target_matches_expected',
-  'authoritative_outcome_matches_expected',
-  'no_provider_contradiction',
-  'final_answer_consistent_with_evidence',
-];
-
 // ---------------------------------------------------------------------------------------------
 // Command classification -- classifyBashCommand/normalizeModuleName now live in
 // command-classify.mjs (relocated verbatim, imported above), shared with junit-evidence.mjs and
@@ -754,6 +747,13 @@ function validateKmpEnvelopeForAttempt(envelope, invokedSubcommand, resultIsErro
     // command that requested --no-coverage is impossible real evidence, regardless of how coherent
     // the envelope's own coverage.* fields otherwise look.
     if (invokedCoverageDisabled) return false;
+    // eval-v2 schema-3 alignment (design.md (g), D6): the SAME contract check
+    // deriveObservedKmpTestResult applies for check 8 (final_answer_consistent_with_evidence) --
+    // checks 5/6 (this function, expected_outcome_matched) must refuse to trust numeric coverage
+    // under an insufficient contract too, or a caller reading expectedOutcomeMatched alone (never
+    // cross-checking terminalEvidence.coverage_gate_attempts) could still be misled into believing
+    // an untrusted coverage claim matched ground truth.
+    if (!supportsRunnerContract(envelope, 'coverage_evidence', 1)) return false;
     // Corroborating (parallel genuinely runs tests -- fact #4/#6): the real test execution must
     // show a genuine clean pass -- never itself a failure (the core distinction from tests_failed,
     // even though both produce exit_code:1).
@@ -1328,6 +1328,15 @@ function deriveObservedKmpTestResult(envelope, classification, resultIsError) {
       // validateKmpEnvelopeForAttempt's identical command-vs-envelope coherence check).
       if (classification.minMissedLines == null || String(coverageFacts.threshold) !== classification.minMissedLines) return uncanonicalizableKmpResult('threshold-mismatch');
       if (envelope.exit_code !== classifyExitCode(envelope.errors, { testsFailed: 0 })) return uncanonicalizableKmpResult('exit-code-incoherent');
+      // eval-v2 schema-3 alignment (design.md (g), D6): numeric coverage fields are trusted only
+      // when the envelope's own contracts.coverage_evidence contract is present and >= 1 -- a
+      // well-formed envelope with the right schema but a missing/lower contract value (an older
+      // kmp-test binary, or a malformed/adversarial envelope) must never produce a
+      // coverage_threshold_exceeded claim from numbers it cannot actually stand behind, however
+      // internally coherent those numbers otherwise look. Checked LAST, after every other real
+      // coherence check above has already passed -- this is specifically about NOT trusting
+      // otherwise-plausible numbers, not a substitute for any of those checks.
+      if (!supportsRunnerContract(envelope, 'coverage_evidence', 1)) return uncanonicalizableKmpResult('coverage_data_unavailable');
       return canonicalKmpResult({
         module, outcome_kind: 'coverage_threshold_exceeded',
         total: individualTotal, passed: individualTotal, failed: 0,
@@ -1562,6 +1571,13 @@ function evaluateKmpTestAttempt(bashResult, scenario, decision) {
     observedResultCanonicalizationReason: observedDerivation.reason,
     errorSummary,
     envelopeSubcommand: hasEvidence ? envelope.subcommand : null,
+    // Distinguishes "the envelope names zero modules at all" (the no_summary/module-scope-
+    // incoherent shape) from "the envelope names one real, but different, module" -- both collapse
+    // to targetMatches:false above, but they are different failure classes worth different check-5
+    // detail text. Array.isArray guard mirrors computeKmpTestTargetMatch's own assumption that a
+    // hasEvidence envelope always carries a real modules array; null here only when there is no
+    // envelope to read at all.
+    envelopeModuleCount: hasEvidence && Array.isArray(envelope.modules) ? envelope.modules.length : null,
     minMissedLines: classification.minMissedLines,
     coverageDisabled: classification.coverageDisabled,
   };
@@ -1922,18 +1938,29 @@ function extractKmpEvalResultBlock(text) {
 }
 
 // Shared by BOTH 'tests_executed' and 'tests_failed' -- the agent's own final-answer block has an
-// identical shape either way (it reports the same real total/passed/failed triple it observed);
-// only the VALUES (failed:0 vs failed>=1) and the compared outcome_kind differ.
-const KMP_EVAL_RESULT_TESTS_EXECUTED_KEYS = new Set(['module', 'outcome_kind', 'total', 'passed', 'failed']);
+// identical shape either way (it reports the same real test_count/passed/failed triple it
+// observed); only the VALUES (failed:0 vs failed>=1) and the compared outcome_kind differ.
+//
+// H15 fix (design.md (f)): the requested field is named `test_count`, never `total` -- kmp-test's
+// own envelope reports TWO differently-scoped counts under adjacent names (`tests.total`, a
+// build-tool TASK-DISPATCH count, vs `tests.individual_total`, the real per-test-case count this
+// grader has always compared against, see deriveObservedKmpTestResult/groundTruthAsObservedResult
+// below), and the prompt never distinguished them for the agent. An agent that reasonably copied
+// the literally-named "total" field from kmp-test's own output got marked wrong here every time,
+// not because it answered incorrectly, but because the SAME english word named two different
+// things on two sides of one comparison. Renaming the REQUESTED field closes the ambiguity at its
+// source; observedResult/groundTruth's own `total` field (always individual_total's value) is
+// UNCHANGED -- see compareKmpEvalResultBlockToObserved's own mapping between the two names.
+const KMP_EVAL_RESULT_TESTS_EXECUTED_KEYS = new Set(['module', 'outcome_kind', 'test_count', 'passed', 'failed']);
 
 // coverage_threshold_exceeded's own closed key set -- deliberately NOT the tests_executed shape:
 // the whole point of this scenario is that the agent correctly read and reported the coverage-gate
 // numbers, which check 8 cannot verify at all unless the block actually carries them.
-const KMP_EVAL_RESULT_COVERAGE_THRESHOLD_KEYS = new Set(['module', 'outcome_kind', 'total', 'passed', 'failed', 'missed_lines', 'threshold', 'modules_contributing']);
+const KMP_EVAL_RESULT_COVERAGE_THRESHOLD_KEYS = new Set(['module', 'outcome_kind', 'test_count', 'passed', 'failed', 'missed_lines', 'threshold', 'modules_contributing']);
 const KMP_EVAL_RESULT_NO_APPLICABLE_KEYS = new Set(['module', 'outcome_kind']);
-const KMP_EVAL_RESULT_NO_APPLICABLE_OPTIONAL_COUNT_KEYS = ['total', 'passed', 'failed'];
+const KMP_EVAL_RESULT_NO_APPLICABLE_OPTIONAL_COUNT_KEYS = ['test_count', 'passed', 'failed'];
 const KMP_EVAL_RESULT_FIELD_ORDER = [
-  'module', 'outcome_kind', 'total', 'passed', 'failed', 'missed_lines', 'threshold', 'modules_contributing',
+  'module', 'outcome_kind', 'test_count', 'passed', 'failed', 'missed_lines', 'threshold', 'modules_contributing',
 ];
 const KMP_EVAL_CANONICAL_OUTCOME_KINDS = new Set([
   'tests_executed',
@@ -1990,13 +2017,19 @@ function compareKmpEvalResultBlockToObserved(block, observedResult) {
     diagnostic.mismatch_fields.push('outcome_kind');
   }
 
-  const compareIntegerField = (field) => {
-    if (!expectedFields.has(field)) return;
-    if (!Number.isInteger(block[field]) || block[field] !== observedResult[field]) {
-      diagnostic.mismatch_fields.push(field);
+  // blockField/observedField deliberately differ for exactly one pair: the agent's own declared
+  // block names the field `test_count` (H15 fix, see KMP_EVAL_RESULT_TESTS_EXECUTED_KEYS's own
+  // comment), while observedResult/groundTruth -- both internal, derived-evidence shapes, never
+  // agent-authored -- keep the pre-existing `total` name (always individual_total's value). Every
+  // other field keeps one shared name on both sides.
+  const compareIntegerField = (blockField, observedField = blockField) => {
+    if (!expectedFields.has(blockField)) return;
+    if (!Number.isInteger(block[blockField]) || block[blockField] !== observedResult[observedField]) {
+      diagnostic.mismatch_fields.push(blockField);
     }
   };
-  for (const field of ['total', 'passed', 'failed', 'missed_lines', 'threshold', 'modules_contributing']) {
+  compareIntegerField('test_count', 'total');
+  for (const field of ['passed', 'failed', 'missed_lines', 'threshold', 'modules_contributing']) {
     compareIntegerField(field);
   }
 
@@ -2020,6 +2053,13 @@ function compareKmpEvalResultBlockToObserved(block, observedResult) {
     diagnostic.comparison_status = 'matched';
     diagnostic.matches_observed = true;
   }
+  // Deliberately UNCHANGED from here on (2026-09-29, WO-A2 auditor finding): this diagnostic
+  // object is also serialized verbatim into terminal_evidence.final_answer_block, which
+  // accepted-run-audit.mjs validates against its OWN closed field set -- adding a field here
+  // would need a new sidecar schema version, not just a grader fix. computeTaskOutcome (the one
+  // real consumer that needs "content correctness alone, independent of unexpected keys") computes
+  // that itself, inline, from missing_fields/mismatch_fields directly, rather than this function
+  // growing a second, differently-scoped notion of "matched" for one caller.
   return diagnostic;
 }
 
@@ -2174,6 +2214,13 @@ function testsContractForCoverageAttempt(attempt) {
 
 function coverageContractForCoverageAttempt(attempt) {
   if (attempt.subcommand === 'coverage') return 'not-applicable';
+  // Distinct from the generic 'unavailable' below (no observed result at all, for any reason) --
+  // this specific reason means the envelope WAS otherwise coherent and would have canonicalized as
+  // coverage_threshold_exceeded, except its own contracts.coverage_evidence contract was
+  // insufficient to trust the numbers (D6). observedResultCanonicalizationReason is copied
+  // verbatim from deriveObservedKmpTestResult's own uncanonicalizableKmpResult('coverage_data_
+  // unavailable') return, see that function's own coverage branch.
+  if (attempt.observedResultCanonicalizationReason === 'coverage_data_unavailable') return 'contract_unavailable';
   const observed = attempt.observedResult;
   if (observed == null || observed.outcome_kind !== 'coverage_threshold_exceeded') return 'unavailable';
   return Number.isInteger(observed.missed_lines)
@@ -2391,7 +2438,7 @@ function isAnswerProtocolWellFormed(block) {
   const keys = Object.keys(block);
   if (!keys.every((k) => allowedFields.has(k))) return false;
   if (![...requiredFields].every((k) => keys.includes(k))) return false;
-  for (const field of ['total', 'passed', 'failed', 'missed_lines', 'threshold', 'modules_contributing']) {
+  for (const field of ['test_count', 'passed', 'failed', 'missed_lines', 'threshold', 'modules_contributing']) {
     if (requiredFields.has(field) && !Number.isInteger(block[field])) return false;
   }
   if (declaredKind === 'no_applicable_tests') {
@@ -2422,9 +2469,18 @@ function computeTaskOutcome(finalText, scenario) {
     ...comparison.missing_fields,
     ...comparison.mismatch_fields,
   ]));
+  // 2026-09-29 (WO-A2 auditor finding, confirmed live): content correctness computed here,
+  // inline, from missing_fields/mismatch_fields directly -- never comparison.matches_observed,
+  // which also folds in unexpected_key_count (deliberately unchanged; see
+  // compareKmpEvalResultBlockToObserved's own comment). mismatchFields above already carries
+  // exactly missing+mismatch, so this is the same underlying signal, just not read off a shared
+  // field also used by a differently-scoped legacy caller -- using matches_observed here let
+  // task_outcome_matched disagree with mismatchFields.length, exactly the schema-invariant
+  // violation a real live cell hit.
+  const contentMatches = comparison.missing_fields.length === 0 && comparison.mismatch_fields.length === 0;
   return {
-    matched: comparison.matches_observed,
-    reason: comparison.matches_observed ? 'matched' : 'mismatched',
+    matched: contentMatches,
+    reason: contentMatches ? 'matched' : 'mismatched',
     protocolMatched: true,
     mismatchFields,
     unexpectedKeyCount: comparison.unexpected_key_count,
@@ -2465,11 +2521,25 @@ function computeProviderEvidence(terminal, hasFinalBlock) {
 
 /** product_e2e_success (Section 9.5): Product-only -- `null` for any condition other than
  * 'current-skill' (FreeBaseline/candidate-skill never get E2E credit, regardless of how correct or
- * well-evidenced their own run was); for 'current-skill', a real boolean requiring ALL THREE of
- * task match, Product evidence matched, and protocol matched. */
-function computeProductE2eSuccess(condition, taskOutcome, providerEvidence) {
+ * well-evidenced their own run was); for 'current-skill', a real boolean requiring task match,
+ * Product evidence matched, protocol matched, AND (2026-09-29, WO-A2 auditor finding) no
+ * unexpected keys in the agent's own final answer block. `task_outcome_matched` alone no longer
+ * carries this (it now means content correctness only -- see compareKmpEvalResultBlockToObserved's
+ * own comment), so it's checked here explicitly: an agent that hedges with additional fields is
+ * still rejected for the metric that actually decides the study's outcome, matching this file's
+ * own "rejected, not silently ignored" design intent.
+ *
+ * EXPORTED (2026-09-29, WO-A2 auditor finding) for direct unit testing of the unexpectedKeyCount
+ * gate specifically: a real end-to-end well-formed-but-hedged answer is not reachable through
+ * gradeScenarioCondition (isAnswerProtocolWellFormed's own closed key-set check for the agent's
+ * DECLARED outcome_kind already rejects a block carrying an unrecognized key before
+ * compareKmpEvalResultBlockToObserved -- the OBSERVED-kind comparison -- ever runs), so this
+ * function's own {condition, taskOutcome, providerEvidence} contract is tested directly instead of
+ * indirectly through prose the extraction/well-formedness layers would intercept first. */
+export function computeProductE2eSuccess(condition, taskOutcome, providerEvidence) {
   if (condition !== 'current-skill') return null;
   return taskOutcome.matched === true
+    && taskOutcome.unexpectedKeyCount === 0
     && providerEvidence.kind === 'kmp-test-envelope' && providerEvidence.status === 'matched'
     && taskOutcome.protocolMatched === true;
 }
@@ -2646,8 +2716,16 @@ export function gradeScenarioCondition(conditionResult, scenario) {
   // Check 5 -- required conjunct of expectedOutcomeMatched, not merely reported alongside it
   // (decision 13's corrected formula -- a wrong-module attempt with coincidentally-matching
   // counts must not read as a match).
+  // An envelope naming ZERO modules (modules:[], the shape a broken/no_summary tool call
+  // produces) is not evidence the agent picked the wrong module -- targetMatches is false in both
+  // cases, but only a genuinely different, uniquely-identified module actually means that. Gated
+  // on terminal.provider==='kmp_test' because a Gradle attempt's targetMatches is unconditionally
+  // true (see evaluateGradleAttempt), so this branch is unreachable for a Gradle terminal.
+  const targetMismatchDetail = terminal != null && terminal.provider === 'kmp_test' && terminal.envelopeModuleCount === 0
+    ? 'terminal attempt\'s envelope names no module at all (0 modules: no_summary / incoherent scope) -- not a module-identity mismatch'
+    : 'terminal attempt targeted the WRONG module';
   addCheck('authoritative_target_matches_expected', evidenceWellFormed && terminal.targetMatches,
-    !evidenceWellFormed ? 'no well-formed terminal evidence to check' : terminal.targetMatches ? 'terminal attempt targeted the expected module' : 'terminal attempt targeted the WRONG module',
+    !evidenceWellFormed ? 'no well-formed terminal evidence to check' : terminal.targetMatches ? 'terminal attempt targeted the expected module' : targetMismatchDetail,
     terminal ? [terminal.resultIndex] : []);
 
   // Check 6 -- also a required conjunct.

@@ -47,7 +47,7 @@ function cleanObservation(condition, overrides = {}) {
     schema: 1,
     runtime: { id: 'claude-code', protocolVersion: 1 },
     process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 100n },
-    session: { initPresent: true, modelResolved: 'claude-sonnet-5', sessionIdObserved: 'sess-1', runtimeVersion: '2.1.212', toolProfileMatchesExpected: true },
+    session: { initPresent: true, modelResolved: 'claude-sonnet-5', sessionIdObserved: 'sess-1', runtimeVersion: '2.1.212', toolProfileMatchesExpected: true, modelSnapshot: null },
     transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
     terminal: { present: false, isError: null, turnCount: null, finalText: null, resultSubtype: null, usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
     toolAttempts: [cleanToolAttempt()],
@@ -152,7 +152,7 @@ describe('cellTranscriptIntegrityOk', () => {
   it('ok:false with noUnexpectedToolsOk + toolProfileOk failing when an unexpected Read tool is invoked, and unexpectedTools/unexpectedToolUsesCount reflect it precisely', () => {
     const conditionResult = cleanConditionResult('current-skill', {
       observation: {
-        session: { initPresent: true, modelResolved: 'claude-sonnet-5', sessionIdObserved: 'sess-1', runtimeVersion: '2.1.212', toolProfileMatchesExpected: false },
+        session: { initPresent: true, modelResolved: 'claude-sonnet-5', sessionIdObserved: 'sess-1', runtimeVersion: '2.1.212', toolProfileMatchesExpected: false, modelSnapshot: null },
         toolAttempts: [
           cleanToolAttempt(),
           cleanToolAttempt({ id: 't2', kind: 'other', runtimeName: 'Read', eventIndex: 3, receiptNs: 3n, profileAllowed: false, command: null, result: { found: true, eventIndex: 4, isError: false, text: 'ok', textStatus: 'text' } }),
@@ -216,7 +216,7 @@ describe('cellTranscriptIntegrityOk', () => {
 
   it('ok:false when init is missing entirely (initOk)', () => {
     const conditionResult = cleanConditionResult('current-skill', {
-      observation: { session: { initPresent: false, modelResolved: null, sessionIdObserved: null, runtimeVersion: null, toolProfileMatchesExpected: false } },
+      observation: { session: { initPresent: false, modelResolved: null, sessionIdObserved: null, runtimeVersion: null, toolProfileMatchesExpected: false, modelSnapshot: null } },
     });
     const result = cellTranscriptIntegrityOk(conditionResult, { requireDispatchAccounting: false });
     expect(result.ok).toBe(false);

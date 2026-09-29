@@ -232,6 +232,13 @@ function Get-E1OfflineCacheFiles([string]$Source) {
     return ,@($rows | Sort-Object { $_.name } -CaseSensitive)
 }
 
+function ConvertTo-E1ExtendedFilePath([string]$Path) {
+    $full=[IO.Path]::GetFullPath($Path)
+    if([Environment]::OSVersion.Platform-ne[PlatformID]::Win32NT-or$full.StartsWith('\\?\')){return $full}
+    if($full.StartsWith('\\')){return '\\?\UNC\'+$full.TrimStart('\')}
+    return '\\?\'+$full
+}
+
 function Copy-E1OfflineCache([string]$Source, [string]$Destination) {
     Assert-E1ToolPath $Destination
     $sourceFull = [IO.Path]::GetFullPath($Source).TrimEnd('\','/')
@@ -246,15 +253,20 @@ function Copy-E1OfflineCache([string]$Source, [string]$Destination) {
         $target = Join-Path $Destination $row.name
         New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
         Assert-E1ToolPath $row.path
-        $inputStream = [IO.File]::Open($row.path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        try {
+            $inputStream = [IO.File]::Open((ConvertTo-E1ExtendedFilePath $row.path), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        } catch {
+            $sourceExists=[int](Test-Path -LiteralPath $row.path -PathType Leaf)
+            throw "cache_source_open_failed_exists_${sourceExists}_length_$($row.path.Length)"
+        }
         $outputStream = $null; $hash = [Security.Cryptography.SHA256]::Create()
         try {
             if ($inputStream.Length -ne $row.bytes) { throw 'cache_changed' }
-            $outputStream = [IO.File]::Open($target, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+            $outputStream = [IO.File]::Open((ConvertTo-E1ExtendedFilePath $target), [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
             $inputStream.CopyTo($outputStream); $outputStream.Dispose(); $outputStream = $null
             $inputStream.Position = 0
             $digest = -join ($hash.ComputeHash($inputStream) | ForEach-Object { $_.ToString('x2') })
-            if ((Get-E1SourceFileHash $target 17179869184L) -cne $digest) { throw 'cache_changed' }
+            if ((Get-E1SourceFileHash (ConvertTo-E1ExtendedFilePath $target) 17179869184L) -cne $digest) { throw 'cache_changed' }
             $hashRows.Add($row.name + '|' + $row.bytes + '|' + $digest); $bytes += $row.bytes
         } finally { if ($outputStream) { $outputStream.Dispose() }; $inputStream.Dispose(); $hash.Dispose() }
     }
@@ -275,7 +287,7 @@ function Get-E1OfflineSealHash {
     $seal=Read-E1Json 'C:\kmp-eval\scratch\agentic-evidence1-claude-2x2-windows-stage-b-readiness-v1\NETWORK-SEAL.json'
     try {Assert-E1Fields $seal.value @{verdict='PASS';network_mode='restricted'}} catch {throw 'network_seal_contract'}
     $allowedAddresses=@()
-    foreach($hostName in @('api.anthropic.com','platform.claude.com','claude.ai','claude.com')) {
+    foreach($hostName in @('api.anthropic.com','platform.claude.com','claude.ai','claude.com','auth.openai.com','chatgpt.com','ab.chatgpt.com')) {
         $addresses=Get-E1Field (Get-E1Field $seal.value 'allowed_resolved_ips_by_host') $hostName
         if(-not $addresses) {throw 'network_endpoint_missing'}
         foreach($address in $addresses) {

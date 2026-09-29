@@ -59,7 +59,7 @@ import { buildObservationBashDispatchAccounting } from './dispatch-accounting.mj
 // importer of that module; see agentic-eval-runtime-boundary.test.js).
 import { resolveSelection, loadRegistries } from './registries.mjs';
 import { loadIsolationAttestation } from './execution-profiles/isolation-attestation.mjs';
-import { resolveScenarioCampaignDesign, buildScenarioCampaignPlan } from './scenario-campaign-plan.mjs';
+import { resolveScenarioCampaignDesign, buildScenarioCampaignPlan, validateScenarioCampaignRuntime } from './scenario-campaign-plan.mjs';
 // Static treatment-size artifacts (schema v6's skill_observation.treatment_size) -- computed
 // entirely offline, once per command (prompt) / once per invocation before the first session
 // (skill snapshot). See input-artifacts.mjs's own header for why this is measured from Git
@@ -88,13 +88,14 @@ import { finalizeIncident, reportIncident } from './incident-diagnostics.mjs';
 import { validateRunRecordFile } from './run-record-loader.mjs';
 import { analyzeRunsDir } from './analysis.mjs';
 import { evaluateProductAccessPreflight } from './product-access-preflight.mjs';
+import { createFinalCampaignControlFromEnv } from './final-campaign-control.mjs';
 
 // dirname(fileURLToPath(...)), not import.meta.dirname -- the latter needs Node 20.11+/21.2+,
 // but package.json declares "node": ">=18" (confirmed to actually matter on a real ubuntu-latest
 // CI job -- see condition-launcher.mjs's identical fix for the full story).
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..');
-const PINNED_SKILL_SHA = '2112aed96686ee159f851e00c2efa553e58473fc';
+const PINNED_SKILL_SHA = '27c943dc392675f78209a78ce09adb4f79283e3e';
 // KMP_EVAL_RUNS_ROOT override exists specifically so tests never write to (or, worse, clean up
 // inside) the real committable tools/runs/ directory -- an earlier version of the integration
 // test suite listed and deleted files directly under the real RUNS_ROOT, including an
@@ -109,6 +110,14 @@ const PINNED_SKILL_SHA = '2112aed96686ee159f851e00c2efa553e58473fc';
 // limited to -- the real, committed corpus/scenarios/ directory, which is scoped to exactly the
 // two real, pinned-commit scenarios this PR ships. Never meant for production use.
 const SCENARIOS_DIR = process.env.KMP_EVAL_SCENARIOS_DIR || join(__dirname, 'corpus', 'scenarios');
+// Isolation split (design.md (c)): ground truth lives in a SEPARATE directory from the task files
+// above, so a mechanism that ships "the scenarios directory" to a guest checkout (today's actual
+// leak surface, confirmed by direct read of the guest-bundle deployment mechanism -- never in this
+// directory itself) cannot also ship the answer merely by ALSO shipping this one. Mirrors
+// KMP_EVAL_SCENARIOS_DIR's own env-override shape for the identical test-injection reason (a
+// throwaway scenario's ground truth needs its own throwaway location too, never the real,
+// committed corpus/expected/).
+const EXPECTED_DIR = process.env.KMP_EVAL_EXPECTED_DIR || join(__dirname, 'corpus', 'expected');
 // Only the DEFAULT root is covered by .gitignore's `tools/runs/agentic-eval-*/raw/**` pattern.
 // KMP_EVAL_RUNS_ROOT is a test-only escape hatch (see above) -- nothing stops it from being set
 // to a path outside that glob, which would leave raw (unredacted, absolute-path-bearing)
@@ -183,7 +192,7 @@ Usage:
                                         [--measurement-scope-file <path>]
   node tools/agentic-eval/cli.mjs run --scenario <id> --source-repo-dir <local-clone> --seed <n>
                                         --campaign-design <id>
-                                        --isolation-attestation-file <path> [--dry-run]
+                                         --isolation-attestation-file <path> [--campaign-cell-index <n>] [--timeout-ms <ms>] [--dry-run]
                                         [--runtime <id>] [--model <name>] [--max-budget-usd <usd>]
                                         [--private-patterns-file <path>]
                                         [--measurement-scope-file <path>]
@@ -211,19 +220,27 @@ evidence is committable until
 schema, policy-hash freshness, privacy, and the run-kind's hard acceptance gate all pass.
 
 --max-budget-usd <usd> is passed directly to Claude Code's per-session --max-budget-usd flag
-(default: 0.60, max: 5.00). It is validated before any live session is spawned; dry-run output
-prints the resolved value so operator authorization can bind to the actual runtime budget.
+(default: 0.60, max: 5.00). Codex CLI does not expose an equivalent per-session spend cap, so
+the flag is rejected for codex-cli and dry-run records null with an explicit reason code.
 
 run --campaign-design <id> expands one scenario into a closed, pre-registered multi-profile
 campaign plan in one invocation. Supported ids: claude-2x2-williams-v1 (policy profile x skill
 condition, 16 sessions), claude-product-vs-free-baseline-v1 (product-assisted vs true
-free-baseline/no-product, 8 sessions), claude-product-canary-v1 and claude-free-baseline-canary-v1
-(one session each, only --scenario coverage-threshold-failure-v2). Use --dry-run to inspect a
-canary without runtime execution; registration does not authorize live use. Future live canaries
-use the existing campaign gates and require separate explicit authorization and ops-wrapper
-adaptation (the live wrapper currently requires matrix8). Mutually exclusive with
+free-baseline/no-product, 8 sessions), claude-product-vs-free-baseline-v2 (the frozen three-pair
+product/control order, 6 sessions), codex-product-vs-free-baseline-v1 (the same product/control
+contrast, 6 sessions), codex-product-vs-free-baseline-v2 (balanced four-pair product/control,
+8 sessions), claude-product-canary-v1 and claude-free-baseline-canary-v1
+(one session each), and codex-product-canary-v1 and codex-free-baseline-canary-v1 (one session
+each); all canaries require --scenario coverage-threshold-failure-v2. Every claude-* design is
+bound to claude-code and every codex-* design to codex-cli; a mismatch fails before runtime
+subprocess or source materialization. Use --dry-run to inspect a canary without runtime execution;
+registration does not authorize live use. Future live canaries use the existing campaign gates
+and require separate explicit authorization and ops-wrapper adaptation (the live wrapper currently
+requires matrix8). Mutually exclusive with
 --execution-profile/--repeats (the design resolves its own profiles and fixes its own repeat count). Requires
---isolation-attestation-file <path> whenever the design includes sandboxed-unrestricted-v1 cells;
+  --isolation-attestation-file <path> whenever the design includes sandboxed-unrestricted-v1 cells.
+  --campaign-cell-index <n> selects exactly one already-registered plan cell by its original
+  order_index; it is valid only with --campaign-design and preserves that cell's provenance.
 see tools/agentic-eval/scenario-campaign-plan.mjs and README.md's "Multi-profile campaigns"
 section.
 
@@ -302,7 +319,7 @@ function parseArgs(argv) {
 const SUBCOMMAND_SHAPES = {
   calibrate: { flags: ['runtime', 'model', 'execution-profile', 'max-budget-usd', 'isolation-attestation-file', 'private-patterns-file', 'measurement-scope-file'], extraPositionals: 0 },
   smoke: { flags: ['runtime', 'model', 'execution-profile', 'max-budget-usd', 'isolation-attestation-file', 'source-repo-dir', 'pinned-commit', 'project-alias', 'private-patterns-file', 'measurement-scope-file'], extraPositionals: 0 },
-  run: { flags: ['scenario', 'source-repo-dir', 'seed', 'repeats', 'runtime', 'model', 'execution-profile', 'campaign-design', 'isolation-attestation-file', 'max-budget-usd', 'dry-run', 'private-patterns-file', 'measurement-scope-file'], extraPositionals: 0 },
+  run: { flags: ['scenario', 'source-repo-dir', 'seed', 'repeats', 'runtime', 'model', 'execution-profile', 'campaign-design', 'campaign-cell-index', 'isolation-attestation-file', 'max-budget-usd', 'timeout-ms', 'dry-run', 'private-patterns-file', 'measurement-scope-file'], extraPositionals: 0 },
   corpus: { flags: [], extraPositionals: 1 }, // corpus <validate>
   aggregate: { flags: ['runs-dir'], extraPositionals: 0 },
   analyze: { flags: ['runs-dir'], extraPositionals: 0 },
@@ -374,7 +391,12 @@ const MAX_MAX_BUDGET_USD = 5.00;
 /** Resolves Claude Code's per-session --max-budget-usd before any spawn. The default preserves
  * the historical launcher argv exactly; a supplied value is intentionally bounded so a typo cannot
  * silently authorize an order-of-magnitude spend across a multi-cell campaign. */
-function resolveMaxBudgetUsdOrFail(rawValue) {
+function resolveMaxBudgetUsdOrFail(rawValue, runtimeId = 'claude-code') {
+  if (runtimeId === 'codex-cli') {
+    return rawValue == null
+      ? { ok: true, maxBudgetUsd: null, source: 'runtime-unsupported', reason: 'runtime_does_not_support_session_budget' }
+      : { ok: false, reason: '--max-budget-usd is unsupported by codex-cli; Codex CLI exposes no per-session spend-cap flag' };
+  }
   if (rawValue == null) {
     return { ok: true, maxBudgetUsd: DEFAULT_MAX_BUDGET_USD, source: 'default' };
   }
@@ -884,6 +906,7 @@ function reasonTextFor(err) {
 async function runConditionPair({
   prompt, model, allowedGradleTasks, allowedKmpTestSubcommands, materializeFixture, cleanupFixture,
   timeoutMs, journal = null, runtimeAdapter, executionProfile = null, maxBudgetUsd = DEFAULT_MAX_BUDGET_USD,
+  reasoningMode = null,
 }) {
   // Thin wrapper over matrix-runner.mjs's acquireSharedEvalResources/runSingleCondition (extracted
   // so a scenario-matrix run, which repeats this same acquire-then-run shape N times instead of
@@ -919,7 +942,7 @@ async function runConditionPair({
     // shared.runtimeAdapter is the RESOLVED instance (default or test-injected) --
     // acquireSharedEvalResources returns it specifically so this call site never needs to import
     // runtimes/claude-code.mjs itself (cli.mjs is a core consumer; only matrix-runner.mjs may).
-    const baseArgv = shared.runtimeAdapter.buildInvocation({ prompt, model, settingsPath: shared.settingsPath, executionProfile, maxBudgetUsd });
+    const baseArgv = shared.runtimeAdapter.buildInvocation({ prompt, model, settingsPath: shared.settingsPath, executionProfile, maxBudgetUsd, reasoningMode });
 
     let fixtureDir;
     let fixtureCleanupQueued = false;
@@ -941,7 +964,8 @@ async function runConditionPair({
         sharedEnv: shared.sharedEnv, baseArgv, snapshotDir: shared.snapshotDir,
         targetPluginName: TARGET_PLUGIN_NAME, targetSkillName: TARGET_SKILL_NAME, timeoutMs,
         junitEvidenceEnabled: false, journal, cellOrdinal, runtimeAdapter: shared.runtimeAdapter,
-        executionProfile,
+        executionProfile, runtimePreflight: shared.runtimePreflight,
+        maxBudgetUsd, reasoningMode,
       });
       fixtureDir = conditionResult.fixtureDir;
       if (policyMode === 'not_applicable') {
@@ -986,7 +1010,7 @@ async function runConditionPair({
     if (!integrityB.ok) {
       return {
         runA: null, runB, snapshotDir: shared.snapshotDir, skillSnapshotArtifact: shared.skillSnapshotArtifact,
-        daemonPolicy: shared.daemonPolicy,
+        daemonPolicy: shared.daemonPolicy, gradleMemoryOverrideSha256: shared.gradleMemoryOverrideSha256,
         allowedGradleTasks, allowedKmpTestSubcommands, cleanup: runCleanup,
         plannedCellCount: 2, executedCellCount: 1, matrixComplete: false,
         failFastStop: {
@@ -1018,7 +1042,7 @@ async function runConditionPair({
 
     return {
       runA, runB, snapshotDir: shared.snapshotDir, skillSnapshotArtifact: shared.skillSnapshotArtifact,
-      daemonPolicy: shared.daemonPolicy,
+      daemonPolicy: shared.daemonPolicy, gradleMemoryOverrideSha256: shared.gradleMemoryOverrideSha256,
       allowedGradleTasks, allowedKmpTestSubcommands, cleanup: runCleanup,
       plannedCellCount: 2, executedCellCount: 2, matrixComplete: true, failFastStop: null,
     };
@@ -1029,7 +1053,7 @@ async function runConditionPair({
 }
 
 function buildRunRecord({
-  conditionResult, condition, runKind, scenarioId, skillSourceSha, daemonPolicy,
+  conditionResult, condition, runKind, scenarioId, skillSourceSha, daemonPolicy, gradleMemoryOverrideSha256 = null,
   allowedGradleTasks, allowedKmpTestSubcommands, policySha256, projectAlias = 'calibration-project',
   projectCommit = null, projectUrl = null, family = 'trigger-only', modelRequested,
   privacyStatus = 'public',
@@ -1100,7 +1124,14 @@ function buildRunRecord({
     throw new TypeError(`buildRunRecord: productAccessMode (${JSON.stringify(productAccessMode)}) is not compatible with condition (${JSON.stringify(condition)}) -- product access is a separate treatment axis and must be supplied explicitly for free-baseline cells`);
   }
 
-  const { observation, startedAt, endedAt } = conditionResult;
+  const {
+    observation, startedAt, endedAt,
+    // eval-v2 recording fields (design.md (d)) -- harness-computed provenance facts attached by
+    // runSingleCondition (matrix-runner.mjs), never part of the observation contract itself.
+    argvSha256, deliveredPromptSha256, envKeys, reasoningEffortRequested, reasoningEffortSource,
+    treatmentDeliverySha256, maxBudgetUsd: cellMaxBudgetUsd, timeoutMs: cellTimeoutMs,
+  } = conditionResult;
+  const isCodexCli = selection.runtime.runtime_id === 'codex-cli';
   const isScenario = runKind === 'scenario';
   const notApplicableReason = `${runKind} run -- no scenario grader applies`;
   // Computed once, shared by tool_calls_total (below) and foreign_skill_summary (schema V3) --
@@ -1222,14 +1253,14 @@ function buildRunRecord({
   // -- never a second, independent derivation. treatment_size reuses the ONE promptArtifact/
   // skillSnapshotArtifact the caller computed once (this function never recomputes either).
   const skillObservation = {
-    delivery_mode: condition === 'current-skill' ? 'runtime-extension' : 'none',
+    delivery_mode: condition === 'current-skill' ? (isCodexCli ? 'project-instructions' : 'runtime-extension') : 'none',
     availability: {
       status: observation.skill.available ? 'observed-present' : 'observed-absent',
-      evidence_kind: 'runtime-catalog',
+      evidence_kind: isCodexCli ? 'isolated-filesystem' : 'runtime-catalog',
     },
     activation: {
-      status: observation.skill.targetInvocation?.confirmed === true ? 'confirmed' : 'not-observed',
-      evidence_kind: 'runtime-explicit-event',
+      status: isCodexCli ? 'not-observable' : observation.skill.targetInvocation?.confirmed === true ? 'confirmed' : 'not-observed',
+      evidence_kind: isCodexCli ? 'not-observable' : 'runtime-explicit-event',
     },
     source_sha: condition === 'current-skill' ? skillSourceSha : null,
     treatment_size: condition === 'current-skill'
@@ -1258,14 +1289,14 @@ function buildRunRecord({
   // and attributable_to_skill_load is always not-recorded (claude never attributes usage to skill
   // loading specifically in this PR), with the one reason value that differs by condition.
   const usageDims = observation.terminal.usage;
-  const hasAnyUsageDimension = [usageDims.input, usageDims.cached_input, usageDims.cache_write, usageDims.output].some((v) => typeof v === 'number');
+  const hasAnyUsageDimension = [usageDims.input, usageDims.cached_input, usageDims.cache_write, usageDims.output, usageDims.reasoning_output].some((v) => typeof v === 'number');
   const usageGroup = {
     source: hasAnyUsageDimension ? 'runtime-reported' : 'not-recorded',
     input: usageDims.input ?? null,
     cached_input: usageDims.cached_input ?? null,
     cache_write: usageDims.cache_write ?? null,
     output: usageDims.output ?? null,
-    reasoning_output: null,
+    reasoning_output: usageDims.reasoning_output ?? null,
     attributable_to_skill_load: {
       status: 'not-recorded',
       dimensions: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null },
@@ -1290,7 +1321,7 @@ function buildRunRecord({
     model_requested: selection.model.model_id,
     model_resolved: observation.session.modelResolved,
     session_id_observed: observation.session.sessionIdObserved,
-    claude_code_version: observation.session.runtimeVersion,
+    claude_code_version: isCodexCli ? null : observation.session.runtimeVersion,
     repo_commit: provenance.repoCommit,
     project_alias: projectAlias,
     project_commit: projectCommit,
@@ -1303,6 +1334,13 @@ function buildRunRecord({
     // keep their existing 'unknown' (this function never claimed to track their cache state).
     cache_state: isScenario ? 'cold' : 'unknown',
     daemon_policy: daemonPolicy ?? 'unknown',
+    // 2026-09-29 (WO-A2 auditor decision, Amendment A5): NOT a canonical/required field (unlike
+    // daemon_policy) -- deliberately kept optional and outside the fairness-partition contract,
+    // so adding it never forces every existing run-record fixture across this suite to be
+    // updated. A fixed literal (GRADLE_MEMORY_OVERRIDE_PROPERTIES in materialize.mjs), so its
+    // absence from older/other run kinds is never a real gap: proves exactly what
+    // GRADLE_USER_HOME-level jvmargs override was in effect for this run, when present.
+    gradle_memory_override_sha256: gradleMemoryOverrideSha256 ?? null,
     env_allowlist_profile: 'narrow',
     seed: isScenario ? seed : null,
     order_index: isScenario ? orderIndex : null,
@@ -1310,8 +1348,12 @@ function buildRunRecord({
     ended_at: endedAt.toISOString(),
     wall_clock_ms: endedAt.getTime() - startedAt.getTime(),
     skill_available: nullableMetric(observation.skill.available),
-    skill_invocation_attempted: nullableMetric(observation.skill.targetInvocation != null),
-    skill_invoked: nullableMetric(observation.skill.targetInvocation?.confirmed ?? false),
+    skill_invocation_attempted: isCodexCli
+      ? nullableMetric(null, 'runtime-does-not-report-skill-activation')
+      : nullableMetric(observation.skill.targetInvocation != null),
+    skill_invoked: isCodexCli
+      ? nullableMetric(null, 'runtime-does-not-report-skill-activation')
+      : nullableMetric(observation.skill.targetInvocation?.confirmed ?? false),
     // 'assistant.tool_use.Skill' is a closed literal (stream-parser.mjs's own findSkillInvocation
     // always used exactly this constant, never a variable value) -- hardcoded here rather than
     // carried through the observation contract, which has no need for a type field that never varies.
@@ -1336,7 +1378,7 @@ function buildRunRecord({
         )
       : nullableMetric(null, `${runKind} run -- no first-useful-signal predicate applies`),
     first_useful_signal_event: isScenario && gradeResult.firstUsefulSignalEventIndex != null
-      ? { type: 'user.tool_result', index: gradeResult.firstUsefulSignalEventIndex }
+      ? { type: isCodexCli ? 'runtime.command_result' : 'user.tool_result', index: gradeResult.firstUsefulSignalEventIndex }
       : null,
     // post_signal_ms/post_signal_tool_calls/policy_denials_before_first_signal/
     // policy_denials_after_first_signal (schema V5) -- computed once, above, shared by nothing
@@ -1362,11 +1404,43 @@ function buildRunRecord({
     execution_profile: executionProfileGroup,
     skill_observation: skillObservation,
     usage: usageGroup,
+    // Schema v9 (eval-v2 recording fields, design.md (d)) -- harness-computed provenance/integrity
+    // facts, always present for every run_kind (calibrate/smoke flow through the identical
+    // runSingleCondition path scenario cells do, so these are never scenario-only the way e.g.
+    // grading_checks is). Closes Evidence1's own disclosed gaps: reasoning effort was neither set
+    // nor recorded for Claude at all, and no per-cell integrity hash existed for argv/prompt/env/
+    // treatment delivery.
+    reasoning_effort_requested: reasoningEffortRequested,
+    reasoning_effort_source: reasoningEffortSource,
+    served_model_snapshot: nullableMetric(
+      observation.session.modelSnapshot,
+      isCodexCli ? 'runtime-does-not-report-per-turn-model' : 'no assistant turn observed',
+    ),
+    argv_sha256: argvSha256,
+    delivered_prompt_sha256: deliveredPromptSha256,
+    treatment_delivery_sha256: nullableMetric(treatmentDeliverySha256, 'condition-no-skill'),
+    env_keys: envKeys,
+    // Every Bash/shell command actually dispatched -- the biggest disclosure change from Evidence1
+    // (which never captured raw commands, raw_capture_committed:false throughout). MUST be cleared
+    // by tools/decouple-audit.mjs (or equivalent) before any cell's evidence is published -- see
+    // design.md (d)/(j); this field is never itself a publication decision.
+    executed_commands: selectShellAttempts(observation.toolAttempts).map((a) => a.command),
+    max_budget_usd: nullableMetric(isCodexCli ? null : cellMaxBudgetUsd, 'no_budget_cap_mechanism'),
+    timeout_ms: cellTimeoutMs,
+    result_subtype: nullableMetric(observation.terminal.resultSubtype, observation.terminal.present ? undefined : 'no result event'),
+    num_turns: nullableMetric(observation.terminal.turnCount, observation.terminal.present ? undefined : 'no result event'),
+    // total_cost_usd: confirmed absent from BOTH runtimes' wire formats today (stream-parser.mjs's
+    // own documented result-event shape carries no cost field; codex-cli.mjs's usageFromTerminal
+    // has no cost dimension) -- never speculatively parsed, always null+reason.
+    total_cost_usd: nullableMetric(null, isCodexCli ? 'no_cost_reporting' : 'not present on this runtime\'s result event schema'),
     tokens: {
       input: nullableMetric(observation.terminal.usage.input, observation.terminal.present ? undefined : 'no result event'),
       output: nullableMetric(observation.terminal.usage.output, observation.terminal.present ? undefined : 'no result event'),
       cache_read: nullableMetric(observation.terminal.usage.cached_input, observation.terminal.present ? undefined : 'no result event'),
-      cache_creation: nullableMetric(observation.terminal.usage.cache_write, observation.terminal.present ? undefined : 'no result event'),
+      cache_creation: nullableMetric(
+        observation.terminal.usage.cache_write,
+        observation.terminal.present ? (isCodexCli ? 'runtime-does-not-report-cache-write' : undefined) : 'no result event',
+      ),
     },
     // Counts EVERY tool attempt in the transcript, regardless of kind (observation.toolAttempts --
     // the identical field the accepted-run-audit sidecar's own summary.tool_calls_total uses) -- a
@@ -1465,6 +1539,9 @@ function buildRunRecord({
       // .gitignore's agentic-eval raw-transcript glob.
       ...(!RUNS_ROOT_IS_DEFAULT
         ? [{ code: 'raw_capture_location_overridden', message: 'KMP_EVAL_RUNS_ROOT was set to a non-default root for this run -- the raw transcript may not be covered by the default .gitignore pattern; verify manually before staging anything from that location' }]
+        : []),
+      ...(isCodexCli && observation.session.modelResolved === null
+        ? [{ code: 'runtime_model_not_reported', message: 'codex-cli did not start a session with the explicitly configured --model value; model_resolved remains null' }]
         : []),
       // Per-attempt JUnit-evidence attribution (tools/agentic-eval "bind junit evidence to
       // authoritative attempts" fix): JUnit XML is now captured per-attempt, keyed by tool_use_id,
@@ -2591,8 +2668,16 @@ function calibrationHardGate(a, b, runAResult, runBResult) {
   // silently pass just because invoked happens to read false.
   const noSkillAttemptObserved =
     a.skill_invocation_attempted.value === true || a.skill_invocation_attempted.value === false;
-  const noSkillSafetyOk = noSkillAttemptObserved && a.skill_invoked.value === false;
-  const currentInvocationOk = b.skill_invocation_attempted.value === true && b.skill_invoked.value === true;
+  const noSkillActivationNotObservable = a.agent_runtime?.runtime_id === 'codex-cli'
+    && a.skill_observation?.activation?.status === 'not-observable';
+  const currentSkillActivationNotObservable = b.agent_runtime?.runtime_id === 'codex-cli'
+    && b.skill_observation?.activation?.status === 'not-observable';
+  const noSkillSafetyOk = noSkillActivationNotObservable
+    ? a.skill_available.value === false && obsA.skill.targetInvocation === null
+    : noSkillAttemptObserved && a.skill_invoked.value === false;
+  const currentInvocationOk = currentSkillActivationNotObservable
+    ? b.skill_available.value === true && obsB.skill.targetInvocation === null
+    : b.skill_invocation_attempted.value === true && b.skill_invoked.value === true;
   // Regression coverage for a real bypass an independent review pass demonstrated: relaxing the
   // no-skill arm to tolerate attempted:false made a NEW gap reachable -- noUnexpectedToolsOk only
   // checks the tool NAME (Bash/Skill), never a Skill call's own `input.skill` argument, so a
@@ -2810,7 +2895,11 @@ function scenarioCellIntegrityOk(record, conditionResult, { sharedAmbientNames =
   // whether the skill triggers naturally on a scenario prompt is part of what's being MEASURED,
   // not a harness precondition (unchanged from this function's original design).
   const availabilityOk = record.skill_available.value === expectSkillAvailable;
-  const noSkillSafetyOk = expectSkillAvailable || record.skill_invoked.value === false;
+  const activationNotObservable = record.agent_runtime?.runtime_id === 'codex-cli'
+    && record.skill_observation?.activation?.status === 'not-observable';
+  const noSkillSafetyOk = expectSkillAvailable
+    || record.skill_invoked.value === false
+    || (activationNotObservable && record.skill_available.value === false && conditionResult.observation.skill.targetInvocation === null);
 
   // The canonical per-cell evaluation (cell-integrity.mjs) -- the SAME function the fail-fast hook
   // (matrix-runner.mjs's runScenarioMatrix loop) already ran on this exact conditionResult earlier
@@ -2973,7 +3062,7 @@ async function cmdCalibrate(args) {
   const model = modelEntry.model_id;
   const privatePatternsFile = args['private-patterns-file'] ?? null;
   const privacyStatus = privatePatternsFile ? 'redacted-private' : 'public';
-  const budgetCheck = resolveMaxBudgetUsdOrFail(args['max-budget-usd'] ?? null);
+  const budgetCheck = resolveMaxBudgetUsdOrFail(args['max-budget-usd'] ?? null, runtime.runtime_id);
   if (!budgetCheck.ok) {
     console.error(budgetCheck.reason);
     return 1;
@@ -3042,6 +3131,7 @@ async function cmdCalibrate(args) {
       runtimeAdapter: adapter,
       executionProfile,
       maxBudgetUsd: budgetCheck.maxBudgetUsd,
+      reasoningMode: modelEntry.default_reasoning_mode,
     });
   } catch (err) {
     const incidentResult = finalizeIncident({
@@ -3055,7 +3145,7 @@ async function cmdCalibrate(args) {
     return 1;
   }
   try {
-    const { runA, runB, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, matrixComplete: pairComplete, plannedCellCount, executedCellCount, failFastStop, skillSnapshotArtifact } = conditionPair;
+    const { runA, runB, daemonPolicy, gradleMemoryOverrideSha256, allowedGradleTasks, allowedKmpTestSubcommands, matrixComplete: pairComplete, plannedCellCount, executedCellCount, failFastStop, skillSnapshotArtifact } = conditionPair;
     const policySha256 = computePolicySha256();
     // One HMAC key + opaque scope id for this ENTIRE calibrate invocation (correction 2) --
     // shared by both A and B so they remain comparable to each other, never persisted. Ephemeral
@@ -3068,7 +3158,7 @@ async function cmdCalibrate(args) {
     // pinned commit into a shallow CI checkout -- see matrix-runner.mjs's own doc comment) and
     // propagated back here on conditionPair, never recomputed by this command.
     const common = {
-      runKind: 'calibration', scenarioId: 'calibration-explicit-invocation', skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, modelRequested: model, privacyStatus, ambientProfileScopeId, ambientProfileKey,
+      runKind: 'calibration', scenarioId: 'calibration-explicit-invocation', skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, gradleMemoryOverrideSha256, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, modelRequested: model, privacyStatus, ambientProfileScopeId, ambientProfileKey,
       selection: selectionResult.selection, promptArtifact: computePromptArtifact(CALIBRATE_PROMPT), skillSnapshotArtifact,
       isolationAttestationSha256: attestationCheck.sha256,
     };
@@ -3169,7 +3259,10 @@ function smokeHardGate(a, b, runAResult, runBResult) {
   // foreign) is real evidence contamination that skillSelectionOk alone no longer catches. B is
   // deliberately exempt -- see this function's own doc comment on skill_invoked never being
   // required for B.
-  const noSkillSafetyOkA = a.skill_invoked.value === false;
+  const noSkillSafetyOkA = a.agent_runtime?.runtime_id === 'codex-cli'
+    && a.skill_observation?.activation?.status === 'not-observable'
+    ? a.skill_available.value === false && obsA.skill.targetInvocation === null
+    : a.skill_invoked.value === false;
   // See calibrationHardGate's identical check and doc comment -- noUnexpectedToolsOk only checks
   // the tool NAME (Bash/Skill), never a Skill call's own `input.skill` argument, so this closes
   // the same gap here: neither condition may contain a Skill call targeting anything other than
@@ -3308,7 +3401,7 @@ async function cmdSmoke(args) {
   const projectAlias = args['project-alias'] ?? 'kampkit';
   const privatePatternsFile = args['private-patterns-file'] ?? null;
   const privacyStatus = privatePatternsFile ? 'redacted-private' : 'public';
-  const budgetCheck = resolveMaxBudgetUsdOrFail(args['max-budget-usd'] ?? null);
+  const budgetCheck = resolveMaxBudgetUsdOrFail(args['max-budget-usd'] ?? null, runtime.runtime_id);
   if (!budgetCheck.ok) {
     console.error(budgetCheck.reason);
     return 1;
@@ -3382,6 +3475,7 @@ async function cmdSmoke(args) {
       runtimeAdapter: adapter,
       executionProfile,
       maxBudgetUsd: budgetCheck.maxBudgetUsd,
+      reasoningMode: modelEntry.default_reasoning_mode,
     });
   } catch (err) {
     const incidentResult = finalizeIncident({
@@ -3395,7 +3489,7 @@ async function cmdSmoke(args) {
     return 1;
   }
   try {
-    const { runA, runB, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, matrixComplete: pairComplete, plannedCellCount, executedCellCount, failFastStop, skillSnapshotArtifact } = conditionPair;
+    const { runA, runB, daemonPolicy, gradleMemoryOverrideSha256, allowedGradleTasks, allowedKmpTestSubcommands, matrixComplete: pairComplete, plannedCellCount, executedCellCount, failFastStop, skillSnapshotArtifact } = conditionPair;
     const policySha256 = computePolicySha256();
     // One HMAC key + opaque scope id for this ENTIRE smoke invocation (correction 2) -- shared by
     // both A and B so they remain comparable to each other, never persisted. Ephemeral (freshly
@@ -3405,7 +3499,7 @@ async function cmdSmoke(args) {
     // Schema v6: promptArtifact is computed ONCE from the exact literal prompt text runConditionPair
     // is called with below -- kept as its own named constant so the two never drift apart.
     const common = {
-      runKind: 'smoke', scenarioId, skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, projectAlias, projectCommit: pinnedCommit, projectUrl, family: 'test-only', modelRequested: model, privacyStatus, ambientProfileScopeId, ambientProfileKey,
+      runKind: 'smoke', scenarioId, skillSourceSha: PINNED_SKILL_SHA, daemonPolicy, gradleMemoryOverrideSha256, allowedGradleTasks, allowedKmpTestSubcommands, policySha256, projectAlias, projectCommit: pinnedCommit, projectUrl, family: 'test-only', modelRequested: model, privacyStatus, ambientProfileScopeId, ambientProfileKey,
       selection: selectionResult.selection, promptArtifact: computePromptArtifact(SMOKE_PROMPT), skillSnapshotArtifact,
       isolationAttestationSha256: attestationCheck.sha256,
     };
@@ -3478,35 +3572,67 @@ async function cmdSmoke(args) {
 }
 
 /**
- * Loads and validates one scenario by id from the committed corpus/scenarios/<id>.json --
+ * Loads and validates one scenario by id, merging the committed corpus/scenarios/<id>.json
+ * (task -- id, family, project_alias/url/commit, prompt, policy, fixture_setup, tags: everything a
+ * session and the skill's own policy hook actually need) with corpus/expected/<id>.json (ground
+ * truth -- expected, expected_outcome, first_useful_signal_predicate) into the SAME merged shape
+ * this function has always returned -- eval-v2's isolation split (design.md (c)) separates these
+ * onto two files ON DISK (task.json is what a guest-shipped harness checkout would contain;
+ * expected.json never is), but every EXISTING caller of this function keeps working unchanged: the
+ * merge happens here, once, host-side, so dispatch/grading logic elsewhere is not yet restructured
+ * to avoid touching the merged `expected` field at the wrong time -- see checkIsolationProbe
+ * (isolation-probe.mjs) for the actual, separately-testable leak-detection primitive this split
+ * enables; wiring a genuine guest-process/host-process boundary around this merge is real,
+ * unfinished follow-on work, not represented as done by this function's own unchanged behavior.
  * `--scenario` is required and singular (decision 1: one invocation = one scenario = one policy =
  * one oracle = one atomic-promotion unit, never an optional filter over multiple files with
  * potentially different policies). Returns {ok:true, scenario} or {ok:false, reason}; never
  * throws, so cmdRun can report a clean, actionable error instead of a raw ENOENT/JSON.parse
  * stack. Re-validates against the live validateScenario() (not just "the file parses") and
- * cross-checks the file's OWN declared id against the requested id, mirroring the
+ * cross-checks each file's OWN declared id against the requested id, mirroring the
  * filename-must-match-id invariant cmdCorpusValidate already enforces for the committed corpus.
  */
 function loadScenarioById(scenarioId) {
   if (typeof scenarioId !== 'string' || !/^[a-z0-9-]+$/.test(scenarioId)) {
     return { ok: false, reason: `--scenario must be a kebab-case scenario id, got: ${JSON.stringify(scenarioId)}` };
   }
-  const scenarioPath = join(SCENARIOS_DIR, `${scenarioId}.json`);
-  if (!existsSync(scenarioPath)) {
-    return { ok: false, reason: `no scenario file found for --scenario ${scenarioId} (expected ${scenarioPath})` };
+  const taskPath = join(SCENARIOS_DIR, `${scenarioId}.json`);
+  if (!existsSync(taskPath)) {
+    return { ok: false, reason: `no scenario file found for --scenario ${scenarioId} (expected ${taskPath})` };
   }
-  let scenario;
+  let task;
   try {
-    scenario = JSON.parse(readFileSync(scenarioPath, 'utf8'));
+    task = JSON.parse(readFileSync(taskPath, 'utf8'));
   } catch (err) {
     return { ok: false, reason: `scenario file for ${scenarioId} is not valid JSON: ${err.message}` };
   }
+  if (task.id !== scenarioId) {
+    return { ok: false, reason: `scenario file's declared id "${task.id}" does not match --scenario ${scenarioId}` };
+  }
+  // Split ground truth (the real, committed corpus path) takes priority; a task file that still
+  // carries `expected` inline (pre-split test fixtures under KMP_EVAL_SCENARIOS_DIR, which have no
+  // reason to also inject a matching KMP_EVAL_EXPECTED_DIR just to keep validating) falls back to
+  // its own inline block -- never a silent, ambiguous merge of both when only one is truly present.
+  const expectedPath = join(EXPECTED_DIR, `${scenarioId}.json`);
+  let groundTruth;
+  if (existsSync(expectedPath)) {
+    try {
+      groundTruth = JSON.parse(readFileSync(expectedPath, 'utf8'));
+    } catch (err) {
+      return { ok: false, reason: `ground-truth file for ${scenarioId} is not valid JSON: ${err.message}` };
+    }
+    if (groundTruth.id !== scenarioId) {
+      return { ok: false, reason: `ground-truth file's declared id "${groundTruth.id}" does not match --scenario ${scenarioId}` };
+    }
+  } else if (task.expected !== undefined) {
+    groundTruth = { expected_outcome: task.expected_outcome, expected: task.expected, first_useful_signal_predicate: task.first_useful_signal_predicate };
+  } else {
+    return { ok: false, reason: `no ground-truth file found for --scenario ${scenarioId} (expected ${expectedPath}, and the task file carries no inline expected block either)` };
+  }
+  const scenario = { ...task, expected_outcome: groundTruth.expected_outcome, expected: groundTruth.expected, first_useful_signal_predicate: groundTruth.first_useful_signal_predicate };
   const { errors } = validateScenario(scenario);
   if (errors.length > 0) {
     return { ok: false, reason: `scenario file for ${scenarioId} failed schema validation: ${JSON.stringify(errors)}` };
-  }
-  if (scenario.id !== scenarioId) {
-    return { ok: false, reason: `scenario file's declared id "${scenario.id}" does not match --scenario ${scenarioId}` };
   }
   return { ok: true, scenario };
 }
@@ -3605,12 +3731,12 @@ function runGradleWrapper({ fixtureDir, task, gradleUserHome }) {
   if (process.platform === 'win32') {
     const wrapper = join(fixtureDir, 'gradlew.bat');
     if (!existsSync(wrapper)) return { skipped: true };
-    const r = spawnSync(wrapper, [task, '--no-daemon'], { cwd: fixtureDir, env, encoding: 'utf8', shell: true });
+    const r = spawnSync(wrapper, [task, '--offline', '--no-daemon'], { cwd: fixtureDir, env, encoding: 'utf8', shell: true });
     return { skipped: false, status: r.status, error: r.error, stdout: r.stdout, stderr: r.stderr };
   }
   const wrapper = join(fixtureDir, 'gradlew');
   if (!existsSync(wrapper)) return { skipped: true };
-  const r = spawnSync(wrapper, [task, '--no-daemon'], { cwd: fixtureDir, env, encoding: 'utf8' });
+  const r = spawnSync(wrapper, [task, '--offline', '--no-daemon'], { cwd: fixtureDir, env, encoding: 'utf8' });
   return { skipped: false, status: r.status, error: r.error, stdout: r.stdout, stderr: r.stderr };
 }
 
@@ -3732,14 +3858,18 @@ async function cmdRunCampaign(args, campaignDesignId) {
   const privatePatternsFile = args['private-patterns-file'] ?? null;
   const privacyStatus = privatePatternsFile ? 'redacted-private' : 'public';
   const isDryRun = args['dry-run'] === true;
-  const budgetCheck = resolveMaxBudgetUsdOrFail(args['max-budget-usd'] ?? null);
-  if (!budgetCheck.ok) {
-    console.error(budgetCheck.reason);
-    return 1;
-  }
-
+  const timeoutMs = Number(args['timeout-ms']);
+  const requestedCellIndexRaw = args['campaign-cell-index'];
   if (!scenarioId || !sourceRepoDir) {
     console.error('run --campaign-design requires --scenario <id> --source-repo-dir <local clone> --seed <n> [--runtime <id>] [--model <name>] --isolation-attestation-file <path> [--dry-run] [--private-patterns-file <path>]');
+    return 1;
+  }
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
+    console.error('run --campaign-design requires --timeout-ms <positive integer>');
+    return 1;
+  }
+  if (requestedCellIndexRaw != null && (!/^(0|[1-9]\d*)$/.test(String(requestedCellIndexRaw)))) {
+    console.error('run --campaign-design accepts --campaign-cell-index <nonnegative integer> only');
     return 1;
   }
   if (args.seed == null) {
@@ -3774,13 +3904,48 @@ async function cmdRunCampaign(args, campaignDesignId) {
     console.error(`campaign design ${JSON.stringify(campaignDesignId)} requires --scenario ${designResolved.design.scenario_id}`);
     return 1;
   }
+
+  // Resolve only the requested/default runtime+model first, before resolving any design cell's
+  // execution profile. This makes runtime<->design identity its own fail-closed gate: notably, a
+  // Codex selection for claude-2x2-williams-v1 is rejected as a design mismatch instead of merely
+  // failing later because Codex does not support that design's strict-policy cells. The call is
+  // registry-only and cannot spawn a runtime or materialize a source workspace.
+  const runtimeProbe = resolveSelection({
+    runtimeId: args.runtime ?? null,
+    modelId: args.model ?? null,
+    executionProfileId: null,
+  });
+  if (!runtimeProbe.ok) {
+    console.error(runtimeProbe.reason);
+    return 1;
+  }
+  const runtimeCompatibility = validateScenarioCampaignRuntime({
+    designId: campaignDesignId,
+    runtimeId: runtimeProbe.selection.runtime.runtime_id,
+  });
+  if (!runtimeCompatibility.ok) {
+    console.error(runtimeCompatibility.reason);
+    return 1;
+  }
+
   const executionProfileIds = loadRegistries().executionProfiles.filter((p) => p.enabled === true).map((p) => p.id);
   const planResult = buildScenarioCampaignPlan({ designId: campaignDesignId, repeats: designResolved.design.repeats, executionProfiles: executionProfileIds });
   if (!planResult.ok) {
     console.error(planResult.reason);
     return 1;
   }
-  const { plan: campaignPlan } = planResult;
+  const fullCampaignPlan = planResult.plan;
+  const requestedCellIndex = requestedCellIndexRaw == null ? null : Number(requestedCellIndexRaw);
+  if (requestedCellIndex != null && requestedCellIndex >= fullCampaignPlan.cells.length) {
+    console.error(`--campaign-cell-index ${requestedCellIndex} is outside the registered campaign plan`);
+    return 1;
+  }
+  // A selected cell is a view over the already-resolved registered plan. Its
+  // original order_index remains durable provenance; matrix-runner assigns its
+  // own local ordinal for this one-cell invocation's journal and capture.
+  const campaignPlan = requestedCellIndex == null
+    ? fullCampaignPlan
+    : { ...fullCampaignPlan, cells: [fullCampaignPlan.cells[requestedCellIndex]], planned_sessions: 1 };
 
   // One (runtime, model, executionProfile, adapter, executionProfileSha256) selection PER DISTINCT
   // execution profile the plan actually uses -- never a single shared selection (Important note in
@@ -3801,6 +3966,11 @@ async function cmdRunCampaign(args, campaignDesignId) {
   }
   const { runtime, model: modelEntry } = selectionsByProfileId[distinctProfileIds[0]];
   const model = modelEntry.model_id;
+  const budgetCheck = resolveMaxBudgetUsdOrFail(args['max-budget-usd'] ?? null, runtime.runtime_id);
+  if (!budgetCheck.ok) {
+    console.error(budgetCheck.reason);
+    return 1;
+  }
 
   // Exactly one shared --isolation-attestation-file flag/value for the WHOLE invocation, validated
   // against whichever ONE distinct profile in this plan actually requires it (today: always
@@ -3855,7 +4025,8 @@ async function cmdRunCampaign(args, campaignDesignId) {
     console.log(JSON.stringify({
       dry_run: true, scenario_id: scenario.id, campaign_design_id: campaignDesignId, repeats: campaignPlan.repeats, seed,
       runtime_id: runtime.runtime_id, model_id: model, model_vendor_expected: modelEntry.model_vendor_expected,
-      max_budget_usd: budgetCheck.maxBudgetUsd,
+      max_budget_usd: budgetCheck.maxBudgetUsd, timeout_ms: timeoutMs,
+      ...(budgetCheck.reason == null ? {} : { max_budget_reason: budgetCheck.reason }),
       planned_sessions: campaignPlan.planned_sessions, policy: scenario.policy, plan: cellsForDryRun, ...measurementScope,
     }, null, 2));
     return 0;
@@ -3884,8 +4055,16 @@ async function cmdRunCampaign(args, campaignDesignId) {
   }
   let matrix;
   try {
-    const gradlePrewarm = buildScenarioGradlePrewarm({ sourceRepoDir, pinnedCommit: scenario.project_commit, scenario });
+    const finalCampaignControl = createFinalCampaignControlFromEnv({
+      campaignPlan, runtimeId: runtime.runtime_id, model,
+    });
     const gradleUserHomeSeedDir = resolveGradleUserHomeSeedDirFromEnv();
+    // A supplied seed is already the host-prewarmed, offline cache baseline. Re-running the
+    // evidence task here is redundant and, on Windows, can leave the disposable worktree locked
+    // before any provider starts. Snapshot the seed directly; only unseeded runs need prewarming.
+    const gradlePrewarm = gradleUserHomeSeedDir == null
+      ? buildScenarioGradlePrewarm({ sourceRepoDir, pinnedCommit: scenario.project_commit, scenario })
+      : null;
     matrix = await runScenarioCampaign({
       scenario, campaignPlan, seed, model,
       allowedGradleTasks: scenario.policy.allowed_gradle_tasks,
@@ -3895,12 +4074,13 @@ async function cmdRunCampaign(args, campaignDesignId) {
       cleanupFixture: (fixtureDir) => removeScenarioWorktree({ sourceRepoDir, worktreeDir: fixtureDir }),
       targetPluginName: TARGET_PLUGIN_NAME,
       targetSkillName: TARGET_SKILL_NAME,
-      timeoutMs: 600000,
+      timeoutMs,
       journal,
       selectionsByProfileId,
       maxBudgetUsd: budgetCheck.maxBudgetUsd,
       gradlePrewarm,
       gradleUserHomeSeedDir,
+      beforeCellSpawn: finalCampaignControl?.beforeCellSpawn ?? null,
     });
   } catch (err) {
     const incidentResult = finalizeIncident({
@@ -3930,13 +4110,15 @@ async function cmdRunCampaign(args, campaignDesignId) {
       // elsewhere in this file). campaignPlan.cells[k].order_index === k by construction
       // (buildScenarioCampaignPlan assigns order_index sequentially), so this is an exact lookup,
       // never an approximation.
-      const planCell = campaignPlan.cells[cell.orderIndex];
+        const planCell = campaignPlan.cells.find((candidate) => candidate.order_index === cell.orderIndex);
+        if (planCell == null) throw new Error(`campaign plan cell missing for order_index ${cell.orderIndex}`);
       const cellSelection = selectionsByProfileId[planCell.execution_profile_id];
       const gradeResult = gradeScenarioCondition(cell.conditionResult, scenario);
       const record = buildRunRecord({
         conditionResult: cell.conditionResult, condition: cell.conditionResult.condition,
         runKind: 'scenario', scenarioId: scenario.id, skillSourceSha: PINNED_SKILL_SHA,
-        daemonPolicy: matrix.daemonPolicy, allowedGradleTasks: matrix.allowedGradleTasks,
+        daemonPolicy: matrix.daemonPolicy, gradleMemoryOverrideSha256: matrix.gradleMemoryOverrideSha256,
+        allowedGradleTasks: matrix.allowedGradleTasks,
         allowedKmpTestSubcommands: matrix.allowedKmpTestSubcommands, policySha256,
         projectAlias: scenario.project_alias, projectCommit: scenario.project_commit,
         projectUrl: scenario.project_url, family: scenario.family, modelRequested: model,
@@ -4029,6 +4211,10 @@ async function cmdRunCampaign(args, campaignDesignId) {
 }
 
 async function cmdRun(args) {
+  if (args['campaign-cell-index'] != null && args['campaign-design'] == null) {
+    console.error('--campaign-cell-index is valid only with --campaign-design');
+    return 1;
+  }
   // agentic-eval-multi-profile-campaigns-v1: an explicit, opt-in dispatch -- everything below this
   // branch (the legacy single-execution-profile/two-skill-condition path) is completely unreached
   // and unchanged when --campaign-design is absent, by construction.
@@ -4047,7 +4233,7 @@ async function cmdRun(args) {
   const privatePatternsFile = args['private-patterns-file'] ?? null;
   const privacyStatus = privatePatternsFile ? 'redacted-private' : 'public';
   const isDryRun = args['dry-run'] === true;
-  const budgetCheck = resolveMaxBudgetUsdOrFail(args['max-budget-usd'] ?? null);
+  const budgetCheck = resolveMaxBudgetUsdOrFail(args['max-budget-usd'] ?? null, runtime.runtime_id);
   if (!budgetCheck.ok) {
     console.error(budgetCheck.reason);
     return 1;
@@ -4131,6 +4317,7 @@ async function cmdRun(args) {
       runtime_id: runtime.runtime_id, model_id: modelEntry.model_id, model_vendor_expected: modelEntry.model_vendor_expected,
       execution_profile_id: executionProfile.id, execution_profile_sha256: executionProfileSha256,
       max_budget_usd: budgetCheck.maxBudgetUsd,
+      ...(budgetCheck.reason == null ? {} : { max_budget_reason: budgetCheck.reason }),
       ...attestationFields,
       total_live_sessions: repeats * 2, policy: scenario.policy, plan, ...measurementScope,
     }, null, 2));
@@ -4166,8 +4353,10 @@ async function cmdRun(args) {
   // contract.
   let matrix;
   try {
-    const gradlePrewarm = buildScenarioGradlePrewarm({ sourceRepoDir, pinnedCommit: scenario.project_commit, scenario });
     const gradleUserHomeSeedDir = resolveGradleUserHomeSeedDirFromEnv();
+    const gradlePrewarm = gradleUserHomeSeedDir == null
+      ? buildScenarioGradlePrewarm({ sourceRepoDir, pinnedCommit: scenario.project_commit, scenario })
+      : null;
     matrix = await runScenarioMatrix({
       scenario, repeats, seed, model,
       allowedGradleTasks: scenario.policy.allowed_gradle_tasks,
@@ -4182,6 +4371,7 @@ async function cmdRun(args) {
       runtimeAdapter: adapter,
       executionProfile,
       maxBudgetUsd: budgetCheck.maxBudgetUsd,
+      reasoningMode: modelEntry.default_reasoning_mode,
       gradlePrewarm,
       gradleUserHomeSeedDir,
     });
@@ -4239,7 +4429,8 @@ async function cmdRun(args) {
       const record = buildRunRecord({
         conditionResult: cell.conditionResult, condition: cell.conditionResult.condition,
         runKind: 'scenario', scenarioId: scenario.id, skillSourceSha: PINNED_SKILL_SHA,
-        daemonPolicy: matrix.daemonPolicy, allowedGradleTasks: matrix.allowedGradleTasks,
+        daemonPolicy: matrix.daemonPolicy, gradleMemoryOverrideSha256: matrix.gradleMemoryOverrideSha256,
+        allowedGradleTasks: matrix.allowedGradleTasks,
         allowedKmpTestSubcommands: matrix.allowedKmpTestSubcommands, policySha256,
         projectAlias: scenario.project_alias, projectCommit: scenario.project_commit,
         projectUrl: scenario.project_url, family: scenario.family, modelRequested: model,
@@ -4458,13 +4649,36 @@ function cmdScopeInit(args) {
   }
 }
 
+// Isolation split (design.md (c)): validateLoadedScenarios' own required-field checks (via
+// validateScenario) still expect the full task+expected shape -- this merges each loaded task
+// entry with its corpus/expected/<id>.json sibling BEFORE validation, exactly like
+// loadScenarioById's own merge, so corpus-validate keeps validating the real, complete scenario
+// shape rather than reporting every real scenario as missing `expected`. A parseError entry, or a
+// task with no `.id` to look up a sibling by, passes through unchanged -- validateLoadedScenarios'
+// own existing error paths (invalid JSON, missing id) already cover those, unaffected by this.
+function mergeExpectedIntoLoadedScenarios(loaded, expectedDir) {
+  return loaded.map((entry) => {
+    if (entry.parseError || typeof entry.scenario?.id !== 'string') return entry;
+    const expectedPath = join(expectedDir, `${entry.scenario.id}.json`);
+    if (!existsSync(expectedPath)) return entry;
+    let groundTruth;
+    try {
+      groundTruth = JSON.parse(readFileSync(expectedPath, 'utf8'));
+    } catch (err) {
+      return { file: entry.file, parseError: `ground truth for ${entry.scenario.id} is not valid JSON: ${err.message}` };
+    }
+    return { file: entry.file, scenario: { ...entry.scenario, expected_outcome: groundTruth.expected_outcome, expected: groundTruth.expected, first_useful_signal_predicate: groundTruth.first_useful_signal_predicate } };
+  });
+}
+
 function cmdCorpusValidate() {
   const corpusDir = join(__dirname, 'corpus');
   const scenariosDir = join(corpusDir, 'scenarios');
+  const expectedDir = join(corpusDir, 'expected');
   let ok = true;
   if (existsSync(scenariosDir)) {
     const scenarioFiles = readdirSync(scenariosDir).filter((f) => f.endsWith('.json'));
-    const loaded = scenarioFiles.map((file) => loadScenarioFile(scenariosDir, file));
+    const loaded = mergeExpectedIntoLoadedScenarios(scenarioFiles.map((file) => loadScenarioFile(scenariosDir, file)), expectedDir);
     const scenarioResult = validateLoadedScenarios(loaded);
     for (const { ok: entryOk, message } of scenarioResult.results) {
       if (entryOk) console.log(message); else console.error(message);

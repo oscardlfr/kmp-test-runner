@@ -260,7 +260,7 @@ describe('loadIsolationAttestation -- every enum/boolean/slug/hash field, invali
     ['schema', { schema: 2 }, 'invalid_schema'],
     ['profile_id (wrong value)', { profile_id: 'strict-policy-v1' }, 'invalid_profile_id'],
     ['profile_id (empty)', { profile_id: '' }, 'invalid_profile_id'],
-    ['runtime_id (wrong value)', { runtime_id: 'codex-cli' }, 'invalid_runtime_id'],
+    ['runtime_id (wrong value)', { runtime_id: 'future-runtime' }, 'invalid_runtime_id'],
     ['campaign_id (uppercase)', { campaign_id: 'MyCampaign' }, 'invalid_campaign_id'],
     ['campaign_id (too short)', { campaign_id: 'ab' }, 'invalid_campaign_id'],
     ['campaign_id (leading hyphen)', { campaign_id: '-abc' }, 'invalid_campaign_id'],

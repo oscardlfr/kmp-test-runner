@@ -92,8 +92,8 @@ $guest=$expression[0].ScriptBlock
 $text=$guest.Extent.Text
 $stubs=@{
   'Add-StageBPath'='function Add-StageBPath {}'
-  'Command-Source'='function Command-Source($Name) { switch($Name) { "node.exe" { "Fixture-Node" }; "git.exe" { "git.exe" }; "claude.cmd" { "Fixture-Claude" }; default { throw "unexpected_tool" } } }'
-  'Assert-RestrictedNetwork'='function Assert-RestrictedNetwork { @{allowed_probe_count=4;blocked_probe_count=6;blocked_probe_success_count=0} }'
+  'Command-Source'='function Command-Source($Name) { switch($Name) { "node.exe" { "Fixture-Node" }; "git.exe" { "git.exe" }; "claude.cmd" { "Fixture-Claude" }; "codex.exe" { "Fixture-Codex" }; default { throw "unexpected_tool" } } }'
+  'Assert-RestrictedNetwork'='function Assert-RestrictedNetwork { @{allowed_probe_count=7;blocked_probe_count=6;blocked_probe_success_count=0} }'
 }
 $functions=$guest.FindAll({param($a) $a -is [Management.Automation.Language.FunctionDefinitionAst] -and $stubs.ContainsKey($a.Name)},$true)
 if($functions.Count -ne $stubs.Count) { throw 'fixture_boundary_missing' }
@@ -149,6 +149,11 @@ function Fixture-Claude {
   if(($args -join ' ') -notin @('--version','auth status')) { throw 'unexpected_claude_call' }
   $global:LASTEXITCODE=0
   if($args[0] -eq '--version') { '2.1.238 (Claude Code)' }
+}
+function Fixture-Codex {
+  if(($args -join ' ') -notin @('--version','login status')) { throw 'unexpected_codex_call' }
+  $global:LASTEXITCODE=0
+  if($args[0] -eq '--version') { 'codex-cli 0.154.0' }
 }
 function java.exe { $global:LASTEXITCODE=0; 'openjdk version "21"' }
 function npm.cmd {

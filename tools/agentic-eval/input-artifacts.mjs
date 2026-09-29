@@ -25,6 +25,8 @@
 // notion of "the skill".
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { readdirSync, statSync, readFileSync } from 'node:fs';
+import { join, relative, sep } from 'node:path';
 import { canonicalJsonSha256 } from './canonical-json.mjs';
 
 /** Runs one read-only git plumbing command against `repoRoot`. Never routed through a shell/bash
@@ -72,6 +74,59 @@ export function computePromptArtifact(promptText) {
   return {
     prompt_sha256: createHash('sha256').update(bytes).digest('hex'),
     prompt_bytes: bytes.length,
+  };
+}
+
+/** SHA-256 of the canonical (sorted-key, stable) JSON encoding of the actual argv array a session
+ * was spawned with -- proves the recorded record.json reflects the argv bytes that really reached
+ * the child process, not merely the harness's own belief about what it built. `argv` is the plain
+ * string array (e.g. invocation.argv), never the {argv, stdinText} wrapper -- the prompt itself is
+ * hashed separately (delivered_prompt_sha256, via computePromptArtifact on the actual stdin bytes)
+ * so a change to prompt content alone can never masquerade as an argv change or vice versa.
+ * @param {string[]} argv
+ * @returns {{argv_sha256: string}}
+ */
+export function computeArgvArtifact(argv) {
+  if (!Array.isArray(argv) || argv.some((a) => typeof a !== 'string')) {
+    throw new TypeError('computeArgvArtifact: argv must be an array of strings');
+  }
+  return { argv_sha256: canonicalJsonSha256(argv) };
+}
+
+/** SHA-256 of the skill/plugin snapshot's ACTUAL on-disk bytes at the moment of delivery (walked
+ * directly from `dir`, never Git's object database) -- a verification counterpart to
+ * computeSkillSnapshotArtifact's git-tree-derived snapshot_sha256, not a replacement for it. The
+ * two are expected to describe the identical content (materializeSkillSnapshot's own `git archive`
+ * extraction is what populates `dir` in the first place), so this exists to CATCH any silent
+ * divergence between "what git says the snapshot is" and "what actually landed on disk and was
+ * handed to the runtime via --plugin-dir" -- e.g. a partial extraction, an encoding/line-ending
+ * mutation, or a stray leftover file from a prior cell that materializeSkillSnapshot's own reset
+ * didn't remove. Same sorted-manifest-then-hash construction as computeSkillSnapshotArtifact, but
+ * walking the real filesystem tree instead of `git ls-tree`.
+ * @param {{dir: string}} args
+ * @returns {{delivery_sha256: string, delivery_file_count: number}}
+ */
+export function computeDeliveredSnapshotArtifact({ dir }) {
+  if (typeof dir !== 'string' || dir.length === 0) {
+    throw new TypeError('computeDeliveredSnapshotArtifact: dir must be a non-empty string');
+  }
+  const manifest = [];
+  const walk = (absDir) => {
+    const entries = readdirSync(absDir, { withFileTypes: true })
+      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const entry of entries) {
+      const absPath = join(absDir, entry.name);
+      if (entry.isDirectory()) { walk(absPath); continue; }
+      if (!entry.isFile()) continue;
+      const relPath = relative(dir, absPath).split(sep).join('/');
+      const contentSha256 = createHash('sha256').update(readFileSync(absPath)).digest('hex');
+      manifest.push({ path: relPath, content_sha256: contentSha256, byte_length: statSync(absPath).size });
+    }
+  };
+  walk(dir);
+  return {
+    delivery_sha256: canonicalJsonSha256(manifest),
+    delivery_file_count: manifest.length,
   };
 }
 

@@ -44,7 +44,8 @@ function Invoke-Checked([string]$Exe, [string[]]$Arguments, [string]$Step) {
   try {
     # Git writes progress such as "From <remote>" to stderr even on success.
     $ErrorActionPreference = 'Continue'
-    $output = @(& $Exe @Arguments 2>&1)
+    $gitArguments = @('-c', "safe.directory=$SourceRepoDir") + $Arguments
+    $output = @(& $Exe @gitArguments 2>&1)
     $exit = $LASTEXITCODE
   } finally {
     $ErrorActionPreference = $previousErrorActionPreference
@@ -58,7 +59,8 @@ function Invoke-Checked([string]$Exe, [string[]]$Arguments, [string]$Step) {
 }
 
 function Invoke-GitText([string[]]$Arguments, [string]$Step) {
-  $output = & git.exe @Arguments 2>&1
+  $gitArguments = @('-c', "safe.directory=$SourceRepoDir") + $Arguments
+  $output = & git.exe @gitArguments 2>&1
   $exit = $LASTEXITCODE
   if ($exit -ne 0) {
     Fail "$Step failed with exit code $exit`: $($output -join ' ')"
@@ -118,7 +120,7 @@ try {
   Invoke-Checked 'git.exe' @('-C', $SourceRepoDir, 'update-ref', $exportRef, $TargetCommit) 'create temporary export ref'
   Invoke-Checked 'git.exe' @('-C', $SourceRepoDir, 'bundle', 'create', $bundlePath, $exportRef) 'create git bundle for target commit'
 } finally {
-  & git.exe -C $SourceRepoDir update-ref -d $exportRef 2>$null
+  & git.exe -c "safe.directory=$SourceRepoDir" -C $SourceRepoDir update-ref -d $exportRef 2>$null
 }
 $bundleHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $bundlePath).Hash.ToLowerInvariant()
 $bundleBytes = (Get-Item -LiteralPath $bundlePath).Length
@@ -171,7 +173,27 @@ try {
   } -ArgumentList $GuestOpsDir
 
   $guestBundlePath = Join-Path $GuestOpsDir (Split-Path -Leaf $bundlePath)
-  Copy-Item -ToSession $session -LiteralPath $bundlePath -Destination $guestBundlePath -Force
+  # PowerShell-Direct copies of this size (harness bundles run several MB) have been observed to
+  # arrive corrupted non-deterministically -- confirmed live: comparing the SHA-256 already computed
+  # on the host ($bundleHash, above) against a hash taken inside the guest right after copy showed a
+  # different byte offset corrupted each time (git's own "pack has bad object at offset N" error,
+  # never the same N twice), which rules out a deterministic bug in bundle creation and isolates the
+  # fault to the copy step itself. Retry the copy specifically (not the whole VM boot/session) up to
+  # 3 times, verified by hash each time, before failing -- directly targets the observed failure mode
+  # rather than assuming an unconfirmed cause.
+  $copyAttempts = 0
+  $guestBundleHash = $null
+  do {
+    $copyAttempts++
+    Copy-Item -ToSession $session -LiteralPath $bundlePath -Destination $guestBundlePath -Force
+    $guestBundleHash = Invoke-Command -Session $session -ScriptBlock {
+      param($Path)
+      (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
+    } -ArgumentList $guestBundlePath
+  } while ($guestBundleHash -ne $bundleHash -and $copyAttempts -lt 3)
+  if ($guestBundleHash -ne $bundleHash) {
+    Fail "guest bundle copy failed integrity check after $copyAttempts attempt(s): host sha256 $bundleHash, guest sha256 $guestBundleHash"
+  }
 
   $guestReport = Invoke-Command -Session $session -ScriptBlock {
     param($HarnessDir, $TargetCommit, $TargetTree, $GuestBundlePath, $ExportRef)
@@ -197,6 +219,9 @@ try {
     }
 
     $env:Path = @(
+      'C:\Evidence1Toolchain\git\2.55.0.windows.5\cmd',
+      'C:\Evidence1Toolchain\git\2.55.0.windows.5\bin',
+      'C:\Evidence1Toolchain\node\24.19.0',
       'C:\Program Files\Git\cmd',
       'C:\Program Files\Git\bin',
       'C:\Program Files\nodejs',
@@ -239,7 +264,7 @@ try {
     }
 
     if ($rebuiltHarness) {
-      $initOutput = & git.exe -C $HarnessDir init 2>&1
+      $initOutput = & git.exe -C $HarnessDir init --initial-branch=evidence1 2>&1
       if ($LASTEXITCODE -ne 0) { FailGuest "git init rebuilt harness failed: $($initOutput -join ' ')" }
       $remoteOutput = & git.exe -C $HarnessDir remote add origin 'https://github.com/oscardlfr/kmp-test-runner.git' 2>&1
       if ($LASTEXITCODE -ne 0) { FailGuest "git remote add rebuilt harness failed: $($remoteOutput -join ' ')" }
@@ -369,6 +394,7 @@ try {
     target_tree = $TargetTree
     bundle_path = $bundlePath
     bundle_sha256 = $bundleHash
+    bundle_copy_attempts = $copyAttempts
     bundle_bytes = $bundleBytes
     guest_bundle_path = $guestBundlePath
     guest = $guestReport

@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "id": "deterministic-unit-test-failure",
+  "expected_outcome": "The agent discovers and runs the custom lint-check module's unit tests and reports that all 3 tests fail, with the accurate counts.",
+  "expected": {
+    "module": ":lint",
+    "outcome_kind": "tests_failed",
+    "kmp_test": {
+      "tests": {
+        "total": 1,
+        "passed": 0,
+        "failed": 1,
+        "skipped": 0,
+        "individual_total": 3
+      },
+      "exit_code": 1
+    },
+    "gradle": {
+      "allowed_invocations": [
+        ":lint:test"
+      ],
+      "evidence_task": ":lint:test",
+      "tests": {
+        "total": 3,
+        "passed": 0,
+        "failed": 3
+      },
+      "exit_code": 1
+    }
+  },
+  "first_useful_signal_predicate": {
+    "description": "first well-formed evidence confirming :lint 3 tests failed"
+  }
+}

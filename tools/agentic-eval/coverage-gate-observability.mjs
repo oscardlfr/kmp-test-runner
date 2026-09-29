@@ -8,6 +8,7 @@ export const COVERAGE_GATE_ERROR_BUCKET_FIELDS = Object.freeze([
   'module_failed',
   'gradle_timeout',
   'no_test_modules',
+  'coverage_data_unavailable',
   'environment_other',
   'configuration',
   'other',
@@ -22,6 +23,16 @@ function bucketForErrorCode(code) {
   if (code === 'module_failed') return 'module_failed';
   if (code === 'gradle_timeout') return 'gradle_timeout';
   if (code === 'no_test_modules') return 'no_test_modules';
+  // Checked BEFORE the generic ENV_ERROR_CODES fallthrough below (coverage_data_unavailable is
+  // itself a member of that set) -- eval-v2 schema-3 alignment (design.md (g), D6): graders.mjs's
+  // own deriveObservedKmpTestResult refuses to canonicalize a coverage_threshold_exceeded claim at
+  // all when the envelope's own contracts.coverage_evidence contract is missing/too-low (checked
+  // via supportsRunnerContract), returning this exact code as its uncanonicalizable reason --
+  // which coverageContractForCoverageAttempt (graders.mjs) also surfaces as its own distinct
+  // coverage_contract:'contract_unavailable' value. This function only buckets a code that
+  // already exists on some attempt's own diagnostics; it does not itself decide when
+  // coverage_data_unavailable fires.
+  if (code === 'coverage_data_unavailable') return 'coverage_data_unavailable';
   if (ENV_ERROR_CODES.has(code)) return 'environment_other';
   if (CONFIG_ERROR_CODES.has(code)) return 'configuration';
   return 'other';

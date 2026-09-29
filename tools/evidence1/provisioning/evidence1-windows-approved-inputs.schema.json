@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Evidence1 Windows approved public input manifest",
+  "type": "object",
+  "required": ["schema_version", "approval_status", "manifest_id", "profile_id", "iso", "artifacts"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "enum": [1, 2] },
+    "approval_status": { "const": "approved" },
+    "manifest_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,79}$" },
+    "profile_id": { "enum": ["evidence1-windows-hyperv-v1", "evidence1-windows-hyperv-e2e-v1"] },
+    "iso": {
+      "$ref": "#/$defs/iso",
+      "properties": {
+        "publisher": { "const": "Microsoft" },
+        "image": {
+          "required": ["index", "name", "edition", "edition_id", "architecture", "languages", "version", "installation_type"]
+        }
+      }
+    },
+    "artifacts": {
+      "$ref": "#/$defs/artifacts",
+      "items": {
+        "required": ["id", "version", "architecture", "sha256", "bytes", "sources", "publisher", "verification"]
+      }
+    },
+    "host_dependencies": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "items": { "$ref": "#/$defs/hostDependency" }
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/manifestV1" },
+    { "$ref": "#/$defs/manifestV2" }
+  ],
+  "$defs": {
+    "source": {
+      "type": "object",
+      "required": ["uri", "digest_algorithm", "digest", "bytes"],
+      "additionalProperties": false,
+      "properties": {
+        "uri": { "type": "string", "pattern": "^https://" },
+        "digest_algorithm": { "enum": ["sha1", "sha256", "sha512-sri"] },
+        "digest": { "type": "string", "minLength": 40, "maxLength": 128 },
+        "bytes": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "required": ["kind", "result"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "enum": ["vendor-checksum", "authenticode", "npm-integrity", "vendor-signature"] },
+        "result": { "const": "verified" }
+      }
+    },
+    "hostSource": {
+      "type": "object",
+      "required": ["uri", "digest_algorithm", "digest", "bytes"],
+      "additionalProperties": false,
+      "properties": {
+        "uri": { "type": "string", "pattern": "^https://" },
+        "digest_algorithm": { "const": "sha256" },
+        "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "bytes": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "image": {
+      "type": "object",
+      "required": ["index", "name", "edition", "edition_id", "architecture", "languages", "version", "installation_type"],
+      "additionalProperties": false,
+      "properties": {
+        "index": { "type": "integer", "minimum": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "edition": { "const": "Windows 11 Pro" },
+        "edition_id": { "const": "Professional" },
+        "architecture": { "const": "x64" },
+        "languages": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 2 } },
+        "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "installation_type": { "const": "Client" }
+      }
+    },
+    "iso": {
+      "type": "object",
+      "required": ["sha256", "bytes", "source_uri", "publisher", "image"],
+      "additionalProperties": false,
+      "properties": {
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "bytes": { "type": "integer", "minimum": 1 },
+        "source_uri": { "type": "string", "pattern": "^https://" },
+        "publisher": { "const": "Microsoft" },
+        "image": { "$ref": "#/$defs/image" }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["id", "version", "architecture", "sha256", "bytes", "sources", "publisher", "verification"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "enum": ["git", "node", "jdk", "android-sdk", "claude-code", "codex-cli"] },
+        "version": { "type": "string", "minLength": 1 },
+        "architecture": { "const": "x64" },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "bytes": { "type": "integer", "minimum": 1 },
+        "sources": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "$ref": "#/$defs/source" } },
+        "publisher": { "type": "string", "minLength": 1 },
+        "verification": { "$ref": "#/$defs/verification" }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": { "$ref": "#/$defs/artifact" }
+    },
+    "hostDependency": {
+      "type": "object",
+      "required": [
+        "id", "adk_release", "servicing_update", "runtime_version", "architecture", "command_relative",
+        "archive_sha256", "archive_bytes", "executable_sha256", "executable_bytes",
+        "tree_identity_format", "tree_sha256", "tree_file_count", "tree_bytes", "sources", "publisher", "verification"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "const": "windows-adk-dism" },
+        "adk_release": { "const": "10.1.26100.2454" },
+        "servicing_update": { "const": "KB5101684" },
+        "runtime_version": { "const": "10.0.26100.8972" },
+        "architecture": { "const": "x64" },
+        "command_relative": { "const": "dism.exe" },
+        "archive_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "archive_bytes": { "type": "integer", "minimum": 1 },
+        "executable_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "executable_bytes": { "type": "integer", "minimum": 1 },
+        "tree_identity_format": { "const": "evidence1-path-size-sha256-v1" },
+        "tree_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "tree_file_count": { "type": "integer", "minimum": 7, "maximum": 4096 },
+        "tree_bytes": { "type": "integer", "minimum": 1 },
+        "sources": { "type": "array", "minItems": 2, "maxItems": 8, "items": { "$ref": "#/$defs/hostSource" } },
+        "publisher": { "const": "CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US" },
+        "verification": {
+          "type": "object",
+          "required": ["kind", "result"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "authenticode" },
+            "result": { "const": "verified" }
+          }
+        }
+      }
+    },
+    "manifestV1": {
+      "type": "object",
+      "required": ["schema_version", "approval_status", "manifest_id", "profile_id", "iso", "artifacts"],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": { "const": 1 },
+        "approval_status": { "const": "approved" },
+        "manifest_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,79}$" },
+        "profile_id": { "enum": ["evidence1-windows-hyperv-v1", "evidence1-windows-hyperv-e2e-v1"] },
+        "iso": { "$ref": "#/$defs/iso" },
+        "artifacts": { "$ref": "#/$defs/artifacts" }
+      }
+    },
+    "manifestV2": {
+      "type": "object",
+      "required": ["schema_version", "approval_status", "manifest_id", "profile_id", "iso", "artifacts", "host_dependencies"],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": { "const": 2 },
+        "approval_status": { "const": "approved" },
+        "manifest_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,79}$" },
+        "profile_id": { "const": "evidence1-windows-hyperv-e2e-v1" },
+        "iso": { "$ref": "#/$defs/iso" },
+        "artifacts": { "$ref": "#/$defs/artifacts" },
+        "host_dependencies": { "type": "array", "minItems": 1, "maxItems": 1, "items": { "$ref": "#/$defs/hostDependency" } }
+      }
+    }
+  }
+}

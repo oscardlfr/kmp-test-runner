@@ -11,7 +11,7 @@
 // the exact same resolveBash/PATH/env `spawnCondition` gives every measured session, so a fake
 // `claude` fixture answering `auth status --json` is genuinely testing the real code path, not a
 // stand-in for it.
-import { spawnCondition } from './condition-launcher.mjs';
+import { resolveClaudeCommand, spawnCondition } from './condition-launcher.mjs';
 
 /**
  * @param {{sharedEnv: NodeJS.ProcessEnv, repoRoot: string, timeoutMs?: number, spawnFn?: Function}} opts
@@ -21,7 +21,7 @@ import { spawnCondition } from './condition-launcher.mjs';
  * @returns {Promise<{ok: boolean, terminated: boolean, exitCode: number|null, loggedIn: boolean|null, authMethod: string|null, apiProvider: string|null, subscriptionType: string|null}>}
  */
 export async function runAuthPreflight({ sharedEnv, repoRoot, timeoutMs = 15000, spawnFn = spawnCondition } = {}) {
-  const spawnResult = await spawnFn(['claude', 'auth', 'status', '--json'], { env: sharedEnv, cwd: repoRoot, timeoutMs });
+  const spawnResult = await spawnFn([resolveClaudeCommand(), 'auth', 'status', '--json'], { env: sharedEnv, cwd: repoRoot, timeoutMs });
   let parsed = null;
   try {
     // Root must be a plain object (never an array/primitive) before any field is trusted -- a

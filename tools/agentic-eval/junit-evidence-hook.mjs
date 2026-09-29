@@ -33,10 +33,10 @@ function isEqualCanonical(a, b, pathImpl = path) {
  * mechanism is disabled for this condition (calibrate/smoke/no_applicable_tests never set these) or
  * if anything fails to resolve -- a hook that cannot safely resolve its own config must never guess. */
 export function loadHookConfig(env = process.env) {
-  const evidenceDirRaw = env.KMP_EVAL_JUNIT_EVIDENCE_DIR;
-  const evidenceTask = env.KMP_EVAL_JUNIT_EVIDENCE_TASK;
-  const allowedInvocationsRaw = env.KMP_EVAL_JUNIT_ALLOWED_INVOCATIONS;
-  const expectedFixtureRootRaw = env.KMP_EVAL_EXPECTED_FIXTURE_ROOT;
+  const evidenceDirRaw = env.KMP_EVAL_JUNIT_EVIDENCE_DIR ?? env.AGENTIC_EVAL_JUNIT_EVIDENCE_DIR;
+  const evidenceTask = env.KMP_EVAL_JUNIT_EVIDENCE_TASK ?? env.AGENTIC_EVAL_JUNIT_EVIDENCE_TASK;
+  const allowedInvocationsRaw = env.KMP_EVAL_JUNIT_ALLOWED_INVOCATIONS ?? env.AGENTIC_EVAL_JUNIT_ALLOWED_INVOCATIONS;
+  const expectedFixtureRootRaw = env.KMP_EVAL_EXPECTED_FIXTURE_ROOT ?? env.AGENTIC_EVAL_EXPECTED_FIXTURE_ROOT;
   if (!evidenceDirRaw || !evidenceTask || !allowedInvocationsRaw || !expectedFixtureRootRaw) return null;
   // Accidental-misconfiguration hygiene (a stray symlink, a path-construction bug) -- not a claimed
   // security boundary against a malicious Gradle build, matching policy-hook.mjs's own documented

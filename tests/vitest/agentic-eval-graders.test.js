@@ -10,7 +10,7 @@
 // tested a mechanism that no longer exists), not "fixed" -- their intent is now covered by the
 // smaller, structural KMP_EVAL_RESULT test group instead.
 import { describe, it, expect } from 'vitest';
-import { extractKmpTestEnvelope, gradeScenarioCondition, GRADING_CHECK_NAMES, validateParallelEvidence } from '../../tools/agentic-eval/graders.mjs';
+import { extractKmpTestEnvelope, gradeScenarioCondition, GRADING_CHECK_NAMES, validateParallelEvidence, computeProductE2eSuccess } from '../../tools/agentic-eval/graders.mjs';
 import { buildRunRecord } from '../../tools/agentic-eval/cli.mjs';
 import { computePolicySha256 } from '../../tools/agentic-eval/policy-config.mjs';
 import { TEST_RUN_RECORD_V6_INPUTS } from './_agentic-eval-run-record-fixtures.js';
@@ -103,7 +103,7 @@ function baseObservation(overrides = {}) {
     schema: 1,
     runtime: { id: 'claude-code', protocolVersion: 1 },
     process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1000n },
-    session: { initPresent: true, modelResolved: 'claude-sonnet-5', sessionIdObserved: 'sess-1', runtimeVersion: '2.1.212', toolProfileMatchesExpected: true },
+    session: { initPresent: true, modelResolved: 'claude-sonnet-5', sessionIdObserved: 'sess-1', runtimeVersion: '2.1.212', toolProfileMatchesExpected: true, modelSnapshot: null },
     transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
     terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
     toolAttempts: [],
@@ -216,7 +216,7 @@ function kmpEvalResultText(prose, block) {
 
 const SCENARIO_1_CORRECT_ANSWER = kmpEvalResultText(
   '24/24 tests passed in the :shared module via testAndroidHostTest.',
-  { module: ':shared', outcome_kind: 'tests_executed', total: 24, passed: 24, failed: 0 },
+  { module: ':shared', outcome_kind: 'tests_executed', test_count: 24, passed: 24, failed: 0 },
 );
 const SCENARIO_2_CORRECT_ANSWER = kmpEvalResultText(
   'The :app module has no applicable unit tests -- no test source set.',
@@ -224,7 +224,7 @@ const SCENARIO_2_CORRECT_ANSWER = kmpEvalResultText(
 );
 const SCENARIO_3_CORRECT_ANSWER = kmpEvalResultText(
   '1/1 tests passed in the :core:common module via test.',
-  { module: ':core:common', outcome_kind: 'tests_executed', total: 1, passed: 1, failed: 0 },
+  { module: ':core:common', outcome_kind: 'tests_executed', test_count: 1, passed: 1, failed: 0 },
 );
 
 // `parallel` mirrors the EXACT real shape `lib/orchestrators/parallel-orchestrator.js`'s per-leg
@@ -347,7 +347,7 @@ const SCENARIO_4 = {
 
 const SCENARIO_4_CORRECT_ANSWER = kmpEvalResultText(
   '3 tests ran in the :lint module; all 3 failed.',
-  { module: ':lint', outcome_kind: 'tests_failed', total: 3, passed: 0, failed: 3 },
+  { module: ':lint', outcome_kind: 'tests_failed', test_count: 3, passed: 0, failed: 3 },
 );
 
 // A genuine module-task failure surfaces exactly one real `module_failed` error entry (ground-truth
@@ -445,7 +445,7 @@ const SCENARIO_5 = {
 // comment, and the review finding (P1-2) that caught the earlier, wrong Gradle-sourced answer.
 const SCENARIO_5_CORRECT_ANSWER = kmpEvalResultText(
   "The :core:domain module's 4 tests pass, but it leaves 23 lines uncovered, exceeding the 15-line budget.",
-  { module: ':core:domain', outcome_kind: 'coverage_threshold_exceeded', total: 4, passed: 4, failed: 0, missed_lines: 23, threshold: 15, modules_contributing: 1 },
+  { module: ':core:domain', outcome_kind: 'coverage_threshold_exceeded', test_count: 4, passed: 4, failed: 0, missed_lines: 23, threshold: 15, modules_contributing: 1 },
 );
 
 // Real envelope shape (condensed from an actual captured `kmp-test parallel --module-filter
@@ -456,6 +456,14 @@ const SCENARIO_5_CORRECT_ANSWER = kmpEvalResultText(
 function coverageEnvelope(overrides = {}) {
   return JSON.stringify({
     tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0',
+    // Matches lib/envelope/builder.js's real buildJsonReport, which always spreads
+    // contracts: runnerContracts() into every envelope it emits (confirmed by direct read) -- a
+    // real, current kmp-test binary's envelope always carries this; omitting it here would make
+    // every existing coverage_threshold_exceeded fixture in this file fail closed under D6's own
+    // contract check (graders.mjs's deriveObservedKmpTestResult) for the wrong reason (a stale
+    // fixture, not a real contract gap). The dedicated coverage_evidence-contract tests below
+    // override this field specifically to exercise that gap on purpose.
+    contracts: { coverage_evidence: 1 },
     project_root: 'C:\\fake', exit_code: 1, duration_ms: 143214,
     tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 4 },
     modules: [
@@ -551,7 +559,7 @@ const SCENARIO_6 = {
 
 const SCENARIO_6_CORRECT_ANSWER = kmpEvalResultText(
   'The pending edit is in the :core:common module; its 1 test passes.',
-  { module: ':core:common', outcome_kind: 'tests_executed', total: 1, passed: 1, failed: 0 },
+  { module: ':core:common', outcome_kind: 'tests_executed', test_count: 1, passed: 1, failed: 0 },
 );
 
 // Real envelope shape -- verbatim from ground truth (independently re-verified live, 3x, cold
@@ -794,11 +802,43 @@ describe('gradeScenarioCondition -- scenario 3 (:core:common) negative cases: wr
     });
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter some-other-module --json', resultContent: wrongModuleEnvelope }],
-      kmpEvalResultText('1/1 tests passed.', { module: ':some-other-module', outcome_kind: 'tests_executed', total: 1, passed: 1, failed: 0 }),
+      kmpEvalResultText('1/1 tests passed.', { module: ':some-other-module', outcome_kind: 'tests_executed', test_count: 1, passed: 1, failed: 0 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_3);
-    expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(false);
+    const targetCheck = grade.checks.find((c) => c.name === 'authoritative_target_matches_expected');
+    expect(targetCheck.passed).toBe(false);
+    // H12 preservation: a real, different, uniquely-identified module keeps the original wording --
+    // only the zero-modules case (next test) gets new text.
+    expect(targetCheck.detail).toBe('terminal attempt targeted the WRONG module');
     expect(grade.checks.find((c) => c.name === 'authoritative_outcome_matches_expected').passed).toBe(false);
+    expect(grade.expectedOutcomeMatched).toBe(false);
+    expect(grade.success).toBe(false);
+  });
+
+  it('H12 (AUDITORIA-EVIDENCE1-2026-09-27.md): a no_summary-shaped envelope with modules:[] fails target with a DIFFERENT detail than a genuine wrong-module envelope -- it never claims the agent picked another module', () => {
+    // Real production shape (lib/parsers/script-output.js's no_summary fallback): modules stays
+    // the empty array the legacy parser started with, and errors[] gets the no_summary code --
+    // this is what the Windows execution-policy bug (H1) actually produces, not a module-resolution
+    // mistake by the agent.
+    const noSummaryEnvelope = JSON.stringify({
+      tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0', project_root: 'C:\\fake',
+      exit_code: 1, duration_ms: 200,
+      tests: { total: 0, passed: 0, failed: 0, skipped: 0, individual_total: 0 },
+      modules: [], skipped: [], coverage: {},
+      errors: [{ message: 'no recognizable test/build summary in script output', code: 'no_summary' }],
+      warnings: [],
+      isolated: DEFAULT_ISOLATED_FIELD,
+    });
+    const cr = buildConditionResult(
+      [{ command: 'kmp-test parallel --module-filter core:common --json', resultContent: noSummaryEnvelope }],
+      kmpEvalResultText('no tests ran.', { module: ':core:common', outcome_kind: 'tests_executed', test_count: 0, passed: 0, failed: 0 }),
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_3);
+    const targetCheck = grade.checks.find((c) => c.name === 'authoritative_target_matches_expected');
+    expect(targetCheck.passed).toBe(false);
+    expect(targetCheck.detail).not.toBe('terminal attempt targeted the WRONG module');
+    expect(targetCheck.detail).toMatch(/no module at all/i);
+    expect(targetCheck.detail).toMatch(/no_summary/);
     expect(grade.expectedOutcomeMatched).toBe(false);
     expect(grade.success).toBe(false);
   });
@@ -823,7 +863,7 @@ describe('gradeScenarioCondition -- scenario 3 (:core:common) negative cases: wr
     });
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter core:common --json', resultContent: wrongCountEnvelope }],
-      kmpEvalResultText('2 tests passed.', { module: ':core:common', outcome_kind: 'tests_executed', total: 2, passed: 2, failed: 0 }),
+      kmpEvalResultText('2 tests passed.', { module: ':core:common', outcome_kind: 'tests_executed', test_count: 2, passed: 2, failed: 0 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_3);
     expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(true);
@@ -852,7 +892,7 @@ describe('gradeScenarioCondition -- scenario 3 (:core:common) negative cases: wr
   it('a KMP_EVAL_RESULT block naming the WRONG module must fail even though outcome_kind and counts are otherwise correct', () => {
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter core:common --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO3_PASS }],
-      kmpEvalResultText('1/1 tests passed.', { module: ':some-other-module', outcome_kind: 'tests_executed', total: 1, passed: 1, failed: 0 }),
+      kmpEvalResultText('1/1 tests passed.', { module: ':some-other-module', outcome_kind: 'tests_executed', test_count: 1, passed: 1, failed: 0 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_3);
     expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
@@ -862,7 +902,7 @@ describe('gradeScenarioCondition -- scenario 3 (:core:common) negative cases: wr
   it('a KMP_EVAL_RESULT block with WRONG counts (claims 1 failed when the real evidence is 0 failed) must fail', () => {
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter core:common --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO3_PASS }],
-      kmpEvalResultText('The :core:common module ran 1 test, but it failed.', { module: ':core:common', outcome_kind: 'tests_executed', total: 1, passed: 0, failed: 1 }),
+      kmpEvalResultText('The :core:common module ran 1 test, but it failed.', { module: ':core:common', outcome_kind: 'tests_executed', test_count: 1, passed: 0, failed: 1 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_3);
     expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
@@ -920,7 +960,7 @@ describe('gradeScenarioCondition -- scenario 4 (:lint) negative cases: wrong mod
     });
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter some-other-module --json', resultContent: wrongModuleEnvelope }],
-      kmpEvalResultText('3 tests failed.', { module: ':some-other-module', outcome_kind: 'tests_failed', total: 3, passed: 0, failed: 3 }),
+      kmpEvalResultText('3 tests failed.', { module: ':some-other-module', outcome_kind: 'tests_failed', test_count: 3, passed: 0, failed: 3 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_4);
     expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(false);
@@ -953,7 +993,7 @@ describe('gradeScenarioCondition -- scenario 4 (:lint) negative cases: wrong mod
     });
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter lint --json', resultContent: wrongCountEnvelope }],
-      kmpEvalResultText('2 tests failed.', { module: ':lint', outcome_kind: 'tests_failed', total: 2, passed: 0, failed: 2 }),
+      kmpEvalResultText('2 tests failed.', { module: ':lint', outcome_kind: 'tests_failed', test_count: 2, passed: 0, failed: 2 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_4);
     expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(true);
@@ -1227,7 +1267,7 @@ describe('gradeScenarioCondition -- scenario 4 (:lint) negative cases: wrong mod
   it('a KMP_EVAL_RESULT block naming the WRONG outcome_kind (tests_executed instead of tests_failed) fails the final-answer check even with correct evidence', () => {
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter lint --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO4_FAIL }],
-      kmpEvalResultText('3/3 tests passed.', { module: ':lint', outcome_kind: 'tests_executed', total: 3, passed: 3, failed: 0 }),
+      kmpEvalResultText('3/3 tests passed.', { module: ':lint', outcome_kind: 'tests_executed', test_count: 3, passed: 3, failed: 0 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_4);
     expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
@@ -1237,7 +1277,7 @@ describe('gradeScenarioCondition -- scenario 4 (:lint) negative cases: wrong mod
   it('a KMP_EVAL_RESULT block with WRONG counts (claims 1 failed when the real evidence is 3 failed) fails the final-answer check', () => {
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter lint --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO4_FAIL }],
-      kmpEvalResultText('1 test failed.', { module: ':lint', outcome_kind: 'tests_failed', total: 1, passed: 0, failed: 1 }),
+      kmpEvalResultText('1 test failed.', { module: ':lint', outcome_kind: 'tests_failed', test_count: 1, passed: 0, failed: 1 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_4);
     expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
@@ -1506,7 +1546,7 @@ describe('gradeScenarioCondition -- decision 13 fix: check 5 (target) is a REQUI
     });
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter some-other-module --json', resultContent: wrongModuleEnvelope }],
-      kmpEvalResultText('24/24 tests passed.', { module: ':some-other-module', outcome_kind: 'tests_executed', total: 24, passed: 24, failed: 0 }),
+      kmpEvalResultText('24/24 tests passed.', { module: ':some-other-module', outcome_kind: 'tests_executed', test_count: 24, passed: 24, failed: 0 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(false);
@@ -1650,7 +1690,7 @@ describe('gradeScenarioCondition -- structural/evidence adversarial cases (evide
     });
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter app --json', resultContent: otherModulePass }],
-      kmpEvalResultText('3/3 tests passed in the :app module.', { module: ':app', outcome_kind: 'tests_executed', total: 3, passed: 3, failed: 0 }),
+      kmpEvalResultText('3/3 tests passed in the :app module.', { module: ':app', outcome_kind: 'tests_executed', test_count: 3, passed: 3, failed: 0 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(false);
@@ -2157,7 +2197,7 @@ describe('gradeScenarioCondition -- round-4: terminal-attempt selection distingu
     });
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter app --json', resultContent: otherModulePass }],
-      kmpEvalResultText('3/3 tests passed in the :app module.', { module: ':app', outcome_kind: 'tests_executed', total: 3, passed: 3, failed: 0 }),
+      kmpEvalResultText('3/3 tests passed in the :app module.', { module: ':app', outcome_kind: 'tests_executed', test_count: 3, passed: 3, failed: 0 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.checks.find((c) => c.name === 'authoritative_target_matches_expected').passed).toBe(false);
@@ -2372,7 +2412,7 @@ describe('gradeScenarioCondition -- round-5: structured KMP_EVAL_RESULT block re
   it('a block naming the WRONG module must fail even though outcome_kind and counts are otherwise correct', () => {
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO1_PASS }],
-      kmpEvalResultText('24/24 tests passed.', { module: ':app', outcome_kind: 'tests_executed', total: 24, passed: 24, failed: 0 }),
+      kmpEvalResultText('24/24 tests passed.', { module: ':app', outcome_kind: 'tests_executed', test_count: 24, passed: 24, failed: 0 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
@@ -2392,7 +2432,7 @@ describe('gradeScenarioCondition -- round-5: structured KMP_EVAL_RESULT block re
   it('a block with the right module/outcome_kind but WRONG counts (claims 3 failed when the real evidence is 0 failed) must fail -- this is what closes the "ran 24 tests, but 3 failed" class structurally: the block itself must be internally correct, not just co-present with correct-sounding prose', () => {
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO1_PASS }],
-      kmpEvalResultText('The :shared module ran 24 tests, but 3 failed.', { module: ':shared', outcome_kind: 'tests_executed', total: 24, passed: 21, failed: 3 }),
+      kmpEvalResultText('The :shared module ran 24 tests, but 3 failed.', { module: ':shared', outcome_kind: 'tests_executed', test_count: 24, passed: 21, failed: 3 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
@@ -2402,7 +2442,7 @@ describe('gradeScenarioCondition -- round-5: structured KMP_EVAL_RESULT block re
   it('a block carrying an EXTRA, unexpected key must fail -- the schema is exact, not merely a minimum', () => {
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO1_PASS }],
-      kmpEvalResultText('24/24 tests passed.', { module: ':shared', outcome_kind: 'tests_executed', total: 24, passed: 24, failed: 0, confidence: 'high' }),
+      kmpEvalResultText('24/24 tests passed.', { module: ':shared', outcome_kind: 'tests_executed', test_count: 24, passed: 24, failed: 0, confidence: 'high' }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
@@ -2420,7 +2460,7 @@ describe('gradeScenarioCondition -- round-5: structured KMP_EVAL_RESULT block re
   });
 
   it('TWO KMP_EVAL_RESULT blocks present (the agent second-guessed itself) -- ambiguous, must fail, never resolved by picking one', () => {
-    const text = `First attempt.\n\nKMP_EVAL_RESULT\n${JSON.stringify({ module: ':shared', outcome_kind: 'tests_executed', total: 24, passed: 24, failed: 0 })}\nKMP_EVAL_RESULT_END\n\nActually, let me restate:\n\nKMP_EVAL_RESULT\n${JSON.stringify({ module: ':shared', outcome_kind: 'tests_executed', total: 24, passed: 24, failed: 0 })}\nKMP_EVAL_RESULT_END\n`;
+    const text = `First attempt.\n\nKMP_EVAL_RESULT\n${JSON.stringify({ module: ':shared', outcome_kind: 'tests_executed', test_count: 24, passed: 24, failed: 0 })}\nKMP_EVAL_RESULT_END\n\nActually, let me restate:\n\nKMP_EVAL_RESULT\n${JSON.stringify({ module: ':shared', outcome_kind: 'tests_executed', test_count: 24, passed: 24, failed: 0 })}\nKMP_EVAL_RESULT_END\n`;
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO1_PASS }],
       text,
@@ -2433,7 +2473,7 @@ describe('gradeScenarioCondition -- round-5: structured KMP_EVAL_RESULT block re
   it('prose says something WRONG/backwards, but the block is CORRECT -- must still PASS for this input, consistent with prose being diagnostic-only (a broader, dedicated prose-sensitivity sweep lives in the review notes, not as a single test\'s claim)', () => {
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO1_PASS }],
-      kmpEvalResultText('The :app module ran 24 tests and :shared was inspected.', { module: ':shared', outcome_kind: 'tests_executed', total: 24, passed: 24, failed: 0 }),
+      kmpEvalResultText('The :app module ran 24 tests and :shared was inspected.', { module: ':shared', outcome_kind: 'tests_executed', test_count: 24, passed: 24, failed: 0 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(true);
@@ -2619,7 +2659,7 @@ describe('gradeScenarioCondition -- round-6: KMP_EVAL_RESULT no_applicable_tests
   it('a block that redundantly includes total:0/passed:0/failed:0 alongside a correct no_applicable_tests claim still passes -- substantively correct, just more verbose than the prompt asked for', () => {
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter app --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS }],
-      kmpEvalResultText('The :app module has no applicable tests.', { module: ':app', outcome_kind: 'no_applicable_tests', total: 0, passed: 0, failed: 0 }),
+      kmpEvalResultText('The :app module has no applicable tests.', { module: ':app', outcome_kind: 'no_applicable_tests', test_count: 0, passed: 0, failed: 0 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_2);
     expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(true);
@@ -2639,7 +2679,7 @@ describe('gradeScenarioCondition -- round-6: KMP_EVAL_RESULT no_applicable_tests
   it('a hedge with a NON-zero count (total:5) is rejected -- a genuine internal contradiction, not tolerated', () => {
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter app --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS }],
-      kmpEvalResultText('The :app module has no applicable tests.', { module: ':app', outcome_kind: 'no_applicable_tests', total: 5, passed: 5, failed: 0 }),
+      kmpEvalResultText('The :app module has no applicable tests.', { module: ':app', outcome_kind: 'no_applicable_tests', test_count: 5, passed: 5, failed: 0 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_2);
     expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
@@ -3559,6 +3599,7 @@ describe('gradeScenarioCondition -- coverage_threshold_exceeded (SCENARIO_5, the
         module_failed: 0,
         gradle_timeout: 0,
         no_test_modules: 0,
+        coverage_data_unavailable: 0,
         environment_other: 0,
         configuration: 0,
         other: 0,
@@ -3569,10 +3610,85 @@ describe('gradeScenarioCondition -- coverage_threshold_exceeded (SCENARIO_5, the
     }]);
   });
 
+  // D6 fix (eval-v2 schema-3 alignment, design.md (g)): numeric coverage is trusted only when the
+  // envelope's own contracts.coverage_evidence contract is present and >= 1 -- an auditor finding
+  // against this closure's own earlier D6 commit (4e5f3ba) confirmed the harness never actually
+  // checked this (only a comment claimed it did): `git grep supportsRunnerContract` found nothing
+  // in tools/agentic-eval before this fix. These three tests are the auditor's own specified
+  // regression contract: (a)/(b) an otherwise-matching envelope with an insufficient contract must
+  // NOT canonicalize as coverage_threshold_exceeded; (c) a sufficient contract (matching every
+  // OTHER coverage test in this file's own default coverageEnvelope() fixture) still grades
+  // exactly as before -- no regression.
+  describe('D6: numeric coverage is trusted only under the coverage_evidence contract', () => {
+    it('(a) contracts.coverage_evidence:0 on an otherwise-matching envelope is NOT a coverage_threshold_exceeded match', () => {
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({ contracts: { coverage_evidence: 0 } }) }],
+        SCENARIO_5_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_5);
+      expect(grade.expectedOutcomeMatched).toBe(false);
+      expect(grade.success).toBe(false);
+      expect(grade.terminalEvidence.observed_result).toBe(null);
+      const attempt = grade.terminalEvidence.coverage_gate_attempts[0];
+      expect(attempt.canonicalization_status).toBe('uncanonicalizable');
+      expect(attempt.canonicalization_reason).toBe('coverage_data_unavailable');
+      expect(attempt.coverage_contract).toBe('contract_unavailable');
+      expect(attempt.observed_outcome_kind).toBe(null);
+    });
+
+    it('(b) an envelope with contracts absent entirely is rejected the same way -- missing is treated identically to insufficient, never as "no opinion, trust it"', () => {
+      const envelope = JSON.parse(coverageEnvelope());
+      delete envelope.contracts;
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: JSON.stringify(envelope) }],
+        SCENARIO_5_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_5);
+      expect(grade.success).toBe(false);
+      const attempt = grade.terminalEvidence.coverage_gate_attempts[0];
+      expect(attempt.canonicalization_reason).toBe('coverage_data_unavailable');
+      expect(attempt.coverage_contract).toBe('contract_unavailable');
+    });
+
+    it('(c) contracts.coverage_evidence:1 (the default every other coverage test in this file already relies on) still grades exactly as today -- no regression', () => {
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({ contracts: { coverage_evidence: 1 } }) }],
+        SCENARIO_5_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_5);
+      expect(grade.expectedOutcomeMatched).toBe(true);
+      expect(grade.success).toBe(true);
+      const attempt = grade.terminalEvidence.coverage_gate_attempts[0];
+      expect(attempt.canonicalization_status).toBe('canonical');
+      expect(attempt.coverage_contract).toBe('matches');
+    });
+
+    it('a contract value higher than the required minimum (a future kmp-test contract bump) is still accepted -- >= 1, never === 1', () => {
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: coverageEnvelope({ contracts: { coverage_evidence: 2 } }) }],
+        SCENARIO_5_CORRECT_ANSWER,
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_5);
+      expect(grade.success).toBe(true);
+    });
+  });
+
+  it('attributes a Windows Codex PowerShell-wrapped kmp-test result to the coverage gate', () => {
+    const command = String.raw`"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -Command 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json --project-root .'`;
+    const cr = buildConditionResult(
+      [{ command, resultContent: KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED }],
+      SCENARIO_5_CORRECT_ANSWER,
+    );
+    const grade = gradeScenarioCondition(cr, SCENARIO_5);
+    expect(grade.terminalEvidence.provider).toBe('kmp-test');
+    expect(grade.terminalEvidence.coverage_gate_diagnostic).toBe('matched');
+    expect(grade.success).toBe(true);
+  });
+
   it('diagnoses the live Evidence 1 class: parallel ran the module tests cleanly but never produced the coverage-threshold gate evidence', () => {
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter :core:domain --json', resultContent: cleanCoverageGateFreeEnvelope() }],
-      kmpEvalResultText('4 tests passed cleanly.', { module: ':core:domain', outcome_kind: 'tests_executed', total: 4, passed: 4, failed: 0 }),
+      kmpEvalResultText('4 tests passed cleanly.', { module: ':core:domain', outcome_kind: 'tests_executed', test_count: 4, passed: 4, failed: 0 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_5);
     expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
@@ -3682,17 +3798,23 @@ describe('gradeScenarioCondition -- coverage_threshold_exceeded (SCENARIO_5, the
           { code: 'task_not_found' },
           { code: 'no_test_modules' },
           { code: 'flavor_unused' },
+          // eval-v2 schema-3 alignment (design.md (g)): coverage_data_unavailable is itself a
+          // member of ENV_ERROR_CODES, so this proves it takes the dedicated bucket added ahead
+          // of that generic check, never falling through to environment_other where it would be
+          // indistinguishable from an unrelated environment failure like gradle_timeout above.
+          { code: 'coverage_data_unavailable' },
           {},
         ],
       }),
     });
 
-    expect(attempt.error_count).toBe(6);
+    expect(attempt.error_count).toBe(7);
     expect(attempt.error_code_buckets).toEqual({
       coverage_threshold_exceeded: 1,
       module_failed: 0,
       gradle_timeout: 1,
       no_test_modules: 1,
+      coverage_data_unavailable: 1,
       environment_other: 1,
       configuration: 1,
       other: 1,
@@ -3713,7 +3835,7 @@ describe('gradeScenarioCondition -- coverage_threshold_exceeded (SCENARIO_5, the
   it('diagnoses a well-formed on-target terminal attempt that explicitly disabled coverage', () => {
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter :core:domain --no-coverage --json', resultContent: cleanCoverageGateFreeEnvelope() }],
-      kmpEvalResultText('4 tests passed cleanly.', { module: ':core:domain', outcome_kind: 'tests_executed', total: 4, passed: 4, failed: 0 }),
+      kmpEvalResultText('4 tests passed cleanly.', { module: ':core:domain', outcome_kind: 'tests_executed', test_count: 4, passed: 4, failed: 0 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_5);
     expect(grade.terminalEvidence.coverage_gate_diagnostic).toBe('coverage-disabled');
@@ -4315,7 +4437,7 @@ describe('gradeScenarioCondition -- coverage_threshold_exceeded (SCENARIO_5, the
     const correctCoverageResultBlock = Object.freeze({
       module: ':core:domain',
       outcome_kind: 'coverage_threshold_exceeded',
-      total: 4,
+      test_count: 4,
       passed: 4,
       failed: 0,
       missed_lines: 23,
@@ -4349,7 +4471,7 @@ describe('gradeScenarioCondition -- coverage_threshold_exceeded (SCENARIO_5, the
     it.each([
       ['module', { module: 'C:\\secret\\module' }],
       ['outcome_kind', { outcome_kind: 'tests_executed' }],
-      ['total', { total: 5 }],
+      ['test_count', { test_count: 5 }],
       ['passed', { passed: 3 }],
       ['failed', { failed: 1 }],
       ['missed_lines', { missed_lines: 24 }],
@@ -4365,6 +4487,47 @@ describe('gradeScenarioCondition -- coverage_threshold_exceeded (SCENARIO_5, the
       expect(serialized).not.toContain('C:\\secret');
     });
 
+    // 2026-09-29 (WO-A2 auditor finding, confirmed live): computeTaskOutcome's own
+    // task_outcome_matched used to read matches_observed, which folds unexpected_key_count into
+    // the same boolean as missing/mismatch fields -- an unexpected-key-only block (every required
+    // field present and correct, one extra field beyond the closed set) got matched:false, and
+    // computeTaskOutcome's own mismatchFields (built ONLY from missing_fields/mismatch_fields)
+    // stayed empty, tripping schemas.mjs's own "must be a canonical unique field list, empty only
+    // for a matched outcome" invariant and losing the whole run record -- exactly what happened to
+    // a real live cell tonight. The fix computes content-correctness inline in computeTaskOutcome
+    // from missing_fields/mismatch_fields directly (this diagnostic object itself is unchanged --
+    // it is also serialized into terminal_evidence.final_answer_block's own closed schema).
+    // matches_observed here is UNCHANGED (the legacy checks[]/success gate reads it via
+    // kmpEvalResultBlockMatchesObserved and must stay exactly as it was): still strict about
+    // unexpected keys, proving the two notions of "matched" are now genuinely independent.
+    it('content correctness (missing/mismatch fields empty) is independent of unexpected_key_count -- matches_observed (legacy) stays strict', () => {
+      const diagnostic = gradeFinalAnswerBlock(kmpEvalResultText('Hedge.', { ...correctCoverageResultBlock, extra_hedge_field: 'x' }));
+      expect(diagnostic.missing_fields).toEqual([]);
+      expect(diagnostic.mismatch_fields).toEqual([]);
+      expect(diagnostic.unexpected_key_count).toBe(1);
+      // The legacy field, deliberately UNCHANGED -- still strict about unexpected keys.
+      expect(diagnostic.matches_observed).toBe(false);
+      expect(diagnostic.comparison_status).toBe('field-mismatch');
+    });
+
+    // "Hedging is rejected, not silently ignored" (this function's own header comment) must stay
+    // true for the metric that actually decides the study's outcome, even though
+    // task_outcome_matched itself is now decoupled from unexpected_key_count -- see
+    // computeProductE2eSuccess's own export comment for why this is unit-tested directly rather
+    // than through gradeScenarioCondition.
+    it('computeProductE2eSuccess rejects a content-correct but hedged answer for current-skill, even though task_outcome_matched is true', () => {
+      const hedgedButCorrectTaskOutcome = { matched: true, protocolMatched: true, unexpectedKeyCount: 1 };
+      const matchedProviderEvidence = { kind: 'kmp-test-envelope', status: 'matched' };
+      expect(computeProductE2eSuccess('current-skill', hedgedButCorrectTaskOutcome, matchedProviderEvidence)).toBe(false);
+
+      const cleanTaskOutcome = { matched: true, protocolMatched: true, unexpectedKeyCount: 0 };
+      expect(computeProductE2eSuccess('current-skill', cleanTaskOutcome, matchedProviderEvidence)).toBe(true);
+
+      // Unchanged for no-skill regardless of unexpectedKeyCount -- product_e2e_success is
+      // Product-only by design (the null branch is checked before any of the other fields).
+      expect(computeProductE2eSuccess('no-skill', hedgedButCorrectTaskOutcome, matchedProviderEvidence)).toBeNull();
+    });
+
     it('collapses an arbitrary outcome value to unrecognized without leaking the arbitrary value', () => {
       const diagnostic = gradeFinalAnswerBlock(kmpEvalResultText('Secret arbitrary outcome.', {
         ...correctCoverageResultBlock,
@@ -4376,10 +4539,62 @@ describe('gradeScenarioCondition -- coverage_threshold_exceeded (SCENARIO_5, the
       expect(JSON.stringify(diagnostic)).not.toContain('secret-unregistered-outcome');
     });
 
+    // H15 fix regression pair (design.md (f)): kmp-test's own envelope reports TWO differently-
+    // scoped counts under adjacent names -- tests.total (1, the Gradle TASK-dispatch count) and
+    // tests.individual_total (4, the real per-test-case count this grader has always compared
+    // against). Before the fix, an agent that reasonably copied the literally-named "total" field
+    // from kmp-test's own output could declare the WRONG (dispatch) count under the requested
+    // "total" key and still look self-consistent to a careless reading of the prompt -- the
+    // rename to test_count closes that at the prompt/key-name level, not the comparison logic
+    // (which already compared against individual_total, confirmed directly in
+    // deriveObservedKmpTestResult/groundTruthAsObservedResult above). This pair proves BOTH
+    // halves survived the rename: the declared field is genuinely test_count now (the old name
+    // "total" is REJECTED outright, not silently ignored), and a test_count value equal to the
+    // old dispatch-count failure shape (1) still fails -- the rename alone could not have made
+    // this ambiguity ungradeable by accident.
+    it('RED: the old H15 failure shape (test_count declaring the dispatch count, 1, instead of individual_total, 4) still fails -- the rename did not make the ambiguity ungradeable', () => {
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED }],
+        kmpEvalResultText('Tests pass, coverage exceeded.', { ...correctCoverageResultBlock, test_count: 1, passed: 1 }),
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_5);
+      expect(grade.terminalEvidence.final_answer_block.comparison_status).toBe('field-mismatch');
+      expect(grade.terminalEvidence.final_answer_block.mismatch_fields).toContain('test_count');
+      expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
+      expect(grade.success).toBe(false);
+    });
+
+    it('RED: the OLD field name "total" (pre-H15) is rejected as a missing required field -- never silently accepted as an alias for test_count', () => {
+      const legacyBlock = { module: ':core:domain', outcome_kind: 'coverage_threshold_exceeded', total: 4, passed: 4, failed: 0, missed_lines: 23, threshold: 15, modules_contributing: 1 };
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED }],
+        kmpEvalResultText('Tests pass, coverage exceeded.', legacyBlock),
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_5);
+      expect(grade.terminalEvidence.final_answer_block.comparison_status).toBe('field-mismatch');
+      expect(grade.terminalEvidence.final_answer_block.missing_fields).toContain('test_count');
+      // The legacy `total` key itself is UNEXPECTED under the new closed key set, not silently
+      // treated as if it were test_count under a different name.
+      expect(grade.terminalEvidence.final_answer_block.unexpected_key_count).toBe(1);
+      expect(grade.success).toBe(false);
+    });
+
+    it('GREEN: test_count declaring the genuine individual_total value (4) passes cleanly', () => {
+      const cr = buildConditionResult(
+        [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED }],
+        kmpEvalResultText('Tests pass, coverage exceeded.', correctCoverageResultBlock),
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_5);
+      expect(grade.terminalEvidence.final_answer_block.comparison_status).toBe('matched');
+      expect(grade.terminalEvidence.final_answer_block.matches_observed).toBe(true);
+      expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(true);
+      expect(grade.success).toBe(true);
+    });
+
     it('rejects a block missing missed_lines/threshold/modules_contributing (the tests_executed-shaped subset alone is insufficient for this outcome)', () => {
       const cr = buildConditionResult(
         [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED }],
-        kmpEvalResultText('Tests pass, coverage exceeded.', { module: ':core:domain', outcome_kind: 'coverage_threshold_exceeded', total: 4, passed: 4, failed: 0 }),
+        kmpEvalResultText('Tests pass, coverage exceeded.', { module: ':core:domain', outcome_kind: 'coverage_threshold_exceeded', test_count: 4, passed: 4, failed: 0 }),
       );
       const grade = gradeScenarioCondition(cr, SCENARIO_5);
       expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
@@ -4390,7 +4605,7 @@ describe('gradeScenarioCondition -- coverage_threshold_exceeded (SCENARIO_5, the
     it('rejects a block with an unrecognized extra key', () => {
       const cr = buildConditionResult(
         [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED }],
-        kmpEvalResultText('Tests pass, coverage exceeded.', { module: ':core:domain', outcome_kind: 'coverage_threshold_exceeded', total: 4, passed: 4, failed: 0, missed_lines: 23, threshold: 15, modules_contributing: 1, extra_field: 'x' }),
+        kmpEvalResultText('Tests pass, coverage exceeded.', { module: ':core:domain', outcome_kind: 'coverage_threshold_exceeded', test_count: 4, passed: 4, failed: 0, missed_lines: 23, threshold: 15, modules_contributing: 1, extra_field: 'x' }),
       );
       const grade = gradeScenarioCondition(cr, SCENARIO_5);
       expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
@@ -4429,7 +4644,7 @@ describe('gradeScenarioCondition -- coverage_threshold_exceeded (SCENARIO_5, the
     it("rejects a final answer using Gradle's corroborating count (2/2/0) instead of kmp_test's own individual_total (4/4/0) -- Finding P1-2", () => {
       const cr = buildConditionResult(
         [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED }],
-        kmpEvalResultText('2 tests pass; 23 lines uncovered, exceeding the 15-line budget.', { module: ':core:domain', outcome_kind: 'coverage_threshold_exceeded', total: 2, passed: 2, failed: 0, missed_lines: 23, threshold: 15, modules_contributing: 1 }),
+        kmpEvalResultText('2 tests pass; 23 lines uncovered, exceeding the 15-line budget.', { module: ':core:domain', outcome_kind: 'coverage_threshold_exceeded', test_count: 2, passed: 2, failed: 0, missed_lines: 23, threshold: 15, modules_contributing: 1 }),
       );
       const grade = gradeScenarioCondition(cr, SCENARIO_5);
       expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
@@ -4439,7 +4654,7 @@ describe('gradeScenarioCondition -- coverage_threshold_exceeded (SCENARIO_5, the
     it("accepts missed_lines/threshold/modules_contributing matching the scenario exactly, with total/passed/failed matching kmp_test's own individual_total (the only count an honest kmp_test-only agent can actually observe)", () => {
       const cr = buildConditionResult(
         [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO5_COVERAGE_EXCEEDED }],
-        kmpEvalResultText('4 tests pass; 23 lines uncovered, exceeding the 15-line budget.', { module: ':core:domain', outcome_kind: 'coverage_threshold_exceeded', total: 4, passed: 4, failed: 0, missed_lines: 23, threshold: 15, modules_contributing: 1 }),
+        kmpEvalResultText('4 tests pass; 23 lines uncovered, exceeding the 15-line budget.', { module: ':core:domain', outcome_kind: 'coverage_threshold_exceeded', test_count: 4, passed: 4, failed: 0, missed_lines: 23, threshold: 15, modules_contributing: 1 }),
       );
       const grade = gradeScenarioCondition(cr, SCENARIO_5);
       expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(true);
@@ -4743,7 +4958,7 @@ describe('gradeScenarioCondition -- changed-module-verification (SCENARIO_6, the
     it('rejects a final answer using Gradle\'s corroborating count when it happens to differ from what the agent could honestly report', () => {
       const cr = buildConditionResult(
         [{ command: 'kmp-test changed --json --project-root . --no-coverage', resultContent: KMP_TEST_ENVELOPE_SCENARIO6_CHANGED_PASS }],
-        kmpEvalResultText('Tests pass.', { module: ':core:common', outcome_kind: 'tests_executed', total: 2, passed: 2, failed: 0 }),
+        kmpEvalResultText('Tests pass.', { module: ':core:common', outcome_kind: 'tests_executed', test_count: 2, passed: 2, failed: 0 }),
       );
       const grade = gradeScenarioCondition(cr, SCENARIO_6);
       expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
@@ -4834,7 +5049,7 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
   it('[case 2] same clean, gate-free terminal as case 1, but the final block honestly reports what actually happened (a clean tests_executed pass) -- must PASS final-consistency even though the scenario expected coverage_threshold_exceeded', () => {
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO5_CLEAN_NO_COVERAGE_GATE }],
-      kmpEvalResultText('4 tests passed cleanly; no coverage gate fired.', { module: ':core:domain', outcome_kind: 'tests_executed', total: 4, passed: 4, failed: 0 }),
+      kmpEvalResultText('4 tests passed cleanly; no coverage gate fired.', { module: ':core:domain', outcome_kind: 'tests_executed', test_count: 4, passed: 4, failed: 0 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_5);
     expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(true);
@@ -4861,7 +5076,7 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
     });
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter app --json', resultContent: otherModulePass }],
-      kmpEvalResultText('3/3 tests passed in the :app module.', { module: ':app', outcome_kind: 'tests_executed', total: 3, passed: 3, failed: 0 }),
+      kmpEvalResultText('3/3 tests passed in the :app module.', { module: ':app', outcome_kind: 'tests_executed', test_count: 3, passed: 3, failed: 0 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
@@ -4901,7 +5116,7 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
     envelope.tests.individual_total = 20;
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: JSON.stringify(envelope) }],
-      kmpEvalResultText('20/20 tests passed.', { module: ':shared', outcome_kind: 'tests_executed', total: 20, passed: 20, failed: 0 }),
+      kmpEvalResultText('20/20 tests passed.', { module: ':shared', outcome_kind: 'tests_executed', test_count: 20, passed: 20, failed: 0 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(true);
@@ -4960,7 +5175,7 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
     });
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter app --json', resultContent: incoherentEnvelope }],
-      kmpEvalResultText('3/3 tests passed in the :app module.', { module: ':app', outcome_kind: 'tests_executed', total: 3, passed: 3, failed: 0 }),
+      kmpEvalResultText('3/3 tests passed in the :app module.', { module: ':app', outcome_kind: 'tests_executed', test_count: 3, passed: 3, failed: 0 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     // The pre-existing well-formedness gate (check 4, parallelEvidenceInvalid) is intentionally
@@ -4985,7 +5200,7 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
     envelope.modules[0].test_failures = envelope.modules[0].test_failures.slice(0, 2);
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter lint --json', resultContent: JSON.stringify(envelope) }],
-      kmpEvalResultText('2 tests ran in the :lint module; both failed.', { module: ':lint', outcome_kind: 'tests_failed', total: 2, passed: 0, failed: 2 }),
+      kmpEvalResultText('2 tests ran in the :lint module; both failed.', { module: ':lint', outcome_kind: 'tests_failed', test_count: 2, passed: 0, failed: 2 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_4);
     expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(true);
@@ -5011,7 +5226,7 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
   it('[gradle / tests_executed, positive] a genuinely different real JUnit count (20/20/0) than the scenario expects (24/24/0), honestly reported -- must PASS final-consistency; outcome check and success still fail', () => {
     const cr = buildConditionResult(
       [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT, evidence: okJunit(20, 20, 0) }],
-      kmpEvalResultText('20/20 tests passed via Gradle.', { module: ':shared', outcome_kind: 'tests_executed', total: 20, passed: 20, failed: 0 }),
+      kmpEvalResultText('20/20 tests passed via Gradle.', { module: ':shared', outcome_kind: 'tests_executed', test_count: 20, passed: 20, failed: 0 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(true);
@@ -5022,7 +5237,7 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
   it('[gradle / tests_failed, positive] a genuinely different real JUnit result (3 ran, 1 passed, 2 failed) than the scenario expects (0 passed, 3 failed), honestly reported -- must PASS final-consistency; outcome check and success still fail', () => {
     const cr = buildConditionResult(
       [{ command: './gradlew.bat :lint:test --console=plain', resultContent: GRADLE_SCENARIO4_FAIL_STDOUT, resultIsError: true, evidence: okJunit(3, 1, 2) }],
-      kmpEvalResultText('3 tests ran in :lint; 1 passed, 2 failed.', { module: ':lint', outcome_kind: 'tests_failed', total: 3, passed: 1, failed: 2 }),
+      kmpEvalResultText('3 tests ran in :lint; 1 passed, 2 failed.', { module: ':lint', outcome_kind: 'tests_failed', test_count: 3, passed: 1, failed: 2 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_4);
     expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(true);
@@ -5045,7 +5260,7 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
     envelope.parallel.legs[0].execution.fresh = 1;
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter lint --json', resultContent: JSON.stringify(envelope) }],
-      kmpEvalResultText('3 tests ran in :lint; all 3 failed.', { module: ':lint', outcome_kind: 'tests_failed', total: 3, passed: 0, failed: 3 }),
+      kmpEvalResultText('3 tests ran in :lint; all 3 failed.', { module: ':lint', outcome_kind: 'tests_failed', test_count: 3, passed: 0, failed: 3 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_4);
     expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
@@ -5098,7 +5313,7 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
     envelope.errors[0].threshold = 99;
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: JSON.stringify(envelope) }],
-      kmpEvalResultText('4 tests pass; 23 lines uncovered, exceeding the 99-line budget.', { module: ':core:domain', outcome_kind: 'coverage_threshold_exceeded', total: 4, passed: 4, failed: 0, missed_lines: 23, threshold: 99, modules_contributing: 1 }),
+      kmpEvalResultText('4 tests pass; 23 lines uncovered, exceeding the 99-line budget.', { module: ':core:domain', outcome_kind: 'coverage_threshold_exceeded', test_count: 4, passed: 4, failed: 0, missed_lines: 23, threshold: 99, modules_contributing: 1 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_5);
     expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
@@ -5109,7 +5324,7 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
   it('[hardening F] BUILD SUCCESSFUL contradicted by a real JUnit failure (failed>0) -- Gradle does not report a task successful while a test case genuinely failed -- must not produce a canonicalizable observedResult', () => {
     const cr = buildConditionResult(
       [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT, evidence: okJunit(3, 2, 1) }],
-      kmpEvalResultText('3 tests ran; 2 passed, 1 failed.', { module: ':shared', outcome_kind: 'tests_executed', total: 3, passed: 2, failed: 1 }),
+      kmpEvalResultText('3 tests ran; 2 passed, 1 failed.', { module: ':shared', outcome_kind: 'tests_executed', test_count: 3, passed: 2, failed: 1 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
@@ -5119,7 +5334,7 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
   it('[hardening G] a genuinely failed task (BUILD FAILED, the target task itself genuinely mentioned as FAILED) contradicted by zero real JUnit failures -- must not produce a canonicalizable observedResult', () => {
     const cr = buildConditionResult(
       [{ command: './gradlew.bat :lint:test --console=plain', resultContent: GRADLE_SCENARIO4_FAIL_STDOUT, resultIsError: true, evidence: okJunit(3, 3, 0) }],
-      kmpEvalResultText('3 tests ran in :lint, all 3 passed.', { module: ':lint', outcome_kind: 'tests_failed', total: 3, passed: 3, failed: 0 }),
+      kmpEvalResultText('3 tests ran in :lint, all 3 passed.', { module: ':lint', outcome_kind: 'tests_failed', test_count: 3, passed: 3, failed: 0 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_4);
     expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
@@ -5129,7 +5344,7 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
   it('[hardening H] a JUnit summary where passed+failed does not sum to total is internally incoherent -- must not produce a canonicalizable observedResult', () => {
     const cr = buildConditionResult(
       [{ command: './gradlew.bat :shared:testAndroidHostTest --console=plain', resultContent: GRADLE_SCENARIO1_PASS_STDOUT, evidence: okJunit(24, 20, 0) }],
-      kmpEvalResultText('24 tests passed.', { module: ':shared', outcome_kind: 'tests_executed', total: 24, passed: 20, failed: 0 }),
+      kmpEvalResultText('24 tests passed.', { module: ':shared', outcome_kind: 'tests_executed', test_count: 24, passed: 20, failed: 0 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
@@ -5221,7 +5436,7 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
     envelope.coverage.modules_contributing = 2;
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: JSON.stringify(envelope) }],
-      kmpEvalResultText('4 tests pass; 23 lines uncovered across 2 contributing modules, exceeding the 15-line budget.', { module: ':core:domain', outcome_kind: 'coverage_threshold_exceeded', total: 4, passed: 4, failed: 0, missed_lines: 23, threshold: 15, modules_contributing: 2 }),
+      kmpEvalResultText('4 tests pass; 23 lines uncovered across 2 contributing modules, exceeding the 15-line budget.', { module: ':core:domain', outcome_kind: 'coverage_threshold_exceeded', test_count: 4, passed: 4, failed: 0, missed_lines: 23, threshold: 15, modules_contributing: 2 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_5);
     expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
@@ -5296,7 +5511,7 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
     const contradictoryStdout = '> Task :lint:test NO-SOURCE\n> Task :lint:test FAILED\n\nFAILURE: Build failed with an exception.\n\nBUILD FAILED in 2s\n1 actionable task: 1 executed\n';
     const cr = buildConditionResult(
       [{ command: './gradlew.bat :lint:test --console=plain', resultContent: contradictoryStdout, resultIsError: true, evidence: okJunit(3, 0, 3) }],
-      kmpEvalResultText('3 tests ran in :lint; all 3 failed.', { module: ':lint', outcome_kind: 'tests_failed', total: 3, passed: 0, failed: 3 }),
+      kmpEvalResultText('3 tests ran in :lint; all 3 failed.', { module: ':lint', outcome_kind: 'tests_failed', test_count: 3, passed: 0, failed: 3 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_4);
     expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
@@ -5352,7 +5567,7 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
     const contradictoryStdout = '> Task :lint:test FAILED\n> Task :lint:test NO-SOURCE\n\nFAILURE: Build failed with an exception.\n\nBUILD FAILED in 2s\n1 actionable task: 1 executed\n';
     const cr = buildConditionResult(
       [{ command: './gradlew.bat :lint:test --console=plain', resultContent: contradictoryStdout, resultIsError: true, evidence: okJunit(3, 0, 3) }],
-      kmpEvalResultText('3 tests ran in :lint; all 3 failed.', { module: ':lint', outcome_kind: 'tests_failed', total: 3, passed: 0, failed: 3 }),
+      kmpEvalResultText('3 tests ran in :lint; all 3 failed.', { module: ':lint', outcome_kind: 'tests_failed', test_count: 3, passed: 0, failed: 3 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_4);
     expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
@@ -5399,7 +5614,7 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
     envelope.warnings = [{ code, message: `synthetic ${code}` }];
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: JSON.stringify(envelope) }],
-      kmpEvalResultText('4 tests pass; 23 lines uncovered, exceeding the 15-line budget.', { module: ':core:domain', outcome_kind: 'coverage_threshold_exceeded', total: 4, passed: 4, failed: 0, missed_lines: 23, threshold: 15, modules_contributing: 1 }),
+      kmpEvalResultText('4 tests pass; 23 lines uncovered, exceeding the 15-line budget.', { module: ':core:domain', outcome_kind: 'coverage_threshold_exceeded', test_count: 4, passed: 4, failed: 0, missed_lines: 23, threshold: 15, modules_contributing: 1 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_5);
     expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
@@ -5412,7 +5627,7 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
     envelope.warnings = [{ code: 'coverage_report_write_failed', message: 'failed to write coverage-report.md' }];
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: JSON.stringify(envelope) }],
-      kmpEvalResultText('4 tests pass; 23 lines uncovered, exceeding the 15-line budget.', { module: ':core:domain', outcome_kind: 'coverage_threshold_exceeded', total: 4, passed: 4, failed: 0, missed_lines: 23, threshold: 15, modules_contributing: 1 }),
+      kmpEvalResultText('4 tests pass; 23 lines uncovered, exceeding the 15-line budget.', { module: ':core:domain', outcome_kind: 'coverage_threshold_exceeded', test_count: 4, passed: 4, failed: 0, missed_lines: 23, threshold: 15, modules_contributing: 1 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_5);
     expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(true);
@@ -5662,7 +5877,7 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
     envelope.modules[0].name = '';
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: JSON.stringify(envelope) }],
-      kmpEvalResultText('24\\24 tests passed.', { module: '', outcome_kind: 'tests_executed', total: 24, passed: 24, failed: 0 }),
+      kmpEvalResultText('24\\24 tests passed.', { module: '', outcome_kind: 'tests_executed', test_count: 24, passed: 24, failed: 0 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.checks.find((c) => c.name === 'final_answer_consistent_with_evidence').passed).toBe(false);
@@ -5675,7 +5890,7 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
     envelope.parallel.legs[0].execution = { fresh: 0, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 0, no_evidence: 0 };
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter shared --json', resultContent: JSON.stringify(envelope) }],
-      kmpEvalResultText('0/0 tests ran in the :shared module.', { module: ':shared', outcome_kind: 'tests_executed', total: 0, passed: 0, failed: 0 }),
+      kmpEvalResultText('0/0 tests ran in the :shared module.', { module: ':shared', outcome_kind: 'tests_executed', test_count: 0, passed: 0, failed: 0 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_1);
     expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
@@ -5688,7 +5903,7 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
     envelope.errors[0].threshold = 0;
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 0 --json', resultContent: JSON.stringify(envelope) }],
-      kmpEvalResultText('4 tests pass; 23 lines uncovered.', { module: ':core:domain', outcome_kind: 'coverage_threshold_exceeded', total: 4, passed: 4, failed: 0, missed_lines: 23, threshold: 0, modules_contributing: 1 }),
+      kmpEvalResultText('4 tests pass; 23 lines uncovered.', { module: ':core:domain', outcome_kind: 'coverage_threshold_exceeded', test_count: 4, passed: 4, failed: 0, missed_lines: 23, threshold: 0, modules_contributing: 1 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_5);
     expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
@@ -5703,7 +5918,7 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
     envelope.coverage.missed_lines = 15;
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json', resultContent: JSON.stringify(envelope) }],
-      kmpEvalResultText('4 tests pass; 15 lines uncovered.', { module: ':core:domain', outcome_kind: 'coverage_threshold_exceeded', total: 4, passed: 4, failed: 0, missed_lines: 15, threshold: 15, modules_contributing: 1 }),
+      kmpEvalResultText('4 tests pass; 15 lines uncovered.', { module: ':core:domain', outcome_kind: 'coverage_threshold_exceeded', test_count: 4, passed: 4, failed: 0, missed_lines: 15, threshold: 15, modules_contributing: 1 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_5);
     expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
@@ -5718,7 +5933,7 @@ describe("gradeScenarioCondition -- final_answer_consistent_with_evidence is bou
     envelope.parallel.legs[0].execution.failed = 2;
     const cr = buildConditionResult(
       [{ command: 'kmp-test parallel --module-filter lint --json', resultContent: JSON.stringify(envelope) }],
-      kmpEvalResultText('3 tests ran in :lint; all 3 failed.', { module: ':lint', outcome_kind: 'tests_failed', total: 3, passed: 0, failed: 3 }),
+      kmpEvalResultText('3 tests ran in :lint; all 3 failed.', { module: ':lint', outcome_kind: 'tests_failed', test_count: 3, passed: 0, failed: 3 }),
     );
     const grade = gradeScenarioCondition(cr, SCENARIO_4);
     expect(grade.checks.find((c) => c.name === 'authoritative_evidence_well_formed').passed).toBe(true);
@@ -5815,7 +6030,7 @@ describe('gradeScenarioCondition -- outcome_assessment (neutral scorer, Stage B1
   const MALFORMED_BLOCK_TEXT = 'Some prose about the result.\n\nKMP_EVAL_RESULT\n{not valid json\nKMP_EVAL_RESULT_END\n';
   const WRONG_CLAIM_TEXT = kmpEvalResultText(
     "The :core:domain module's tests all pass with no coverage issues.",
-    { module: ':core:domain', outcome_kind: 'tests_executed', total: 4, passed: 4, failed: 0 },
+    { module: ':core:domain', outcome_kind: 'tests_executed', test_count: 4, passed: 4, failed: 0 },
   );
 
   it('[case 1] baseline: correct claim, zero product tool use -> task true, Product E2E null', () => {
@@ -5969,7 +6184,7 @@ describe('gradeScenarioCondition -- outcome_assessment (neutral scorer, Stage B1
   it('reports only canonical field names when a well-formed neutral claim mismatches ground truth', () => {
     const wrongClaim = kmpEvalResultText('Result recorded.', {
       module: ':wrong:module', outcome_kind: 'coverage_threshold_exceeded',
-      total: 5, passed: 3, failed: 2,
+      test_count: 5, passed: 3, failed: 2,
       missed_lines: 22, threshold: 16, modules_contributing: 2,
     });
     const grade = gradeScenarioCondition(
@@ -5978,7 +6193,7 @@ describe('gradeScenarioCondition -- outcome_assessment (neutral scorer, Stage B1
     );
     expect(grade.outcomeAssessment.task_outcome_matched).toBe(false);
     expect(grade.outcomeAssessment.task_outcome_mismatch_fields).toEqual([
-      'module', 'total', 'passed', 'failed', 'missed_lines', 'threshold', 'modules_contributing',
+      'module', 'test_count', 'passed', 'failed', 'missed_lines', 'threshold', 'modules_contributing',
     ]);
     expect(grade.outcomeAssessment.task_outcome_unexpected_key_count).toBe(0);
   });

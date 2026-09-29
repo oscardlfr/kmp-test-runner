@@ -293,7 +293,7 @@ export function resolveDecisions(evidenceDir, bashResults, terminationInfo = {},
  *   own Gradle-evidence-specific scan; both maps are keyed by each attempt's own `tool_use_id`
  *   string (`b.id`), never `b.index`.
  */
-export function attributeCondition(evidenceDir, scenario, bashResults, terminationInfo = {}, junitXmlAttributionEnabled = true, policyMode = 'required') {
+export function attributeCondition(evidenceDir, scenario, bashResults, terminationInfo = {}, junitXmlAttributionEnabled = true, policyMode = 'required', runtimeId = 'claude-code') {
   const { terminated = false, terminationReason = null } = terminationInfo;
   const allowedInvocations = scenario.expected?.gradle?.allowed_invocations ?? [];
   const targetModule = scenario.expected?.module;
@@ -362,14 +362,24 @@ export function attributeCondition(evidenceDir, scenario, bashResults, terminati
         perAttemptJunit.set(b.id, { status: 'conflict' });
         continue;
       }
+      // codex-cli is exempt from the capture-completeness requirement below (never from anything
+      // else here -- conflicts and anomaly tombstones still apply identically). Codex's own
+      // PostToolUse hook payload has never been validated against a real transcript, and prior to
+      // H16 recognizing its PowerShell-wrapped `./gradlew` commands, Codex Gradle calls were never
+      // classified as relevant in the first place, so this requirement was never actually
+      // exercised for it. perAttemptJunit is still left unset either way (below), so
+      // outcomeMatches/junitOk in graders.mjs correctly keeps reading "unverified", never
+      // fabricating a pass -- this only stops an unverified capture mechanism from rejecting the
+      // whole cell.
+      const capturedRequiredForRuntime = runtimeId !== 'codex-cli';
       const isTrailingUnderTimeout = terminated && terminationReason === 'timeout' && b.id === lastRelevantAttemptId && b.resultFound === false;
       const evidenceRecord = readSidecarRecord(evidenceRecordsDir, idHash);
       if (evidenceRecord == null) {
-        if (!isTrailingUnderTimeout) evidenceCaptureIncomplete = true;
+        if (!isTrailingUnderTimeout && capturedRequiredForRuntime) evidenceCaptureIncomplete = true;
         continue;
       }
       if (evidenceRecord.command !== b.command) {
-        evidenceCaptureIncomplete = true;
+        if (capturedRequiredForRuntime) evidenceCaptureIncomplete = true;
         continue;
       }
       if (evidenceRecord.status === 'integrity_error') unreliable = true;

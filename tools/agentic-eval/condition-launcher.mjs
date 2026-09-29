@@ -6,14 +6,14 @@
 // argv diverge in more than --plugin-dir), no --allowedTools (superseded entirely by the
 // PreToolUse policy hook -- Round 6), no bypassPermissions, never Read/Glob/Grep/Edit/Write/
 // Agent in --tools.
-import { spawn, execFile } from 'node:child_process';
-import { writeFileSync, mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { spawn, spawnSync, execFile } from 'node:child_process';
+import { writeFileSync, realpathSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildEvalEnv } from './env-builder.mjs';
 import { buildPolicyEnvValues, computePolicySha256 } from './policy-config.mjs';
 import { resolveBash } from './resolve-bash.mjs';
+import { mkdtempLongPathSafe } from './materialize.mjs';
 
 // dirname(fileURLToPath(...)), not import.meta.dirname -- the latter needs Node 20.11+/21.2+,
 // but package.json declares "node": ">=18". Confirmed to actually matter: a real ubuntu-latest
@@ -25,6 +25,13 @@ const POLICY_HOOK_PATH = join(__dirname, 'policy-hook.mjs');
 const JUNIT_EVIDENCE_HOOK_PATH = join(__dirname, 'junit-evidence-hook.mjs');
 
 const shQuote = (arg) => `'${String(arg).replace(/'/g, `'\\''`)}'`;
+
+/** Git Bash does not apply Windows PATHEXT lookup to bare command names. The pinned
+ * Claude installation is a `claude.cmd` launcher, so Windows invocations must name
+ * that file explicitly; POSIX installations continue to use `claude`. */
+export function resolveClaudeCommand(platform = process.platform) {
+  return platform === 'win32' ? 'claude.cmd' : 'claude';
+}
 
 /**
  * Generates a --settings JSON file wiring policy-hook.mjs as the PreToolUse Bash hook.
@@ -53,7 +60,7 @@ const shQuote = (arg) => `'${String(arg).replace(/'/g, `'\\''`)}'`;
  * from before this parameter existed.
  */
 export function buildPolicySettingsFile({ junitEvidenceEnabled = false, policyHookEnabled = true } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-settings-'));
+  const dir = mkdtempLongPathSafe('kmp-agentic-eval-settings-');
   const settingsPath = join(dir, 'settings.json');
   const hooks = {};
   if (policyHookEnabled) {
@@ -81,7 +88,7 @@ export function buildBaseArgv({
   prompt, model = 'claude-sonnet-5', settingsPath, maxBudgetUsd = 0.60, permissionMode = 'dontAsk',
 }) {
   return [
-    'claude', '-p', prompt,
+    resolveClaudeCommand(), '-p', prompt,
     '--output-format', 'stream-json', '--verbose', '--include-hook-events',
     '--model', model,
     '--setting-sources', '', '--strict-mcp-config', '--no-chrome', '--no-session-persistence',
@@ -96,15 +103,29 @@ export function buildBaseArgv({
  * non-prompt values; the exact prompt bytes travel over stdin. This avoids Windows' Git Bash ->
  * npm .cmd shim path reinterpreting multiline prompt arguments before --output-format/--verbose
  * reach claude.exe, while preserving the prompt content itself byte-for-byte.
+ *
+ * `--effort high` (eval v2, D2): harness-pinned for the first time -- Claude previously ran with
+ * NO reasoning-effort control at all (the model-registry `default_reasoning_mode` mechanism Codex
+ * uses is structurally rejected for claude-code, see claude-code.mjs's supportsModelConfiguration),
+ * an undisclosed gap in Evidence1. Deliberately a literal harness-level flag here, not routed
+ * through reasoningMode/the model registry -- it must never interact with supportsModelConfiguration's
+ * existing "claude-code requires default_reasoning_mode === null" guard. `high` matches
+ * claude-sonnet-5's own documented default per code.claude.com/docs/en/model-config, chosen so a
+ * flag that turned out to be a no-op on the pinned CLI build would silently reproduce
+ * pre-existing behavior rather than silently changing it -- but the flag's exact effect on the
+ * specific pinned CLI version has NOT been confirmed by a live invocation as of this comment (see
+ * research-v1.md item 2 and preregistration-v2.md); reasoning_effort_requested/_source
+ * (buildRunRecord) record what was ASKED for, never a confirmation that it was honored.
  */
 export function buildBaseInvocation({
   prompt, model = 'claude-sonnet-5', settingsPath, maxBudgetUsd = 0.60, permissionMode = 'dontAsk',
 }) {
   return {
     argv: [
-      'claude', '-p',
+      resolveClaudeCommand(), '-p',
       '--output-format', 'stream-json', '--verbose', '--include-hook-events',
       '--model', model,
+      '--effort', 'high',
       '--setting-sources', '', '--strict-mcp-config', '--no-chrome', '--no-session-persistence',
       '--settings', settingsPath,
       '--tools', 'Bash,Skill',
@@ -156,9 +177,9 @@ export function buildConditionArgv(baseArgv, condition, snapshotDir) {
  */
 export function buildSharedEnv({
   shimDir, gradleUserHome, kmpEvalTempHome, expectedFixtureRoot, allowedGradleTasks, allowedKmpTestSubcommands,
-  includePolicyEnv = true,
+  includePolicyEnv = true, extraAllowedEnvNames = [],
 }) {
-  const baseEnv = buildEvalEnv(process.env);
+  const baseEnv = buildEvalEnv(process.env, { extraAllowed: extraAllowedEnvNames });
   const { errors, envValues } = buildPolicyEnvValues({ allowedGradleTasks, allowedKmpTestSubcommands });
   if (errors.length > 0) {
     throw new Error(`Invalid policy configuration: ${JSON.stringify(errors)}`);
@@ -209,8 +230,25 @@ export function spawnCondition(invocation, { env, cwd, timeoutMs = 300000, onSpa
   const stdinText = Array.isArray(invocation) ? undefined : invocation.stdinText;
   const cmd = argv.map(shQuote).join(' ');
   const t0 = process.hrtime.bigint();
+  const bash = resolveBash();
+  let spawnCwd = cwd;
+  if (env?.KMP_AGENTIC_EVAL_LIVE_SPAWN_PREFLIGHT === '1') {
+    try {
+      spawnCwd = realpathSync.native(cwd);
+    } catch {
+      throw new Error('condition_spawn_preflight_cwd_missing');
+    }
+    const probe = spawnSync(bash, ['--noprofile', '--norc', '-c', 'exit 0'], {
+      env, cwd: spawnCwd, stdio: 'ignore', windowsHide: true,
+    });
+    if (probe.error?.code === 'EACCES') throw new Error('condition_spawn_preflight_permission_denied');
+    if (probe.error?.code === 'ENOENT') throw new Error('condition_spawn_preflight_executable_missing');
+    if (probe.error || probe.status !== 0) throw new Error('condition_spawn_preflight_failed');
+  }
   return new Promise((resolve) => {
-    const child = spawn(resolveBash(), ['-c', cmd], { env, cwd, detached: process.platform !== 'win32' });
+    const child = spawn(bash, ['--noprofile', '--norc', '-c', cmd], {
+      env, cwd: spawnCwd, detached: process.platform !== 'win32', windowsHide: true,
+    });
     let rawStdout = '';
     let stderr = '';
     let buf = '';

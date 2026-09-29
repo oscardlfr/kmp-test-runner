@@ -9,7 +9,7 @@ import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateTriggerQueries, validateScenario } from '../../tools/agentic-eval/schemas.mjs';
-import { loadScenarioFile } from '../../tools/agentic-eval/cli.mjs';
+import { loadScenarioFile, loadScenarioById } from '../../tools/agentic-eval/cli.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -113,8 +113,8 @@ describe('corpus/scenarios/', () => {
   // SCENARIOS_DIR is a long-lived, always-present directory, same as CORPUS_DIR's own top-level
   // use for trigger-queries.json.)
   function loadNowinandroidScenario() {
-    const { scenario, parseError } = loadScenarioFile(SCENARIOS_DIR, 'nowinandroid-core-common.json');
-    if (parseError) throw new Error(`nowinandroid-core-common.json: ${parseError}`);
+    const { ok, scenario, reason } = loadScenarioById('nowinandroid-core-common');
+    if (!ok) throw new Error(`nowinandroid-core-common.json: ${reason}`);
     return scenario;
   }
 
@@ -142,8 +142,8 @@ describe('corpus/scenarios/', () => {
   // independently verified 6x (3x kmp-test, 3x direct Gradle, cold GRADLE_USER_HOME each)
   // against android/nowinandroid @ 058f0e4375ec51ff8811ba2d0bb10bc4c1b4fdb8's :lint module.
   function loadDeterministicTestFailureScenario() {
-    const { scenario, parseError } = loadScenarioFile(SCENARIOS_DIR, 'deterministic-unit-test-failure.json');
-    if (parseError) throw new Error(`deterministic-unit-test-failure.json: ${parseError}`);
+    const { ok, scenario, reason } = loadScenarioById('deterministic-unit-test-failure');
+    if (!ok) throw new Error(`deterministic-unit-test-failure.json: ${reason}`);
     return scenario;
   }
 
@@ -183,8 +183,8 @@ describe('corpus/scenarios/', () => {
   // pinned skill's own ask-guard AND let a real target-attribution gap in the grader go unnoticed.
   // :core:domain has zero substring collision with any other real module in this project.
   function loadCoverageThresholdFailureScenario() {
-    const { scenario, parseError } = loadScenarioFile(SCENARIOS_DIR, 'coverage-threshold-failure.json');
-    if (parseError) throw new Error(`coverage-threshold-failure.json: ${parseError}`);
+    const { ok, scenario, reason } = loadScenarioById('coverage-threshold-failure');
+    if (!ok) throw new Error(`coverage-threshold-failure.json: ${reason}`);
     return scenario;
   }
 
@@ -229,8 +229,8 @@ describe('corpus/scenarios/', () => {
   // mutation (an unstaged, harness-constant comment appended to a pinned-blob-verified tracked
   // file) instead of being told the module outright.
   function loadChangedModuleVerificationScenario() {
-    const { scenario, parseError } = loadScenarioFile(SCENARIOS_DIR, 'changed-module-verification.json');
-    if (parseError) throw new Error(`changed-module-verification.json: ${parseError}`);
+    const { ok, scenario, reason } = loadScenarioById('changed-module-verification');
+    if (!ok) throw new Error(`changed-module-verification.json: ${reason}`);
     return scenario;
   }
 
@@ -284,17 +284,22 @@ describe('corpus/scenarios/', () => {
   // Evidence1 success-recovery PR B, Stage B3 (docs/audits/agentic-eval-evidence1-success-recovery-
   // v1-runbook.md, Section 9.12): coverage-threshold-failure-v2.json, the neutral scenario Stage B4
   // creates only after this whole describe block confirms genuine RED (the file does not exist
-  // yet). Requirement 8: coverage-threshold-failure.json (the historical scenario) itself is NEVER
-  // edited by this PR -- its git blob identity is pinned here to the exact value confirmed unchanged
-  // since PR_A_SHA (548a0c14dcb0f29618b1827cb2c6a3c881f55d92), computed via `git hash-object --path`
-  // against the real committed file, not assumed.
+  // yet). Requirement 8 (historical, now superseded -- eval-v2 H15 fix): coverage-threshold-
+  // failure.json's blob identity was pinned unchanged through Evidence1 PR B specifically to prove
+  // v2 was created ALONGSIDE v1 without disturbing it -- a temporal invariant scoped to that one
+  // PR, not a permanent prohibition (the non-v2 scenario is not referenced by
+  // scenario-campaign-plan.mjs's own design registry; only the v2 anchor is). eval-v2's H15 fix
+  // (design.md (f)) legitimately applies the identical total->test_count rename to every corpus
+  // scenario, including this one -- "a scenario-specific fix would reintroduce the same ambiguity
+  // for the next scenario" -- so the pin below is intentionally re-pointed to the new, real blob
+  // identity after that edit, not left stale.
   describe('coverage-threshold-failure-v2.json (Evidence1 success-recovery PR B, Section 9.8/9.12)', () => {
     const SOURCE_SHA = '7d45eae4f8720a0c77f507712ba2437ff974b6ed';
     const OUTCOME_KIND_VALUES_CANONICAL = ['tests_executed', 'no_applicable_tests', 'tests_failed', 'coverage_threshold_exceeded'];
 
     function loadV2Scenario() {
-      const { scenario, parseError } = loadScenarioFile(SCENARIOS_DIR, 'coverage-threshold-failure-v2.json');
-      if (parseError) throw new Error(`coverage-threshold-failure-v2.json: ${parseError}`);
+      const { ok, scenario, reason } = loadScenarioById('coverage-threshold-failure-v2');
+      if (!ok) throw new Error(`coverage-threshold-failure-v2.json: ${reason}`);
       return scenario;
     }
 
@@ -302,11 +307,16 @@ describe('corpus/scenarios/', () => {
     // suite) never mutated the historical scenario while designing v2 alongside it. Shells out to
     // the REAL `git hash-object --path` (never a hand-reimplemented sha1-of-"blob N\0"+content in
     // JS) -- this repo's own CRLF-normalization history means a naive raw-byte hash can silently
-    // mismatch git's own gitattributes-aware normalization on Windows.
+    // mismatch git's own gitattributes-aware normalization on Windows. Re-pointed twice since
+    // Evidence1 PR B: once for eval-v2's H15 fix (total->test_count, applied to every corpus
+    // scenario including this one -- see this describe block's own header comment), and again for
+    // the isolation split (design.md (c)) that moved expected/expected_outcome/
+    // first_useful_signal_predicate out to corpus/expected/coverage-threshold-failure.json -- both
+    // real, intentional, uniformly-applied changes, not drift.
     it('the historical coverage-threshold-failure.json keeps its exact, unchanged git blob identity', () => {
       const relativePath = 'tools/agentic-eval/corpus/scenarios/coverage-threshold-failure.json';
       const blobSha = execFileSync('git', ['hash-object', '--path', relativePath, relativePath], { cwd: REPO_ROOT, encoding: 'utf8' }).trim();
-      expect(blobSha).toBe('e06cf1b4a8c4486e9adaf6ede3f7aee0093f1937');
+      expect(blobSha).toBe('2d05134c2b9afbab22a1995d78bbd67de23c731f');
     });
 
     // Requirement 9: expected shape valida (also proves the file exists and parses at all).

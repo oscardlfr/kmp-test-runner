@@ -96,7 +96,7 @@ node -e "console.log(JSON.stringify({type:'user',message:{role:'user',content:[{
 FINAL_ANSWER='The pending edit affects the :fakemod2 module; its 1 test passes.
 
 KMP_EVAL_RESULT
-{"module": ":fakemod2", "outcome_kind": "tests_executed", "total": 1, "passed": 1, "failed": 0}
+{"module": ":fakemod2", "outcome_kind": "tests_executed", "test_count": 1, "passed": 1, "failed": 0}
 KMP_EVAL_RESULT_END'
 node -e "console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,duration_ms:10,num_turns:1,result:process.argv[1],permission_denials:[],usage:{input_tokens:2,output_tokens:2,cache_read_input_tokens:0,cache_creation_input_tokens:0}}))" "$FINAL_ANSWER"
 exit 0

@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Evidence1 Windows provisioning private input lock",
+  "type": "object",
+  "required": ["schema_version", "profile_id", "approved_manifest", "iso", "artifacts"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "enum": [2, 3] },
+    "profile_id": { "enum": ["evidence1-windows-hyperv-v1", "evidence1-windows-hyperv-e2e-v1"] },
+    "approved_manifest": {
+      "$ref": "#/$defs/approvedManifest",
+      "required": ["path", "sha256", "git_commit", "blob_oid"]
+    },
+    "iso": {
+      "$ref": "#/$defs/iso",
+      "required": ["path"]
+    },
+    "artifacts": {
+      "$ref": "#/$defs/artifacts",
+      "items": {
+        "type": "object",
+        "required": ["id", "path"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "enum": ["git", "node", "jdk", "android-sdk", "claude-code", "codex-cli"] },
+          "path": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "host_dependencies": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 1,
+      "items": { "$ref": "#/$defs/hostDependencyPath" }
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/lockV2" },
+    { "$ref": "#/$defs/lockV3" }
+  ],
+  "$defs": {
+    "approvedManifest": {
+      "type": "object",
+      "required": ["path", "sha256", "git_commit", "blob_oid"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "git_commit": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+        "blob_oid": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" }
+      }
+    },
+    "iso": {
+      "type": "object",
+      "required": ["path"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "minLength": 1 }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["id", "path"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "enum": ["git", "node", "jdk", "android-sdk", "claude-code", "codex-cli"] },
+        "path": { "type": "string", "minLength": 1 }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": { "$ref": "#/$defs/artifact" }
+    },
+    "hostDependencyPath": {
+      "type": "object",
+      "required": ["id", "path"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "const": "windows-adk-dism" },
+        "path": { "type": "string", "minLength": 1 }
+      }
+    },
+    "lockV2": {
+      "type": "object",
+      "required": ["schema_version", "profile_id", "approved_manifest", "iso", "artifacts"],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": { "const": 2 },
+        "profile_id": { "enum": ["evidence1-windows-hyperv-v1", "evidence1-windows-hyperv-e2e-v1"] },
+        "approved_manifest": { "$ref": "#/$defs/approvedManifest" },
+        "iso": { "$ref": "#/$defs/iso" },
+        "artifacts": { "$ref": "#/$defs/artifacts" }
+      }
+    },
+    "lockV3": {
+      "type": "object",
+      "required": ["schema_version", "profile_id", "approved_manifest", "iso", "artifacts", "host_dependencies"],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": { "const": 3 },
+        "profile_id": { "enum": ["evidence1-windows-hyperv-v1", "evidence1-windows-hyperv-e2e-v1"] },
+        "approved_manifest": { "$ref": "#/$defs/approvedManifest" },
+        "iso": { "$ref": "#/$defs/iso" },
+        "artifacts": { "$ref": "#/$defs/artifacts" },
+        "host_dependencies": { "type": "array", "minItems": 0, "maxItems": 1, "items": { "$ref": "#/$defs/hostDependencyPath" } }
+      }
+    }
+  }
+}

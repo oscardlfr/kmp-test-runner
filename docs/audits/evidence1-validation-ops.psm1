@@ -74,6 +74,23 @@ function Resolve-E1Path([string]$Path, [string]$Root = 'C:\kmp-eval') {
     return $full
 }
 
+function Get-E1CanonicalRuntimeRoot([string]$Id, [string]$Version) {
+    $root = "C:\Evidence1Toolchain\$Id\$Version"
+    $marker = Join-Path $root '.evidence1-artifact.json'
+    if (Test-Path -LiteralPath $marker -PathType Leaf) { return $root }
+    return $null
+}
+
+function Get-E1RuntimeCommand([string]$Id, [string]$Version, [string]$Relative, [string]$Legacy) {
+    $root = Get-E1CanonicalRuntimeRoot $Id $Version
+    if ($root) {
+        $candidate = Join-Path $root $Relative
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { throw 'java_toolchain' }
+        return $candidate
+    }
+    return $Legacy
+}
+
 function Assert-E1GuestIdentity {
     param($ComputerName, $HostComputerName, $ExpectedGuest, $ActualVmId, $ExpectedVmId,
         $Manufacturer, $Model, $User, $ExpectedUser)
@@ -155,7 +172,7 @@ function Assert-E1Evidence {
         network = 'restricted'; normal_home_mounted = $false; ambient_secrets_present = $false
         disposable_home = $true; rollback_or_destroy_required = $true; supplied_in_session = $true
     }
-    Assert-E1Fields (Get-E1Field $Ledger 'network') @{ allowed_probe_count = 4; blocked_probe_count = 6; blocked_probe_success_count = 0 }
+    Assert-E1Fields (Get-E1Field $Ledger 'network') @{ allowed_probe_count = 7; blocked_probe_count = 6; blocked_probe_success_count = 0 }
     $oldPlan = Get-E1Field (Get-E1Field $Ledger 'R7_campaign_dry_run') 'pass_dry_run'
     Assert-E1Fields $oldPlan @{
         campaign_design_id = 'claude-product-vs-free-baseline-v1'; planned_sessions = 8; plan_length = 8
@@ -279,6 +296,7 @@ namespace Evidence1 {
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] static extern IntPtr CreateJobObject(IntPtr a,string n);
     [DllImport("kernel32.dll")] static extern bool SetInformationJobObject(IntPtr j,int c,ref Extended x,int s);
     [DllImport("kernel32.dll")] static extern bool QueryInformationJobObject(IntPtr j,int c,ref Accounting x,int s,IntPtr r);
+    [DllImport("kernel32.dll", EntryPoint="QueryInformationJobObject", SetLastError=true)] static extern bool QueryInformationJobObjectRaw(IntPtr j,int c,IntPtr x,int s,out uint r);
     [DllImport("kernel32.dll")] static extern bool InitializeProcThreadAttributeList(IntPtr list,int count,int flags,ref IntPtr size);
     [DllImport("kernel32.dll")] static extern bool UpdateProcThreadAttribute(IntPtr list,uint flags,IntPtr key,IntPtr value,IntPtr size,IntPtr previous,IntPtr returned);
     [DllImport("kernel32.dll")] static extern void DeleteProcThreadAttributeList(IntPtr list);
@@ -287,6 +305,7 @@ namespace Evidence1 {
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
     [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr h,uint ms);
     [DllImport("kernel32.dll")] static extern bool GetExitCodeProcess(IntPtr p,out uint e);
+    [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access,bool inherit,uint pid);
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] static extern IntPtr CreateFile(string p,uint a,uint s,ref Security sec,uint c,uint f,IntPtr t);
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] static extern bool CreateProcess(string app,StringBuilder cmd,IntPtr pa,IntPtr ta,bool inherit,uint flags,IntPtr env,string cwd,ref StartupEx startup,out Info info);
     public static string Quote(string arg) {
@@ -319,6 +338,42 @@ namespace Evidence1 {
           WallSeconds=result.WallSeconds, CleanupOk=result.CleanupOk, Cancelled=cancelled };
       });
     }
+    static bool CaptureJobProcessHandles(IntPtr job,List<IntPtr> handles) {
+      int capacity=64;
+      for(int attempt=0;attempt<7;attempt++) {
+        int size=checked(8+capacity*IntPtr.Size);
+        IntPtr buffer=Marshal.AllocHGlobal(size);
+        try {
+          uint returned;
+          if(!QueryInformationJobObjectRaw(job,3,buffer,size,out returned)) {
+            int error=Marshal.GetLastWin32Error();
+            if(error==24 || error==122) { capacity=checked(capacity*2); continue; }
+            return false;
+          }
+          uint assigned=unchecked((uint)Marshal.ReadInt32(buffer,0));
+          uint listed=unchecked((uint)Marshal.ReadInt32(buffer,4));
+          if(listed>(uint)capacity) return false;
+          if(listed<assigned) {
+            capacity=checked(Math.Max(capacity*2,(int)assigned));
+            continue;
+          }
+          for(uint index=0;index<listed;index++) {
+            int offset=checked(8+(int)index*IntPtr.Size);
+            ulong rawPid=IntPtr.Size==8 ? unchecked((ulong)Marshal.ReadInt64(buffer,offset)) : unchecked((uint)Marshal.ReadInt32(buffer,offset));
+            if(rawPid==0 || rawPid>uint.MaxValue) return false;
+            IntPtr process=OpenProcess(0x00100000u,false,(uint)rawPid);
+            if(process==IntPtr.Zero) {
+              // ERROR_INVALID_PARAMETER means the process exited between the job snapshot and OpenProcess.
+              if(Marshal.GetLastWin32Error()==87) continue;
+              return false;
+            }
+            handles.Add(process);
+          }
+          return true;
+        } finally { Marshal.FreeHGlobal(buffer); }
+      }
+      return false;
+    }
     static ProcessResult RunCore(string exe,string[] args,string cwd,string stdout,string stderr,int seconds,
         CancellationToken cancellation,string environment,out bool cancelled) {
       cancelled=false;
@@ -328,6 +383,7 @@ namespace Evidence1 {
       }
       IntPtr job=IntPtr.Zero, o=IntPtr.Zero, e=IntPtr.Zero, input=IntPtr.Zero;
       IntPtr attributes=IntPtr.Zero, jobList=IntPtr.Zero, handleList=IntPtr.Zero, environmentBlock=IntPtr.Zero; bool initialized=false;
+      var ownedProcesses=new List<IntPtr>();
       Info pi=new Info(); var clock=new Stopwatch();
       try {
         job=CreateJobObject(IntPtr.Zero,null);
@@ -370,6 +426,7 @@ namespace Evidence1 {
         if(wait!=0 && wait!=258) throw new Exception("process_wait");
         clock.Stop(); uint exit;
         if(!GetExitCodeProcess(pi.Process,out exit)) throw new Exception("process_exit");
+        bool captured=CaptureJobProcessHandles(job,ownedProcesses);
         bool stopped=TerminateJobObject(job,124);
         var deadline=Stopwatch.StartNew(); var accounting=new Accounting();
         while(stopped && deadline.ElapsedMilliseconds<10000) {
@@ -377,14 +434,21 @@ namespace Evidence1 {
           if(accounting.Active==0) break;
           System.Threading.Thread.Sleep(20);
         }
+        bool signaled=captured;
+        foreach(var process in ownedProcesses) {
+          long remaining=10000-deadline.ElapsedMilliseconds;
+          uint memberWait=WaitForSingleObject(process,(uint)Math.Max(0,remaining));
+          if(memberWait!=0) { signaled=false; break; }
+        }
         return new ProcessResult { ExitCode=cancelled?130:(wait==258?124:(int)exit), TimedOut=wait==258&&!cancelled,
-          WallSeconds=clock.Elapsed.TotalSeconds, CleanupOk=stopped&&accounting.Active==0 };
+          WallSeconds=clock.Elapsed.TotalSeconds, CleanupOk=stopped&&accounting.Active==0&&signaled };
       } finally {
         if(pi.Process!=IntPtr.Zero) { TerminateProcess(pi.Process,124); WaitForSingleObject(pi.Process,10000); CloseHandle(pi.Process); }
         if(pi.Thread!=IntPtr.Zero) CloseHandle(pi.Thread);
         if(job!=IntPtr.Zero) CloseHandle(job);
         if(initialized) DeleteProcThreadAttributeList(attributes);
         foreach(var p in new[]{attributes,jobList,handleList,environmentBlock}) if(p!=IntPtr.Zero) Marshal.FreeHGlobal(p);
+        foreach(var process in ownedProcesses) if(process!=IntPtr.Zero) CloseHandle(process);
         foreach(var h in new[]{o,e,input}) if(h!=IntPtr.Zero&&h!=new IntPtr(-1)) CloseHandle(h);
       }
     }
@@ -761,7 +825,8 @@ function Invoke-E1Git([string]$Root, [string[]]$Arguments, [string]$Directory) {
     $id = [guid]::NewGuid().ToString('N')
     $stdout = Join-Path $Directory "$id.git.stdout.txt"
     $stderr = Join-Path $Directory "$id.git.stderr.txt"
-    $process = Invoke-E1OwnedProcess 'C:\Program Files\Git\cmd\git.exe' (@('--no-optional-locks', '-c', 'core.fsmonitor=false', '-C', $Root) + $Arguments) $Root $stdout $stderr 20
+    $git = Get-E1RuntimeCommand 'git' '2.55.0.windows.5' 'cmd\git.exe' 'C:\Program Files\Git\cmd\git.exe'
+    $process = Invoke-E1OwnedProcess $git (@('--no-optional-locks', '-c', 'core.fsmonitor=false', '-C', $Root) + $Arguments) $Root $stdout $stderr 20
     if ($process.ExitCode -ne 0 -or $process.TimedOut -or -not $process.CleanupOk) { throw 'git_failed' }
     if ((Get-Item -LiteralPath $stdout).Length -gt 1048576) { throw 'git_output_size' }
     return [IO.File]::ReadAllText($stdout).Trim()
@@ -914,6 +979,13 @@ function Assert-E1ToolPath([string]$Path) {
 }
 
 function Get-E1Java21 {
+    $canonical = Get-E1CanonicalRuntimeRoot 'jdk' '21.0.12.1+1'
+    if ($canonical) {
+        $java = Join-Path $canonical 'bin\java.exe'
+        Assert-E1ToolPath $java
+        if (-not (Test-Path -LiteralPath $java -PathType Leaf)) { throw 'java_toolchain' }
+        return @{ home = $canonical; executable = $java }
+    }
     $root = 'C:\Program Files\Eclipse Adoptium'
     Assert-E1ToolPath $root
     if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw 'java_toolchain' }
@@ -928,12 +1000,18 @@ function Get-E1Java21 {
 
 function Invoke-E1Java21Environment([string]$Directory, [scriptblock]$Action) {
     $oldHome = $env:JAVA_HOME; $oldPath = $env:PATH
+    $oldAndroidHome = $env:ANDROID_HOME; $oldAndroidSdkRoot = $env:ANDROID_SDK_ROOT
     try {
         $java = Get-E1Java21
         $env:JAVA_HOME = $java.home
-        $paths = @((Join-Path $java.home 'bin'), 'C:\Windows\System32', 'C:\Program Files\Git\cmd',
+        $paths = @((Join-Path $java.home 'bin'), 'C:\Windows\System32',
+            'C:\Evidence1Toolchain\git\2.55.0.windows.5\cmd', 'C:\Evidence1Toolchain\git\2.55.0.windows.5\bin',
+            'C:\Evidence1Toolchain\node\24.19.0', 'C:\Evidence1Toolchain\claude-code\2.1.238',
+            'C:\Evidence1Toolchain\codex-cli\0.154.0\bin', 'C:\Program Files\Git\cmd',
             'C:\Program Files\Git\bin', 'C:\Program Files\nodejs', (Join-Path $env:USERPROFILE 'AppData\Roaming\npm'), $oldPath)
         $env:PATH = ($paths | Where-Object { $_ }) -join ';'
+        $android = Get-E1CanonicalRuntimeRoot 'android-sdk' 'platform-36-build-tools-36.0.0'
+        if ($android) { $env:ANDROID_HOME = $android; $env:ANDROID_SDK_ROOT = $android }
         $id = [guid]::NewGuid().ToString('N')
         $stdout = Join-Path $Directory "$id.java.stdout.txt"; $stderr = Join-Path $Directory "$id.java.stderr.txt"
         $process = Invoke-E1OwnedProcess $java.executable @('-version') $Directory $stdout $stderr 15
@@ -945,7 +1023,10 @@ function Invoke-E1Java21Environment([string]$Directory, [scriptblock]$Action) {
         }
         if ($text -cnotmatch '(?m)^(?:openjdk|java) version "21(?:\.[0-9]+){0,3}(?:[-+][A-Za-z0-9.-]+)?"') { throw 'java_toolchain' }
         & $Action $java
-    } finally { $env:JAVA_HOME = $oldHome; $env:PATH = $oldPath }
+    } finally {
+        $env:JAVA_HOME = $oldHome; $env:PATH = $oldPath
+        $env:ANDROID_HOME = $oldAndroidHome; $env:ANDROID_SDK_ROOT = $oldAndroidSdkRoot
+    }
 }
 
 function Get-E1RecordsSnapshot([string]$HarnessDir) {
@@ -1054,7 +1135,7 @@ function Invoke-E1GuestValidation($Config, $Readiness, [string]$ReadinessHash, [
         Assert-E1NoGuestLive $source
         # Recheck freshness immediately before the only permitted executable dispatches.
         $null = Assert-E1Evidence $Readiness $ledger.value $attestation.value $Config.VMName $Config.TargetCommit $Config.TargetTree $attestationPath
-        $node = 'C:\Program Files\nodejs\node.exe'
+        $node = Get-E1RuntimeCommand 'node' '24.19.0' 'node.exe' 'C:\Program Files\nodejs\node.exe'
         if ($Config.Operation -ceq 'wet-v2') {
             $result.stage = 'guest_toolchain'
             $result = Invoke-E1Java21Environment $directory {

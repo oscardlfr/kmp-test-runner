@@ -99,7 +99,7 @@ node -e "console.log(JSON.stringify({type:'user',message:{role:'user',content:[{
 FINAL_ANSWER='The first attempt failed with 1 failure; retried with --rerun-tasks and it passed cleanly: 2/2 tests passed in the :fakemod module.
 
 KMP_EVAL_RESULT
-{"module": ":fakemod", "outcome_kind": "tests_executed", "total": 2, "passed": 2, "failed": 0}
+{"module": ":fakemod", "outcome_kind": "tests_executed", "test_count": 2, "passed": 2, "failed": 0}
 KMP_EVAL_RESULT_END'
 node -e "console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,duration_ms:10,num_turns:1,result:process.argv[1],permission_denials:[],usage:{input_tokens:2,output_tokens:2,cache_read_input_tokens:0,cache_creation_input_tokens:0}}))" "$FINAL_ANSWER"
 exit 0

@@ -26,6 +26,7 @@ import { dirname, join } from 'node:path';
 import { USAGE_DIMENSIONS, REQUIRED_CAPABILITY_KEYS, validateRuntimeAdapter } from './runtimes/contract.mjs';
 import { canonicalJsonSha256 } from './canonical-json.mjs';
 import claudeCodeRuntimeAdapter from './runtimes/claude-code.mjs';
+import codexCliRuntimeAdapter from './runtimes/codex-cli.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -40,6 +41,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
  * caller-supplied test override, which may not itself be null-prototype. */
 export const ADAPTERS_BY_RUNTIME_ID = Object.freeze(Object.assign(Object.create(null), {
   'claude-code': claudeCodeRuntimeAdapter,
+  'codex-cli': codexCliRuntimeAdapter,
 }));
 
 /** The one own-property-safe accessor for an `adaptersByRuntimeId` map -- used for BOTH the real,
@@ -83,6 +85,10 @@ function callAdapterSupportCheck(adapter, methodName, entry) {
 }
 
 const ID_RE = /^[a-z0-9][a-z0-9-]*$/;
+// Provider model identifiers are not internal registry IDs. OpenAI model names legitimately
+// contain dots (for example `gpt-5.6-terra`), so validate them with their own narrow grammar
+// while keeping runtime/profile identifiers on the original stricter contract.
+const MODEL_ID_RE = /^[a-z0-9][a-z0-9.-]*$/;
 
 // P1 architectural review (Codex round 2): was a local copy here, independently duplicated from
 // schemas.mjs's own (differently-scoped, wrongly-permissive) required-capabilities check --
@@ -141,6 +147,14 @@ function checkExactKeys(obj, allowedKeys, label, errors) {
 function checkId(value, label, errors) {
   if (typeof value !== 'string' || !ID_RE.test(value)) {
     fail(errors, `${label}: must be a lowercase id matching ${ID_RE} -- got ${JSON.stringify(value)}`);
+    return false;
+  }
+  return true;
+}
+
+function checkModelId(value, label, errors) {
+  if (typeof value !== 'string' || !MODEL_ID_RE.test(value)) {
+    fail(errors, `${label}: must be a lowercase model id matching ${MODEL_ID_RE} -- got ${JSON.stringify(value)}`);
     return false;
   }
   return true;
@@ -303,7 +317,7 @@ export function buildRegistries({ runtimes, models, executionProfiles }, { adapt
     if (runtimeIdOk && !registeredRuntimeIds.has(entry.runtime_id)) {
       fail(errors, `${label}.runtime_id: references unregistered runtime "${entry.runtime_id}"`);
     }
-    const modelIdOk = checkId(entry.model_id, `${label}.model_id`, errors);
+    const modelIdOk = checkModelId(entry.model_id, `${label}.model_id`, errors);
     if (runtimeIdOk && modelIdOk) {
       const pairKey = `${entry.runtime_id}:${entry.model_id}`;
       if (seenModelPairs.has(pairKey)) fail(errors, `${label}: duplicate (runtime_id, model_id) pair (${entry.runtime_id}, ${entry.model_id})`);
@@ -325,10 +339,19 @@ export function buildRegistries({ runtimes, models, executionProfiles }, { adapt
   // --- execution profiles ---
   const seenProfileIds = new Set();
   const profileDefaultCountByRuntime = new Map();
+  const enabledProfileCountByRuntime = new Map();
   executionProfiles.forEach((entry, i) => {
     const label = `executionProfiles[${i}]`;
-    checkExactKeys(entry, PROFILE_ENTRY_KEYS, label, errors);
-    if (!isPlainObject(entry)) return;
+    if (!isPlainObject(entry)) {
+      checkExactKeys(entry, PROFILE_ENTRY_KEYS, label, errors);
+      return;
+    }
+    for (const key of PROFILE_ENTRY_KEYS) {
+      if (!Object.prototype.hasOwnProperty.call(entry, key)) fail(errors, `${label}: missing required key "${key}"`);
+    }
+    for (const key of Object.keys(entry)) {
+      if (!PROFILE_ENTRY_KEYS.includes(key)) fail(errors, `${label}: unknown key "${key}"`);
+    }
     if (checkId(entry.id, `${label}.id`, errors)) {
       if (seenProfileIds.has(entry.id)) fail(errors, `${label}.id: duplicate execution profile id "${entry.id}"`);
       seenProfileIds.add(entry.id);
@@ -370,9 +393,12 @@ export function buildRegistries({ runtimes, models, executionProfiles }, { adapt
         fail(errors, `${idLabel}: policy_mode "not_applicable" must not require "softPermissionDenial" -- no policy hook governs this profile`);
       }
     }
-    if (supportedOk && entry.default === true && entry.enabled === true) {
+    if (supportedOk && entry.enabled === true) {
       for (const rid of entry.supported_runtime_ids) {
-        profileDefaultCountByRuntime.set(rid, (profileDefaultCountByRuntime.get(rid) ?? 0) + 1);
+        enabledProfileCountByRuntime.set(rid, (enabledProfileCountByRuntime.get(rid) ?? 0) + 1);
+        if (entry.default === true) {
+          profileDefaultCountByRuntime.set(rid, (profileDefaultCountByRuntime.get(rid) ?? 0) + 1);
+        }
       }
     }
   });
@@ -387,7 +413,10 @@ export function buildRegistries({ runtimes, models, executionProfiles }, { adapt
     const modelCount = modelDefaultCountByRuntime.get(runtimeId) ?? 0;
     if (modelCount !== 1) fail(errors, `models: runtime "${runtimeId}" must have exactly one enabled default model, found ${modelCount}`);
     const profileCount = profileDefaultCountByRuntime.get(runtimeId) ?? 0;
-    if (profileCount !== 1) fail(errors, `executionProfiles: runtime "${runtimeId}" must have exactly one enabled default execution profile, found ${profileCount}`);
+    const enabledProfileCount = enabledProfileCountByRuntime.get(runtimeId) ?? 0;
+    if (profileCount !== 1 && !(profileCount === 0 && enabledProfileCount === 1)) {
+      fail(errors, `executionProfiles: runtime "${runtimeId}" must have exactly one enabled default execution profile or exactly one enabled compatible profile, found ${profileCount} defaults among ${enabledProfileCount} compatible profiles`);
+    }
   }
 
   if (errors.length > 0) throw new Error(`registries.mjs: invalid registries -- ${errors.join('; ')}`);
@@ -405,7 +434,11 @@ export function buildRegistries({ runtimes, models, executionProfiles }, { adapt
   const candidate = deepFreeze({
     runtimes: runtimes.map((e) => ({ ...e })),
     models: models.map((e) => ({ ...e, required_capabilities: [...e.required_capabilities], usage_dimensions: [...e.usage_dimensions] })),
-    executionProfiles: executionProfiles.map((e) => ({ ...e, supported_runtime_ids: [...e.supported_runtime_ids], required_capabilities: [...e.required_capabilities] })),
+    executionProfiles: executionProfiles.map((e) => ({
+      ...e,
+      supported_runtime_ids: [...e.supported_runtime_ids],
+      required_capabilities: [...e.required_capabilities],
+    })),
   });
 
   // --- cross-validate against the registered adapter (only reachable once every shape check above is clean) ---
@@ -591,9 +624,11 @@ export function resolveSelection({ runtimeId = null, modelId = null, executionPr
     if (executionProfile == null) return { ok: false, reason: `unknown or unsupported --execution-profile "${executionProfileId}" for runtime "${runtime.runtime_id}"` };
     if (executionProfile.enabled !== true) return { ok: false, reason: `--execution-profile "${executionProfileId}" is disabled` };
   } else {
-    const defaults = compatibleProfiles.filter((p) => p.enabled === true && p.default === true);
-    if (defaults.length !== 1) return { ok: false, reason: `no unique default execution profile is available for runtime "${runtime.runtime_id}" (found ${defaults.length})` };
-    [executionProfile] = defaults;
+    const enabledCompatible = compatibleProfiles.filter((p) => p.enabled === true);
+    const defaults = enabledCompatible.filter((p) => p.default === true);
+    if (defaults.length === 1) [executionProfile] = defaults;
+    else if (defaults.length === 0 && enabledCompatible.length === 1) [executionProfile] = enabledCompatible;
+    else return { ok: false, reason: `no unique default execution profile is available for runtime "${runtime.runtime_id}" (found ${defaults.length} defaults among ${enabledCompatible.length} compatible profiles)` };
   }
 
   const adapter = getAdapterForRuntimeId(ADAPTERS_BY_RUNTIME_ID, runtime.runtime_id);

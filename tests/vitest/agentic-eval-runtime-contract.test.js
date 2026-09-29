@@ -88,7 +88,7 @@ function validObservation(overrides = {}) {
     schema: 1,
     runtime: { id: 'synthetic-runtime', protocolVersion: 1 },
     process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 500n },
-    session: { initPresent: true, modelResolved: 'synthetic-model', sessionIdObserved: 'sess-synthetic-0001', runtimeVersion: '9.9.9', toolProfileMatchesExpected: true },
+    session: { initPresent: true, modelResolved: 'synthetic-model', sessionIdObserved: 'sess-synthetic-0001', runtimeVersion: '9.9.9', toolProfileMatchesExpected: true, modelSnapshot: 'synthetic-model' },
     transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
     terminal: { present: true, isError: false, turnCount: 2, finalText: 'done', resultSubtype: 'success', usage: { input: 1, cached_input: 2, cache_write: 3, output: 4, reasoning_output: null } },
     toolAttempts: [validToolAttempt()],
@@ -1022,7 +1022,7 @@ describe('Stage 5 -- synthetic multi-source and typed-step fixtures both satisfy
       session: {
         initPresent: true, modelResolved: primaryStream.modelResolved ?? null,
         sessionIdObserved: primaryStream.sessionId ?? null, runtimeVersion: 'synthetic-multi-source-v1',
-        toolProfileMatchesExpected: true,
+        toolProfileMatchesExpected: true, modelSnapshot: null,
       },
       transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
       terminal: {
@@ -1077,7 +1077,7 @@ describe('Stage 5 -- synthetic multi-source and typed-step fixtures both satisfy
       session: {
         initPresent: begin != null, modelResolved: begin?.modelResolved ?? null,
         sessionIdObserved: begin?.sessionId ?? null, runtimeVersion: 'synthetic-typed-step-v1',
-        toolProfileMatchesExpected: true,
+        toolProfileMatchesExpected: true, modelSnapshot: null,
       },
       transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
       terminal: {
@@ -1284,7 +1284,7 @@ function minimalConsistentObservation(overrides = {}) {
     schema: 1,
     runtime: { id: 'synthetic-runtime', protocolVersion: 1 },
     process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1n },
-    session: { initPresent: true, modelResolved: null, sessionIdObserved: null, runtimeVersion: null, toolProfileMatchesExpected: true },
+    session: { initPresent: true, modelResolved: null, sessionIdObserved: null, runtimeVersion: null, toolProfileMatchesExpected: true, modelSnapshot: null },
     // No structural issues at all -- absence of init_count/result_count means exactly one init and
     // one result event were found, so session.initPresent/terminal.present must both be true.
     transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
@@ -1496,7 +1496,7 @@ describe('validateObservation -- strict/effective structuralIssues relation, key
 
   it('rejects an effective structural issue that does not appear in strict at all', () => {
     const observation = minimalConsistentObservation({
-      session: { initPresent: false, modelResolved: null, sessionIdObserved: null, runtimeVersion: null, toolProfileMatchesExpected: true },
+      session: { initPresent: false, modelResolved: null, sessionIdObserved: null, runtimeVersion: null, toolProfileMatchesExpected: true, modelSnapshot: null },
       transcript: { malformedLineCount: 0, strictStructuralIssues: [{ type: 'init_count', count: 0 }], effectiveStructuralIssues: [{ type: 'init_not_first', initIndex: 3 }], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
     });
     expect(validateObservation(observation).ok).toBe(false);
@@ -1622,7 +1622,7 @@ describe('validateObservation -- strictIncompleteToolResults eventIndex-set matc
 describe('validateObservation -- session.initPresent cross-checked against strictStructuralIssues\' init_count (round 4)', () => {
   it('rejects initPresent:false with no init_count issue reported at all', () => {
     const observation = minimalConsistentObservation({
-      session: { initPresent: false, modelResolved: null, sessionIdObserved: null, runtimeVersion: null, toolProfileMatchesExpected: true },
+      session: { initPresent: false, modelResolved: null, sessionIdObserved: null, runtimeVersion: null, toolProfileMatchesExpected: true, modelSnapshot: null },
     });
     expect(validateObservation(observation).ok).toBe(false);
   });
@@ -1636,7 +1636,7 @@ describe('validateObservation -- session.initPresent cross-checked against stric
 
   it('accepts initPresent:false paired with a genuine init_count:0 issue', () => {
     const observation = minimalConsistentObservation({
-      session: { initPresent: false, modelResolved: null, sessionIdObserved: null, runtimeVersion: null, toolProfileMatchesExpected: true },
+      session: { initPresent: false, modelResolved: null, sessionIdObserved: null, runtimeVersion: null, toolProfileMatchesExpected: true, modelSnapshot: null },
       transcript: { malformedLineCount: 0, strictStructuralIssues: [{ type: 'init_count', count: 0 }], effectiveStructuralIssues: [{ type: 'init_count', count: 0 }], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
     });
     expect(validateObservation(observation).ok).toBe(true);

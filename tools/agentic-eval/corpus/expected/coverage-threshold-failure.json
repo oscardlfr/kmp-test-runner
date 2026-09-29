@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "id": "coverage-threshold-failure",
+  "expected_outcome": "The agent discovers NowInAndroid's :core:domain module, confirms its 4 unit tests pass cleanly, discovers it leaves 23 lines uncovered (exceeding a 15-line budget), and reports outcome_kind coverage_threshold_exceeded with the accurate missed_lines/threshold/modules_contributing.",
+  "expected": {
+    "module": ":core:domain",
+    "outcome_kind": "coverage_threshold_exceeded",
+    "kmp_test": {
+      "tests": {
+        "total": 1,
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "individual_total": 4
+      },
+      "exit_code": 1,
+      "coverage": {
+        "tool": "auto",
+        "min_missed_lines": 15,
+        "missed_lines": 23,
+        "with_data": [
+          ":core:domain"
+        ]
+      }
+    },
+    "gradle": {
+      "allowed_invocations": [
+        ":core:domain:testDemoDebugUnitTest"
+      ],
+      "evidence_task": ":core:domain:testDemoDebugUnitTest",
+      "tests": {
+        "total": 2,
+        "passed": 2,
+        "failed": 0
+      },
+      "exit_code": 0
+    }
+  },
+  "first_useful_signal_predicate": {
+    "description": "first well-formed kmp_test evidence confirming :core:domain's coverage gate fired at 23 missed lines > 15"
+  }
+}

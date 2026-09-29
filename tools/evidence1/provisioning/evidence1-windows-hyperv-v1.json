@@ -1,0 +1,92 @@
+{
+  "schema_version": 2,
+  "profile_id": "evidence1-windows-hyperv-v1",
+  "platform": "windows",
+  "hypervisor": "hyper-v",
+  "vm": {
+    "name": "Evidence1-Runner",
+    "root": "C:\\kmp-eval\\hyperv",
+    "generation": 2,
+    "processor_count": 4,
+    "startup_memory_bytes": 8589934592,
+    "dynamic_memory": false,
+    "vhd_size_bytes": 137438953472,
+    "secure_boot": true,
+    "secure_boot_template": "MicrosoftWindows",
+    "v_tpm": true,
+    "automatic_checkpoints": false,
+    "checkpoint_type": "ProductionOnly"
+  },
+  "network": {
+    "create_state": "disconnected",
+    "bootstrap_state": "disconnected",
+    "checkpoint_state": "disconnected"
+  },
+  "os": {
+    "family": "windows",
+    "edition": "Windows 11 Pro",
+    "architecture": "x64",
+    "installation_boundary": "operator"
+  },
+  "guest": {
+    "computer_name": "Evidence1Runner",
+    "local_user": "Evidence1",
+    "toolchain_root": "C:\\Evidence1Toolchain",
+    "staging_root": "C:\\Evidence1Provisioning\\staging",
+    "runtime_state_root": "C:\\Evidence1RuntimeState",
+    "android_sdk_root": "C:\\Evidence1Toolchain\\android-sdk\\platform-36-build-tools-36.0.0",
+    "codex_home": "C:\\Evidence1RuntimeState\\codex",
+    "claude_config_dir": "C:\\Evidence1RuntimeState\\claude",
+    "forbidden_environment_names": [
+      "ANTHROPIC_API_KEY",
+      "ANTHROPIC_AUTH_TOKEN",
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "OPENAI_API_KEY",
+      "AZURE_OPENAI_API_KEY",
+      "CODEX_API_KEY",
+      "GOOGLE_API_KEY",
+      "GH_TOKEN",
+      "GITHUB_TOKEN",
+      "AWS_ACCESS_KEY_ID",
+      "AWS_SECRET_ACCESS_KEY",
+      "AWS_SESSION_TOKEN",
+      "CLAUDE_CODE_USE_BEDROCK",
+      "CLAUDE_CODE_USE_VERTEX",
+      "CLAUDE_CODE_USE_FOUNDRY"
+    ],
+    "forbidden_environment_prefixes": ["COPILOT_"],
+    "known_auth_storage_paths": [
+      "C:\\Evidence1RuntimeState\\codex",
+      "C:\\Evidence1RuntimeState\\claude",
+      "%USERPROFILE%\\.codex",
+      "%USERPROFILE%\\.claude",
+      "%USERPROFILE%\\.claude.json",
+      "%LOCALAPPDATA%\\OpenAI",
+      "%APPDATA%\\OpenAI",
+      "%LOCALAPPDATA%\\Claude",
+      "%APPDATA%\\Claude"
+    ]
+  },
+  "checkpoint": {
+    "toolchain_name": "Evidence1-ready-toolchain-v1",
+    "required_vm_state": "Off",
+    "max_verify_age_seconds": 900
+  },
+  "toolchain": [
+    { "id": "git", "version": "2.55.0.windows.5", "architecture": "x64", "distribution": "git-for-windows-install-root", "artifact_format": "normalized-flat-zip", "install_handler": "git-portable-zip", "path_relative": "cmd", "command_relative": "cmd\\git.exe", "version_argument": "--version", "version_pattern": "^git version 2\\.55\\.0\\.windows\\.5$", "version_capture_pattern": "^git version (?<version>2\\.55\\.0\\.windows\\.5)$", "auth_in_base_image": false },
+    { "id": "node", "version": "24.19.0", "architecture": "x64", "distribution": "official-node-windows-binary-root", "artifact_format": "normalized-flat-zip", "install_handler": "node-portable-zip", "path_relative": "", "command_relative": "node.exe", "version_argument": "--version", "version_pattern": "^v24\\.19\\.0$", "version_capture_pattern": "^v(?<version>24\\.19\\.0)$", "secondary_commands": [{ "id": "npm", "command_relative": "npm.cmd", "version_argument": "--version", "version_pattern": "^11\\.17\\.0$", "version_capture_pattern": "^(?<version>11\\.17\\.0)$" }], "auth_in_base_image": false },
+    { "id": "jdk", "version": "21.0.12.1+1", "architecture": "x64", "distribution": "eclipse-temurin-jdk", "artifact_format": "normalized-flat-zip", "install_handler": "jdk-portable-zip", "path_relative": "bin", "command_relative": "bin\\java.exe", "version_argument": "-version", "version_pattern": "version \\\"21\\.0\\.12\\.1\\\"", "version_capture_pattern": "(?m)^(?:openjdk|java) version \\\"(?<version>21\\.0\\.12\\.1)\\\"", "auth_in_base_image": false },
+    { "id": "android-sdk", "version": "platform-36-build-tools-36.0.0", "architecture": "x64", "distribution": "official-android-sdk-package-closure", "artifact_format": "normalized-flat-zip", "install_handler": "android-sdk-zip", "path_relative": "platform-tools", "command_relative": "platform-tools\\adb.exe", "version_argument": "version", "version_pattern": "^Android Debug Bridge version [0-9]+\\.[0-9]+\\.[0-9]+(?:[\\s\\S]*)$", "version_capture_pattern": "^Android Debug Bridge version (?<version>[0-9]+\\.[0-9]+\\.[0-9]+)", "required_files": ["build-tools\\36.0.0\\aapt2.exe", "platforms\\android-36\\android.jar", "platform-tools\\adb.exe"], "auth_in_base_image": false },
+    { "id": "claude-code", "version": "2.1.238", "architecture": "x64", "distribution": "official-claude-code-npm-package-closure", "artifact_format": "normalized-flat-zip", "install_handler": "claude-npm-zip", "path_relative": "", "command_relative": "claude.cmd", "version_argument": "--version", "version_pattern": "^2\\.1\\.238(?: |$)", "version_capture_pattern": "^(?<version>2\\.1\\.238)(?: |$)", "auth_in_base_image": false },
+    { "id": "codex-cli", "version": "0.153.4", "architecture": "x64", "distribution": "official-codex-npm-package-binary", "artifact_format": "raw-executable", "install_handler": "codex-single-exe", "path_relative": "", "command_relative": "codex.exe", "version_argument": "--version", "version_pattern": "^codex-cli 0\\.153\\.4$", "version_capture_pattern": "^codex-cli (?<version>0\\.153\\.4)$", "authenticode_subject": "CN=\"OpenAI OpCo, LLC\", O=\"OpenAI OpCo, LLC\", L=San Francisco, S=California, C=US", "auth_in_base_image": false }
+  ],
+  "phases": [
+    "validate-inputs",
+    "create-vm",
+    "operator-install-os",
+    "verify-and-seal-post-os",
+    "bootstrap-toolchain",
+    "verify-offline",
+    "checkpoint-toolchain"
+  ]
+}

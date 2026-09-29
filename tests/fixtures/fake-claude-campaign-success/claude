@@ -21,6 +21,19 @@ fi
 # "bypassPermissions" (no hook events, no sidecar) -- see those two fixtures' own header comments
 # for why each shape is the genuine, profile-correct one. Same :fakemod no_applicable_tests outcome
 # either way.
+#
+# Scenario-generic (WO-A2 step 8, design.md (i)): which real project/module this fixture drives
+# kmp-test/Gradle against is resolved from 5 KMP_FAKE_SCENARIO_* env vars, every one defaulting to
+# the exact literal value this fixture always hardcoded (coverage-threshold-failure-v2's own
+# :core:domain) -- an invocation that sets none of them behaves byte-for-byte as before. A future
+# v2.1 scenario (e.g. nowinandroid-core-common) exercises this SAME fixture by setting only these
+# 5 variables, never editing this file.
+FAKE_SCENARIO_PROJECT_NAME="${KMP_FAKE_SCENARIO_PROJECT_NAME:-nowinandroid}"
+FAKE_SCENARIO_INCLUDE_MARKER="${KMP_FAKE_SCENARIO_INCLUDE_MARKER:-include(\":core:domain\")}"
+FAKE_SCENARIO_MODULE="${KMP_FAKE_SCENARIO_MODULE:-:core:domain}"
+FAKE_SCENARIO_MIN_MISSED_LINES="${KMP_FAKE_SCENARIO_MIN_MISSED_LINES:-15}"
+FAKE_SCENARIO_GRADLE_TASKS="${KMP_FAKE_SCENARIO_GRADLE_TASKS:-:core:domain:testDemoDebugUnitTest :core:domain:createDemoDebugUnitTestCoverageReport}"
+
 write_sidecar() {
   local kind="$1" toolUseId="$2" recordJson="$3"
   node -e '
@@ -33,6 +46,20 @@ const dir = path.join(process.env.KMP_EVAL_JUNIT_EVIDENCE_DIR, kind);
 fs.mkdirSync(dir, { recursive: true });
 fs.writeFileSync(path.join(dir, idHash + ".json"), recordJson);
 ' -- "$kind" "$toolUseId" "$recordJson"
+}
+
+# Provider-free exec gate: true only when cwd is the real materialized workspace for the
+# CURRENTLY-CONFIGURED scenario (FAKE_SCENARIO_PROJECT_NAME/FAKE_SCENARIO_INCLUDE_MARKER above --
+# never any synthetic/temp source repo any existing test uses). When true, this fixture stops
+# emitting the hardcoded :fakemod literal below and genuinely invokes the real product/gradle
+# against FAKE_SCENARIO_MODULE instead, relaying whatever really happens to the existing grading
+# pipeline.
+is_real_scenario_workspace() {
+  [ -f "$PWD/gradlew.bat" ] || return 1
+  [ -f "$PWD/settings.gradle.kts" ] || return 1
+  grep -q "rootProject.name = \"$FAKE_SCENARIO_PROJECT_NAME\"" "$PWD/settings.gradle.kts" || return 1
+  grep -q "$FAKE_SCENARIO_INCLUDE_MARKER" "$PWD/settings.gradle.kts" || return 1
+  return 0
 }
 
 HAS_PLUGIN_DIR=0
@@ -72,6 +99,87 @@ if [ "$HAS_PLUGIN_DIR" = "1" ]; then
 else
   echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakeskill1","name":"Skill","input":{"skill":"kmp-test-runner"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
   echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"<tool_use_error>Unknown skill: kmp-test-runner</tool_use_error>","is_error":true,"tool_use_id":"toolu_fakeskill1"}]}}'
+fi
+
+if is_real_scenario_workspace; then
+  if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+    REAL_CMD="kmp-test parallel --module-filter $FAKE_SCENARIO_MODULE --min-missed-lines $FAKE_SCENARIO_MIN_MISSED_LINES --json --project-root ."
+  else
+    REAL_CMD="./gradlew $FAKE_SCENARIO_GRADLE_TASKS --offline --console=plain"
+  fi
+
+  node -e "console.log(JSON.stringify({type:'assistant',message:{model:'claude-sonnet-5',content:[{type:'tool_use',id:'toolu_fakebash1',name:'Bash',input:{command:process.argv[1],description:'fake'}}],usage:{input_tokens:1,output_tokens:1,cache_read_input_tokens:0,cache_creation_input_tokens:0}}}))" "$REAL_CMD"
+
+  if [ "$PERMISSION_MODE" = "dontAsk" ]; then
+    echo '{"type":"system","subtype":"hook_started","hook_id":"fake-hook-1","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse"}'
+    echo '{"type":"system","subtype":"hook_response","hook_id":"fake-hook-1","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse","output":"{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"permissionDecisionReason\":\"fake\"}}","exit_code":0,"outcome":"success"}'
+    SIDECAR_JSON=$(node -e "console.log(JSON.stringify({decision:'allow',command:process.argv[1]}))" "$REAL_CMD")
+    write_sidecar decisions toolu_fakebash1 "$SIDECAR_JSON"
+  fi
+
+  if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+    # The real kmp-test (migrated subcommands, e.g. `parallel`) writes failure diagnostics to
+    # stderr BEFORE the JSON envelope whenever it exits non-zero (script-dispatcher.js's
+    # formatFailureDiagnostics call, in the migrated-envelope path) --
+    # coverage_threshold_exceeded is exit_code 1, so this is the real shape, not an edge case.
+    # Capturing merged like the free branch below would make the envelope unparseable. Parse
+    # stdout alone; still relay both streams combined in the transcript (stderr first, matching
+    # the real write order), same as what a real Bash tool invocation shows the agent.
+    REAL_STDERR_FILE=$(mktemp)
+    REAL_STDOUT=$(eval "$REAL_CMD" 2>"$REAL_STDERR_FILE")
+    REAL_STDERR=$(cat "$REAL_STDERR_FILE")
+    rm -f "$REAL_STDERR_FILE"
+    if [ -n "$REAL_STDERR" ]; then
+      REAL_OUTPUT="$REAL_STDERR
+$REAL_STDOUT"
+    else
+      REAL_OUTPUT="$REAL_STDOUT"
+    fi
+  else
+    REAL_OUTPUT=$(eval "$REAL_CMD" 2>&1)
+    REAL_STDOUT="$REAL_OUTPUT"
+  fi
+  node -e "console.log(JSON.stringify({type:'user',message:{role:'user',content:[{type:'tool_result',content:process.argv[1],tool_use_id:'toolu_fakebash1'}]}}))" "$REAL_OUTPUT"
+
+  if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+    FINAL_ANSWER=$(node -e '
+const raw = process.argv[1];
+const module = process.argv[2];
+const threshold = Number(process.argv[3]);
+let parsed = null;
+try { parsed = JSON.parse(raw); } catch { parsed = null; }
+const hasEnvelope = parsed && typeof parsed === "object" && typeof parsed.exit_code === "number" && parsed.tests && parsed.coverage;
+if (!hasEnvelope) {
+  console.log("The " + module + " check did not produce a result I could make sense of.");
+} else {
+  // test_count/passed are individual_total, not tests.total -- the latter counts Gradle TASKS (1
+  // for this module), while the grader canonicalizes against individual_total (graders.mjs, the
+  // per-test-case count) for every outcome kind below. H15 fix: the requested field is named
+  // test_count, never total, so an agent can never reasonably copy the differently-scoped total
+  // field name straight from the kmp-test tool output by mistake. No apostrophes in this comment
+  // block -- it lives inside a single-quoted bash string; one would prematurely close it.
+  const t = parsed.tests;
+  let block;
+  if ((t.failed || 0) > 0) {
+    block = { module, outcome_kind: "tests_failed", test_count: t.individual_total, passed: t.individual_total - t.failed, failed: t.failed };
+  } else if ((t.individual_total || 0) === 0) {
+    block = { module, outcome_kind: "no_applicable_tests" };
+  } else {
+    const missed = parsed.coverage && typeof parsed.coverage.missed_lines === "number" ? parsed.coverage.missed_lines : null;
+    if (missed !== null && missed > threshold) {
+      block = { module, outcome_kind: "coverage_threshold_exceeded", test_count: t.individual_total, passed: t.individual_total, failed: 0, missed_lines: missed, threshold, modules_contributing: parsed.coverage.modules_contributing };
+    } else {
+      block = { module, outcome_kind: "tests_executed", test_count: t.individual_total, passed: t.individual_total, failed: 0 };
+    }
+  }
+  console.log("Investigated " + module + ".\n\nKMP_EVAL_RESULT\n" + JSON.stringify(block) + "\nKMP_EVAL_RESULT_END");
+}
+' "$REAL_STDOUT" "$FAKE_SCENARIO_MODULE" "$FAKE_SCENARIO_MIN_MISSED_LINES")
+  else
+    FINAL_ANSWER="Ran the $FAKE_SCENARIO_MODULE unit tests and coverage report directly via Gradle for this condition (no product access)."
+  fi
+  node -e "console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,duration_ms:10,num_turns:1,result:process.argv[1],permission_denials:[],usage:{input_tokens:2,output_tokens:2,cache_read_input_tokens:0,cache_creation_input_tokens:0}}))" "$FINAL_ANSWER"
+  exit 0
 fi
 
 echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakebash1","name":"Bash","input":{"command":"kmp-test parallel --module-filter :fakemod --json","description":"fake"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'

@@ -26,6 +26,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveBash } from '../../tools/agentic-eval/resolve-bash.mjs';
+import { createFakeClaudeCommandPath } from './_fake-claude-command.js';
 import { validateAcceptedRunAuditSidecar, crossValidateAcceptedRunAuditAgainstRecord } from '../../tools/agentic-eval/accepted-run-audit.mjs';
 import { LATEST_RUN_SCHEMA } from '../../tools/agentic-eval/schemas.mjs';
 
@@ -36,6 +37,7 @@ const FIXTURES_DIR = path.join(__dirname, '..', 'fixtures');
 
 const DESIGN_ID = 'claude-2x2-williams-v1';
 const FREE_BASELINE_DESIGN_ID = 'claude-product-vs-free-baseline-v1';
+const CODEX_DESIGN_ID = 'codex-product-vs-free-baseline-v1';
 const STRICT = 'strict-policy-v1';
 const UNRESTRICTED = 'sandboxed-unrestricted-v1';
 const EXPECTED_LABEL_ORDER = ['A', 'B', 'D', 'C', 'B', 'C', 'A', 'D', 'C', 'D', 'B', 'A', 'D', 'A', 'C', 'B'];
@@ -61,6 +63,7 @@ const PRODUCT_EXECUTABLE_NAMES = [
 
 let runsRoot;
 let isolatedTmp;
+let commandShimRoot;
 let sourceRepoDir;
 let scenariosDir;
 let pinnedCommit;
@@ -79,6 +82,7 @@ function gitViaBash(argv, cwd) {
 beforeEach(() => {
   runsRoot = mkdtempSync(path.join(os.tmpdir(), 'aecc-runs-root-'));
   isolatedTmp = mkdtempSync(path.join(os.tmpdir(), 'aecc-isolated-tmp-'));
+  commandShimRoot = mkdtempSync(path.join(os.tmpdir(), 'aecc-claude-cmd-shim-'));
 
   sourceRepoDir = mkdtempSync(path.join(os.tmpdir(), 'aecc-source-'));
   gitViaBash(['init', '-q'], sourceRepoDir);
@@ -139,6 +143,7 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(runsRoot, { recursive: true, force: true });
   rmSync(isolatedTmp, { recursive: true, force: true });
+  rmSync(commandShimRoot, { recursive: true, force: true });
   rmSync(sourceRepoDir, { recursive: true, force: true });
   rmSync(scenariosDir, { recursive: true, force: true });
 });
@@ -161,9 +166,25 @@ function fakeClaudeEnv(scenario, { productCliVisible = true } = {}) {
   const basePath = productCliVisible
     ? (process.env.PATH ?? process.env.Path ?? '')
     : withoutProductExecutablePathEntries(process.env.PATH ?? process.env.Path ?? '', delimiter);
+  const command = createFakeClaudeCommandPath({ fixtureDir: fakeDir, basePath, shimRoot: commandShimRoot });
   return {
     ...process.env,
-    PATH: `${fakeDir}${delimiter}${basePath}`,
+    PATH: command.path,
+    KMP_EVAL_RUNS_ROOT: runsRoot,
+    KMP_EVAL_SCENARIOS_DIR: scenariosDir,
+    TEMP: isolatedTmp,
+    TMP: isolatedTmp,
+    TMPDIR: isolatedTmp,
+  };
+}
+
+function fakeCodexEnv() {
+  const fakeDir = path.join(FIXTURES_DIR, 'fake-codex-campaign-success');
+  chmodSync(path.join(fakeDir, 'codex'), 0o755);
+  const delimiter = process.platform === 'win32' ? ';' : ':';
+  return {
+    ...process.env,
+    PATH: `${fakeDir}${delimiter}${withoutProductExecutablePathEntries(process.env.PATH ?? process.env.Path ?? '', delimiter)}`,
     KMP_EVAL_RUNS_ROOT: runsRoot,
     KMP_EVAL_SCENARIOS_DIR: scenariosDir,
     TEMP: isolatedTmp,
@@ -280,13 +301,22 @@ function writeValidAttestation(overrides = {}) {
 }
 
 function runArgs(extra = []) {
-  return ['run', '--scenario', SCENARIO_ID, '--source-repo-dir', sourceRepoDir, '--model', 'claude-sonnet-5', ...extra];
+  const timeout = extra.includes('--campaign-design') && !extra.includes('--timeout-ms')
+    ? ['--timeout-ms', '900000']
+    : [];
+  return ['run', '--scenario', SCENARIO_ID, '--source-repo-dir', sourceRepoDir, '--model', 'claude-sonnet-5', ...extra, ...timeout];
 }
 
-const CAMPAIGN_FLAGS = (attestationPath) => ['--campaign-design', DESIGN_ID, '--isolation-attestation-file', attestationPath];
-const FREE_BASELINE_CAMPAIGN_FLAGS = (attestationPath) => ['--campaign-design', FREE_BASELINE_DESIGN_ID, '--isolation-attestation-file', attestationPath];
+const CAMPAIGN_FLAGS = (attestationPath) => ['--campaign-design', DESIGN_ID, '--isolation-attestation-file', attestationPath, '--timeout-ms', '900000'];
+const FREE_BASELINE_CAMPAIGN_FLAGS = (attestationPath) => ['--campaign-design', FREE_BASELINE_DESIGN_ID, '--isolation-attestation-file', attestationPath, '--timeout-ms', '900000'];
 
 describe('1. cli.mjs run --campaign-design -- dry-run plan preview', () => {
+  it('accepts the injected provider timeout in the campaign plan', async () => {
+    const attestationPath = writeValidAttestation();
+    const result = await runCli(runArgs(['--seed', '7', ...CAMPAIGN_FLAGS(attestationPath), '--dry-run']), fakeClaudeEnv('run-scenario-success'));
+    expect(result.status, result.stderr || result.stdout).toBe(0);
+    expect(result.parsed.timeout_ms).toBe(900000);
+  });
   it.each([
     ['claude-product-canary-v1', 'A', 'current-skill', 'product-assisted'],
     ['claude-free-baseline-canary-v1', 'B', 'no-skill', 'free-baseline-no-product'],
@@ -294,7 +324,7 @@ describe('1. cli.mjs run --campaign-design -- dry-run plan preview', () => {
     const attestationPath = writeValidAttestation();
     const result = await runCli([
       'run', '--scenario', 'coverage-threshold-failure-v2', '--source-repo-dir', '/definitely/does/not/exist',
-      '--seed', '7', '--campaign-design', designId, '--isolation-attestation-file', attestationPath, '--dry-run',
+      '--seed', '7', '--campaign-design', designId, '--isolation-attestation-file', attestationPath, '--timeout-ms', '900000', '--dry-run',
     ], {
       ...fakeClaudeEnv('run-scenario-success'),
       KMP_EVAL_SCENARIOS_DIR: path.join(REPO_ROOT, 'tools', 'agentic-eval', 'corpus', 'scenarios'),
@@ -356,6 +386,23 @@ describe('1. cli.mjs run --campaign-design -- dry-run plan preview', () => {
     expect(a.parsed.plan).toEqual(b.parsed.plan);
   });
 
+  it('selects one registered nonzero cell by its original order_index without spawning in dry-run', async () => {
+    const attestationPath = writeValidAttestation();
+    const result = await runCli([
+      'run', '--scenario', SCENARIO_ID, '--source-repo-dir', '/definitely/does/not/exist', '--seed', '7',
+      ...CAMPAIGN_FLAGS(attestationPath), '--campaign-cell-index', '7', '--dry-run',
+    ], fakeClaudeEnv('run-scenario-success'));
+    expect(result.status, result.stderr || result.stdout).toBe(0);
+    expect(result.parsed.planned_sessions).toBe(1);
+    expect(result.parsed.plan).toHaveLength(1);
+    expect(result.parsed.plan[0]).toMatchObject({
+      order_index: 7, repetition_index: 1, campaign_cell_label: 'D',
+      condition: CELL_DEFINITIONS.D.condition, execution_profile_id: CELL_DEFINITIONS.D.execution_profile_id,
+      product_access_mode: CELL_DEFINITIONS.D.product_access_mode,
+    });
+    expect(listEvidenceFiles('scenario')).toHaveLength(0);
+  });
+
   it('never spawns a live session (no evidence, no journal, no rejected dirs created)', async () => {
     const attestationPath = writeValidAttestation();
     await runCli(['run', '--scenario', SCENARIO_ID, '--source-repo-dir', '/definitely/does/not/exist', '--seed', '1', ...CAMPAIGN_FLAGS(attestationPath), '--dry-run'], fakeClaudeEnv('run-scenario-success'));
@@ -397,6 +444,24 @@ describe('2. cli.mjs run --campaign-design -- argument validation (fail closed b
     expect(result.parsed).toBeNull();
     expect(result.stderr).not.toMatch(/Unknown flag/);
   }
+
+  it.each(['-1', '16', 'not-an-index'])('rejects campaign-cell-index %s before journal, source materialization, or spawn', async (index) => {
+    const attestationPath = writeValidAttestation();
+    const result = await runCli(runArgs([
+      '--seed', '1', ...CAMPAIGN_FLAGS(attestationPath), '--campaign-cell-index', index, '--dry-run',
+    ]), fakeClaudeEnv('run-scenario-success'));
+    expectRealCampaignRejection(result);
+    expect(result.stderr).toMatch(/campaign-cell-index/i);
+    expect(listEvidenceFiles('scenario')).toHaveLength(0);
+    expect(existsSync(path.join(runsRoot, 'agentic-eval-rejected'))).toBe(false);
+  });
+
+  it('rejects campaign-cell-index without campaign-design before any I/O', async () => {
+    const result = await runCli(runArgs(['--seed', '1', '--campaign-cell-index', '0', '--dry-run']), fakeClaudeEnv('run-scenario-success'));
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/campaign-cell-index.*campaign-design/i);
+    expect(listEvidenceFiles('scenario')).toHaveLength(0);
+  });
 
   it('rejects --campaign-design combined with --execution-profile, before any plan is printed', async () => {
     const attestationPath = writeValidAttestation();
@@ -504,7 +569,6 @@ describe('4. cli.mjs run --campaign-design -- fake-runtime campaign execution (r
     const gradleSeedDir = path.join(isolatedTmp, 'gradle-seed');
     mkdirSync(path.join(gradleSeedDir, 'caches', 'modules-2'), { recursive: true });
     writeFileSync(path.join(gradleSeedDir, 'caches', 'modules-2', 'prewarmed.bin'), 'seeded');
-    const expectedSeedFile = ['caches', 'modules-2', 'prewarmed.bin'].join(path.sep);
     const result = await runCli(
       runArgs(['--seed', '11', '--max-budget-usd', '1.25', ...CAMPAIGN_FLAGS(attestationPath)]),
       {
@@ -512,16 +576,15 @@ describe('4. cli.mjs run --campaign-design -- fake-runtime campaign execution (r
         KMP_FAKE_EXPECT_MAX_BUDGET_USD: '1.25',
         KMP_EVAL_PREWARM_MARKER_FILE: prewarmMarker,
         KMP_AGENTIC_EVAL_GRADLE_USER_HOME_SEED_DIR: gradleSeedDir,
-        KMP_EVAL_EXPECT_PREWARM_SEED_FILE: expectedSeedFile,
       },
       120000,
     );
     expect(result.status, result.stderr || result.stdout).toBe(0);
     expect(result.parsed).not.toBeNull();
-    const prewarmLines = readFileSync(prewarmMarker, 'utf8').trim().split(/\r?\n/);
-    expect(prewarmLines.length).toBe(2); // one isolated Gradle snapshot per distinct profile
-    expect(prewarmLines.every((line) => line.includes(':fakemod:test'))).toBe(true);
-    expect(prewarmLines.every((line) => line.includes('seed=yes'))).toBe(true);
+    // A certified seed is snapshotted directly. Re-running Gradle here is redundant and may
+    // lock the disposable worktree before any provider starts; materializeGradleUserHome's seed
+    // copy is covered separately in agentic-eval-materialize.test.js.
+    expect(existsSync(prewarmMarker)).toBe(false);
     const { records } = result.parsed;
     expect(records.length).toBe(16);
     expect(listEvidenceFiles('scenario').length).toBe(16);
@@ -658,10 +721,14 @@ describe('4. cli.mjs run --campaign-design -- fake-runtime campaign execution (r
     // that the fields we happen to check look clean.
     expect(Object.keys(incident).sort()).toEqual([
       'counts', 'created_at', 'emergency_raw_persisted', 'emergency_raw_write_error', 'incident_id',
-      'failed_cell_correlation', 'phase', 'planned_cell_count', 'provenance', 'reason', 'run_kind', 'schema',
+      'failed_cell_correlation', 'path_diagnostics', 'phase', 'planned_cell_count', 'provenance',
+      'reason', 'run_kind', 'schema',
     ].sort());
 
-    expect(incident.schema).toBe(2);
+    // Schema 4 (2026-09-29, WO-A2): 2 (this test's own correlation axis, unchanged) + 2
+    // (path_diagnostics, now always computed -- see incident-diagnostics.test.js's own dedicated
+    // coverage for that field's shape).
+    expect(incident.schema).toBe(4);
     expect(incident.failed_cell_correlation).toEqual({
       schema: 2,
       condition: 'current-skill',
@@ -734,4 +801,65 @@ describe('4. cli.mjs run --campaign-design -- fake-runtime campaign execution (r
     const worktreeList = gitViaBash(['worktree', 'list'], sourceRepoDir);
     expect(worktreeList.trim().split('\n').length).toBe(1);
   }, 60000);
+});
+
+describe('5. codex-cli fake-runtime E2E', () => {
+  it('dry-run fixes six paired sessions and records the unsupported budget dimension honestly', async () => {
+    const attestationPath = writeValidAttestation({ runtime_id: 'codex-cli' });
+    const result = await runCli([
+      'run', '--scenario', SCENARIO_ID, '--source-repo-dir', '/does/not/need/to/exist', '--seed', '17',
+      '--runtime', 'codex-cli', '--model', 'gpt-5.6-terra', '--campaign-design', CODEX_DESIGN_ID,
+      '--isolation-attestation-file', attestationPath, '--timeout-ms', '600000', '--dry-run',
+    ], fakeCodexEnv());
+    expect(result.status, result.stderr || result.stdout).toBe(0);
+    expect(result.parsed).toMatchObject({
+      dry_run: true, runtime_id: 'codex-cli', model_id: 'gpt-5.6-terra', planned_sessions: 6,
+      max_budget_usd: null, max_budget_reason: 'runtime_does_not_support_session_budget',
+    });
+    expect(result.parsed.plan.map((cell) => cell.campaign_cell_label)).toEqual(['A', 'B', 'B', 'A', 'A', 'B']);
+  });
+
+  it('executes and validates all six cells through the real CLI against a fake Codex process', async () => {
+    const attestationPath = writeValidAttestation({ runtime_id: 'codex-cli' });
+    const result = await runCli([
+      'run', '--scenario', SCENARIO_ID, '--source-repo-dir', sourceRepoDir, '--seed', '17',
+      '--runtime', 'codex-cli', '--model', 'gpt-5.6-terra', '--campaign-design', CODEX_DESIGN_ID,
+      '--isolation-attestation-file', attestationPath, '--timeout-ms', '600000',
+    ], fakeCodexEnv(), 90000);
+    expect(result.status, result.stderr || result.stdout).toBe(0);
+    expect(result.parsed.records).toHaveLength(6);
+    expect(listEvidenceFiles('scenario')).toHaveLength(6);
+    const sorted = [...result.parsed.records].sort((a, b) => a.order_index - b.order_index);
+    expect(sorted.map((record) => record.condition)).toEqual(['current-skill', 'no-skill', 'no-skill', 'current-skill', 'current-skill', 'no-skill']);
+    for (const record of sorted) {
+      expect(record.agent_runtime).toMatchObject({ runtime_id: 'codex-cli', cli_version: '0.154.0' });
+      expect(record.model_requested).toBe('gpt-5.6-terra');
+      expect(record.model_resolved).toBe('gpt-5.6-terra');
+      expect(record.claude_code_version).toBeNull();
+      expect(record.skill_observation.delivery_mode).toBe(record.condition === 'current-skill' ? 'project-instructions' : 'none');
+      expect(record.skill_observation.activation).toEqual({ status: 'not-observable', evidence_kind: 'not-observable' });
+      expect(record.tokens.cache_creation).toEqual({ value: null, reason: 'runtime-does-not-report-cache-write' });
+      expect(record.usage.reasoning_output).toBe(3);
+      expect(record.benchmark_eligible).toBe(false);
+      const sidecar = readAcceptedAuditSidecar(record.run_id);
+      expect(validateAcceptedRunAuditSidecar(sidecar).errors).toEqual([]);
+      expect(sidecar.terminal_authoritative_event?.type).toBe('runtime.command_result');
+    }
+  }, 90000);
+
+  it('executes one nonzero design cell with a local journal ordinal and durable original order_index', async () => {
+    const attestationPath = writeValidAttestation({ runtime_id: 'codex-cli' });
+    const result = await runCli([
+      'run', '--scenario', SCENARIO_ID, '--source-repo-dir', sourceRepoDir, '--seed', '17',
+      '--runtime', 'codex-cli', '--model', 'gpt-5.6-terra', '--campaign-design', CODEX_DESIGN_ID,
+      '--campaign-cell-index', '5', '--isolation-attestation-file', attestationPath, '--timeout-ms', '900000',
+    ], fakeCodexEnv(), 90000);
+    expect(result.status, result.stderr || result.stdout).toBe(0);
+    expect(result.parsed.records).toHaveLength(1);
+    expect(result.parsed.records[0]).toMatchObject({
+      order_index: 5, repetition_index: 2, condition: 'no-skill',
+      execution_profile: { id: UNRESTRICTED }, product_access_mode: 'free-baseline-no-product',
+    });
+    expect(listEvidenceFiles('scenario')).toHaveLength(1);
+  }, 90000);
 });

@@ -1,0 +1,136 @@
+{
+  "schema_version": 1,
+  "approval_status": "approved",
+  "manifest_id": "evidence1-windows-25h2-en-gb-codex-01534-e2e-v1",
+  "profile_id": "evidence1-windows-hyperv-e2e-v1",
+  "iso": {
+    "sha256": "66b7b4b71763ed6f9b2ce29326ed9284544da6f5283d00329921540c01aaaeea",
+    "bytes": 8486862848,
+    "source_uri": "https://www.microsoft.com/en-us/software-download/windows11",
+    "publisher": "Microsoft",
+    "image": {
+      "index": 6,
+      "name": "Windows 11 Pro",
+      "edition": "Windows 11 Pro",
+      "edition_id": "Professional",
+      "architecture": "x64",
+      "languages": ["en-GB"],
+      "version": "10.0.26200.8037",
+      "installation_type": "Client"
+    }
+  },
+  "artifacts": [
+    {
+      "id": "git",
+      "version": "2.55.0.windows.5",
+      "architecture": "x64",
+      "sha256": "666e717573801c37e90c00e0bf8843293b0320b33e1cf01cf4bb2ddbb16a2a95",
+      "bytes": 40796477,
+      "sources": [{
+        "uri": "https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.5/MinGit-2.55.0.5-64-bit.zip",
+        "digest_algorithm": "sha256",
+        "digest": "56d7b226b7693196cfc71fef26568f536c4a021ab6c37ff2db4287bed908e96e",
+        "bytes": 38989688
+      }],
+      "publisher": "Git for Windows project",
+      "verification": { "kind": "vendor-checksum", "result": "verified" }
+    },
+    {
+      "id": "node",
+      "version": "24.19.0",
+      "architecture": "x64",
+      "sha256": "8e893c4781483a95009e05b6d34391b527119947a029a134defd2f344ca805a2",
+      "bytes": 39012287,
+      "sources": [{
+        "uri": "https://nodejs.org/dist/v24.19.0/node-v24.19.0-win-x64.zip",
+        "digest_algorithm": "sha256",
+        "digest": "57f71ab3652e797d84acddc79c81cc9ff1c6ddb2a1974cdb83f00fee9bff4c73",
+        "bytes": 37304352
+      }],
+      "publisher": "OpenJS Foundation",
+      "verification": { "kind": "vendor-checksum", "result": "verified" }
+    },
+    {
+      "id": "jdk",
+      "version": "21.0.12.1+1",
+      "architecture": "x64",
+      "sha256": "e528bd5ceba09fa4d183149caef642c29cd66677bb440a1c072ddc3cf3c1277f",
+      "bytes": 201943018,
+      "sources": [{
+        "uri": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_x64_windows_hotspot_21.0.12.1_1.zip",
+        "digest_algorithm": "sha256",
+        "digest": "f9d6e191ab098c0d416e7d588a24420a8621cd2f4720dab2459b8b7b2d2d8b4e",
+        "bytes": 205073461
+      }],
+      "publisher": "Eclipse Adoptium",
+      "verification": { "kind": "vendor-checksum", "result": "verified" }
+    },
+    {
+      "id": "android-sdk",
+      "version": "platform-36-build-tools-36.0.0",
+      "architecture": "x64",
+      "sha256": "e7a01612ebd0d37f7c183a4ed9a748ea490d65bab7145c50aae2c76982d2c579",
+      "bytes": 132555005,
+      "sources": [
+        {
+          "uri": "https://dl.google.com/android/repository/platform-36_r02.zip",
+          "digest_algorithm": "sha1",
+          "digest": "2c1a80dd4d9f7d0e6dd336ec603d9b5c55a6f576",
+          "bytes": 65878410
+        },
+        {
+          "uri": "https://dl.google.com/android/repository/build-tools_r36_windows.zip",
+          "digest_algorithm": "sha1",
+          "digest": "f16ccffd34de8790dede813a6c7d8e2c11a27b50",
+          "bytes": 58699878
+        },
+        {
+          "uri": "https://dl.google.com/android/repository/platform-tools_r37.0.1-win.zip",
+          "digest_algorithm": "sha1",
+          "digest": "e03e78b1d80b396f1c3358e31251cb31740e1110",
+          "bytes": 8044989
+        }
+      ],
+      "publisher": "Google LLC",
+      "verification": { "kind": "vendor-checksum", "result": "verified" }
+    },
+    {
+      "id": "claude-code",
+      "version": "2.1.238",
+      "architecture": "x64",
+      "sha256": "7d6c38f6f6d61393ea9f266c629223f8690db4614de0a0718e5ec52e7592422f",
+      "bytes": 208751416,
+      "sources": [
+        {
+          "uri": "https://registry.npmjs.org/@anthropic-ai/claude-code/-/claude-code-2.1.238.tgz",
+          "digest_algorithm": "sha512-sri",
+          "digest": "sha512-8AgGrM8qxsA5B8KU/MvVND/fMUsF3vZQxeYjz+1Z/rGx/ZmNr0iqjfmUVKVASKN7P9OzkAUHoXgKEpyvgRfUkA==",
+          "bytes": 25564
+        },
+        {
+          "uri": "https://registry.npmjs.org/@anthropic-ai/claude-code-win32-x64/-/claude-code-win32-x64-2.1.238.tgz",
+          "digest_algorithm": "sha512-sri",
+          "digest": "sha512-NjCMfRSMcym7skMW9IzJhoMw+ZpANpo0kh3w78nbcX850sqMquAecQliPj78ZNW0Y/e11xK6llet3M/0puAA0w==",
+          "bytes": 103741746
+        }
+      ],
+      "publisher": "Anthropic PBC",
+      "verification": { "kind": "npm-integrity", "result": "verified" }
+    },
+    {
+      "id": "codex-cli",
+      "version": "0.153.4",
+      "architecture": "x64",
+      "sha256": "444a3f0008050605cae73cd9b7a2dcac61294062dfaab56dd20430fd6498518b",
+      "bytes": 295408944,
+      "sources": [{
+        "uri": "https://registry.npmjs.org/@openai/codex/-/codex-0.153.4-win32-x64.tgz",
+        "digest_algorithm": "sha512-sri",
+        "digest": "sha512-lMkB43kJZH0VFr+hoXc11qqR7QtQIbkr07ALgj4urKL1osNyUyuy1iXd3Vzz2iCYvBUCSw7I0l/W1cEPGx9euQ==",
+        "bytes": 141495386
+      }],
+      "publisher": "OpenAI OpCo, LLC",
+      "verification": { "kind": "npm-integrity", "result": "verified" }
+    }
+  ]
+}

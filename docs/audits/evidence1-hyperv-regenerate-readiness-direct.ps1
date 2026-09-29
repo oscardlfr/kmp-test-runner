@@ -1,9 +1,9 @@
 #Requires -RunAsAdministrator
 
 param(
-  [string]$VMName = 'Evidence1-Runner',
-  [string]$GuestComputerName = 'Evidence1Runner',
-  [string]$GuestCredentialPath = 'C:\kmp-eval\scratch\hyperv-create-runner\Evidence1-Runner.guest-credential.clixml',
+  [Parameter(Mandatory = $true)][string]$ProfilePath,
+  [Parameter(Mandatory = $true)][string]$CreatedInspectionReceiptPath,
+  [Parameter(Mandatory = $true)][string]$GuestCredentialPath,
   [string]$SourceRepoDir = '',
   [string]$HarnessDir = 'C:\kmp-eval\agentic-evidence1-claude-2x2-windows-stage-b-readiness-v1',
   [string]$TargetRef = 'origin/develop',
@@ -14,12 +14,18 @@ param(
   [string]$NowInAndroidDir = 'C:\kmp-eval\NowInAndroid-evidence1-coverage-threshold-windows-stageb-v1',
   [string]$AttestationFile = 'C:\kmp-eval\measurement-scopes\evidence1-claude-windows-isolation-attestation-stageb-v1.json',
   [string]$ScratchDir = 'C:\kmp-eval\scratch\agentic-evidence1-claude-2x2-windows-stage-b-readiness-v1',
-  [string]$ReportPath = 'C:\kmp-eval\scratch\hyperv-regenerate-readiness-direct\HYPERV-REGENERATE-READINESS-DIRECT.json',
+  [string]$ReportPath = 'C:\kmp-eval\scratch\hyperv-e2e-regenerate-readiness-direct\HYPERV-REGENERATE-READINESS-DIRECT.json',
   [int]$TimeoutMinutes = 20
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'evidence1-vm-identity-contract.psm1') -Force -DisableNameChecking
+$vmIdentity = Get-Evidence1CanonicalE2EVmIdentity -ProfilePath $ProfilePath `
+  -CreatedInspectionReceiptPath $CreatedInspectionReceiptPath -GuestCredentialPath $GuestCredentialPath
+$VMName = $vmIdentity.vm_name
+$ExpectedVMId = $vmIdentity.vm_id
+$GuestComputerName = $vmIdentity.guest_computer_name
 
 function Fail($Message) {
   Write-Error "HARD STOP: $Message"
@@ -46,7 +52,8 @@ function Invoke-HostGit([string[]]$Arguments, [string]$Step) {
   try {
     # Git writes progress such as "From <remote>" to stderr even on success.
     $ErrorActionPreference = 'Continue'
-    $output = @(& git.exe @Arguments 2>&1)
+    $gitArguments = @('-c', "safe.directory=$SourceRepoDir") + $Arguments
+    $output = @(& git.exe @gitArguments 2>&1)
     $exit = $LASTEXITCODE
   } finally {
     $ErrorActionPreference = $previousErrorActionPreference
@@ -113,10 +120,12 @@ if (-not ($TargetTree -match '^[0-9a-f]{40}$')) {
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ReportPath) | Out-Null
 
 $vm = Get-VM -Name $VMName -ErrorAction Stop
+if (([string]$vm.Id).ToLowerInvariant() -cne $ExpectedVMId) { Fail 'E2E VM id mismatch' }
 if ($vm.State -ne 'Running') {
   Start-VM -Name $VMName
   Start-Sleep -Seconds 5
   $vm = Get-VM -Name $VMName -ErrorAction Stop
+  if (([string]$vm.Id).ToLowerInvariant() -cne $ExpectedVMId) { Fail 'E2E VM id mismatch after start' }
 }
 if ($vm.State -ne 'Running') {
   Fail "$VMName is not running after start attempt: $($vm.State)"
@@ -128,13 +137,7 @@ if ($simpleUser -match '[\\@]') {
   Fail "stored guest user must be a simple local account name, got: $simpleUser"
 }
 
-$candidates = @(
-  "$GuestComputerName\$simpleUser",
-  "$VMName\$simpleUser",
-  ".\$simpleUser",
-  $simpleUser,
-  "localhost\$simpleUser"
-)
+$candidates = @("$GuestComputerName\$simpleUser")
 
 $attempts = @()
 $session = $null
@@ -142,7 +145,7 @@ $workingLogonName = $null
 foreach ($logonName in $candidates) {
   $credential = [pscredential]::new($logonName, $storedCredential.Password)
   try {
-    $session = New-PSSession -VMName $VMName -Credential $credential -ErrorAction Stop
+    $session = New-PSSession -VMId ([guid]$ExpectedVMId) -Credential $credential -ErrorAction Stop
     $workingLogonName = $logonName
     $attempts += [ordered]@{ logon_name = $logonName; ok = $true; error = $null }
     break
@@ -156,7 +159,14 @@ if (-not $session) {
     verdict = 'FAIL'
     generated_at_utc = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
     vm_name = $VMName
+    vm_id = $ExpectedVMId
     vm_state = $vm.State.ToString()
+    vm_identity = [ordered]@{
+      profile_sha256 = $vmIdentity.profile_sha256
+      created_inspection_receipt_sha256 = $vmIdentity.created_inspection_receipt_sha256
+      custody_marker_sha256 = $vmIdentity.custody_marker_sha256
+      input_lock_sha256 = $vmIdentity.input_lock_sha256
+    }
     attempts = $attempts
   } | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $ReportPath -Encoding UTF8
   Fail "could not establish PowerShell Direct session to $VMName"
@@ -177,8 +187,10 @@ try {
 
     Set-StrictMode -Version Latest
     $ErrorActionPreference = 'Stop'
+    Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
 
     $ClaudeVersion = '2.1.238'
+    $ExpectedCodexVersion = '0.154.0'
     $CampaignDesignId = 'claude-product-vs-free-baseline-v1'
     $MaxBudgetUsd = '2.00'
 
@@ -188,15 +200,40 @@ try {
 
     function Add-StageBPath {
       $npmPrefix = Join-Path $env:USERPROFILE 'AppData\Roaming\npm'
+      $canonicalRoot = 'C:\Evidence1Toolchain'
+      $canonicalJdk = Join-Path $canonicalRoot 'jdk\21.0.12.1+1'
+      $canonicalAndroid = Join-Path $canonicalRoot 'android-sdk\platform-36-build-tools-36.0.0'
       $paths = @(
         'C:\Windows\System32',
+        (Join-Path $canonicalRoot 'git-bash\2.55.0.windows.5\cmd'),
+        (Join-Path $canonicalRoot 'git-bash\2.55.0.windows.5\bin'),
+        (Join-Path $canonicalRoot 'git\2.55.0.windows.5\cmd'),
+        (Join-Path $canonicalRoot 'git\2.55.0.windows.5\bin'),
+        (Join-Path $canonicalRoot 'node\24.19.0'),
+        (Join-Path $canonicalRoot 'claude-code\2.1.238'),
+        (Join-Path $canonicalRoot 'codex-cli\0.154.0\bin'),
+        (Join-Path $canonicalAndroid 'platform-tools'),
         'C:\Program Files\Git\cmd',
         'C:\Program Files\Git\bin',
         'C:\Program Files\nodejs',
         $npmPrefix
       )
-      $jdkRoot = 'C:\Program Files\Eclipse Adoptium'
-      if (Test-Path -LiteralPath $jdkRoot) {
+      $canonicalBash = Join-Path $canonicalRoot 'git-bash\2.55.0.windows.5\bin\bash.exe'
+      if (-not (Test-Path -LiteralPath $canonicalBash -PathType Leaf)) {
+        FailGuest "canonical Git Bash missing: $canonicalBash"
+      }
+      $env:KMP_EVAL_BASH_PATH = $canonicalBash
+      if (Test-Path -LiteralPath (Join-Path $canonicalAndroid '.evidence1-artifact.json') -PathType Leaf) {
+        $env:ANDROID_HOME = $canonicalAndroid
+        $env:ANDROID_SDK_ROOT = $canonicalAndroid
+      }
+      if ((Test-Path -LiteralPath (Join-Path $canonicalJdk '.evidence1-artifact.json') -PathType Leaf) -and
+          (Test-Path -LiteralPath (Join-Path $canonicalJdk 'bin\java.exe') -PathType Leaf)) {
+        $env:JAVA_HOME = $canonicalJdk
+        $paths += (Join-Path $canonicalJdk 'bin')
+      } else {
+        $jdkRoot = 'C:\Program Files\Eclipse Adoptium'
+        if (Test-Path -LiteralPath $jdkRoot) {
         $jdk = Get-ChildItem -LiteralPath $jdkRoot -Directory -ErrorAction SilentlyContinue |
           Where-Object Name -like 'jdk-21*' |
           Sort-Object Name -Descending |
@@ -204,6 +241,7 @@ try {
         if ($jdk) {
           $env:JAVA_HOME = $jdk.FullName
           $paths += (Join-Path $jdk.FullName 'bin')
+        }
         }
       }
       $env:Path = @($paths + $env:Path | Where-Object { $_ }) -join ';'
@@ -257,14 +295,17 @@ try {
         'https://api.anthropic.com',
         'https://platform.claude.com',
         'https://claude.ai',
-        'https://claude.com'
+        'https://claude.com',
+        'https://auth.openai.com',
+        'https://chatgpt.com',
+        'https://ab.chatgpt.com'
       )
       $allowed = @()
       foreach ($uri in $allowedUris) {
         $probe = Invoke-CurlProbe $uri 15
         $allowed += $probe
         if ($probe.exit_code -ne 0) {
-          FailGuest "$uri is not reachable; live Claude Code sessions cannot run"
+          FailGuest "$uri is not reachable; live inference sessions cannot run"
         }
       }
 
@@ -315,9 +356,11 @@ try {
     $claude = Command-Source 'claude.cmd'
     if (-not $claude) { $claude = Command-Source 'claude.exe' }
     if (-not $claude) { FailGuest 'claude command not found' }
+    $codex = Command-Source 'codex.exe'
+    if (-not $codex) { FailGuest 'codex command not found' }
 
     $forbiddenEnv = @(Get-ChildItem Env: |
-      Where-Object { $_.Name -match 'ANTHROPIC_API_KEY|OPENAI_API_KEY|GOOGLE_API_KEY|AZURE_OPENAI_API_KEY|GH_TOKEN|GITHUB_TOKEN|COPILOT_' } |
+      Where-Object { $_.Name -match 'ANTHROPIC_API_KEY|OPENAI_API_KEY|CODEX_API_KEY|GOOGLE_API_KEY|AZURE_OPENAI_API_KEY|GH_TOKEN|GITHUB_TOKEN|COPILOT_' } |
       Select-Object -ExpandProperty Name)
     if ($forbiddenEnv.Count -gt 0) {
       FailGuest "forbidden secret-like environment variables present: $($forbiddenEnv -join ', ')"
@@ -344,13 +387,32 @@ try {
       $nodeVersion = (& $node --version).Trim()
       $gitVersion = (& git.exe --version).Trim()
       $claudeVersion = (& $claude --version).Trim()
+      $codexVersionOutput = (& $codex --version 2>$null | Select-Object -First 1)
+      $codexVersionExit = $LASTEXITCODE
       if ($claudeVersion -notmatch [regex]::Escape($ClaudeVersion)) {
         FailGuest "Claude Code version mismatch: $claudeVersion"
       }
+      if ($codexVersionExit -ne 0 -or [string]$codexVersionOutput -cne "codex-cli $ExpectedCodexVersion") {
+        FailGuest "Codex CLI version mismatch: $codexVersionOutput"
+      }
 
-      & $claude auth status *> $null
-      if ($LASTEXITCODE -ne 0) {
-        FailGuest "claude auth status failed with exit code $LASTEXITCODE"
+      $previousErrorActionPreference = $ErrorActionPreference
+      try {
+        # Both CLIs may write successful status text through the native stderr
+        # stream. PowerShell 7.5 must not promote that text to an ErrorRecord.
+        $ErrorActionPreference = 'Continue'
+        & $claude auth status *> $null
+        $claudeAuthExit = $LASTEXITCODE
+        & $codex login status *> $null
+        $codexAuthExit = $LASTEXITCODE
+      } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+      }
+      if ($claudeAuthExit -ne 0) {
+        FailGuest "claude auth status failed with exit code $claudeAuthExit"
+      }
+      if ($codexAuthExit -ne 0) {
+        FailGuest "codex login status failed with exit code $codexAuthExit"
       }
 
       $previousErrorActionPreference = $ErrorActionPreference
@@ -522,6 +584,8 @@ if (!r.ok) process.exit(2);
           java_present = $true
           claude = $claudeVersion
           claude_logged_in = $true
+          codex = $codexVersionOutput
+          codex_logged_in = $true
         }
         network = $network
         r5_attestation = [ordered]@{
@@ -590,6 +654,7 @@ if (!r.ok) process.exit(2);
           node = $nodeVersion
           git = $gitVersion
           claude = $claudeVersion
+          codex = $codexVersionOutput
           java_present = $true
         }
         ledger_path = $ledgerPath
@@ -628,7 +693,14 @@ if (!r.ok) process.exit(2);
     verdict = 'PASS'
     generated_at_utc = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
     vm_name = $VMName
+    vm_id = $ExpectedVMId
     vm_state = (Get-VM -Name $VMName).State.ToString()
+    vm_identity = [ordered]@{
+      profile_sha256 = $vmIdentity.profile_sha256
+      created_inspection_receipt_sha256 = $vmIdentity.created_inspection_receipt_sha256
+      custody_marker_sha256 = $vmIdentity.custody_marker_sha256
+      input_lock_sha256 = $vmIdentity.input_lock_sha256
+    }
     powershell_direct_logon = $workingLogonName
     attempts = $attempts
     target_commit = $TargetCommit

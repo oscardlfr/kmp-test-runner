@@ -11,15 +11,69 @@
 import { tokenize } from './policy-hook.mjs';
 import { matchModuleFilter } from '../../lib/orchestrators/module-filter.js';
 
-/** Classifies one Bash tool_use's raw command string. Relocated verbatim from graders.mjs (the
- * grammar itself is unchanged) so it can be shared by graders.mjs, junit-evidence.mjs, and
- * junit-evidence-hook.mjs without a second, potentially divergent parser. Returns
+// Codex CLI on Windows reports the shell launcher as the command_execution.command,
+// e.g. `".../powershell.exe" -Command 'kmp-test parallel ...'`. Classify the
+// single inner command, not the launcher. Keep compound PowerShell programs out
+// of the evidence path: their output cannot be attributed to one invocation.
+function commandTokens(command) {
+  const outer = tokenize(command);
+  if (outer == null || outer.length !== 3
+    || !/^(?:[A-Za-z]:[\\/].*[\\/])?(?:powershell|pwsh)\.exe$/i.test(outer[0])
+    || outer[1].toLowerCase() !== '-command') return outer;
+  const inner = outer[2];
+  if (/[;|&`$()<>\r\n]/.test(inner)) return null;
+  return tokenize(inner);
+}
+
+const DIGITS_RE = /^\d+$/;
+const NEGATIVE_NUMBER_FLAG_RE = /^-\d+$/;
+
+// Real transcripts (011c89b6) wrap the actual command in a `cd <dir> &&` (agents re-assert
+// cwd defensively) or `timeout <N>` prefix. Recognizing at most one of either leaves the real
+// command's own tokens (kmp-test/gradlew and everything after) untouched for the classification
+// that follows -- this never changes what a command DOES, only what this classifier reads past.
+function stripKnownPrefix(tokens) {
+  if (tokens[0] === 'cd' && tokens[2] === '&&') return tokens.slice(3);
+  if (tokens[0] === 'timeout' && DIGITS_RE.test(tokens[1] ?? '')) return tokens.slice(2);
+  return tokens;
+}
+
+// Real transcripts also trail the command with output-shaping redirects/pipes -- `2>&1`
+// alone, or (just as commonly) `2>&1` immediately feeding a `| tail -N` / `| head -N` /
+// `| Select-Object -Last N`. Checked longest-first so the combined redirect+pipe idiom strips as
+// the single trailing suffix it is, rather than requiring two separate passes.
+const SUFFIX_PATTERNS = [
+  [(t) => t === '2>&1', (t) => t === '|', (t) => t === 'tail', NEGATIVE_NUMBER_FLAG_RE],
+  [(t) => t === '2>&1', (t) => t === '|', (t) => t === 'head', NEGATIVE_NUMBER_FLAG_RE],
+  [(t) => t === '2>&1', (t) => t === '|', (t) => t === 'Select-Object', (t) => t === '-Last', DIGITS_RE],
+  [(t) => t === '|', (t) => t === 'tail', NEGATIVE_NUMBER_FLAG_RE],
+  [(t) => t === '|', (t) => t === 'head', NEGATIVE_NUMBER_FLAG_RE],
+  [(t) => t === '|', (t) => t === 'Select-Object', (t) => t === '-Last', DIGITS_RE],
+  [(t) => t === '2>&1'],
+].map((pattern) => pattern.map((m) => (typeof m === 'function' ? m : (t) => m.test(t ?? ''))));
+
+function stripKnownSuffix(tokens) {
+  for (const pattern of SUFFIX_PATTERNS) {
+    if (tokens.length < pattern.length) continue;
+    const start = tokens.length - pattern.length;
+    if (pattern.every((matches, i) => matches(tokens[start + i]))) return tokens.slice(0, start);
+  }
+  return tokens;
+}
+
+const GRADLEW_TOKENS = new Set(['./gradlew', './gradlew.bat', 'gradlew', 'gradlew.bat', '.\\gradlew.bat']);
+
+/** Classifies one tool's raw command string. The direct-command grammar remains shared by
+ * graders.mjs, junit-evidence.mjs, and junit-evidence-hook.mjs; a single Windows PowerShell
+ * launcher around that command is unwrapped before classification. Returns
  * `{kind:'kmp-test', subcommand, moduleFilter, testType, minMissedLines, coverageDisabled, isPlanOnly}` |
  * `{kind:'gradle', taskTokens, isPlanOnly}` | `{kind:'other'}`. */
 export function classifyBashCommand(command) {
   if (typeof command !== 'string') return { kind: 'other' };
-  const tokens = tokenize(command);
-  if (tokens == null || tokens.length === 0) return { kind: 'other' };
+  const rawTokens = commandTokens(command);
+  if (rawTokens == null || rawTokens.length === 0) return { kind: 'other' };
+  const tokens = stripKnownSuffix(stripKnownPrefix(rawTokens));
+  if (tokens.length === 0) return { kind: 'other' };
   if (tokens[0] === 'kmp-test') {
     let moduleFilter = null;
     let testType = null;
@@ -53,7 +107,7 @@ export function classifyBashCommand(command) {
     const coverageDisabled = tokens.includes('--no-coverage');
     return { kind: 'kmp-test', subcommand: tokens[1] ?? null, moduleFilter, testType, minMissedLines, coverageDisabled, isPlanOnly };
   }
-  if (tokens[0] === './gradlew' || tokens[0] === './gradlew.bat') {
+  if (GRADLEW_TOKENS.has(tokens[0])) {
     const taskTokens = tokens.slice(1).filter((t) => !t.startsWith('-'));
     const isPlanOnly = tokens.includes('--dry-run');
     return { kind: 'gradle', taskTokens, isPlanOnly };

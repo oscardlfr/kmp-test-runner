@@ -11,6 +11,7 @@ import {
   ADAPTERS_BY_RUNTIME_ID, checkRegistryContainerShape,
 } from '../../tools/agentic-eval/registries.mjs';
 import { claudeCodeRuntimeAdapter } from '../../tools/agentic-eval/runtimes/claude-code.mjs';
+import { codexCliRuntimeAdapter } from '../../tools/agentic-eval/runtimes/codex-cli.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const AGENTIC_DIR = join(__dirname, '..', '..', 'tools', 'agentic-eval');
@@ -25,6 +26,27 @@ function realModels() {
     model_vendor_expected: 'anthropic', default_reasoning_mode: null,
     required_capabilities: [], usage_dimensions: ['input', 'cached_input', 'cache_write', 'output'],
   }];
+}
+function additionalShippedModels() {
+  const claude = model_id => ({
+    runtime_id: 'claude-code', model_id, enabled: true, default: false,
+    model_vendor_expected: 'anthropic', default_reasoning_mode: null,
+    required_capabilities: [], usage_dimensions: ['input', 'cached_input', 'cache_write', 'output'],
+  });
+  const codex = model_id => ({
+    runtime_id: 'codex-cli', model_id, enabled: true, default: false,
+    model_vendor_expected: 'openai', default_reasoning_mode: 'low',
+    required_capabilities: ['structuredTranscript', 'correlatedToolResults', 'skillStateEvidence'],
+    usage_dimensions: ['input', 'cached_input', 'output', 'reasoning_output'],
+  });
+  return [
+    claude('claude-opus-5'),
+    claude('claude-fable-5'),
+    claude('claude-haiku-4-5-20251001'),
+    codex('gpt-5.6-sol'),
+    codex('gpt-6-astra'),
+    codex('gpt-5.6-luna'),
+  ];
 }
 function realUnrestrictedProfile() {
   return {
@@ -56,9 +78,31 @@ describe('buildRegistries -- accepts the three real initial registries', () => {
     const runtimesJson = JSON.parse(readFileSync(join(AGENTIC_DIR, 'runtimes', 'registry.json'), 'utf8'));
     const modelsJson = JSON.parse(readFileSync(join(AGENTIC_DIR, 'models', 'registry.json'), 'utf8'));
     const profilesJson = JSON.parse(readFileSync(join(AGENTIC_DIR, 'execution-profiles', 'registry.json'), 'utf8'));
-    expect(runtimesJson).toEqual({ schema: 1, runtimes: realRuntimes() });
-    expect(modelsJson).toEqual({ schema: 1, models: realModels() });
-    expect(profilesJson).toEqual({ schema: 1, execution_profiles: realProfiles() });
+    expect(runtimesJson).toEqual({ schema: 1, runtimes: [...realRuntimes(), { runtime_id: 'codex-cli', enabled: true, default: false }] });
+    const [claudeOpus, claudeFable, claudeHaiku, codexSol, codexAstra, codexLuna] = additionalShippedModels();
+    expect(modelsJson).toEqual({ schema: 1, models: [...realModels(), claudeOpus, claudeFable, claudeHaiku, {
+      runtime_id: 'codex-cli', model_id: 'gpt-5.6-terra', enabled: true, default: true,
+      model_vendor_expected: 'openai', default_reasoning_mode: 'low',
+      required_capabilities: ['structuredTranscript', 'correlatedToolResults', 'skillStateEvidence'],
+      usage_dimensions: ['input', 'cached_input', 'output', 'reasoning_output'],
+    }, codexSol, codexAstra, codexLuna] });
+    expect(profilesJson).toEqual({ schema: 1, execution_profiles: [realProfiles()[0], { ...realUnrestrictedProfile(), supported_runtime_ids: ['claude-code', 'codex-cli'] }] });
+  });
+
+  it('ships four explicit capability-tier model pairs while preserving one default per runtime', () => {
+    const registries = loadRegistries();
+    const pairs = [
+    ['claude-fable-5', 'gpt-6-astra'],
+      ['claude-opus-5', 'gpt-5.6-sol'],
+      ['claude-sonnet-5', 'gpt-5.6-terra'],
+      ['claude-haiku-4-5-20251001', 'gpt-5.6-luna'],
+    ];
+    for (const [claudeModel, codexModel] of pairs) {
+      expect(resolveSelection({ registries, runtimeId: 'claude-code', modelId: claudeModel }).ok).toBe(true);
+      expect(resolveSelection({ registries, runtimeId: 'codex-cli', modelId: codexModel }).ok).toBe(true);
+    }
+    expect(registries.models.filter(model => model.runtime_id === 'claude-code' && model.default)).toHaveLength(1);
+    expect(registries.models.filter(model => model.runtime_id === 'codex-cli' && model.default)).toHaveLength(1);
   });
 });
 
@@ -161,6 +205,15 @@ describe('buildRegistries -- duplicate IDs fail', () => {
     fixture.models[0].default = true;
     fixture.models.push({ ...realModels()[0], enabled: false, default: false });
     expect(() => buildRegistries(fixture)).toThrow();
+  });
+
+  it('accepts provider model ids containing dots without weakening internal ids', () => {
+    const fixture = realFixture();
+    fixture.models[0].model_id = 'claude-5.6-preview';
+    expect(() => buildRegistries(fixture)).not.toThrow();
+
+    fixture.models[0].model_id = 'claude/5.6-preview';
+    expect(() => buildRegistries(fixture)).toThrow(/model_id/);
   });
 });
 
@@ -605,6 +658,10 @@ describe('ADAPTERS_BY_RUNTIME_ID -- the one static runtime_id -> adapter map', (
     expect(ADAPTERS_BY_RUNTIME_ID['claude-code']).toBe(claudeCodeRuntimeAdapter);
   });
 
+  it('maps codex-cli to the real codexCliRuntimeAdapter singleton', () => {
+    expect(ADAPTERS_BY_RUNTIME_ID['codex-cli']).toBe(codexCliRuntimeAdapter);
+  });
+
   it('has a null prototype -- an ordinary Object.prototype-having literal would resolve an Object.prototype member name (e.g. "constructor") via inheritance instead of correctly reporting "absent"', () => {
     expect(Object.getPrototypeOf(ADAPTERS_BY_RUNTIME_ID)).toBe(null);
   });
@@ -1005,9 +1062,18 @@ describe('the real on-disk execution-profiles registry adds sandboxed-unrestrict
     });
   });
 
-  it('sandboxed-unrestricted-v1 is present, enabled, non-default, claude-code only, exactly the Decision-A shape', () => {
+  it('sandboxed-unrestricted-v1 is present, enabled, non-default, and supports both first-class runtimes', () => {
     const profilesJson = JSON.parse(readFileSync(join(AGENTIC_DIR, 'execution-profiles', 'registry.json'), 'utf8'));
-    expect(profilesJson.execution_profiles[1]).toEqual(realUnrestrictedProfile());
+    expect(profilesJson.execution_profiles[1]).toEqual({ ...realUnrestrictedProfile(), supported_runtime_ids: ['claude-code', 'codex-cli'] });
+  });
+
+  it('resolves codex-cli to its honest model and sole compatible execution profile', () => {
+    const result = resolveSelection({ registries: loadRegistries(), runtimeId: 'codex-cli' });
+    expect(result.ok).toBe(true);
+    expect(result.selection.runtime.runtime_id).toBe('codex-cli');
+    expect(result.selection.model.model_id).toBe('gpt-5.6-terra');
+    expect(result.selection.executionProfile.id).toBe('sandboxed-unrestricted-v1');
+    expect(result.selection.adapter).toBe(codexCliRuntimeAdapter);
   });
 
   it('required_capabilities is in canonical REQUIRED_CAPABILITY_KEYS relative order and omits softPermissionDenial', async () => {

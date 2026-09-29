@@ -23,6 +23,7 @@ const ATTESTATION_KEYS = Object.freeze([
 // widening either requires a deliberate change here, never an incidental loosening.
 const SUPPORTED_PROFILE_ID = 'sandboxed-unrestricted-v1';
 const SUPPORTED_RUNTIME_ID = 'claude-code';
+const SUPPORTED_RUNTIME_IDS = Object.freeze(['claude-code', 'codex-cli']);
 
 const PLATFORM_VALUES = Object.freeze(['windows', 'macos', 'linux']);
 const BOUNDARY_KIND_VALUES = Object.freeze(['disposable-vm', 'dedicated-ephemeral-runner', 'reviewed-external-sandbox']);
@@ -142,7 +143,7 @@ export function loadIsolationAttestation(filePath, expected, { now = new Date() 
 
   if (parsed.schema !== 1) return { ok: false, reason: 'invalid_schema' };
   if (parsed.profile_id !== SUPPORTED_PROFILE_ID) return { ok: false, reason: 'invalid_profile_id' };
-  if (parsed.runtime_id !== SUPPORTED_RUNTIME_ID) return { ok: false, reason: 'invalid_runtime_id' };
+  if (!SUPPORTED_RUNTIME_IDS.includes(parsed.runtime_id)) return { ok: false, reason: 'invalid_runtime_id' };
   if (typeof parsed.campaign_id !== 'string' || !CAMPAIGN_ID_RE.test(parsed.campaign_id)) {
     return { ok: false, reason: 'invalid_campaign_id' };
   }
@@ -186,4 +187,4 @@ export function loadIsolationAttestation(filePath, expected, { now = new Date() 
   return { ok: true, schema: 1, sha256: canonicalJsonSha256(parsed) };
 }
 
-export { ATTESTATION_KEYS, SUPPORTED_PROFILE_ID, SUPPORTED_RUNTIME_ID };
+export { ATTESTATION_KEYS, SUPPORTED_PROFILE_ID, SUPPORTED_RUNTIME_ID, SUPPORTED_RUNTIME_IDS };

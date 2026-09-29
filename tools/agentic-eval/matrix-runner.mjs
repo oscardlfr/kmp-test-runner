@@ -18,13 +18,12 @@
 // parameters throughout (never collapsed into one), matching stream-parser.mjs's
 // isTargetSkillReference contract: a plugin's own identity and a skill's own identity within it
 // are logically distinct, even where (as in this harness) their literal string values coincide.
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { delimiter as pathDelimiter, join, normalize } from 'node:path';
 
 import { buildPathShim } from './path-shim.mjs';
-import { materializeSkillSnapshot, materializeGradleUserHome, realpath, applyFixtureSetup } from './materialize.mjs';
-import { computeSkillSnapshotArtifact } from './input-artifacts.mjs';
+import { materializeSkillSnapshot, materializeGradleUserHome, mkdtempLongPathSafe, realpath, applyFixtureSetup } from './materialize.mjs';
+import { computeSkillSnapshotArtifact, computeArgvArtifact, computeDeliveredSnapshotArtifact, computePromptArtifact } from './input-artifacts.mjs';
 import { buildRunMatrix, buildConditionOrders } from './randomizer.mjs';
 import { attributeCondition } from './junit-evidence.mjs';
 import { buildObservationBashDispatchAccounting } from './dispatch-accounting.mjs';
@@ -34,6 +33,7 @@ import { tagIncidentPhase } from './durable-journal.mjs';
 import { validateRuntimeAdapter, validateObservation, freezeObservation, selectShellAttempts } from './runtimes/contract.mjs';
 import { evaluateProductAccessPreflight, summarizeProductAccessPreflight } from './product-access-preflight.mjs';
 import { productAccessModeForSkillCondition } from './product-access.mjs';
+import { applyExplicitProductTreatment } from './product-treatment.mjs';
 // registries.mjs is now the ONE module allowed to import runtimes/claude-code.mjs directly
 // (agentic-eval-runtime-neutral-records-v1) -- this module no longer defaults runtimeAdapter to
 // the Claude singleton; every caller must resolve a selection (registries.mjs's resolveSelection)
@@ -156,9 +156,25 @@ export async function acquireSharedEvalResources({
   }
   const { registerCleanup, runCleanup } = createCleanupAccumulator();
   try {
-    const { shimDir } = buildPathShim({ worktreeRoot: repoRoot });
+    let shimDir;
+    try {
+      ({ shimDir } = buildPathShim({ worktreeRoot: repoRoot }));
+    } catch (err) {
+      throw tagIncidentPhase(err, 'acquiring_shared_resources');
+    }
     registerCleanup(() => rmSync(shimDir, { recursive: true, force: true }));
-    const { snapshotDir } = await materializeSkillSnapshot({ repoRoot, sha: pinnedSkillSha, validateFn: runPluginValidator });
+    // Explicitly phase-tagged (2026-09-29, WO-A2 auditor finding): this call's own mkdtempSync
+    // predecessor is a confirmed real failure mode on this harness's hosts (see
+    // mkdtempLongPathSafe's own comment in materialize.mjs) -- an untagged throw here would
+    // default to incidentPhaseOf's own 'finalizing_matrix' fallback, exactly what made the first
+    // occurrence of this bug look like it happened at the very end of a whole matrix instead of
+    // during upfront resource acquisition.
+    let snapshotDir;
+    try {
+      ({ snapshotDir } = await materializeSkillSnapshot({ repoRoot, sha: pinnedSkillSha, validateFn: runPluginValidator }));
+    } catch (err) {
+      throw tagIncidentPhase(err, 'acquiring_shared_resources');
+    }
     registerCleanup(() => rmSync(snapshotDir, { recursive: true, force: true }));
     // Computed here, immediately after materialization and its cleanup registration, and before
     // any adapter/spawn work below -- a Git or canonicalization failure must fail closed before
@@ -181,13 +197,23 @@ export async function acquireSharedEvalResources({
     // internal snapshotDir it resets from) -- gradleSnapshotDir here is deliberately distinctly
     // named from the skill snapshot's `snapshotDir` above; conflating the two previously meant the
     // Gradle module's own snapshot directory was never captured at all and leaked on every run.
-    const { gradleUserHome, snapshotDir: gradleSnapshotDir, resetToSnapshot, daemonPolicy } = materializeGradleUserHome({
-      runPrewarm: gradlePrewarm ?? undefined,
-      seedFromDir: gradleUserHomeSeedDir ?? undefined,
-    });
+    let gradleUserHome, gradleSnapshotDir, resetToSnapshot, daemonPolicy, gradleMemoryOverrideSha256;
+    try {
+      ({ gradleUserHome, snapshotDir: gradleSnapshotDir, resetToSnapshot, daemonPolicy, gradleMemoryOverrideSha256 } = materializeGradleUserHome({
+        runPrewarm: gradlePrewarm ?? undefined,
+        seedFromDir: gradleUserHomeSeedDir ?? undefined,
+      }));
+    } catch (err) {
+      throw tagIncidentPhase(err, 'acquiring_shared_resources');
+    }
     registerCleanup(() => rmSync(gradleUserHome, { recursive: true, force: true }));
     registerCleanup(() => rmSync(gradleSnapshotDir, { recursive: true, force: true }));
-    const kmpEvalTempHome = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-home-'));
+    let kmpEvalTempHome;
+    try {
+      kmpEvalTempHome = mkdtempLongPathSafe('kmp-agentic-eval-home-');
+    } catch (err) {
+      throw tagIncidentPhase(err, 'acquiring_shared_resources');
+    }
     registerCleanup(() => rmSync(kmpEvalTempHome, { recursive: true, force: true }));
 
     // prepareIsolatedHome builds the same runtime environment/config as before (buildPolicySettingsFile
@@ -195,11 +221,16 @@ export async function acquireSharedEvalResources({
     // home, skill snapshot, fixture and this cleanup accumulator; cleanupPaths (the settings
     // directory the adapter itself created) is registered here, immediately, exactly like every
     // other resource above.
-    const { sharedEnv, settingsPath, cleanupPaths } = await runtimeAdapter.prepareIsolatedHome({
-      shimDir, gradleUserHome, kmpEvalTempHome,
-      expectedFixtureRoot: null, // set per-condition once the fixture dir is materialized
-      allowedGradleTasks, allowedKmpTestSubcommands, junitEvidenceEnabled, executionProfile,
-    });
+    let sharedEnv, settingsPath, cleanupPaths;
+    try {
+      ({ sharedEnv, settingsPath, cleanupPaths } = await runtimeAdapter.prepareIsolatedHome({
+        shimDir, gradleUserHome, kmpEvalTempHome,
+        expectedFixtureRoot: null, // set per-condition once the fixture dir is materialized
+        allowedGradleTasks, allowedKmpTestSubcommands, junitEvidenceEnabled, executionProfile,
+      }));
+    } catch (err) {
+      throw tagIncidentPhase(err, 'acquiring_shared_resources');
+    }
     for (const p of cleanupPaths) registerCleanup(() => rmSync(p, { recursive: true, force: true }));
 
     // Confirms the runtime can actually authenticate BEFORE the first live spawn -- the exact same
@@ -218,8 +249,9 @@ export async function acquireSharedEvalResources({
 
     return {
       settingsPath, shimDir, snapshotDir, skillSnapshotArtifact, gradleUserHome, gradleSnapshotDir,
-      resetGradleToSnapshot: resetToSnapshot, daemonPolicy, kmpEvalTempHome, sharedEnv,
+      resetGradleToSnapshot: resetToSnapshot, daemonPolicy, gradleMemoryOverrideSha256, kmpEvalTempHome, sharedEnv,
       registerCleanup, runCleanup,
+      runtimePreflight: preflight,
       // The RESOLVED adapter instance (default or test-injected) -- returned so a caller outside
       // this module (cli.mjs's runConditionPair) can reuse the exact same instance for its own
       // buildInvocation() call without importing runtimes/claude-code.mjs itself, which only this
@@ -288,7 +320,17 @@ export async function acquireSharedEvalResources({
  *   acquireSharedEvalResources); the scratch directory's removal is queued on it IMMEDIATELY after
  *   creation, before spawnCondition runs, so a failure anywhere later in this call is still covered.
  */
-export async function runSingleCondition({ condition, materializeFixture, previousFixtureDir, cleanupFixtureOnce, resetGradleToSnapshot, kmpEvalTempHome, sharedEnv, baseArgv, snapshotDir, targetPluginName, targetSkillName, timeoutMs, decisionAttributionEnabled = false, junitEvidenceEnabled = false, evidenceTask = null, allowedInvocations = null, registerCleanup = null, fixtureSetup = null, journal = null, cellOrdinal = null, runtimeAdapter, executionProfile = null, productAccessMode = productAccessModeForSkillCondition(condition), shimDir = null }) {
+// timeoutMs default (300000) deliberately matches condition-launcher.mjs's spawnCondition own
+// default EXACTLY, not an independent guess -- runConditionPair's calibrate call site never passes
+// timeoutMs at all (a pre-existing gap; smoke's own call site does, at 180000). Before eval-v2's
+// timeout_ms recording field existed, that gap was harmless: an undefined timeoutMs silently fell
+// through to spawnCondition's own default with nobody the wiser. Once this function started
+// RECORDING the value it was given, a bare (no-default) parameter would have recorded `undefined`
+// while the spawn itself still silently used 300000 -- a real record/reality mismatch, caught by
+// this function's own new schema-validation requiring timeout_ms to be a real positive integer.
+// Giving this parameter the identical default is the one change that keeps both readings in
+// lockstep by construction, for every existing caller, without touching cmdCalibrate itself.
+export async function runSingleCondition({ condition, materializeFixture, previousFixtureDir, cleanupFixtureOnce, resetGradleToSnapshot, kmpEvalTempHome, sharedEnv, baseArgv, snapshotDir, targetPluginName, targetSkillName, timeoutMs = 300000, decisionAttributionEnabled = false, junitEvidenceEnabled = false, evidenceTask = null, allowedInvocations = null, registerCleanup = null, fixtureSetup = null, journal = null, cellOrdinal = null, runtimeAdapter, executionProfile = null, productAccessMode = productAccessModeForSkillCondition(condition), shimDir = null, runtimePreflight = null, beforeSpawn = null, maxBudgetUsd = 0.60, reasoningMode = null }) {
   // Validated BEFORE any per-condition resource is created (P1 architectural review): every
   // condition within a matrix reuses the SAME runtimeAdapter acquireSharedEvalResources already
   // validated once upfront, but this function's own materialization work (fixture materialize,
@@ -336,8 +378,33 @@ export async function runSingleCondition({ condition, materializeFixture, previo
   // removed once the caller's own try/catch invokes runCleanup().
   let evidenceDir = null;
   if (decisionAttributionEnabled) {
-    evidenceDir = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-junit-'));
+    // Explicitly phase-tagged as 'materializing_cell' (2026-09-29, WO-A2 auditor finding), the
+    // same phase the fixture/Gradle materialization immediately above this point already uses --
+    // this scratch dir is exactly the same kind of per-cell materialization step, and its own
+    // mkdtempSync predecessor is a confirmed real failure mode on this harness's hosts (see
+    // mkdtempLongPathSafe's own comment in materialize.mjs). An untagged throw here would default
+    // to incidentPhaseOf's own 'finalizing_matrix' fallback instead.
+    try {
+      evidenceDir = mkdtempLongPathSafe('kmp-agentic-eval-junit-');
+    } catch (err) {
+      throw tagIncidentPhase(err, 'materializing_cell', cellOrdinal ?? undefined);
+    }
     if (registerCleanup) registerCleanup(() => rmSync(evidenceDir, { recursive: true, force: true }));
+    // Provider-neutral harness instrumentation is required for every runtime and product-access
+    // mode. In particular, free-baseline-no-product deliberately strips every KMP_* variable
+    // below, but the JUnit PostToolUse hook still has to know where to write its attribution
+    // sidecars. The hook already supports these AGENTIC_EVAL_* names; previously only Codex
+    // received them, leaving Claude free-baseline cells unable to satisfy a gate the harness
+    // itself required. These variables expose no kmp-test product path, shim, skill, or command.
+    conditionEnv = {
+      ...conditionEnv,
+      AGENTIC_EVAL_JUNIT_EVIDENCE_DIR: evidenceDir,
+      AGENTIC_EVAL_EXPECTED_FIXTURE_ROOT: realpath(fixtureDir),
+      ...(junitEvidenceEnabled ? {
+        AGENTIC_EVAL_JUNIT_EVIDENCE_TASK: evidenceTask,
+        AGENTIC_EVAL_JUNIT_ALLOWED_INVOCATIONS: JSON.stringify(allowedInvocations ?? []),
+      } : {}),
+    };
     if (productAccessMode !== 'free-baseline-no-product') {
       conditionEnv = { ...conditionEnv, KMP_EVAL_JUNIT_EVIDENCE_DIR: evidenceDir };
     }
@@ -350,7 +417,44 @@ export async function runSingleCondition({ condition, materializeFixture, previo
     }
   }
   assertFreeBaselinePreflight({ productAccessMode, fixtureDir, conditionEnv, cellOrdinal });
-  const argv = runtimeAdapter.prepareSkillDelivery(baseArgv, condition, condition === 'current-skill' ? snapshotDir : null);
+  const preparedInvocation = await runtimeAdapter.prepareSkillDelivery(
+    baseArgv,
+    condition,
+    condition === 'current-skill' ? snapshotDir : null,
+    { fixtureDir, conditionEnv, targetSkillName, targetPluginName },
+  );
+  const argv = applyExplicitProductTreatment({
+    invocation: preparedInvocation,
+    condition,
+    runtimeId: runtimeAdapter.id,
+    targetPluginName,
+    targetSkillName,
+    skillText: condition === 'current-skill' && runtimeAdapter.id === 'claude-code'
+      ? readFileSync(join(snapshotDir, '.skills', targetSkillName, 'SKILL.md'), 'utf8')
+      : null,
+  });
+  // eval-v2 recording fields (design.md (d)): computed from the FINAL, post-treatment argv/env --
+  // never the pre-treatment baseArgv/sharedEnv -- so these hashes describe exactly what this cell
+  // was actually spawned with, including product-treatment/plugin-dir/shim-dir differences between
+  // conditions. Kept as sibling fields on the returned object (never inside `observation`): they
+  // are harness-computed provenance facts, not transcript observations, so they deliberately never
+  // touch runtimes/contract.mjs's closed observation keyset.
+  const finalArgvArray = Array.isArray(argv) ? argv : argv.argv;
+  const finalStdinText = Array.isArray(argv) ? undefined : argv.stdinText;
+  const argvArtifact = computeArgvArtifact(finalArgvArray);
+  const deliveredPromptArtifact = finalStdinText !== undefined ? computePromptArtifact(finalStdinText) : null;
+  const envKeys = Object.keys(conditionEnv).sort();
+  const isClaudeCode = runtimeAdapter.id === 'claude-code';
+  // reasoning effort (D2): claude-code is harness-pinned to a literal argv flag (buildBaseInvocation),
+  // never routed through reasoningMode/the model registry (see that function's own comment) -- so
+  // its requested value is a constant here, matching the flag, not a passthrough of `reasoningMode`
+  // (which stays null for claude-code by construction, see supportsModelConfiguration). codex-cli
+  // reports whatever the caller actually resolved from the model registry, unchanged.
+  const reasoningEffortRequested = isClaudeCode ? 'high' : reasoningMode;
+  const reasoningEffortSource = isClaudeCode
+    ? 'harness-pinned-cli-flag'
+    : (reasoningMode != null ? 'model-registry-default-reasoning-mode' : null);
+  const treatmentDeliveryArtifact = condition === 'current-skill' ? computeDeliveredSnapshotArtifact({ dir: snapshotDir }) : null;
   const startedAt = new Date();
   // onSpawned performs ZERO I/O and can never throw -- Node's EventEmitter dispatch does not
   // protect a listener from its own exception, so a callback that did fallible I/O here could
@@ -359,6 +463,9 @@ export async function runSingleCondition({ condition, materializeFixture, previo
   // `await`ed code inside a real try/catch, safe to fail without taking the process down with it.
   let didSpawn = false;
   let spawnStartedAt = null;
+  // Opt-in durable campaign claim. This is deliberately the last fallible operation before the
+  // provider spawn; once it succeeds, a crash burns the slot. Historical callers omit it.
+  if (beforeSpawn) await beforeSpawn();
   const sources = await runtimeAdapter.collectObservationSources(argv, {
     env: conditionEnv, cwd: fixtureDir, timeoutMs,
     onSpawned: () => { didSpawn = true; spawnStartedAt = Date.now(); },
@@ -386,6 +493,7 @@ export async function runSingleCondition({ condition, materializeFixture, previo
       condition, targetPluginName, targetSkillName,
       expectedSnapshotDir: condition === 'current-skill' ? snapshotDir : undefined,
       executionProfile,
+      runtimePreflight,
     });
     const { ok, errors } = validateObservation(observation);
     if (!ok) {
@@ -435,6 +543,16 @@ export async function runSingleCondition({ condition, materializeFixture, previo
     // a terminal journal state with no legal next transition -- the journal's own state machine
     // would throw (correctly) if a caller blindly tried to record `evaluated` on top of it.
     didSpawn,
+    // eval-v2 recording fields (design.md (d)) -- computed above, from the final post-treatment
+    // argv/env this cell actually spawned with. buildRunRecord (cli.mjs) reads these directly.
+    argvSha256: argvArtifact.argv_sha256,
+    deliveredPromptSha256: deliveredPromptArtifact?.prompt_sha256 ?? null,
+    envKeys,
+    reasoningEffortRequested,
+    reasoningEffortSource,
+    treatmentDeliverySha256: treatmentDeliveryArtifact?.delivery_sha256 ?? null,
+    maxBudgetUsd,
+    timeoutMs,
   };
 }
 
@@ -508,7 +626,7 @@ export function isJunitEvidenceOutcome(outcomeKind) {
 export async function runScenarioMatrix({
   scenario, repeats, seed, model, allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha,
   runPluginValidator, materializeFixture, cleanupFixture, targetPluginName, targetSkillName, timeoutMs,
-  journal = null, runtimeAdapter, executionProfile = null, maxBudgetUsd = 0.60, gradlePrewarm = null,
+  journal = null, runtimeAdapter, executionProfile = null, maxBudgetUsd = 0.60, reasoningMode = null, gradlePrewarm = null,
   gradleUserHomeSeedDir = null,
 }) {
   // Decision attribution (allow/deny per Bash attempt) is needed for EVERY scenario regardless of
@@ -541,7 +659,7 @@ export async function runScenarioMatrix({
     // repetition index runs at each time-slot (see this function's own doc comment).
     const repetitionSlots = buildRunMatrix([scenario.id], ['trial'], repeats, seed);
     const conditionOrders = buildConditionOrders(repeats, seed);
-    const baseArgv = runtimeAdapter.buildInvocation({ prompt: scenario.prompt, model, settingsPath: shared.settingsPath, executionProfile, maxBudgetUsd });
+    const baseArgv = runtimeAdapter.buildInvocation({ prompt: scenario.prompt, model, settingsPath: shared.settingsPath, executionProfile, maxBudgetUsd, reasoningMode });
 
     let fixtureDir;
     let fixtureCleanupQueued = false;
@@ -594,6 +712,9 @@ export async function runScenarioMatrix({
         cellOrdinal: orderIndex,
         runtimeAdapter,
         executionProfile,
+        runtimePreflight: shared.runtimePreflight,
+        maxBudgetUsd,
+        reasoningMode,
       });
       fixtureDir = conditionResult.fixtureDir;
       let fullConditionResult;
@@ -610,7 +731,7 @@ export async function runScenarioMatrix({
           ? attributeCondition(conditionResult.evidenceDir, scenario, shellAttempts, {
               terminated: conditionResult.observation.process.terminated,
               terminationReason: conditionResult.observation.process.terminationReason,
-            }, junitEvidenceEnabled, policyMode)
+            }, junitEvidenceEnabled, policyMode, runtimeAdapter.id)
           : null;
         // The scratch directory has now been fully consumed by attributeCondition -- eagerly
         // remove it right away (a safe no-op if already gone) rather than leaving it until the
@@ -670,7 +791,7 @@ export async function runScenarioMatrix({
 
     return {
       cellResults, snapshotDir: shared.snapshotDir, skillSnapshotArtifact: shared.skillSnapshotArtifact,
-      daemonPolicy: shared.daemonPolicy,
+      daemonPolicy: shared.daemonPolicy, gradleMemoryOverrideSha256: shared.gradleMemoryOverrideSha256,
       allowedGradleTasks, allowedKmpTestSubcommands, cleanup: runCleanup,
       plannedCellCount, executedCellCount, matrixComplete, failFastStop,
     };
@@ -735,7 +856,7 @@ export async function runScenarioCampaign({
   scenario, campaignPlan, seed, model, allowedGradleTasks, allowedKmpTestSubcommands, repoRoot, pinnedSkillSha,
   runPluginValidator, materializeFixture, cleanupFixture, targetPluginName, targetSkillName, timeoutMs,
   journal = null, selectionsByProfileId, maxBudgetUsd = 0.60, gradlePrewarm = null,
-  gradleUserHomeSeedDir = null,
+  gradleUserHomeSeedDir = null, beforeCellSpawn = null,
 }) {
   const decisionAttributionEnabled = true;
   const junitEvidenceEnabled = isJunitEvidenceOutcome(scenario.expected?.outcome_kind);
@@ -791,6 +912,7 @@ export async function runScenarioCampaign({
       baseArgvByProfileId[profileId] = shared.runtimeAdapter.buildInvocation({
         prompt: scenario.prompt, model, settingsPath: shared.settingsPath,
         executionProfile: selectionsByProfileId[profileId].executionProfile,
+        reasoningMode: selectionsByProfileId[profileId].model.default_reasoning_mode,
         maxBudgetUsd,
       });
     }
@@ -809,7 +931,7 @@ export async function runScenarioCampaign({
     let failFastStop = null;
     // The plan's own literal cells order IS the dispatch order -- never grouped/re-sorted by
     // profile (that would defeat the whole point of a Williams-style counterbalanced design).
-    for (const planCell of campaignPlan.cells) {
+    for (const [cellOrdinal, planCell] of campaignPlan.cells.entries()) {
       const { execution_profile_id: profileId, condition, order_index: orderIndex, repetition_index: repetitionIndex } = planCell;
       const shared = sharedByProfileId[profileId];
       const { executionProfile } = selectionsByProfileId[profileId];
@@ -834,11 +956,15 @@ export async function runScenarioCampaign({
         registerCleanup: registerCampaignCleanup,
         fixtureSetup,
         journal,
-        cellOrdinal: orderIndex,
+        cellOrdinal,
         runtimeAdapter: shared.runtimeAdapter,
         executionProfile,
+        runtimePreflight: shared.runtimePreflight,
         productAccessMode: planCell.product_access_mode,
         shimDir: shared.shimDir,
+        maxBudgetUsd,
+        reasoningMode: selectionsByProfileId[profileId].model.default_reasoning_mode,
+        beforeSpawn: beforeCellSpawn ? () => beforeCellSpawn(planCell) : null,
       });
       fixtureDir = conditionResult.fixtureDir;
 
@@ -856,7 +982,7 @@ export async function runScenarioCampaign({
           ? attributeCondition(conditionResult.evidenceDir, scenario, shellAttempts, {
               terminated: conditionResult.observation.process.terminated,
               terminationReason: conditionResult.observation.process.terminationReason,
-            }, junitEvidenceEnabled, policyMode)
+            }, junitEvidenceEnabled, policyMode, shared.runtimeAdapter.id)
           : null;
         if (conditionResult.evidenceDir) {
           rmSync(conditionResult.evidenceDir, { recursive: true, force: true });
@@ -877,13 +1003,13 @@ export async function runScenarioCampaign({
         fullConditionResult = { ...conditionResult, junitAttribution, dispatchAccounting, correlationObservability };
         localIntegrity = cellTranscriptIntegrityOk(fullConditionResult, { targetPluginName, targetSkillName, requireDispatchAccounting: true });
       } catch (err) {
-        throw tagIncidentPhase(err, 'parsing_or_attributing_cell', orderIndex);
+          throw tagIncidentPhase(err, 'parsing_or_attributing_cell', cellOrdinal);
       }
       if (journal && conditionResult.didSpawn) {
         try {
-          journal.recordEvaluated(orderIndex, fullConditionResult.correlationObservability);
+          journal.recordEvaluated(cellOrdinal, fullConditionResult.correlationObservability);
         } catch (err) {
-          throw tagIncidentPhase(err, 'persisting_cell_journal', orderIndex);
+          throw tagIncidentPhase(err, 'persisting_cell_journal', cellOrdinal);
         }
       }
       cellResults.push({
@@ -899,10 +1025,11 @@ export async function runScenarioCampaign({
 
     const executedCellCount = cellResults.length;
     const matrixComplete = executedCellCount === plannedCellCount;
-    // daemonPolicy/skillSnapshotArtifact are both PROVEN execution-profile-independent
-    // (materializeGradleUserHome's daemonPolicy is a hardcoded literal; computeSkillSnapshotArtifact
+    // daemonPolicy/skillSnapshotArtifact/gradleMemoryOverrideSha256 are all PROVEN
+    // execution-profile-independent (materializeGradleUserHome's daemonPolicy AND its
+    // GRADLE_MEMORY_OVERRIDE_PROPERTIES content are both hardcoded literals; computeSkillSnapshotArtifact
     // is a pure function of repoRoot/sha/root alone, identical regardless of which bundle computed
-    // it) -- reading either off any one acquired bundle is exact, never an approximation.
+    // it) -- reading any of them off any one acquired bundle is exact, never an approximation.
     const anyShared = sharedByProfileId[distinctProfileIds[0]];
 
     const runCleanup = async () => {
@@ -914,6 +1041,7 @@ export async function runScenarioCampaign({
 
     return {
       cellResults, skillSnapshotArtifact: anyShared.skillSnapshotArtifact, daemonPolicy: anyShared.daemonPolicy,
+      gradleMemoryOverrideSha256: anyShared.gradleMemoryOverrideSha256,
       allowedGradleTasks, allowedKmpTestSubcommands, cleanup: runCleanup,
       plannedCellCount, executedCellCount, matrixComplete, failFastStop,
     };

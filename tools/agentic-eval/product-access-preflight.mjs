@@ -12,6 +12,7 @@ const SUPPORTED_PREFLIGHT_MODES = Object.freeze(['free-baseline-no-product']);
 
 const PRODUCT_WORKSPACE_MARKERS = Object.freeze([
   '.skills/kmp-test-runner',
+  '.agents/skills/kmp-test-runner',
   '.claude-plugin',
   'tools/agentic-eval',
   'bin/kmp-test.js',

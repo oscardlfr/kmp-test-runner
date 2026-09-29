@@ -13,6 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveBash } from '../../tools/agentic-eval/resolve-bash.mjs';
+import { createFakeClaudeCommandPath } from './_fake-claude-command.js';
 import { LATEST_RUN_SCHEMA } from '../../tools/agentic-eval/schemas.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -45,23 +46,30 @@ const FIXTURES_DIR = path.join(__dirname, '..', 'fixtures');
 // running concurrently.
 let runsRoot;
 let isolatedTmp;
+let commandShimRoot;
 
 beforeEach(() => {
   runsRoot = mkdtempSync(path.join(os.tmpdir(), 'aeci-runs-root-'));
   isolatedTmp = mkdtempSync(path.join(os.tmpdir(), 'aeci-isolated-tmp-'));
+  commandShimRoot = mkdtempSync(path.join(os.tmpdir(), 'aeci-claude-cmd-shim-'));
 });
 
 afterEach(() => {
   rmSync(runsRoot, { recursive: true, force: true });
   rmSync(isolatedTmp, { recursive: true, force: true });
+  rmSync(commandShimRoot, { recursive: true, force: true });
 });
 
 function fakeClaudeEnv(scenario) {
   const fakeDir = path.join(FIXTURES_DIR, `fake-claude-${scenario}`);
-  const delimiter = process.platform === 'win32' ? ';' : ':';
+  const command = createFakeClaudeCommandPath({
+    fixtureDir: fakeDir,
+    basePath: process.env.PATH ?? process.env.Path ?? '',
+    shimRoot: commandShimRoot,
+  });
   return {
     ...process.env,
-    PATH: `${fakeDir}${delimiter}${process.env.PATH ?? process.env.Path ?? ''}`,
+    PATH: command.path,
     KMP_EVAL_RUNS_ROOT: runsRoot,
     TEMP: isolatedTmp,
     TMP: isolatedTmp,

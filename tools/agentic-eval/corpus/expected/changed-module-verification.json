@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "id": "changed-module-verification",
+  "expected_outcome": "The agent discovers that the single pending edit affects NowInAndroid's :core:common module, correctly scopes testing to exactly that module, and reports the accurate pass/fail count.",
+  "expected": {
+    "module": ":core:common",
+    "outcome_kind": "tests_executed",
+    "kmp_test": {
+      "tests": {
+        "total": 1,
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "individual_total": 1
+      },
+      "exit_code": 0
+    },
+    "gradle": {
+      "allowed_invocations": [
+        ":core:common:test"
+      ],
+      "evidence_task": ":core:common:test",
+      "tests": {
+        "total": 1,
+        "passed": 1,
+        "failed": 0
+      },
+      "exit_code": 0
+    },
+    "changed": {
+      "detected_modules": [
+        "core:common"
+      ],
+      "staged_only": false,
+      "base_ref": "HEAD"
+    }
+  },
+  "first_useful_signal_predicate": {
+    "description": "first well-formed changed evidence confirming :core:common single-module detection and 1/1"
+  }
+}

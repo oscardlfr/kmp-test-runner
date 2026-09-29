@@ -832,7 +832,7 @@ describe('finalizeAndWriteRecords -- fails closed on a dirty measured-code tree'
       schema: 1,
       runtime: { id: 'claude-code', protocolVersion: 1 },
       process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1000n },
-      session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true },
+      session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true, modelSnapshot: null },
       transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
       terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
       toolAttempts: [],
@@ -851,6 +851,14 @@ describe('finalizeAndWriteRecords -- fails closed on a dirty measured-code tree'
       observation: fakeObservation(),
       startedAt: new Date('2026-01-01T00:00:00.000Z'),
       endedAt: new Date('2026-01-01T00:00:01.000Z'),
+      argvSha256: 'a'.repeat(64),
+      deliveredPromptSha256: 'b'.repeat(64),
+      envKeys: ['PATH'],
+      reasoningEffortRequested: 'high',
+      reasoningEffortSource: 'harness-pinned-cli-flag',
+      treatmentDeliverySha256: null,
+      maxBudgetUsd: 0.6,
+      timeoutMs: 300000,
     };
   }
 
@@ -931,7 +939,7 @@ describe('finalizeAndWriteRecords / finalizeAndWriteMatrixRecords -- a rejected 
       schema: 1,
       runtime: { id: 'claude-code', protocolVersion: 1 },
       process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1000n },
-      session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: `sess-${cellOrdinal}`, runtimeVersion: 'fake', toolProfileMatchesExpected: true },
+      session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: `sess-${cellOrdinal}`, runtimeVersion: 'fake', toolProfileMatchesExpected: true, modelSnapshot: null },
       transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
       terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
       toolAttempts: [],
@@ -950,6 +958,14 @@ describe('finalizeAndWriteRecords / finalizeAndWriteMatrixRecords -- a rejected 
       observation: fakeObservation(cellOrdinal),
       startedAt: new Date('2026-01-01T00:00:00.000Z'),
       endedAt: new Date('2026-01-01T00:00:01.000Z'),
+      argvSha256: 'a'.repeat(64),
+      deliveredPromptSha256: 'b'.repeat(64),
+      envKeys: ['PATH'],
+      reasoningEffortRequested: 'high',
+      reasoningEffortSource: 'harness-pinned-cli-flag',
+      treatmentDeliverySha256: null,
+      maxBudgetUsd: 0.6,
+      timeoutMs: 300000,
       cellOrdinal,
     };
   }
@@ -1364,7 +1380,7 @@ describe('buildRunRecord -- raw_capture_location under the default (non-overridd
         schema: 1,
         runtime: { id: 'claude-code', protocolVersion: 1 },
         process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1000n },
-        session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true },
+        session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true, modelSnapshot: null },
         transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
         terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
         toolAttempts: [],
@@ -1379,6 +1395,14 @@ describe('buildRunRecord -- raw_capture_location under the default (non-overridd
       },
       startedAt: new Date('2026-01-01T00:00:00.000Z'),
       endedAt: new Date('2026-01-01T00:00:01.000Z'),
+      argvSha256: 'a'.repeat(64),
+      deliveredPromptSha256: 'b'.repeat(64),
+      envKeys: ['PATH'],
+      reasoningEffortRequested: 'high',
+      reasoningEffortSource: 'harness-pinned-cli-flag',
+      treatmentDeliverySha256: null,
+      maxBudgetUsd: 0.6,
+      timeoutMs: 300000,
     };
     const record = buildRunRecord({
       conditionResult, condition: 'no-skill', runKind: 'calibration', scenarioId: 'test-default-root',
@@ -1405,7 +1429,7 @@ describe('buildRunRecord -- retries reflects "not tracked", never a hardcoded ze
         schema: 1,
         runtime: { id: 'claude-code', protocolVersion: 1 },
         process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1000n },
-        session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true },
+        session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true, modelSnapshot: null },
         transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
         terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
         toolAttempts: [],
@@ -1420,6 +1444,14 @@ describe('buildRunRecord -- retries reflects "not tracked", never a hardcoded ze
       },
       startedAt: new Date('2026-01-01T00:00:00.000Z'),
       endedAt: new Date('2026-01-01T00:00:01.000Z'),
+      argvSha256: 'a'.repeat(64),
+      deliveredPromptSha256: 'b'.repeat(64),
+      envKeys: ['PATH'],
+      reasoningEffortRequested: 'high',
+      reasoningEffortSource: 'harness-pinned-cli-flag',
+      treatmentDeliverySha256: null,
+      maxBudgetUsd: 0.6,
+      timeoutMs: 300000,
     };
   }
 
@@ -1457,7 +1489,7 @@ describe('buildRunRecord -- policy_mode:not_applicable (sandboxed-unrestricted-v
         schema: 1,
         runtime: { id: 'claude-code', protocolVersion: 1 },
         process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1000n },
-        session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true },
+        session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true, modelSnapshot: null },
         transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
         terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
         toolAttempts: [],
@@ -1472,6 +1504,14 @@ describe('buildRunRecord -- policy_mode:not_applicable (sandboxed-unrestricted-v
       },
       startedAt: new Date('2026-01-01T00:00:00.000Z'),
       endedAt: new Date('2026-01-01T00:00:01.000Z'),
+      argvSha256: 'a'.repeat(64),
+      deliveredPromptSha256: 'b'.repeat(64),
+      envKeys: ['PATH'],
+      reasoningEffortRequested: 'high',
+      reasoningEffortSource: 'harness-pinned-cli-flag',
+      treatmentDeliverySha256: null,
+      maxBudgetUsd: 0.6,
+      timeoutMs: 300000,
       ...overrides,
     };
   }
@@ -1604,7 +1644,7 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
         schema: 1,
         runtime: { id: 'claude-code', protocolVersion: 1 },
         process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1000n },
-        session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true },
+        session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true, modelSnapshot: null },
         transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
         terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
         toolAttempts: [],
@@ -1619,6 +1659,14 @@ describe('buildRunRecord -- ambiguous_junit_evidence propagation (review-round-2
       },
       startedAt: new Date('2026-01-01T00:00:00.000Z'),
       endedAt: new Date('2026-01-01T00:00:01.000Z'),
+      argvSha256: 'a'.repeat(64),
+      deliveredPromptSha256: 'b'.repeat(64),
+      envKeys: ['PATH'],
+      reasoningEffortRequested: 'high',
+      reasoningEffortSource: 'harness-pinned-cli-flag',
+      treatmentDeliverySha256: null,
+      maxBudgetUsd: 0.6,
+      timeoutMs: 300000,
     };
   }
   function fakeGradeResult(overrides = {}) {
@@ -1886,7 +1934,7 @@ describe('buildRunRecord -- tool_calls_total counts every Skill attempt, not jus
       schema: 1,
       runtime: { id: 'claude-code', protocolVersion: 1 },
       process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1000n },
-      session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true },
+      session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true, modelSnapshot: null },
       transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
       terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
       toolAttempts,
@@ -1912,6 +1960,14 @@ describe('buildRunRecord -- tool_calls_total counts every Skill attempt, not jus
       observation: observationFromEvents(events),
       startedAt: new Date('2026-01-01T00:00:00.000Z'),
       endedAt: new Date('2026-01-01T00:00:01.000Z'),
+      argvSha256: 'a'.repeat(64),
+      deliveredPromptSha256: 'b'.repeat(64),
+      envKeys: ['PATH'],
+      reasoningEffortRequested: 'high',
+      reasoningEffortSource: 'harness-pinned-cli-flag',
+      treatmentDeliverySha256: null,
+      maxBudgetUsd: 0.6,
+      timeoutMs: 300000,
     };
     const record = buildRunRecord({
       conditionResult, condition: 'current-skill', runKind: 'calibration', scenarioId: 'test-tool-calls-total',
@@ -1931,6 +1987,14 @@ describe('buildRunRecord -- tool_calls_total counts every Skill attempt, not jus
       observation: observationFromEvents(events),
       startedAt: new Date('2026-01-01T00:00:00.000Z'),
       endedAt: new Date('2026-01-01T00:00:01.000Z'),
+      argvSha256: 'a'.repeat(64),
+      deliveredPromptSha256: 'b'.repeat(64),
+      envKeys: ['PATH'],
+      reasoningEffortRequested: 'high',
+      reasoningEffortSource: 'harness-pinned-cli-flag',
+      treatmentDeliverySha256: null,
+      maxBudgetUsd: 0.6,
+      timeoutMs: 300000,
     };
     const record = buildRunRecord({
       conditionResult, condition: 'no-skill', runKind: 'calibration', scenarioId: 'test-tool-calls-total-no-invocation',
@@ -1960,6 +2024,14 @@ describe('buildRunRecord -- tool_calls_total counts every Skill attempt, not jus
       observation: observationFromEvents(events),
       startedAt: new Date('2026-01-01T00:00:00.000Z'),
       endedAt: new Date('2026-01-01T00:00:01.000Z'),
+      argvSha256: 'a'.repeat(64),
+      deliveredPromptSha256: 'b'.repeat(64),
+      envKeys: ['PATH'],
+      reasoningEffortRequested: 'high',
+      reasoningEffortSource: 'harness-pinned-cli-flag',
+      treatmentDeliverySha256: null,
+      maxBudgetUsd: 0.6,
+      timeoutMs: 300000,
     };
     const record = buildRunRecord({
       conditionResult, condition: 'current-skill', runKind: 'calibration', scenarioId: 'test-tool-calls-total-foreign-skill',
@@ -1992,7 +2064,7 @@ describe('finalizeAndWriteRecords -- a writeRunRecordEvidence() throw returns {o
           schema: 1,
           runtime: { id: 'claude-code', protocolVersion: 1 },
           process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1000n },
-          session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true },
+          session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true, modelSnapshot: null },
           transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
           terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
           toolAttempts: [],
@@ -2007,6 +2079,14 @@ describe('finalizeAndWriteRecords -- a writeRunRecordEvidence() throw returns {o
         },
         startedAt: new Date('2026-01-01T00:00:00.000Z'),
         endedAt: new Date('2026-01-01T00:00:01.000Z'),
+        argvSha256: 'a'.repeat(64),
+        deliveredPromptSha256: 'b'.repeat(64),
+        envKeys: ['PATH'],
+        reasoningEffortRequested: 'high',
+        reasoningEffortSource: 'harness-pinned-cli-flag',
+        treatmentDeliverySha256: null,
+        maxBudgetUsd: 0.6,
+        timeoutMs: 300000,
       };
     }
     const policySha256 = computePolicySha256();
@@ -2356,7 +2436,7 @@ describe('buildRunRecord -- schema v5 post-signal metrics + accepted_audit place
         schema: 1,
         runtime: { id: 'claude-code', protocolVersion: 1 },
         process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: endedHrtimeNs ?? 1000n },
-        session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true },
+        session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true, modelSnapshot: null },
         transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
         terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
         toolAttempts,
@@ -2371,6 +2451,14 @@ describe('buildRunRecord -- schema v5 post-signal metrics + accepted_audit place
       },
       startedAt: new Date('2026-01-01T00:00:00.000Z'),
       endedAt: new Date('2026-01-01T00:00:01.000Z'),
+      argvSha256: 'a'.repeat(64),
+      deliveredPromptSha256: 'b'.repeat(64),
+      envKeys: ['PATH'],
+      reasoningEffortRequested: 'high',
+      reasoningEffortSource: 'harness-pinned-cli-flag',
+      treatmentDeliverySha256: null,
+      maxBudgetUsd: 0.6,
+      timeoutMs: 300000,
       junitAttribution: { decisionByAttempt },
     };
   }
@@ -2513,7 +2601,7 @@ describe('buildRunRecord -- selection/promptArtifact/skillSnapshotArtifact are r
         schema: 1,
         runtime: { id: 'claude-code', protocolVersion: 1 },
         process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1000n },
-        session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true },
+        session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true, modelSnapshot: null },
         transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
         terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
         toolAttempts: [],
@@ -2528,6 +2616,14 @@ describe('buildRunRecord -- selection/promptArtifact/skillSnapshotArtifact are r
       },
       startedAt: new Date('2026-01-01T00:00:00.000Z'),
       endedAt: new Date('2026-01-01T00:00:01.000Z'),
+      argvSha256: 'a'.repeat(64),
+      deliveredPromptSha256: 'b'.repeat(64),
+      envKeys: ['PATH'],
+      reasoningEffortRequested: 'high',
+      reasoningEffortSource: 'harness-pinned-cli-flag',
+      treatmentDeliverySha256: null,
+      maxBudgetUsd: 0.6,
+      timeoutMs: 300000,
     };
   }
 
@@ -2664,7 +2760,7 @@ describe('finalizeAndWriteMatrixRecords -- gate rejection precedence over sideca
       schema: 1,
       runtime: { id: 'claude-code', protocolVersion: 1 },
       process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1000n },
-      session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true },
+      session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true, modelSnapshot: null },
       transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
       terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
       toolAttempts: [],
@@ -2773,13 +2869,18 @@ describe('finalizeAndWriteMatrixRecords -- gate rejection precedence over sideca
     };
     const startedAt = new Date('2026-01-01T00:00:00.000Z');
     const endedAt = new Date('2026-01-01T00:00:01.000Z');
+    const v9RecordingFields = {
+      argvSha256: 'a'.repeat(64), deliveredPromptSha256: 'b'.repeat(64), envKeys: ['PATH'],
+      reasoningEffortRequested: 'high', reasoningEffortSource: 'harness-pinned-cli-flag',
+      treatmentDeliverySha256: null, maxBudgetUsd: 0.6, timeoutMs: 300000,
+    };
     return [
       buildRunRecord({
-        ...shared, conditionResult: { observation: minimalObservation(), startedAt, endedAt, cellOrdinal: 0 },
+        ...shared, conditionResult: { observation: minimalObservation(), startedAt, endedAt, cellOrdinal: 0, ...v9RecordingFields },
         condition: 'current-skill', scenarioId: 'test-gate-precedence', skillSourceSha: 'a'.repeat(40), orderIndex: 0,
       }),
       buildRunRecord({
-        ...shared, conditionResult: { observation: minimalObservation(), startedAt, endedAt, cellOrdinal: 1 },
+        ...shared, conditionResult: { observation: minimalObservation(), startedAt, endedAt, cellOrdinal: 1, ...v9RecordingFields },
         condition: 'no-skill', scenarioId: 'test-gate-precedence', skillSourceSha: null, orderIndex: 1,
       }),
     ];
@@ -2836,7 +2937,7 @@ describe('finalizeAndWriteMatrixRecords -- a provenance-bound field redacted by 
       schema: 1,
       runtime: { id: 'claude-code', protocolVersion: 1 },
       process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1000n },
-      session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true },
+      session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true, modelSnapshot: null },
       transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
       terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
       toolAttempts: [],
@@ -2852,7 +2953,12 @@ describe('finalizeAndWriteMatrixRecords -- a provenance-bound field redacted by 
   }
 
   function fakeConditionResultLocal() {
-    return { observation: minimalObservation(), startedAt: new Date('2026-01-01T00:00:00.000Z'), endedAt: new Date('2026-01-01T00:00:01.000Z'), cellOrdinal: 0 };
+    return {
+      observation: minimalObservation(), startedAt: new Date('2026-01-01T00:00:00.000Z'), endedAt: new Date('2026-01-01T00:00:01.000Z'), cellOrdinal: 0,
+      argvSha256: 'a'.repeat(64), deliveredPromptSha256: 'b'.repeat(64), envKeys: ['PATH'],
+      reasoningEffortRequested: 'high', reasoningEffortSource: 'harness-pinned-cli-flag',
+      treatmentDeliverySha256: null, maxBudgetUsd: 0.6, timeoutMs: 300000,
+    };
   }
 
   const REQUIRED_GRADING_CHECK_NAMES = [
@@ -3169,7 +3275,7 @@ describe('cmdAggregate -- schema-v6 scenario records require a verifiable on-dis
         schema: 1,
         runtime: { id: 'claude-code', protocolVersion: 1 },
         process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: undefined },
-        session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true },
+        session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true, modelSnapshot: null },
         transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
         terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
         toolAttempts: events.length === 0 ? [] : findAllToolUsesWithResults(events).map((u) => ({
@@ -3193,6 +3299,14 @@ describe('cmdAggregate -- schema-v6 scenario records require a verifiable on-dis
       },
       startedAt: new Date('2026-01-01T00:00:00.000Z'),
       endedAt: new Date('2026-01-01T00:00:01.000Z'),
+      argvSha256: 'a'.repeat(64),
+      deliveredPromptSha256: 'b'.repeat(64),
+      envKeys: ['PATH'],
+      reasoningEffortRequested: 'high',
+      reasoningEffortSource: 'harness-pinned-cli-flag',
+      treatmentDeliverySha256: null,
+      maxBudgetUsd: 0.6,
+      timeoutMs: 300000,
       junitAttribution: { decisionByAttempt: new Map() },
     };
   }

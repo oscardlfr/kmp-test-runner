@@ -32,6 +32,20 @@ describe('classifyBashCommand', () => {
     expect(c).toEqual({ kind: 'kmp-test', subcommand: 'parallel', moduleFilter: 'shared', testType: null, minMissedLines: null, coverageDisabled: false, isPlanOnly: false });
   });
 
+  it('recognizes the PowerShell command wrapper emitted by Codex CLI on Windows', () => {
+    const command = String.raw`"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -Command 'kmp-test parallel --module-filter :core:domain --min-missed-lines 15 --json --project-root .'`;
+    expect(classifyBashCommand(command)).toEqual({
+      kind: 'kmp-test', subcommand: 'parallel', moduleFilter: ':core:domain', testType: null,
+      minMissedLines: '15', coverageDisabled: false, isPlanOnly: false,
+    });
+  });
+
+  it('does not attribute compound PowerShell output to one kmp-test invocation', () => {
+    const command = String.raw`"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -Command 'kmp-test parallel --module-filter :core:domain --json; Write-Output forged'`;
+    expect(classifyBashCommand(command)).toEqual({ kind: 'other' });
+    expect(classifyBashCommand(String.raw`powershell.exe -Command 'kmp-test parallel --module-filter $(Write-Output :core:domain) --json'`)).toEqual({ kind: 'other' });
+  });
+
   it('kmp-test parallel with --module-filter=shared (equals form) extracts the module identically', () => {
     const c = classifyBashCommand('kmp-test parallel --module-filter=shared --json');
     expect(c.moduleFilter).toBe('shared');
@@ -96,6 +110,63 @@ describe('classifyBashCommand', () => {
 
   it('a Gradle --dry-run invocation sets isPlanOnly:true', () => {
     expect(classifyBashCommand('./gradlew.bat :shared:testAndroidHostTest --dry-run --console=plain').isPlanOnly).toBe(true);
+  });
+
+  // H16 (AUDITORIA-EVIDENCE1-2026-09-27.md): real 011c89b6 transcripts used common Gradle
+  // invocation forms this classifier didn't recognize at all -- it fell through to {kind:'other'},
+  // silently hiding the command from the grader's policy-allowed / relevant-invocation checks.
+  it.each([
+    ['bare gradlew (no leading ./)', 'gradlew :app:testDebugUnitTest --console=plain'],
+    ['bare gradlew.bat (no leading ./)', 'gradlew.bat :app:testDebugUnitTest --console=plain'],
+    ['Windows-style .\\gradlew.bat', String.raw`.\gradlew.bat :app:testDebugUnitTest --console=plain`],
+  ])('recognizes the %s form identically to ./gradlew.bat', (_label, command) => {
+    const c = classifyBashCommand(command);
+    expect(c.kind).toBe('gradle');
+    expect(c.taskTokens).toEqual([':app:testDebugUnitTest']);
+  });
+
+  it('strips exactly one leading `cd <dir> &&` before classifying', () => {
+    const c = classifyBashCommand('cd "$(pwd)" && ./gradlew :app:testDebugUnitTest --console=plain');
+    expect(c.kind).toBe('gradle');
+    expect(c.taskTokens).toEqual([':app:testDebugUnitTest']);
+  });
+
+  it('strips exactly one leading `timeout N` before classifying', () => {
+    const c = classifyBashCommand('timeout 300 ./gradlew :app:testDebugUnitTest --console=plain');
+    expect(c.kind).toBe('gradle');
+    expect(c.taskTokens).toEqual([':app:testDebugUnitTest']);
+  });
+
+  it.each([
+    ['trailing 2>&1', './gradlew :app:testDebugUnitTest --console=plain 2>&1'],
+    ['trailing | tail -N', './gradlew :app:testDebugUnitTest --console=plain | tail -150'],
+    ['trailing | head -N', './gradlew :app:testDebugUnitTest --console=plain | head -150'],
+    ['trailing | Select-Object -Last N', './gradlew :app:testDebugUnitTest --console=plain | Select-Object -Last 150'],
+  ])('strips a %s suffix before classifying, without touching the real task tokens', (_label, command) => {
+    const c = classifyBashCommand(command);
+    expect(c.kind).toBe('gradle');
+    expect(c.taskTokens).toEqual([':app:testDebugUnitTest']);
+  });
+
+  it('the literal 011c89b6 claude-code-1 transcript command: cd prefix + ./gradlew + 2>&1 | tail -150 suffix, all stripped together', () => {
+    const command = 'cd "$(pwd)" && ./gradlew :core:domain:createDemoDebugUnitTestCoverageReport --console=plain --offline --no-configuration-cache 2>&1 | tail -150';
+    const c = classifyBashCommand(command);
+    expect(c.kind).toBe('gradle');
+    expect(c.taskTokens).toEqual([':core:domain:createDemoDebugUnitTestCoverageReport']);
+    expect(c.isPlanOnly).toBe(false);
+  });
+
+  it('does not strip a suffix that only partially matches a known pattern (e.g. | tail with a non-numeric arg)', () => {
+    // Guards against over-eager stripping: `| tail -f` is a real, different Gradle invocation
+    // shape (follow mode) that must stay {kind:'other'} rather than being silently misread as
+    // Gradle with a spurious trailing "-f" swallowed.
+    const c = classifyBashCommand('./gradlew :app:testDebugUnitTest --console=plain | tail -f');
+    expect(c.kind).toBe('gradle');
+    // Pre-existing, unrelated taskTokens quirk (not something H16 touches): the filter only drops
+    // flag-shaped (`-*`) tokens, so the un-stripped `| tail` leaks through as if they were task
+    // names. What this test actually guards is the suffix-stripper NOT matching `-f` as a numeric
+    // tail/head argument -- kind stays 'gradle' via the leading ./gradlew token either way.
+    expect(c.taskTokens).toEqual([':app:testDebugUnitTest', '|', 'tail']);
   });
 
   // --min-missed-lines -- extracted the same way moduleFilter/testType are: a raw string token,

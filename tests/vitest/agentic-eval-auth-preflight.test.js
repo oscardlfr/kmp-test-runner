@@ -4,6 +4,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { runAuthPreflight, authPreflightReasonCode } from '../../tools/agentic-eval/auth-preflight.mjs';
 
+const CLAUDE_COMMAND = process.platform === 'win32' ? 'claude.cmd' : 'claude';
+
 // terminated defaults to false -- a normal, completed spawn -- matching every EXISTING test
 // below's own intent (they were all already testing a process that ran to a normal conclusion;
 // only the NEW terminated-specific tests further down pass true explicitly).
@@ -152,7 +154,7 @@ describe('runAuthPreflight', () => {
       expect(spawnFn).toHaveBeenCalledTimes(1);
       expect(capturedCalls.length).toBe(1);
       const { argv, opts } = capturedCalls[0];
-      expect(argv).toEqual(['claude', 'auth', 'status', '--json']);
+      expect(argv).toEqual([CLAUDE_COMMAND, 'auth', 'status', '--json']);
       // The EXACT sharedEnv object reference -- never a copy/subset/superset -- so a future
       // regression that silently drops or mutates env vars before the real spawn would be caught.
       expect(opts.env).toBe(sharedEnv);

@@ -30,6 +30,7 @@ const NO_SKILL_RAW = readFileSync(join(FIXTURES_DIR, 'agentic-eval-stream-no-ski
 
 const TARGET_PLUGIN_NAME = 'kmp-test-runner';
 const TARGET_SKILL_NAME = 'kmp-test-runner';
+const CLAUDE_COMMAND = process.platform === 'win32' ? 'claude.cmd' : 'claude';
 
 // PR 4: the two real execution-profile shapes, mirrored from registries.mjs's own shipped
 // registry.json literals (frozen, matching how resolveSelection actually returns them -- proves
@@ -141,9 +142,10 @@ describe('buildInvocation -- byte-identical flags with prompt-safe stdin transpo
     const invocation = buildInvocation({ prompt: 'PROMPT', settingsPath: 'SETTINGS' });
     expect(invocation.stdinText).toBe('PROMPT');
     expect(argvOf(invocation)).toEqual([
-      'claude', '-p',
+      CLAUDE_COMMAND, '-p',
       '--output-format', 'stream-json', '--verbose', '--include-hook-events',
       '--model', 'claude-sonnet-5',
+      '--effort', 'high',
       '--setting-sources', '', '--strict-mcp-config', '--no-chrome',
       '--no-session-persistence', '--settings', 'SETTINGS',
       '--tools', 'Bash,Skill',
@@ -157,9 +159,10 @@ describe('buildInvocation -- byte-identical flags with prompt-safe stdin transpo
     const invocation = buildInvocation({ prompt: 'PROMPT', settingsPath: 'SETTINGS', model: 'MODEL', maxBudgetUsd: 1.25 });
     expect(invocation.stdinText).toBe('PROMPT');
     expect(argvOf(invocation)).toEqual([
-      'claude', '-p',
+      CLAUDE_COMMAND, '-p',
       '--output-format', 'stream-json', '--verbose', '--include-hook-events',
       '--model', 'MODEL',
+      '--effort', 'high',
       '--setting-sources', '', '--strict-mcp-config', '--no-chrome',
       '--no-session-persistence', '--settings', 'SETTINGS',
       '--tools', 'Bash,Skill',
@@ -259,6 +262,49 @@ describe('prepareIsolatedHome -- executionProfile-aware settings/env compilation
     }
   });
 
+  it('only the externally sandboxed profile carries the canonical Claude credential-store path', async () => {
+    const original = process.env.CLAUDE_CONFIG_DIR;
+    const originalPreflight = process.env.KMP_AGENTIC_EVAL_LIVE_SPAWN_PREFLIGHT;
+    process.env.CLAUDE_CONFIG_DIR = 'C:\\Evidence1RuntimeState\\claude';
+    process.env.KMP_AGENTIC_EVAL_LIVE_SPAWN_PREFLIGHT = '1';
+    let strict;
+    let unrestricted;
+    try {
+      strict = await prepareIsolatedHome({ ...baseOpts, executionProfile: STRICT_PROFILE });
+      unrestricted = await prepareIsolatedHome({ ...baseOpts, executionProfile: UNRESTRICTED_PROFILE });
+      expect(strict.sharedEnv).not.toHaveProperty('CLAUDE_CONFIG_DIR');
+      expect(strict.sharedEnv).not.toHaveProperty('KMP_AGENTIC_EVAL_LIVE_SPAWN_PREFLIGHT');
+      expect(unrestricted.sharedEnv.CLAUDE_CONFIG_DIR).toBe('C:\\Evidence1RuntimeState\\claude');
+      expect(unrestricted.sharedEnv.KMP_AGENTIC_EVAL_LIVE_SPAWN_PREFLIGHT).toBe('1');
+    } finally {
+      if (strict) for (const p of strict.cleanupPaths) rmSync(p, { recursive: true, force: true });
+      if (unrestricted) for (const p of unrestricted.cleanupPaths) rmSync(p, { recursive: true, force: true });
+      if (original === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = original;
+      if (originalPreflight === undefined) delete process.env.KMP_AGENTIC_EVAL_LIVE_SPAWN_PREFLIGHT;
+      else process.env.KMP_AGENTIC_EVAL_LIVE_SPAWN_PREFLIGHT = originalPreflight;
+    }
+  });
+
+  it('preserves the explicit Claude Windows shell selection through the isolated env', async () => {
+    const originalBash = process.env.CLAUDE_CODE_GIT_BASH_PATH;
+    const originalPowerShell = process.env.CLAUDE_CODE_USE_POWERSHELL_TOOL;
+    process.env.CLAUDE_CODE_GIT_BASH_PATH = 'C:\\Evidence1Toolchain\\git-bash\\bin\\bash.exe';
+    process.env.CLAUDE_CODE_USE_POWERSHELL_TOOL = '0';
+    let prepared;
+    try {
+      prepared = await prepareIsolatedHome({ ...baseOpts, executionProfile: UNRESTRICTED_PROFILE });
+      expect(prepared.sharedEnv.CLAUDE_CODE_GIT_BASH_PATH).toBe(process.env.CLAUDE_CODE_GIT_BASH_PATH);
+      expect(prepared.sharedEnv.CLAUDE_CODE_USE_POWERSHELL_TOOL).toBe('0');
+    } finally {
+      if (prepared) for (const p of prepared.cleanupPaths) rmSync(p, { recursive: true, force: true });
+      if (originalBash === undefined) delete process.env.CLAUDE_CODE_GIT_BASH_PATH;
+      else process.env.CLAUDE_CODE_GIT_BASH_PATH = originalBash;
+      if (originalPowerShell === undefined) delete process.env.CLAUDE_CODE_USE_POWERSHELL_TOOL;
+      else process.env.CLAUDE_CODE_USE_POWERSHELL_TOOL = originalPowerShell;
+    }
+  });
+
   it('executionProfile:sandboxed-unrestricted-v1 + junitEvidenceEnabled:true still wires the JUnit PostToolUse/PostToolUseFailure hooks', async () => {
     const { settingsPath, cleanupPaths } = await prepareIsolatedHome({
       ...baseOpts, executionProfile: UNRESTRICTED_PROFILE, junitEvidenceEnabled: true,
@@ -275,6 +321,26 @@ describe('prepareIsolatedHome -- executionProfile-aware settings/env compilation
     await expect(prepareIsolatedHome({
       ...baseOpts, executionProfile: UNRESTRICTED_PROFILE, allowedGradleTasks: ['build; rm -rf /'],
     })).rejects.toThrow(/Invalid policy configuration/);
+  });
+
+  // D5 (PLAN-A-cierre-evidence1.md 2.3): a Bash command past the 120s ambient default gets moved
+  // to background instead of dying, which the grader reads as malformed and which forces polling.
+  // Set explicitly here (not inherited) because buildEvalEnv's allowlist otherwise drops any
+  // ambient BASH_*_TIMEOUT_MS the launching shell happened to have. prepareIsolatedHome has no
+  // `condition` parameter at all -- sharedEnv construction never branches on current-skill vs
+  // no-skill -- so proving it once here covers both of Claude's arms by construction.
+  it('sets both Bash timeout env vars to 10 minutes explicitly, for both Claude conditions, regardless of execution profile', async () => {
+    const strict = await prepareIsolatedHome(baseOpts);
+    const unrestricted = await prepareIsolatedHome({ ...baseOpts, executionProfile: UNRESTRICTED_PROFILE });
+    try {
+      for (const { sharedEnv } of [strict, unrestricted]) {
+        expect(sharedEnv.BASH_DEFAULT_TIMEOUT_MS).toBe('600000');
+        expect(sharedEnv.BASH_MAX_TIMEOUT_MS).toBe('600000');
+      }
+    } finally {
+      for (const p of strict.cleanupPaths) rmSync(p, { recursive: true, force: true });
+      for (const p of unrestricted.cleanupPaths) rmSync(p, { recursive: true, force: true });
+    }
   });
 });
 
@@ -366,7 +432,7 @@ describe('preflight -- delegates to runAuthPreflight with the same closed reason
     const spawnFn = async (argv, opts) => { calls.push({ argv, opts }); return { exitCode: 0, terminated: false, rawStdout: '{"loggedIn":true}' }; };
     await preflight({ sharedEnv, repoRoot: '/real/repo', timeoutMs: 12345, spawnFn });
     expect(calls.length).toBe(1);
-    expect(calls[0].argv).toEqual(['claude', 'auth', 'status', '--json']);
+    expect(calls[0].argv).toEqual([CLAUDE_COMMAND, 'auth', 'status', '--json']);
     expect(calls[0].opts.env).toBe(sharedEnv);
     expect(calls[0].opts.cwd).toBe('/real/repo');
     expect(calls[0].opts.timeoutMs).toBe(12345);
@@ -445,6 +511,7 @@ describe('normalizeObservations -- current-skill fixture (real PR #436 JSONL)', 
       sessionIdObserved: 'sess-synthetic-0001',
       runtimeVersion: '2.1.212',
       toolProfileMatchesExpected: true,
+      modelSnapshot: 'claude-sonnet-5',
     });
   });
 
@@ -555,7 +622,7 @@ describe('normalizeObservations -- no-skill fixture (real PR #436 JSONL)', () =>
   it('session identity + terminal status + canonical usage', () => {
     expect(observation.session).toEqual({
       initPresent: true, modelResolved: 'claude-sonnet-5', sessionIdObserved: 'sess-synthetic-0001',
-      runtimeVersion: '2.1.212', toolProfileMatchesExpected: true,
+      runtimeVersion: '2.1.212', toolProfileMatchesExpected: true, modelSnapshot: 'claude-sonnet-5',
     });
     expect(observation.terminal).toEqual({
       present: true, isError: false, turnCount: 2, finalText: '[synthetic result text]',
