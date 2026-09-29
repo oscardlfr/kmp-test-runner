@@ -578,3 +578,44 @@ describe('CLI entry point -- real `node evidence2-tables.mjs <campaign-dir> <tar
     });
   });
 });
+
+// Amendment A9: num_turns is not comparable across runtimes (Claude counts assistant turns, Codex
+// always reports 1 non-interactive user turn per session). Every table here is already scoped to
+// ONE runtime per row (buildPerCellTableLines: one cell; buildAggregateTableLines: one runtime x
+// arm group) -- "the per-runtime tables are fine" per the auditor. Defensive: this guards against a
+// future change introducing an explicit cross-runtime turns comparison (the "N vs M" phrasing
+// buildCrossAgentBullet and the composition-row legends both use elsewhere) without the A9 caveat,
+// not a fix for a live bug -- confirmed by real, very different Claude/Codex turn counts in the
+// golden fixture, not just fixture values too similar to tell the two cases apart.
+describe('evidence2-tables.mjs (WO-C17, Amendment A9): turns is never compared across runtimes', () => {
+  it('no line in the full rendered block puts two runtimes\' turns side by side ("N vs M" phrasing near the word "turns")', () => {
+    withTempDir((dir) => {
+      writeManifest(dir);
+      for (let i = 0; i < 8; i++) {
+        const condition = i % 2 === 0 ? 'current-skill' : 'no-skill';
+        const rep = Math.floor(i / 2);
+        writeAcceptedCellV9(dir, `claude-code-${i}`, {
+          runtimeId: 'claude-code', condition, roundIndex: i, matched: true, success: condition === 'current-skill',
+          usage: { input: 1000, cached_input: 200, cache_write: 50, output: 500 },
+          durationMs: 100000, toolCallsValue: 3, numTurns: 2 + rep, // small, tight range
+          reasoningEffortRequested: 'high', reasoningEffortSource: 'harness-pinned-cli-flag',
+        });
+        writeAcceptedCellV9(dir, `codex-cli-${i}`, {
+          runtimeId: 'codex-cli', condition, roundIndex: i, matched: true, success: condition === 'current-skill',
+          usage: { input: 4000, cached_input: 3000, cache_write: 0, output: 300, reasoning_output: 40 },
+          durationMs: 150000, toolCallsValue: 3, numTurns: 9 + rep, // large, tight range -- deliberately far from Claude's
+          reasoningEffortRequested: 'low', reasoningEffortSource: 'model-registry-default-reasoning-mode',
+        });
+      }
+      const costResult = buildCostEstimate(dir);
+      const infraFlake = classifyCampaign(dir);
+      const block = buildEvidence2TablesFromCampaign(dir, costResult.doc, infraFlake);
+      expect(block).toContain('turns'); // sanity: the fixture's turns data really is present and rendered
+      for (const line of block.split('\n')) {
+        if (/\bturns?\b/i.test(line) && /\bvs\b/i.test(line)) {
+          throw new Error(`line compares turns across runtimes: "${line}"`);
+        }
+      }
+    });
+  });
+});

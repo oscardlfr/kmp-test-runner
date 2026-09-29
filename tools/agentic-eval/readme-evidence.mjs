@@ -604,6 +604,26 @@ export const COMMAND_KIND_LABEL = { kmp_test: 'kmp-test', gradle: 'gradle', othe
 const GRID_LEGEND_FS = 9;
 const GRID_LEGEND_SWATCH = 8;
 
+// Greedy word-wrap for a plain sentence (not a list of short "label N vs M" parts, which wrap on
+// their own part boundaries elsewhere in this file) -- same chars x fontSize x 0.6 estimator used
+// throughout. Shared by the composition-row partial-total note and the strip-row caption below;
+// extracted once a third caller needed the identical loop rather than a third copy of it.
+function wrapWords(text, fontSize, maxWidth) {
+  const lines = [];
+  let line = '';
+  for (const word of text.split(' ')) {
+    const candidate = line ? `${line} ${word}` : word;
+    if (line && candidate.length * fontSize * 0.6 > maxWidth) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = candidate;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
 function medianOf(values) {
   if (!values || values.length === 0) return null;
   const sorted = [...values].sort((a, b) => a - b);
@@ -855,9 +875,11 @@ function compositionValueFor(composition, type) {
 
 // One STRIP row (scalar metric) for one runtime column: header (metric/unit/diff%) -> two lanes
 // stacked VERTICALLY sharing one 0..axisMax horizontal axis (dots in the arm's own scorecard
-// color, a median tick, the median value printed right of the axis) -> 3 shared tick labels below
-// both lanes -> gap. Each band advances a single cursor, so no band can silently overlap another.
-function renderStripRow(colX, rowY, mainHeaderText, diffText, agentLabel, withMetric, withoutMetric, axisMax, fmtValue) {
+// color, a median tick, the median value printed right of the axis) -> 3 shared tick labels ->
+// an optional word-wrapped caption (Amendment A9: Turns' own axis is per-agent, not shared, and
+// carries a caption explaining why -- see buildGridRowData) -> gap. Each band advances a single
+// cursor, so no band can silently overlap another.
+function renderStripRow(colX, rowY, mainHeaderText, diffText, agentLabel, withMetric, withoutMetric, axisMax, fmtValue, caption) {
   const items = [];
   let cursor = rowY;
   items.push(textItem('gridRowHeader', null, colX, cursor + GRID_HEADER_FS, GRID_HEADER_FS, 500, COLOR_TEXT, mainHeaderText));
@@ -909,7 +931,14 @@ function renderStripRow(colX, rowY, mainHeaderText, diffText, agentLabel, withMe
   for (const [t, anchor] of ticks) {
     items.push(textItem('gridTickLabel', null, xFor(t), tickY, GRID_TICK_FS, 400, COLOR_SECONDARY, fmtValue(t), anchor));
   }
-  cursor += GRID_TICK_H + GRID_ROW_GAP;
+  cursor += GRID_TICK_H;
+  if (caption) {
+    for (const line of wrapWords(caption, GRID_TICK_FS, COLUMN_W)) {
+      items.push(textItem('gridRowCaption', null, colX, cursor + GRID_TICK_FS, GRID_TICK_FS, 400, COLOR_SECONDARY, line));
+      cursor += GRID_TICK_H;
+    }
+  }
+  cursor += GRID_ROW_GAP;
 
   return { items, rowHeight: cursor - rowY };
 }
@@ -998,17 +1027,7 @@ function renderCompositionRow(colX, rowY, headerText, agentLabel, withComp, with
     // Word-wrapped separately from the component tokens above (it's one long sentence, not a list of
     // short "label N vs M" parts, and carries no swatch) -- at ~76 chars it exceeds one COLUMN_W line
     // on its own (estimated ~410px vs 396px), so it needs the same greedy wrapping, split on spaces.
-    let noteLine = '';
-    for (const word of partialTotalNote.split(' ')) {
-      const candidate = noteLine ? `${noteLine} ${word}` : word;
-      if (noteLine && candidate.length * GRID_LEGEND_FS * 0.6 > maxLineWidth) {
-        legendLines.push({ note: noteLine });
-        noteLine = word;
-      } else {
-        noteLine = candidate;
-      }
-    }
-    if (noteLine) legendLines.push({ note: noteLine });
+    for (const noteLine of wrapWords(partialTotalNote, GRID_LEGEND_FS, maxLineWidth)) legendLines.push({ note: noteLine });
   }
 
   let legendY = cursor + GRID_LEGEND_FS + 2;
@@ -1119,7 +1138,14 @@ function buildGridRowData(runtimeId, summary, costEstimate) {
     { kind: 'strip', label: 'Wall-clock', unit: 'min', fmtValue: fmtMinutesGrid, sourceNote: null, with: wallWith, without: wallWithout },
     { kind: 'strip', label: 'API cost', unit: 'USD', fmtValue: fmtUsdGrid, sourceNote: costSourceNote, with: costWith, without: costWithout },
     {
+      // Amendment A9: num_turns is not comparable across runtimes -- Claude counts assistant
+      // turns (5-12 observed in canary 2), Codex reports one user turn per non-interactive
+      // session (always 1). perAgentScale keeps each column's own axis independent (see the
+      // computeMetricsGridLayout call site); the caption states the reason directly on the row
+      // rather than relying on a reader to infer it from two very different-looking scales.
       kind: 'strip', label: 'Turns', unit: '', fmtValue: fmtCount, sourceNote: null, integerTicks: true,
+      perAgentScale: true,
+      caption: 'Not comparable across agents: Claude counts assistant turns; Codex reports one turn per session.',
       with: scalarMetric(summary, gp, runtimeId, 'product', 'num_turns', () => null),
       without: scalarMetric(summary, gf, runtimeId, 'free', 'num_turns', () => null),
     },
@@ -1166,10 +1192,22 @@ export function computeMetricsGridLayout(summary, costEstimate) {
       const agentLabel = RUNTIME_DISPLAY_NAME[col.id];
       let rendered;
       if (row.kind === 'strip') {
-        const axisMax = sharedStripAxisMax(!!row.integerTicks, row.with, row.without, otherData[ri].with, otherData[ri].without);
+        // Amendment A9: Turns is not comparable across runtimes (Claude counts assistant turns;
+        // Codex reports one user turn per non-interactive session, always 1) -- perAgentScale
+        // rows compute their axis from ONLY this column's own two lanes, never otherData, so a
+        // shared scale never implies the two columns' Turns values are meant to be read side by
+        // side. Every other row is unaffected (perAgentScale is undefined => falsy there).
+        // Amendment A9: Turns is not comparable across runtimes (Claude counts assistant turns;
+        // Codex reports one user turn per non-interactive session, always 1) -- perAgentScale
+        // rows compute their axis from ONLY this column's own two lanes, never otherData, so a
+        // shared scale never implies the two columns' Turns values are meant to be read side by
+        // side. Every other row is unaffected (perAgentScale is undefined => falsy there).
+        const axisMax = row.perAgentScale
+          ? sharedStripAxisMax(!!row.integerTicks, row.with, row.without)
+          : sharedStripAxisMax(!!row.integerTicks, row.with, row.without, otherData[ri].with, otherData[ri].without);
         const diffPct = stripDiffPct(row.with, row.without);
         const { mainText, diffText } = stripHeaderLines(row.label, row.unit, diffPct, row.sourceNote);
-        rendered = renderStripRow(col.x, cy, mainText, diffText, agentLabel, row.with, row.without, axisMax, row.fmtValue);
+        rendered = renderStripRow(col.x, cy, mainText, diffText, agentLabel, row.with, row.without, axisMax, row.fmtValue, row.caption);
       } else {
         const compMax = sharedCompositionMax(row.with, row.without, otherData[ri].with, otherData[ri].without);
         rendered = renderCompositionRow(col.x, cy, row.label, agentLabel, row.with, row.without, compMax, row.types, row.typeColors, row.typeLabels, row.fmtValue, row.partialTotalNote);

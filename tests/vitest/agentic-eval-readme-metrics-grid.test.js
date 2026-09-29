@@ -360,6 +360,20 @@ describe('metrics-grid.svg (WO-C12 redesign)', () => {
     expect(withoutBullet).toContain('n=4 for Claude, n=2 for Codex');
   });
 
+  // Amendment A9: num_turns is not comparable across runtimes (Claude counts assistant turns,
+  // Codex always reports 1 non-interactive user turn per session) -- the cross-agent bullet must
+  // never put the two runtimes' turns side by side. Defensive: buildCrossAgentBullet already only
+  // ever reads tool_calls_total, never num_turns, so this is a regression guard against a future
+  // change accidentally adding a turns comparison without the A9 caveat, not a fix for a live bug.
+  it('the cross-agent bullets never compare turns across runtimes, even when both runtimes have real, very different turn counts', () => {
+    const summary = v2Summary();
+    for (const cell of summary.cells) cell.num_turns = cell.runtime_id === 'claude-code' ? 2 : 9;
+    const bullets = buildBullets(summary, v2CostEstimate(), 'tools/runs/evidence1-agentic-benchmark-2026-09-28');
+    const crossAgentBullets = bullets.filter((b) => b.startsWith('With kmp-test') || b.startsWith('Without kmp-test'));
+    expect(crossAgentBullets.length).toBeGreaterThan(0);
+    for (const b of crossAgentBullets) expect(b.toLowerCase(), `cross-agent bullet mentions turns: "${b}"`).not.toContain('turn');
+  });
+
   it('WO-C12 point 4: the cost row header says "provider-reported" when every session (both lanes) carries total_cost_usd, and "estimate: midpoint of low/high" otherwise', () => {
     const svg = renderMetricsGridSvg(v2Summary(), v2CostEstimate());
     const claudeCostIdx = svg.indexOf('API cost (USD)');
@@ -711,5 +725,62 @@ describe('metrics-grid.svg (WO-C15): integer metrics never render a fractional t
     // Real fixture values (WO-C12's own v2Summary) already produce a non-round wall-clock axis;
     // asserting the row still renders at all is enough to prove integerTicks wasn't applied globally.
     expect(svg).toContain('Wall-clock (min)');
+  });
+});
+
+// Amendment A9: num_turns is not comparable across runtimes -- Claude counts assistant turns
+// (5-12 observed in canary 2), Codex reports one user turn per non-interactive session (always 1).
+// The Turns row's axis must be per-agent, everything else stays shared, and the row must carry a
+// caption saying so.
+describe('metrics-grid.svg (WO-C17, Amendment A9): Turns uses a per-agent axis, never shared', () => {
+  it('Turns\' own axis max differs per column when the real values differ, while every other strip row (wall-clock) keeps ONE shared max across both columns', () => {
+    const summary = v2Summary();
+    // Claude: small, tight turns range. Codex: a much larger one -- if the axis were still shared
+    // (the pre-fix behavior), both columns would show the SAME max tick, dominated by Codex's own
+    // larger value; per-agent, each column's own max reflects only its own data.
+    for (const cell of summary.cells) {
+      if (cell.runtime_id === 'claude-code') cell.num_turns = cell.arm === 'product' ? 1 : 2;
+      if (cell.runtime_id === 'codex-cli') cell.num_turns = cell.arm === 'product' ? 8 : 9;
+    }
+    const layout = computeMetricsGridLayout(summary, v2CostEstimate());
+    checkNoOverlapLayout(layout);
+    const svg = renderMetricsGridSvg(summary, v2CostEstimate());
+
+    // Turns: the two columns' own max-tick text (anchor=end, inside each column's own Turns band)
+    // must be DIFFERENT -- proof the axis is computed per-column, not from combined data.
+    const claudeTurnsStart = svg.indexOf('>Turns<');
+    const claudeWallStart = svg.indexOf('Wall-clock', claudeTurnsStart); // next row header, same column
+    const claudeTurnsSection = svg.slice(claudeTurnsStart, claudeWallStart);
+    const codexTurnsStart = svg.indexOf('>Turns<', claudeWallStart);
+    const codexWallStart = svg.indexOf('Wall-clock', codexTurnsStart);
+    const codexTurnsSection = svg.slice(codexTurnsStart, codexWallStart);
+    const maxTick = (section) => [...section.matchAll(/text-anchor="end">(\d+)<\/text>/g)].map((m) => m[1]).pop();
+    const claudeTurnsMax = maxTick(claudeTurnsSection);
+    const codexTurnsMax = maxTick(codexTurnsSection);
+    expect(claudeTurnsMax).toBeDefined();
+    expect(codexTurnsMax).toBeDefined();
+    expect(claudeTurnsMax).not.toBe(codexTurnsMax);
+
+    // The caption appears under BOTH columns' Turns rows.
+    const caption = 'Not comparable across agents: Claude counts assistant turns; Codex reports one turn per session.';
+    expect(claudeTurnsSection).toContain('Not comparable across agents: Claude counts assistant');
+    expect(codexTurnsSection).toContain('Not comparable across agents: Claude counts assistant');
+    // Reconstructed from its (possibly wrapped) rendered lines, not asserted as one contiguous
+    // string -- word-wrapping a caption into multiple <text> lines is exactly the class of change
+    // that broke a naive contiguous-substring match before (WO-C13/C15's own lesson).
+    const extractCaptionWords = (section) => [...section.matchAll(/font-size="9"[^>]*>([^<]*)<\/text>/g)].map((m) => m[1]).join(' ');
+    expect(extractCaptionWords(claudeTurnsSection).replace(/\s+/g, ' ')).toContain(caption.split(' ').slice(0, 5).join(' '));
+
+    // Control: Wall-clock (an ordinary, still-shared strip row) keeps ONE identical max across both
+    // columns -- proof the per-agent fix is scoped to Turns only, not applied to every strip row.
+    const wallMaxTicks = layout.items.filter((i) => i.role === 'gridTickLabel' && i.anchor === 'end' && i.text.endsWith(' min'));
+    expect(new Set(wallMaxTicks.map((i) => i.text)).size).toBe(1);
+  });
+
+  it('a lane with no Turns caption (every other strip row) never renders the A9 note text', () => {
+    const svg = renderMetricsGridSvg(v2Summary(), v2CostEstimate());
+    const wallStart = svg.indexOf('Wall-clock (min)');
+    const costStart = svg.indexOf('API cost (USD)', wallStart);
+    expect(svg.slice(wallStart, costStart)).not.toContain('Not comparable across agents');
   });
 });
