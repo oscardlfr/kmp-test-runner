@@ -165,6 +165,13 @@ export function validateCostEstimate(doc) {
         const n = cells.filter(c => c.arm === arm).length;
         if (n !== 4) errors.push(`runtimes.${runtimeId}: expected 4 ${arm} cells, got ${n}`);
       }
+      // Optional; when present it must genuinely be a boolean -- a truthy non-boolean (e.g. the
+      // string "true") would silently pass the `=== true` check armCostRange relies on, always
+      // resolving to today's behavior even when the field was clearly meant to turn the new
+      // high-bound pricing on.
+      if (entry && 'uncached_input_may_be_cache_writes' in entry && typeof entry.uncached_input_may_be_cache_writes !== 'boolean') {
+        errors.push(`runtimes.${runtimeId}.uncached_input_may_be_cache_writes must be a boolean when present`);
+      }
     }
     return errors;
   }
@@ -181,10 +188,12 @@ export function loadCostEstimate(path) {
   return raw;
 }
 
-// One session's cost at a given per-million-token price table.
-function sessionCost(tokens, price, cacheWriteKey) {
+// One session's cost at a given per-million-token price table. inputPrice defaults to the plain
+// input rate; a runtime whose usage events can't distinguish a cache write from a plain input
+// token (see armCostRange below) overrides it for the high bound only.
+function sessionCost(tokens, price, cacheWriteKey, inputPrice = price.input) {
   return (
-    tokens.input * price.input +
+    tokens.input * inputPrice +
     tokens.cache_creation * price[cacheWriteKey] +
     tokens.cache_read * price.cache_read +
     tokens.output * price.output
@@ -196,9 +205,22 @@ function sessionCost(tokens, price, cacheWriteKey) {
 // cheapest cell under the 5m price, the high bound is the priciest cell under
 // the 1h price -- the widest interval consistent with every session in the
 // arm regardless of which TTL it actually used.
-export function armCostRange(cells, price) {
+//
+// uncachedInputMayBeCacheWrites (schema 2 only): some providers' usage events report
+// input_tokens (uncached) and cached_input_tokens separately but never distinguish a cache WRITE
+// from a plain uncached input token, and a cache write is priced instead of the input rate, not
+// in addition to it -- so tokens.input itself may have actually been billed at either price. The
+// low bound keeps the existing, always-correct assumption (plain input rate); the high bound
+// additionally prices tokens.input at the pricier of the two cache-write rates, on top of the
+// existing 5m/1h uncertainty already applied to cache_creation. Claude's own usage events do
+// distinguish these, so this never applies to claude-code (see claudeCostRange below, which never
+// passes this argument).
+export function armCostRange(cells, price, uncachedInputMayBeCacheWrites = false) {
+  const highInputPrice = uncachedInputMayBeCacheWrites
+    ? Math.max(price.cache_write_5m, price.cache_write_1h)
+    : price.input;
   const low5m = cells.map(c => sessionCost(c.tokens, price, 'cache_write_5m'));
-  const high1h = cells.map(c => sessionCost(c.tokens, price, 'cache_write_1h'));
+  const high1h = cells.map(c => sessionCost(c.tokens, price, 'cache_write_1h', highInputPrice));
   return { low: Math.min(...low5m), high: Math.max(...high1h) };
 }
 
@@ -217,7 +239,7 @@ function hasV2Cost(costEstimate, runtimeId) {
 function runtimeCostRange(costEstimate, runtimeId, arm) {
   const entry = costEstimate.runtimes[runtimeId];
   const cells = entry.cells.filter(c => c.arm === arm);
-  return armCostRange(cells, entry.per_million_tokens);
+  return armCostRange(cells, entry.per_million_tokens, entry.uncached_input_may_be_cache_writes === true);
 }
 
 // 2 decimal places: matches the scorecard chart's and the README bullets'

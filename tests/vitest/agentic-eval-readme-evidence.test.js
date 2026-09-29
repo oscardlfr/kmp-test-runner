@@ -768,6 +768,68 @@ describe('schema 2 (Evidence2): multi-runtime cost + reasoning effort', () => {
   it('rejects a v2 cost-estimate missing runtimes entirely', () => {
     expect(validateCostEstimate({ schema: 2 }).length).toBeGreaterThan(0);
   });
+
+  it('rejects a non-boolean uncached_input_may_be_cache_writes', () => {
+    const c = baseCostEstimateV2();
+    c.runtimes['codex-cli'].uncached_input_may_be_cache_writes = 'true';
+    expect(validateCostEstimate(c).some(e => e.includes('uncached_input_may_be_cache_writes'))).toBe(true);
+  });
+
+  // gpt-5.6-terra's real pricing (developers.openai.com/api/docs/pricing): Input $2, Cache writes
+  // $2.50 -- "cache writes are not an additive fee", and Codex's own usage events never report a
+  // cache-write count, only input_tokens (includes cached) and cached_input_tokens separately. The
+  // uncached remainder could have been billed at either rate; the flag makes the HIGH bound assume
+  // the pricier one. Isolated fixture (every other token field zero) so the range is exactly
+  // U*input .. U*max(cache_write_5m, cache_write_1h), computed independently of the generator.
+  it('uncached_input_may_be_cache_writes=true prices the HIGH bound input at max(cache_write_5m, cache_write_1h)', () => {
+    const U = 50000;
+    const price = { input: 2, cache_write_5m: 2.5, cache_write_1h: 2.5, cache_read: 0.2, output: 12 };
+    const cells = [
+      { arm: 'product', order_index: 0, tokens: { input: U, output: 0, cache_read: 0, cache_creation: 0 } },
+    ];
+    const range = armCostRange(cells, price, true);
+    expect(range.low).toBeCloseTo((U * 2) / 1e6, 10);
+    expect(range.high).toBeCloseTo((U * 2.5) / 1e6, 10);
+  });
+
+  it('uncached_input_may_be_cache_writes absent or explicitly false leaves the cost range unchanged', () => {
+    const price = { input: 2, cache_write_5m: 2.5, cache_write_1h: 4, cache_read: 0.2, output: 10 };
+    const cells = [
+      { arm: 'product', order_index: 0, tokens: { input: 1000, output: 500, cache_read: 2000, cache_creation: 300 } },
+    ];
+    const withoutFlag = armCostRange(cells, price);
+    const explicitFalse = armCostRange(cells, price, false);
+    expect(withoutFlag).toEqual(explicitFalse);
+    // HIGH bound's input contribution stays at the plain input rate, not either cache-write rate.
+    const expectedHigh = (1000 * 2 + 300 * 4 + 2000 * 0.2 + 500 * 10) / 1e6;
+    expect(withoutFlag.high).toBeCloseTo(expectedHigh, 10);
+  });
+
+  it('flagging codex-cli does not change claude-code\'s own cost bullet, and raises only codex-cli\'s high bound', () => {
+    // A dedicated fixture, not baseCostEstimateV2(): that shared fixture gives codex-cli
+    // input === cache_write_5m === cache_write_1h (all 1), so the flag would have NO visible
+    // effect there regardless of whether the generator is correct -- this needs input distinctly
+    // cheaper than the cache-write rate (gpt-5.6-terra's real shape: input $2, cache write $2.50)
+    // for the comparison to actually discriminate.
+    const summary = baseSummaryV2();
+    const makeCostEstimate = (flagged) => {
+      const c = baseCostEstimateV2();
+      c.runtimes['codex-cli'].per_million_tokens = { input: 2, cache_write_5m: 2.5, cache_write_1h: 2.5, cache_read: 0.2, output: 12 };
+      // baseCostEstimateV2()'s shared cells give tokens.input=10 -- the $2 vs $2.50 difference on
+      // 10 tokens is $0.000005, far below fmtCostRange's 2-decimal-place rounding, so the bullet
+      // TEXT would be identical either way regardless of whether the generator is correct. A
+      // realistic-scale input count (Claude's real committed data uses ~100k-token fields) is
+      // needed for the difference to actually survive rounding to cents.
+      for (const cell of c.runtimes['codex-cli'].cells) cell.tokens.input = 100000;
+      if (flagged) c.runtimes['codex-cli'].uncached_input_may_be_cache_writes = true;
+      return c;
+    };
+    const [, claudeBulletUnflagged, codexBulletUnflagged] = buildBullets(summary, makeCostEstimate(false), FAKE_RUNS_PATH);
+    const [, claudeBulletFlagged, codexBulletFlagged] = buildBullets(summary, makeCostEstimate(true), FAKE_RUNS_PATH);
+
+    expect(claudeBulletFlagged).toBe(claudeBulletUnflagged);
+    expect(codexBulletFlagged).not.toBe(codexBulletUnflagged);
+  });
 });
 
 // ---------------------------------------------------------------------------
