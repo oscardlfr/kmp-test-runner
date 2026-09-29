@@ -490,3 +490,102 @@ describe('metrics-grid.svg (WO-C13): shell-command row label precision', () => {
     expect(svg).not.toContain('Tool calls by kind');
   });
 });
+
+// WO-C13 residual bug 1: schema-1's own by_runtime_arm.tokens object literal (campaign-summary.mjs,
+// verified directly against that file) has only input/output/cached_input/cache_write -- never a
+// reasoning_output key -- so the pre-fix rawMedians loop defaulted it to 0, and disjointTokens then
+// unconditionally split `output` by that fabricated 0, printing a "reasoning 0 vs ..." segment that
+// never existed in the source data. A genuinely-tracked-and-zero reasoning value must still show as
+// 0 (WO-C13's original disjoint-token tests above cover that); only the structurally-ABSENT case is
+// new here.
+describe('metrics-grid.svg (WO-C13 residual): reasoning_output null vs. genuinely zero', () => {
+  it('a Codex aggregate with no reasoning_output field omits "reasoning" and leaves output undivided, never defaulting reasoning to 0', () => {
+    const summary = v2Summary();
+    const gp = summary.by_runtime_arm.find((g) => g.runtime_id === 'codex-cli' && g.arm === 'product');
+    const gf = summary.by_runtime_arm.find((g) => g.runtime_id === 'codex-cli' && g.arm === 'free');
+    // Strip per-cell tokens for BOTH Codex arms so tokenCompositionMedians falls through to the
+    // aggregate branch on both lanes -- a real schema-1 campaign is uniformly aggregate-only (schema
+    // is a property of the whole campaign, never one arm per-cell and the other aggregate), so
+    // gp/gf.tokens below match schema-1's real shape: no reasoning_output key on either side.
+    for (const cell of summary.cells) {
+      if (cell.runtime_id === 'codex-cli') delete cell.tokens;
+    }
+    gp.tokens = { input: { median: 100 }, cached_input: { median: 40 }, output: { median: 50 }, cache_write: { median: 0 } };
+    gf.tokens = { input: { median: 80 }, cached_input: { median: 30 }, output: { median: 40 }, cache_write: { median: 0 } };
+
+    const layout = computeMetricsGridLayout(summary, v2CostEstimate());
+    const svg = renderMetricsGridSvg(summary, v2CostEstimate());
+    checkNoOverlapLayout(layout);
+
+    const codexTokensStart = svg.indexOf('Tokens per session, by type', svg.indexOf('Codex CLI'));
+    const codexWallStart = svg.indexOf('Wall-clock', codexTokensStart);
+    const codexSection = svg.slice(codexTokensStart, codexWallStart);
+
+    // Neither lane tracks reasoning_output -- the component never appears, not even as "n/a vs n/a"
+    // (contrast with a genuinely mixed campaign, where one lane lacking it while the other has real
+    // data correctly shows "reasoning n/a vs <value>", the same per-lane pattern already established
+    // and tested for kmp_test_vs_gradle.available:false elsewhere in this file).
+    expect(codexSection).not.toContain('reasoning');
+    expect(codexSection).toContain('output 50 vs 40');
+    // with lane: uncached(60) + cache_read(40) + output(50, undivided) = 150 = real input+output.
+    // without lane: uncached(50) + cache_read(30) + output(40, undivided) = 120. Both totals stay
+    // complete and print normally -- unlike the shell-commands 'other'-untracked case below, an
+    // absent reasoning_output never shrinks what the total represents.
+    expect(codexSection).toContain('>150<');
+    expect(codexSection).toContain('>120<');
+  });
+});
+
+// WO-C13 residual bug 2: campaign-summary.mjs's kmp_test_vs_gradle aggregate never tracks a 3rd
+// 'other' bucket (only per-cell command_kind_counts does), so an aggregate-sourced total of just
+// kmp-test+gradle undercounts the real number of shell commands run -- printing it next to the
+// scorecard's own much larger "tool calls" figure for the same lane reads as "this agent ran (almost)
+// no shell commands", which isn't what the data says.
+describe('metrics-grid.svg (WO-C13 residual): aggregate-sourced shell-command total omits the untracked "other" bucket', () => {
+  it('prints no numeric total and adds the "kmp-test and gradle only" note when command_kind_counts falls back to the aggregate (other untracked)', () => {
+    const summary = v2Summary();
+    // Strip per-cell command_kind_counts for Codex-product only, forcing compositionMedians to fall
+    // through to commandKindAggregate -- the group's own kmp_test_vs_gradle (kmp_test_count:8,
+    // gradle_count:4 over n=4, v2Group's own default) is real and available:true, the same shape as
+    // the real committed campaign: kmp-test/gradle tracked, 'other' never tracked at the aggregate
+    // level (campaign-summary.mjs's own kmp_test_vs_gradle object has no 'other' key at all).
+    for (const cell of summary.cells) {
+      if (cell.runtime_id === 'codex-cli' && cell.arm === 'product') delete cell.command_kind_counts;
+    }
+    const layout = computeMetricsGridLayout(summary, v2CostEstimate());
+    const svg = renderMetricsGridSvg(summary, v2CostEstimate());
+    checkNoOverlapLayout(layout);
+
+    const codexShellStart = svg.indexOf('Shell commands by kind', svg.indexOf('Codex CLI'));
+    const codexTokensStart = svg.indexOf('Tokens per session, by type', codexShellStart);
+    const section = svg.slice(codexShellStart, codexTokensStart);
+
+    // Real per-component medians are still shown (2 kmp-test, 1 gradle) -- the fix withholds the
+    // TOTAL, not the underlying data.
+    expect(section).toContain('kmp-test 2 vs 0');
+    // The partial aggregate's total (2+1=3) is never printed as if it were the whole story.
+    expect(section).not.toContain('>3<');
+    // Checked as short fragments, not the whole sentence: the note text wraps across two <text>
+    // lines at this width (COLUMN_W), so a single contiguous-string match would break on rewrap
+    // even though the message itself is unchanged.
+    expect(section).toContain('kmp-test and gradle only');
+    expect(section).toContain('other shell commands');
+    expect(section).toContain('not tracked');
+    expect(section).toContain('campaign');
+  });
+
+  it('keeps printing the total for a lane whose data is genuinely complete (per-cell, "other" tracked), even when the other lane in the same row is a partial aggregate', () => {
+    const summary = v2Summary();
+    for (const cell of summary.cells) {
+      if (cell.runtime_id === 'codex-cli' && cell.arm === 'product') delete cell.command_kind_counts;
+    }
+    const svg = renderMetricsGridSvg(summary, v2CostEstimate());
+    const codexShellStart = svg.indexOf('Shell commands by kind', svg.indexOf('Codex CLI'));
+    const codexTokensStart = svg.indexOf('Tokens per session, by type', codexShellStart);
+    const section = svg.slice(codexShellStart, codexTokensStart);
+    // codex-free (the "without" lane) still has real per-cell command_kind_counts (kmp_test:0,
+    // gradle:1, other:0 on every cell) -- untouched by this fixture edit -- so its total (1) stays
+    // complete and prints normally.
+    expect(section).toContain('>1<');
+  });
+});

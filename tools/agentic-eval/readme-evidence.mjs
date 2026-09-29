@@ -637,18 +637,29 @@ function scalarMetric(summary, group, runtimeId, arm, cellField, aggregateOf) {
 //     aggregate actually tracks become a segment; an untracked one (e.g. commandKindAggregate's
 //     'other') is omitted, never defaulted to a fabricated 0.
 // Returns null when neither source has anything -- the caller renders a single "not recorded" line.
+// totalIsComplete: false marks a total that undercounts reality -- the aggregate fallback tracked
+// fewer of the declared `types` than exist (e.g. commandKindAggregate has no 'other' bucket at all),
+// so summing only the present segments is not the same quantity as the row's true total. The
+// per-cell branch always carries every declared type (command_kind_counts' own 3-bucket invariant),
+// so its total is always complete. renderCompositionRow uses this to suppress a misleading number
+// rather than print a partial sum as if it were whole.
 function compositionMedians(summary, group, runtimeId, arm, cellField, types, aggregateOf) {
   const cells = countedCells(summary, runtimeId, arm);
   if (cells.length > 0 && cells.every((c) => c[cellField] && typeof c[cellField] === 'object')) {
     const segments = types.map((t) => ({ type: t, value: medianOf(cells.map((c) => Number(c[cellField][t]) || 0)) }));
-    return { segments, stat: 'median', total: segments.reduce((a, s) => a + s.value, 0) };
+    return { segments, stat: 'median', total: segments.reduce((a, s) => a + s.value, 0), totalIsComplete: true };
   }
   const agg = aggregateOf(group);
   if (agg) {
     const segments = types
       .filter((t) => agg[t] && typeof agg[t].median === 'number')
       .map((t) => ({ type: t, value: agg[t].median }));
-    if (segments.length > 0) return { segments, stat: agg.stat || 'median', total: segments.reduce((a, s) => a + s.value, 0) };
+    if (segments.length > 0) {
+      return {
+        segments, stat: agg.stat || 'median', total: segments.reduce((a, s) => a + s.value, 0),
+        totalIsComplete: segments.length === types.length,
+      };
+    }
   }
   return null;
 }
@@ -669,11 +680,18 @@ const TOKEN_COMPONENT_TYPES = {
 const TOKEN_COMPONENT_COLORS = { uncached_input: '#8250df', cache_read: '#0969da', cache_write: '#1a7f37', output: '#bc4c00', reasoning: '#cf222e' };
 const TOKEN_COMPONENT_LABEL = { uncached_input: 'uncached input', cache_read: 'cache read', cache_write: 'cache write', output: 'output', reasoning: 'reasoning' };
 
+// A `reasoning_output` that is null/undefined means "not tracked" (schema-1's own by_runtime_arm
+// aggregate -- campaign-summary.mjs's tokenStats object literal has only input/output/cached_input/
+// cache_write, never a reasoning_output key, verified directly against that file), not "genuinely
+// zero" -- those two must render differently (component omitted vs. component shown as 0), so this
+// checks raw nullness BEFORE any Number() coercion collapses both cases to the same 0.
 function disjointTokens(raw, runtimeId) {
   const input = Number(raw.input) || 0;
   const cachedInput = Number(raw.cached_input) || 0;
   const output = Number(raw.output) || 0;
   if (runtimeId === 'codex-cli') {
+    const reasoningTracked = raw.reasoning_output !== null && raw.reasoning_output !== undefined;
+    if (!reasoningTracked) return { uncached_input: input - cachedInput, cache_read: cachedInput, output };
     const reasoning = Number(raw.reasoning_output) || 0;
     return { uncached_input: input - cachedInput, cache_read: cachedInput, output: output - reasoning, reasoning };
   }
@@ -684,23 +702,37 @@ function disjointTokens(raw, runtimeId) {
 // across sessions, else the group aggregate) but applying disjointTokens() to whichever raw numbers
 // are about to be reduced -- per-cell values before their median, or the group's own already-reduced
 // medians before the fallback segments are built. Never mixes raw overlapping fields into a stack.
+// totalIsComplete is always true here, unlike compositionMedians: an untracked reasoning_output
+// doesn't shrink the total, it just leaves the reasoning portion folded into 'output' (disjointTokens'
+// own null-handling) -- uncached_input + cache_read + output always equals the real input + output,
+// split into fewer components or more, never a partial sum of them.
 function tokenCompositionMedians(summary, group, runtimeId, arm) {
   const types = TOKEN_COMPONENT_TYPES[runtimeId];
   const cells = countedCells(summary, runtimeId, arm);
   if (cells.length > 0 && cells.every((c) => c.tokens && typeof c.tokens === 'object')) {
     const perCellDisjoint = cells.map((c) => disjointTokens(c.tokens, runtimeId));
-    const segments = types.map((t) => ({ type: t, value: medianOf(perCellDisjoint.map((d) => d[t])) }));
-    return { segments, stat: 'median', total: segments.reduce((a, s) => a + s.value, 0) };
+    // A type only becomes a segment when EVERY cell's disjoint result actually has it -- e.g.
+    // 'reasoning' is absent from a cell whose raw tokens had no reasoning_output at all (never a
+    // partial mix of some cells contributing a real value and others silently defaulting to 0).
+    const presentTypes = types.filter((t) => perCellDisjoint.every((d) => d[t] !== undefined));
+    const segments = presentTypes.map((t) => ({ type: t, value: medianOf(perCellDisjoint.map((d) => d[t])) }));
+    return { segments, stat: 'median', total: segments.reduce((a, s) => a + s.value, 0), totalIsComplete: true };
   }
   if (!group.tokens) return null;
   const rawMedians = {};
-  for (const key of ['input', 'cached_input', 'cache_write', 'output', 'reasoning_output']) {
+  for (const key of ['input', 'cached_input', 'cache_write', 'output']) {
     rawMedians[key] = group.tokens[key] && typeof group.tokens[key].median === 'number' ? group.tokens[key].median : 0;
   }
+  // reasoning_output stays null (never defaulted to 0) when untracked, so disjointTokens can tell
+  // "not tracked" apart from "tracked and genuinely zero".
+  rawMedians.reasoning_output = group.tokens.reasoning_output && typeof group.tokens.reasoning_output.median === 'number'
+    ? group.tokens.reasoning_output.median
+    : null;
   const disjoint = disjointTokens(rawMedians, runtimeId);
-  const segments = types.map((t) => ({ type: t, value: disjoint[t] }));
+  const presentTypes = types.filter((t) => disjoint[t] !== undefined);
+  const segments = presentTypes.map((t) => ({ type: t, value: disjoint[t] }));
   if (!segments.some((s) => s.value > 0)) return null;
-  return { segments, stat: 'median', total: segments.reduce((a, s) => a + s.value, 0) };
+  return { segments, stat: 'median', total: segments.reduce((a, s) => a + s.value, 0), totalIsComplete: true };
 }
 
 function commandKindAggregate(group) {
@@ -860,7 +892,7 @@ function renderStripRow(colX, rowY, mainHeaderText, diffText, agentLabel, withMe
 // One COMPOSITION row (tool calls by kind / tokens by type) for one runtime column: header ->
 // two lanes, each ONE horizontal stacked bar of per-component MEDIANS with the total printed at
 // the end -> one shared legend line giving each present component's with-vs-without value -> gap.
-function renderCompositionRow(colX, rowY, headerText, agentLabel, withComp, withoutComp, compMax, types, typeColors, typeLabels, fmtValue) {
+function renderCompositionRow(colX, rowY, headerText, agentLabel, withComp, withoutComp, compMax, types, typeColors, typeLabels, fmtValue, partialTotalNote) {
   const items = [];
   let cursor = rowY;
   items.push(textItem('gridRowHeader', null, colX, cursor + GRID_HEADER_FS, GRID_HEADER_FS, 500, COLOR_TEXT, headerText));
@@ -888,7 +920,13 @@ function renderCompositionRow(colX, rowY, headerText, agentLabel, withComp, with
         items.push({ kind: 'bar', column: null, x: xCursor, y: barY, w, h: GRID_COMP_BAR_H, rx: 1, fill: typeColors[seg.type] || COLOR_SECONDARY });
         xCursor += w;
       }
-      items.push(textItem('gridCompTotal', null, barX + GRID_COMP_BAR_W + 6, barCenterY + 4, GRID_VALUE_LABEL_FS, 400, COLOR_TEXT, fmtValue(lane.c.total)));
+      // A partial aggregate's total undercounts reality (see compositionMedians' totalIsComplete
+      // doc) -- printing it would read as "the whole story" when it's really "the tracked subset of
+      // an unknown whole" (e.g. 0 kmp-test/gradle calls next to the scorecard's own ~12 tool calls
+      // for the same lane). Omitted here; the legend's partialTotalNote explains why below.
+      if (lane.c.totalIsComplete !== false) {
+        items.push(textItem('gridCompTotal', null, barX + GRID_COMP_BAR_W + 6, barCenterY + 4, GRID_VALUE_LABEL_FS, 400, COLOR_TEXT, fmtValue(lane.c.total)));
+      }
     }
     cursor += GRID_COMP_BAR_H + GRID_COMP_BAR_GAP;
   }
@@ -917,6 +955,23 @@ function renderCompositionRow(colX, rowY, headerText, agentLabel, withComp, with
     }
   }
   if (currentLine) legendLines.push(currentLine);
+  const anyPartialTotal = [withComp, withoutComp].some((c) => c && c.totalIsComplete === false);
+  if (anyPartialTotal && partialTotalNote) {
+    // Word-wrapped separately from the component parts above (it's one long sentence, not a list of
+    // short "label N vs M" parts) -- at ~76 chars it exceeds one COLUMN_W line on its own (estimated
+    // ~410px vs 396px), so it needs the same greedy wrapping, just split on spaces instead of SEP.
+    let noteLine = '';
+    for (const word of partialTotalNote.split(' ')) {
+      const candidate = noteLine ? `${noteLine} ${word}` : word;
+      if (noteLine && candidate.length * GRID_LEGEND_FS * 0.6 > maxLineWidth) {
+        legendLines.push(noteLine);
+        noteLine = word;
+      } else {
+        noteLine = candidate;
+      }
+    }
+    if (noteLine) legendLines.push(noteLine);
+  }
 
   let legendY = cursor + GRID_LEGEND_FS + 2;
   for (const line of legendLines) {
@@ -1000,6 +1055,7 @@ function buildGridRowData(runtimeId, summary, costEstimate) {
       // population. Named precisely so a reader never reads the two side by side and thinks the chart
       // is wrong.
       kind: 'composition', label: 'Shell commands by kind', types: ['kmp_test', 'gradle', 'other'], typeColors: COMMAND_KIND_COLORS, typeLabels: COMMAND_KIND_LABEL, fmtValue: fmtCount,
+      partialTotalNote: 'kmp-test and gradle only (other shell commands not tracked in this campaign)',
       with: compositionMedians(summary, gp, runtimeId, 'product', 'command_kind_counts', ['kmp_test', 'gradle', 'other'], commandKindAggregate),
       without: compositionMedians(summary, gf, runtimeId, 'free', 'command_kind_counts', ['kmp_test', 'gradle', 'other'], commandKindAggregate),
     },
@@ -1064,7 +1120,7 @@ export function computeMetricsGridLayout(summary, costEstimate) {
         rendered = renderStripRow(col.x, cy, mainText, diffText, agentLabel, row.with, row.without, axisMax, row.fmtValue);
       } else {
         const compMax = sharedCompositionMax(row.with, row.without, otherData[ri].with, otherData[ri].without);
-        rendered = renderCompositionRow(col.x, cy, row.label, agentLabel, row.with, row.without, compMax, row.types, row.typeColors, row.typeLabels, row.fmtValue);
+        rendered = renderCompositionRow(col.x, cy, row.label, agentLabel, row.with, row.without, compMax, row.types, row.typeColors, row.typeLabels, row.fmtValue, row.partialTotalNote);
       }
       items.push(...rendered.items);
       cy += rendered.rowHeight;
