@@ -223,7 +223,10 @@ export function validatePairing(summary, costEstimate) {
 // One session's cost at a given per-million-token price table. inputPrice defaults to the plain
 // input rate; a runtime whose usage events can't distinguish a cache write from a plain input
 // token (see armCostRange below) overrides it for the high bound only.
-function sessionCost(tokens, price, cacheWriteKey, inputPrice = price.input) {
+// Exported (WO-C16): evidence2-tables.mjs's per-cell cost column reuses this exact per-session
+// pricing formula (and costMetric's own low/high-then-midpoint pattern around it) rather than
+// re-deriving it.
+export function sessionCost(tokens, price, cacheWriteKey, inputPrice = price.input) {
   return (
     tokens.input * inputPrice +
     tokens.cache_creation * price[cacheWriteKey] +
@@ -597,7 +600,7 @@ const GRID_ROW_GAP = 14; // clearance before the next row (WO-C10 required >= 10
 // just the arm's own color". With real, mixed-type data the two encodings (arm color in strip rows /
 // scorecard, component-type color here) would otherwise collide and mislead a reader.
 const COMMAND_KIND_COLORS = { kmp_test: '#8250df', gradle: '#1a7f37', other: '#59636e' };
-const COMMAND_KIND_LABEL = { kmp_test: 'kmp-test', gradle: 'gradle', other: 'other' };
+export const COMMAND_KIND_LABEL = { kmp_test: 'kmp-test', gradle: 'gradle', other: 'other' };
 const GRID_LEGEND_FS = 9;
 const GRID_LEGEND_SWATCH = 8;
 
@@ -618,7 +621,11 @@ function countedCells(summary, runtimeId, arm) {
 // A scalar metric's per-session values when every counted cell carries `cellField`; otherwise the
 // run-level aggregate (median/min/max) `aggregateField` already provides. Never a partial mix of
 // some real dots and some inferred ones for the same lane.
-function scalarMetric(summary, group, runtimeId, arm, cellField, aggregateOf) {
+// Exported (WO-C16): evidence2-tables.mjs's aggregate table reuses this (and compositionMedians/
+// tokenCompositionMedians/commandKindAggregate below) so its numbers are computed exactly the same
+// way as the grid's, never a second, potentially-diverging implementation of the same median/
+// per-type logic.
+export function scalarMetric(summary, group, runtimeId, arm, cellField, aggregateOf) {
   const cells = countedCells(summary, runtimeId, arm);
   if (cells.length > 0 && cells.every((c) => typeof c[cellField] === 'number')) {
     const values = cells.map((c) => c[cellField]);
@@ -648,7 +655,7 @@ function scalarMetric(summary, group, runtimeId, arm, cellField, aggregateOf) {
 // per-cell branch always carries every declared type (command_kind_counts' own 3-bucket invariant),
 // so its total is always complete. renderCompositionRow uses this to suppress a misleading number
 // rather than print a partial sum as if it were whole.
-function compositionMedians(summary, group, runtimeId, arm, cellField, types, aggregateOf) {
+export function compositionMedians(summary, group, runtimeId, arm, cellField, types, aggregateOf) {
   const cells = countedCells(summary, runtimeId, arm);
   if (cells.length > 0 && cells.every((c) => c[cellField] && typeof c[cellField] === 'object')) {
     const segments = types.map((t) => ({ type: t, value: medianOf(cells.map((c) => Number(c[cellField][t]) || 0)) }));
@@ -678,21 +685,23 @@ function compositionMedians(summary, group, runtimeId, arm, cellField, types, ag
 // charges. Stacking the raw fields as-is (the pre-WO-C13 bug) double-counted Codex's cached and
 // reasoning tokens into its own totals. Identical canonical labels across both runtimes (WO-C13):
 // "uncached input", "cache read", "cache write", "output", "reasoning".
-const TOKEN_COMPONENT_TYPES = {
+export const TOKEN_COMPONENT_TYPES = {
   'claude-code': ['uncached_input', 'cache_read', 'cache_write', 'output'],
   'codex-cli': ['uncached_input', 'cache_read', 'output', 'reasoning'], // Codex never has a cache-write token count (cost-estimate.mjs: cache_creation = 0 always)
 };
 // WO-C15: cache_read and output used to reuse COLOR_WITH/COLOR_WITHOUT exactly (#0969da/#bc4c00) --
 // same collision as COMMAND_KIND_COLORS above, fixed the same way.
 const TOKEN_COMPONENT_COLORS = { uncached_input: '#8250df', cache_read: '#1b7c83', cache_write: '#1a7f37', output: '#bf3989', reasoning: '#cf222e' };
-const TOKEN_COMPONENT_LABEL = { uncached_input: 'uncached input', cache_read: 'cache read', cache_write: 'cache write', output: 'output', reasoning: 'reasoning' };
+export const TOKEN_COMPONENT_LABEL = { uncached_input: 'uncached input', cache_read: 'cache read', cache_write: 'cache write', output: 'output', reasoning: 'reasoning' };
 
 // A `reasoning_output` that is null/undefined means "not tracked" (schema-1's own by_runtime_arm
 // aggregate -- campaign-summary.mjs's tokenStats object literal has only input/output/cached_input/
 // cache_write, never a reasoning_output key, verified directly against that file), not "genuinely
 // zero" -- those two must render differently (component omitted vs. component shown as 0), so this
 // checks raw nullness BEFORE any Number() coercion collapses both cases to the same 0.
-function disjointTokens(raw, runtimeId) {
+// Exported (WO-C16): evidence2-tables.mjs's per-cell token column reuses this exact mapping rather
+// than re-deriving the same Codex input/cached_input/output subset relationship a second time.
+export function disjointTokens(raw, runtimeId) {
   const input = Number(raw.input) || 0;
   const cachedInput = Number(raw.cached_input) || 0;
   const output = Number(raw.output) || 0;
@@ -713,7 +722,7 @@ function disjointTokens(raw, runtimeId) {
 // doesn't shrink the total, it just leaves the reasoning portion folded into 'output' (disjointTokens'
 // own null-handling) -- uncached_input + cache_read + output always equals the real input + output,
 // split into fewer components or more, never a partial sum of them.
-function tokenCompositionMedians(summary, group, runtimeId, arm) {
+export function tokenCompositionMedians(summary, group, runtimeId, arm) {
   const types = TOKEN_COMPONENT_TYPES[runtimeId];
   const cells = countedCells(summary, runtimeId, arm);
   if (cells.length > 0 && cells.every((c) => c.tokens && typeof c.tokens === 'object')) {
@@ -742,7 +751,7 @@ function tokenCompositionMedians(summary, group, runtimeId, arm) {
   return { segments, stat: 'median', total: segments.reduce((a, s) => a + s.value, 0), totalIsComplete: true };
 }
 
-function commandKindAggregate(group) {
+export function commandKindAggregate(group) {
   const mix = group.kmp_test_vs_gradle;
   if (!mix || mix.available === false) return null;
   const n = Math.max(group.counted, 1);

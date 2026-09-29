@@ -621,6 +621,11 @@ describe('summarizeCampaign -- provenance and limitations', () => {
       expect(result.provenance.reasoning_effort['claude-code']).toEqual({ values: ['high'], mixed: false });
       expect(result.provenance.reasoning_effort['codex-cli']).toEqual({ values: ['low'], mixed: false });
       expect(result.limitations.some((l) => l.includes('mixed revisions') && l.includes('reasoning_effort'))).toBe(false);
+      // WO-C16: reasoning_effort_source (the sibling field naming WHERE the requested effort came
+      // from, e.g. a pinned CLI flag vs a runtime default) aggregates the same way, alongside the
+      // value itself -- v9RecordFields hardcodes 'harness-pinned-cli-flag' for every fixture cell.
+      expect(result.provenance.reasoning_effort_source['claude-code']).toEqual({ values: ['harness-pinned-cli-flag'], mixed: false });
+      expect(result.provenance.reasoning_effort_source['codex-cli']).toEqual({ values: ['harness-pinned-cli-flag'], mixed: false });
     });
   });
 

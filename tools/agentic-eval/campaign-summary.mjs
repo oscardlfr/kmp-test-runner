@@ -175,6 +175,11 @@ function buildProvenance(loadedCells) {
   // equivalent, so unlike runtimeCliVersion/modelResolved above this tracker is accepted-cells-only,
   // honestly (never inferred for a rejected cell).
   const reasoningEffort = { 'claude-code': newProvenanceTracker(), 'codex-cli': newProvenanceTracker() };
+  // reasoning_effort_source (WO-C16, same schema-v9 accepted-only shape as reasoning_effort_requested
+  // above -- verified against a real record.json directly: the two are sibling fields on the same
+  // object) -- e.g. "harness-pinned-cli-flag". Evidence2's own controls table names the source, not
+  // just the requested value, so a reader can tell a pinned flag from a runtime default.
+  const reasoningEffortSource = { 'claude-code': newProvenanceTracker(), 'codex-cli': newProvenanceTracker() };
 
   for (const cell of loadedCells) {
     if (cell.loaded.status === 'accepted') {
@@ -189,6 +194,8 @@ function buildProvenance(loadedCells) {
       if (modelBucket) trackProvenance(modelBucket, record.agent_runtime?.model_resolved);
       const effortBucket = reasoningEffort[cell.runtimeId];
       if (effortBucket) trackProvenance(effortBucket, record.reasoning_effort_requested);
+      const effortSourceBucket = reasoningEffortSource[cell.runtimeId];
+      if (effortSourceBucket) trackProvenance(effortSourceBucket, record.reasoning_effort_source);
     } else if (cell.loaded.status === 'rejected') {
       const { rejectionTop, rejectionCell } = cell.loaded;
       trackProvenance(repoCommit, rejectionTop.repo_commit);
@@ -221,6 +228,10 @@ function buildProvenance(loadedCells) {
       'claude-code': finalizeProvenance(reasoningEffort['claude-code']),
       'codex-cli': finalizeProvenance(reasoningEffort['codex-cli']),
     },
+    reasoning_effort_source: {
+      'claude-code': finalizeProvenance(reasoningEffortSource['claude-code']),
+      'codex-cli': finalizeProvenance(reasoningEffortSource['codex-cli']),
+    },
   };
 }
 
@@ -235,6 +246,8 @@ function provenanceLimitationLines(provenance) {
     ['codex-cli model_resolved', provenance.model_resolved['codex-cli']],
     ['claude-code reasoning_effort', provenance.reasoning_effort['claude-code']],
     ['codex-cli reasoning_effort', provenance.reasoning_effort['codex-cli']],
+    ['claude-code reasoning_effort_source', provenance.reasoning_effort_source['claude-code']],
+    ['codex-cli reasoning_effort_source', provenance.reasoning_effort_source['codex-cli']],
   ];
   for (const [label, tracker] of flat) {
     if (tracker.mixed) lines.push(`mixed revisions: ${label} varies across cells (${tracker.values.join(', ')})`);
@@ -563,14 +576,16 @@ export function summarizeCampaign(campaignDir, excludeCellKeys = new Set()) {
 // code path here ever reads those fields at all.
 // ---------------------------------------------------------------------------------------------
 
-function fmtRate({ matched, of }) {
+// Exported (WO-C16): evidence2-tables.mjs reuses these three verbatim rather than re-implementing
+// the same x/n and median/min/max formatting a second time.
+export function fmtRate({ matched, of }) {
   return of > 0 ? `${matched}/${of}` : 'n/a';
 }
-function fmtStats(stats) {
+export function fmtStats(stats) {
   if (stats.n === 0) return 'n/a';
   return `median ${stats.median}, min ${stats.min}, max ${stats.max} (n=${stats.n})`;
 }
-function fmtProvenanceLine(label, tracker) {
+export function fmtProvenanceLine(label, tracker) {
   return `- ${label}: ${tracker.values.length === 0 ? 'not-recorded' : tracker.values.join(', ')}${tracker.mixed ? ' **(mixed)**' : ''}`;
 }
 
@@ -595,6 +610,8 @@ export function renderMarkdown(summary) {
   lines.push(fmtProvenanceLine('codex-cli model_resolved', summary.provenance.model_resolved['codex-cli']));
   lines.push(fmtProvenanceLine('claude-code reasoning_effort', summary.provenance.reasoning_effort['claude-code']));
   lines.push(fmtProvenanceLine('codex-cli reasoning_effort', summary.provenance.reasoning_effort['codex-cli']));
+  lines.push(fmtProvenanceLine('claude-code reasoning_effort_source', summary.provenance.reasoning_effort_source['claude-code']));
+  lines.push(fmtProvenanceLine('codex-cli reasoning_effort_source', summary.provenance.reasoning_effort_source['codex-cli']));
   lines.push('');
   lines.push('## benchmark_eligible, as recorded on accepted cells (descriptive only, not a gate)');
   const eligibilityRuntimes = Object.keys(summary.benchmark_eligible_counts).sort();
