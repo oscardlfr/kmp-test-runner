@@ -303,30 +303,26 @@ function fmtToolCallsMedian(median) {
 // bar: an all-4/4 result renders every bar identically full and conveys
 // nothing, so it is stated as text instead (see computeScorecardLayout).
 
-function buildBarMetrics(runtimeId, summary, costEstimate) {
+// Raw (unscaled) values only -- WO-C12 addendum point 1 requires the SAME 0..max scale for both
+// agent columns (today's per-runtime max misleads any cross-agent reading: 3.2 min fills Claude's
+// row and 4.8 min fills Codex's, identically full bars for very different durations). Fracs are
+// attached afterward by attachSharedBarFracs, once both runtimes' raw metrics are known.
+function buildBarMetricsRaw(runtimeId, summary, costEstimate) {
   const gProduct = findGroup(summary, runtimeId, 'product');
   const gFree = findGroup(summary, runtimeId, 'free');
-
-  const toolsWith = Math.round(gProduct.tool_calls_total.median);
-  const toolsWithout = Math.round(gFree.tool_calls_total.median);
-  const toolsMax = Math.max(toolsWith, toolsWithout, 1e-9);
-
-  const wallWith = gProduct.duration_ms.median / 60000;
-  const wallWithout = gFree.duration_ms.median / 60000;
-  const wallMax = Math.max(wallWith, wallWithout, 1e-9);
 
   const metrics = [
     {
       label: 'Tool calls per session (median)',
-      withFrac: toolsWith / toolsMax,
-      withoutFrac: toolsWithout / toolsMax,
+      withValue: Math.round(gProduct.tool_calls_total.median),
+      withoutValue: Math.round(gFree.tool_calls_total.median),
       withLabel: fmtToolCallsMedian(gProduct.tool_calls_total.median),
       withoutLabel: fmtToolCallsMedian(gFree.tool_calls_total.median),
     },
     {
       label: 'Wall-clock per session (median)',
-      withFrac: wallWith / wallMax,
-      withoutFrac: wallWithout / wallMax,
+      withValue: gProduct.duration_ms.median / 60000,
+      withoutValue: gFree.duration_ms.median / 60000,
       withLabel: `${fmtMinutesMedian(gProduct.duration_ms.median)} min`,
       withoutLabel: `${fmtMinutesMedian(gFree.duration_ms.median)} min`,
     },
@@ -338,30 +334,46 @@ function buildBarMetrics(runtimeId, summary, costEstimate) {
   if (costEstimate.schema === 1 && runtimeId === 'claude-code') {
     const withRange = claudeCostRange(costEstimate, 'product');
     const withoutRange = claudeCostRange(costEstimate, 'free');
-    const costMax = Math.max(withRange.high, withoutRange.high, 1e-9);
     metrics.push({
       label: 'Estimated API cost per session',
-      withFrac: withRange.high / costMax,
-      withoutFrac: withoutRange.high / costMax,
-      withLabel: fmtCostRange(withRange),
-      withoutLabel: fmtCostRange(withoutRange),
+      withValue: withRange.high, withoutValue: withoutRange.high,
+      withLabel: fmtCostRange(withRange), withoutLabel: fmtCostRange(withoutRange),
     });
   } else if (hasV2Cost(costEstimate, runtimeId)) {
     const withRange = runtimeCostRange(costEstimate, runtimeId, 'product');
     const withoutRange = runtimeCostRange(costEstimate, runtimeId, 'free');
-    const costMax = Math.max(withRange.high, withoutRange.high, 1e-9);
     metrics.push({
       label: 'Estimated API cost per session',
-      withFrac: withRange.high / costMax,
-      withoutFrac: withoutRange.high / costMax,
-      withLabel: fmtCostRange(withRange),
-      withoutLabel: fmtCostRange(withoutRange),
+      withValue: withRange.high, withoutValue: withoutRange.high,
+      withLabel: fmtCostRange(withRange), withoutLabel: fmtCostRange(withoutRange),
     });
   } else {
     metrics.push({ label: 'Estimated API cost per session', notEstimated: true });
   }
 
   return metrics;
+}
+
+// Attaches withFrac/withoutFrac to each same-index metric pair from BOTH columns, sharing one max
+// per metric TYPE across both agents when both sides have a real value; a metric only one side has
+// (e.g. Codex cost not yet estimated) falls back to that side's own max, since there is nothing on
+// the other side to share against.
+function attachSharedBarFracs(metricsA, metricsB) {
+  for (let i = 0; i < metricsA.length; i++) {
+    const a = metricsA[i], b = metricsB[i];
+    const aOk = !a.notEstimated, bOk = !b.notEstimated;
+    if (aOk && bOk) {
+      const max = Math.max(a.withValue, a.withoutValue, b.withValue, b.withoutValue, 1e-9);
+      a.withFrac = a.withValue / max; a.withoutFrac = a.withoutValue / max;
+      b.withFrac = b.withValue / max; b.withoutFrac = b.withoutValue / max;
+    } else if (aOk) {
+      const max = Math.max(a.withValue, a.withoutValue, 1e-9);
+      a.withFrac = a.withValue / max; a.withoutFrac = a.withoutValue / max;
+    } else if (bOk) {
+      const max = Math.max(b.withValue, b.withoutValue, 1e-9);
+      b.withFrac = b.withValue / max; b.withoutFrac = b.withoutValue / max;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -425,9 +437,14 @@ export function computeScorecardLayout(summary, costEstimate) {
         { id: 'codex-cli', x: PAD + COLUMN_W + COLUMN_GAP, title: 'Codex CLI · gpt-5.6-terra (low effort)' },
       ];
 
+  // Raw metrics for BOTH columns first, then shared fracs (WO-C12 addendum) -- a shared max needs
+  // both agents' values before either column's bars can be positioned.
+  const rawMetricsByColumn = columns.map((col) => buildBarMetricsRaw(col.id, summary, costEstimate));
+  attachSharedBarFracs(rawMetricsByColumn[0], rawMetricsByColumn[1]);
+
   const columnBottoms = [];
 
-  for (const col of columns) {
+  columns.forEach((col, colIndex) => {
     let cy = headerBottom;
 
     const panelTitleFS = 15;
@@ -443,7 +460,7 @@ export function computeScorecardLayout(summary, costEstimate) {
     items.push(textItem('keyFactsLine', col.id, col.x, keyFactsY, keyFactsFS, 400, COLOR_TEXT, keyFactsText));
     cy = keyFactsY + ROW_GAP + 8; // extra breathing room before the first bar block
 
-    const metrics = buildBarMetrics(col.id, summary, costEstimate);
+    const metrics = rawMetricsByColumn[colIndex];
     for (const metric of metrics) {
       const labelFS = 13;
       const labelY = cy + labelFS;
@@ -478,7 +495,7 @@ export function computeScorecardLayout(summary, costEstimate) {
     }
 
     columnBottoms.push(cy - BLOCK_GAP);
-  }
+  });
 
   const height = Math.round(Math.max(...columnBottoms) + PAD);
   return { width: SCORECARD_W, height, items };
@@ -514,7 +531,7 @@ export function buildScorecardAlt(summary, costEstimate) {
     const gProduct = findGroup(summary, runtimeId, 'product');
     const gFree = findGroup(summary, runtimeId, 'free');
     const bits = [`key facts ${fmtRatio(gProduct.key_facts_match)} with kmp-test, ${fmtRatio(gFree.key_facts_match)} without`];
-    for (const metric of buildBarMetrics(runtimeId, summary, costEstimate)) {
+    for (const metric of buildBarMetricsRaw(runtimeId, summary, costEstimate)) {
       // Lowercase the label for alt-text style, but keep "API" as an acronym, not "api".
       const label = metric.label.toLowerCase().replace(/\bapi\b/, 'API');
       bits.push(metric.notEstimated
@@ -549,27 +566,31 @@ export function buildScorecardAlt(summary, costEstimate) {
 // availability) is omitted from the grid entirely rather than showing either.
 
 const GRID_W = SCORECARD_W;
-const GRID_ROW_LABEL_W = 190;
-const GRID_LANE_W = 120;
-const GRID_LANE_GAP = 18;
 const GRID_DOT_R = 3;
-const GRID_STACK_W = 10;
-// Row layout: each row is a stack of non-overlapping bands (label, optional note, lane header,
-// plot, bottom line), each with a fixed height; a row's TOTAL height is the sum of only the bands
-// it actually uses (see renderMetricRow). Never a single flat per-row constant -- that was the
-// WO-C10 bug: a fixed 64px slot for content that needed ~110-126px, so every band silently bled
-// into its neighbor (row label under the previous row's legend, "with"/"without" under the next
-// row's label, the aggregate note drawn over the row label it was meant to sit below).
-const GRID_ROW_LABEL_FS = 13;
-const GRID_NOTE_FS = 10;
-const GRID_LANE_HEADER_FS = 11;
+// WO-C12 redesign: numbers-first, in the scorecard's own visual language. Two row shapes, each a
+// stack of non-overlapping bands (header, lane(s), footer), height = sum of only the bands used:
+//   STRIP rows (scalar metrics) -- two lanes stacked VERTICALLY sharing one horizontal axis (0 to
+//   a nice max), dots in the arm's own color (scorecard COLOR_WITH/COLOR_WITHOUT), a median tick,
+//   the median value printed to the right, 3 axis-tick labels shared below both lanes.
+//   COMPOSITION rows (tool calls by kind, tokens by type) -- two lanes, each ONE horizontal
+//   stacked bar of per-component MEDIANS (never per-session mini-bars), a total at the end, one
+//   legend line below both bars giving each component's with-vs-without value.
+const GRID_HEADER_FS = 13;
+const GRID_HEADER_H = 18;
+const GRID_LANE_LABEL_FS = 11;
+const GRID_LANE_LABEL_W = 92; // "with kmp-test" / "without" text budget
 const GRID_VALUE_LABEL_FS = 11;
-const GRID_ROW_LABEL_H = 18;
-const GRID_NOTE_H = 16;
-const GRID_LANE_HEADER_H = 18;
-const GRID_PLOT_H = 44;
-const GRID_BOTTOM_H = 18;
-const GRID_ROW_GAP = 12; // clearance before the next row -- WO-C10 requires >= 10px
+const GRID_VALUE_LABEL_GAP = 8;
+const GRID_VALUE_LABEL_W = 96; // "median 190.0 s" text budget
+const GRID_STRIP_AXIS_W = COLUMN_W - GRID_LANE_LABEL_W - GRID_VALUE_LABEL_GAP - GRID_VALUE_LABEL_W;
+const GRID_STRIP_LANE_H = 20;
+const GRID_TICK_FS = 9;
+const GRID_TICK_H = 16;
+const GRID_COMP_BAR_H = 14;
+const GRID_COMP_BAR_GAP = 4;
+const GRID_COMP_TOTAL_LABEL_W = 46;
+const GRID_COMP_BAR_W = COLUMN_W - GRID_LANE_LABEL_W - GRID_COMP_TOTAL_LABEL_W;
+const GRID_ROW_GAP = 14; // clearance before the next row (WO-C10 required >= 10px; kept generous)
 const TOKEN_TYPE_COLORS = {
   input: '#8250df', cached_input: '#0969da', cache_write: '#1a7f37', output: '#bc4c00', reasoning_output: '#cf222e',
 };
@@ -612,34 +633,31 @@ function scalarMetric(summary, group, runtimeId, arm, cellField, aggregateOf) {
   return { kind: 'unavailable' };
 }
 
-// A composite metric's per-session segments (one {type,value} array per session) when every
-// counted cell carries `cellField` as an object; otherwise ONE segment array built from the
-// run-level aggregate's own per-type medians (by_runtime_arm.tokens.<type>.median), when that
-// aggregate exists.
-// Distinct kind labels from scalarMetric()'s 'per-session'/'aggregate' -- a stacked result's
-// payload shape (sessions: array-of-segment-arrays, or segments: one segment array) is structurally
-// different from a scalar's (values: number[], or min/median/max), and reusing the same kind
-// strings for both was a real bug caught in the real-data preview: yScaleFor's scalar branch read
-// stacked payloads through the wrong shape and silently produced a NaN/1 scale, exploding every
-// bar's height by orders of magnitude. Keeping the labels distinct makes that class of mismatch a
-// missing-branch/undefined error instead of a silent wrong number.
-function stackedMetric(summary, group, runtimeId, arm, cellField, types, aggregateOf) {
+// A composition row's per-component MEDIANS for one lane -- WO-C12 always renders ONE bar per
+// lane (never a per-session mini-bar cluster), so the data layer always resolves to "one value per
+// component" up front, whichever source it comes from:
+//   - every counted cell carries `cellField` as an object -> the median of each component ACROSS
+//     sessions (stat: 'median', every declared type present, per-cell data always tracks all of
+//     them -- see command_kind_counts's own 3-bucket invariant elsewhere in this file);
+//   - otherwise the run-level aggregate's own per-type figure (by_runtime_arm.tokens.<type>.median
+//     for tokens, or commandKindAggregate's per-session MEAN for tool calls) -- only the types the
+//     aggregate actually tracks become a segment; an untracked one (e.g. commandKindAggregate's
+//     'other') is omitted, never defaulted to a fabricated 0.
+// Returns null when neither source has anything -- the caller renders a single "not recorded" line.
+function compositionMedians(summary, group, runtimeId, arm, cellField, types, aggregateOf) {
   const cells = countedCells(summary, runtimeId, arm);
   if (cells.length > 0 && cells.every((c) => c[cellField] && typeof c[cellField] === 'object')) {
-    const sessions = cells.map((c) => types.map((t) => ({ type: t, value: Number(c[cellField][t]) || 0 })));
-    return { kind: 'stack-per-session', sessions };
+    const segments = types.map((t) => ({ type: t, value: medianOf(cells.map((c) => Number(c[cellField][t]) || 0)) }));
+    return { segments, stat: 'median', total: segments.reduce((a, s) => a + s.value, 0) };
   }
   const agg = aggregateOf(group);
   if (agg) {
-    // Only types aggregateOf actually tracks become a segment -- a type it doesn't track (e.g.
-    // commandKindAggregate's 'other') is omitted rather than defaulted to a fabricated 0, so a
-    // genuinely-untracked bucket is never indistinguishable from one that measured zero.
     const segments = types
       .filter((t) => agg[t] && typeof agg[t].median === 'number')
       .map((t) => ({ type: t, value: agg[t].median }));
-    if (segments.some((s) => s.value > 0)) return { kind: 'stack-aggregate', segments, stat: agg.stat || 'median' };
+    if (segments.length > 0) return { segments, stat: agg.stat || 'median', total: segments.reduce((a, s) => a + s.value, 0) };
   }
-  return { kind: 'unavailable' };
+  return null;
 }
 
 function commandKindAggregate(group) {
@@ -690,216 +708,319 @@ export function costMetric(summary, group, runtimeId, arm, costEstimate) {
   return { kind: 'per-session', values, median: medianOf(values), provider: false };
 }
 
-function yScaleFor(marks) {
-  let max = 0;
-  for (const m of marks) {
-    if (m.kind === 'per-session') max = Math.max(max, ...m.values);
-    else if (m.kind === 'aggregate') max = Math.max(max, m.max);
-    else if (m.kind === 'stack-per-session') max = Math.max(max, ...m.sessions.map((s) => s.reduce((a, b) => a + b.value, 0)));
-    else if (m.kind === 'stack-aggregate') max = Math.max(max, m.segments.reduce((a, b) => a + b.value, 0));
-  }
-  return max > 0 ? max : 1;
+// Rounds up to a "nice" axis max (1/2/5 x 10^n) so the 3 tick labels (0/mid/max) are clean
+// numbers, not e.g. "0 / 96.3 / 192.7".
+function niceAxisMax(rawMax) {
+  if (!(rawMax > 0)) return 1;
+  const exp = Math.floor(Math.log10(rawMax));
+  const base = Math.pow(10, exp);
+  const fraction = rawMax / base;
+  const niceFraction = fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10;
+  return niceFraction * base;
 }
 
-// The set of type keys actually present in a metric's segments/sessions -- never every key
-// typeColors happens to define, so a legend built from this never shows a swatch for a type the
-// underlying data never tracked (mirrors stackedMetric's own "omit, don't fabricate" rule).
-function presentStackTypes(metric) {
-  if (metric.kind === 'stack-per-session') return new Set(metric.sessions.flatMap((s) => s.map((seg) => seg.type)));
-  if (metric.kind === 'stack-aggregate') return new Set(metric.segments.map((seg) => seg.type));
-  return new Set();
+// A strip row's shared axis max: the addendum requires the SAME 0..max scale for both agent
+// columns, so a viewer can compare Claude's and Codex's dots directly -- computed over every
+// per-session/aggregate value from BOTH runtimes' with/without lanes for this one metric, never
+// per-runtime (that was the pre-addendum scorecard bug this also fixes).
+function scalarLaneMax(metric) {
+  if (metric.kind === 'per-session') return Math.max(...metric.values, 0);
+  if (metric.kind === 'aggregate') return metric.max;
+  return 0;
+}
+function sharedStripAxisMax(...metrics) {
+  const raw = Math.max(...metrics.map(scalarLaneMax), 1e-9);
+  return niceAxisMax(raw);
 }
 
-// A row needs its one aggregate-disclaimer note line when either lane fell back to an aggregate
-// (stack-aggregate: a per-type median/mean built from by_runtime_arm, not per-cell data; aggregate:
-// a scalar min/median/max range) -- never for a row where every plotted lane is real per-session data.
-function rowNeedsNote(withMetric, withoutMetric) {
-  return [withMetric, withoutMetric].some((m) => m.kind === 'stack-aggregate' || m.kind === 'aggregate');
+// A composition row's shared bar-total max, same cross-agent reasoning as sharedStripAxisMax --
+// null-total lanes (no data) don't participate.
+function sharedCompositionMax(...compositions) {
+  const totals = compositions.filter(Boolean).map((c) => c.total);
+  return totals.length > 0 ? Math.max(...totals, 1e-9) : 1;
 }
 
-function rowNoteText(withMetric, withoutMetric) {
-  const stackAgg = [withMetric, withoutMetric].find((m) => m.kind === 'stack-aggregate');
-  if (stackAgg) {
-    return stackAgg.stat === 'mean' ? 'bars: campaign mean per session, not per-session' : 'bars: campaign median, not per-session';
-  }
-  return 'campaign range, not per-session';
+// The set of type keys actually present across two composition lanes -- never every key typeColors
+// happens to define, so the legend never shows a value for a type neither lane tracked.
+function presentCompositionTypes(...compositions) {
+  const set = new Set();
+  for (const c of compositions) if (c) for (const s of c.segments) set.add(s.type);
+  return set;
+}
+function compositionValueFor(composition, type) {
+  if (!composition) return null;
+  const seg = composition.segments.find((s) => s.type === type);
+  return seg ? seg.value : null;
 }
 
-// One row's SVG items for one runtime column, laid out as stacked, non-overlapping bands: row
-// label -> optional aggregate note -> lane header ("with"/"without", ABOVE their lanes) -> plot
-// area (dot cluster / stacked-bar cluster / range mark / "n/a") -> bottom line (color legend for
-// stacked rows, the median value line for scalar rows) -> gap. Each band advances a single cursor,
-// so no band can silently overlap another the way the old fixed-GRID_ROW_H layout did.
-function renderMetricRow(colX, rowY, label, unit, descriptive, withMetric, withoutMetric, isStack, typeColors, types, typeLabels) {
+// One STRIP row (scalar metric) for one runtime column: header (metric/unit/diff%) -> two lanes
+// stacked VERTICALLY sharing one 0..axisMax horizontal axis (dots in the arm's own scorecard
+// color, a median tick, the median value printed right of the axis) -> 3 shared tick labels below
+// both lanes -> gap. Each band advances a single cursor, so no band can silently overlap another.
+function renderStripRow(colX, rowY, mainHeaderText, diffText, agentLabel, withMetric, withoutMetric, axisMax, fmtValue) {
   const items = [];
   let cursor = rowY;
-
-  items.push(textItem('gridRowLabel', null, colX, cursor + GRID_ROW_LABEL_FS, GRID_ROW_LABEL_FS, 500, COLOR_TEXT, descriptive ? `${label} (descriptive)` : label));
-  cursor += GRID_ROW_LABEL_H;
+  items.push(textItem('gridRowHeader', null, colX, cursor + GRID_HEADER_FS, GRID_HEADER_FS, 500, COLOR_TEXT, mainHeaderText));
+  cursor += GRID_HEADER_H;
+  if (diffText) {
+    items.push(textItem('gridRowDiff', null, colX, cursor + GRID_TICK_FS, GRID_TICK_FS, 400, COLOR_SECONDARY, diffText));
+    cursor += GRID_TICK_H;
+  }
 
   if (withMetric.kind === 'unavailable' && withoutMetric.kind === 'unavailable') {
-    items.push(textItem('gridNotAvailable', null, colX, cursor + 12, 12, 400, COLOR_SECONDARY, 'not available for this campaign'));
+    items.push(textItem('gridNotRecorded', null, colX, cursor + 12, 12, 400, COLOR_SECONDARY, `not recorded for ${agentLabel}`));
     cursor += 16 + GRID_ROW_GAP;
     return { items, rowHeight: cursor - rowY };
   }
 
-  if (rowNeedsNote(withMetric, withoutMetric)) {
-    items.push(textItem('gridAggregateNote', null, colX, cursor + GRID_NOTE_FS, GRID_NOTE_FS, 400, COLOR_SECONDARY, rowNoteText(withMetric, withoutMetric)));
-    cursor += GRID_NOTE_H;
-  }
+  const axisLeft = colX + GRID_LANE_LABEL_W;
+  const axisRight = axisLeft + GRID_STRIP_AXIS_W;
+  const xFor = (v) => axisLeft + (Math.min(Math.max(v, 0), axisMax) / axisMax) * GRID_STRIP_AXIS_W;
 
-  const lanes = [{ x: colX, m: withMetric, arm: 'with' }, { x: colX + GRID_LANE_W + GRID_LANE_GAP, m: withoutMetric, arm: 'without' }];
+  const lanes = [
+    { m: withMetric, arm: 'with kmp-test', color: COLOR_WITH },
+    { m: withoutMetric, arm: 'without', color: COLOR_WITHOUT },
+  ];
   for (const lane of lanes) {
-    items.push(textItem('gridLaneLabel', null, lane.x, cursor + GRID_LANE_HEADER_FS, GRID_LANE_HEADER_FS, 400, COLOR_SECONDARY, lane.arm));
-  }
-  cursor += GRID_LANE_HEADER_H;
-
-  const plotTop = cursor;
-  const scale = yScaleFor([withMetric, withoutMetric]);
-  const yFor = (v) => plotTop + GRID_PLOT_H - (v / scale) * GRID_PLOT_H;
-
-  for (const lane of lanes) {
+    const laneCenterY = cursor + GRID_STRIP_LANE_H / 2;
+    items.push(textItem('gridLaneLabel', null, colX, laneCenterY + 4, GRID_LANE_LABEL_FS, 400, COLOR_SECONDARY, lane.arm));
     if (lane.m.kind === 'unavailable') {
-      items.push(textItem('gridNotAvailable', null, lane.x, plotTop + GRID_PLOT_H / 2 + 4, 11, 400, COLOR_SECONDARY, 'n/a'));
-      continue;
+      items.push(textItem('gridNotRecorded', null, axisLeft, laneCenterY + 4, GRID_VALUE_LABEL_FS, 400, COLOR_SECONDARY, 'n/a'));
+    } else {
+      if (lane.m.kind === 'per-session') {
+        const n = lane.m.values.length;
+        lane.m.values.forEach((v, i) => {
+          // A small vertical jitter so n=4 real sessions landing at/near the same x are still all visible.
+          const dotY = laneCenterY + (i - (n - 1) / 2) * 3.2;
+          items.push({ kind: 'dot', column: null, cx: xFor(v), cy: dotY, r: GRID_DOT_R, fill: lane.color });
+        });
+      } else if (lane.m.kind === 'aggregate') {
+        items.push({ kind: 'rangeLineH', column: null, y: laneCenterY, x1: xFor(lane.m.min), x2: xFor(lane.m.max), stroke: lane.color });
+      }
+      items.push({ kind: 'tickV', column: null, x: xFor(lane.m.median), y1: laneCenterY - 6, y2: laneCenterY + 6 });
+      items.push(textItem('gridValueLabel', null, axisRight + GRID_VALUE_LABEL_GAP, laneCenterY + 4, GRID_VALUE_LABEL_FS, 400, COLOR_TEXT, `median ${fmtValue(lane.m.median)}`));
     }
-    if (isStack) {
-      const sessionsToPlot = lane.m.kind === 'stack-per-session' ? lane.m.sessions : [lane.m.segments];
-      const n = sessionsToPlot.length;
-      const spacing = Math.min(GRID_STACK_W + 4, GRID_LANE_W / Math.max(n, 1));
-      const startX = lane.x + GRID_LANE_W / 2 - (n - 1) * spacing / 2;
-      sessionsToPlot.forEach((segments, i) => {
-        let yCursor = plotTop + GRID_PLOT_H;
-        for (const seg of segments) {
-          if (seg.value <= 0) continue;
-          const segH = (seg.value / scale) * GRID_PLOT_H;
-          items.push({ kind: 'bar', column: null, x: startX + i * spacing - GRID_STACK_W / 2, y: yCursor - segH, w: GRID_STACK_W, h: segH, rx: 1, fill: typeColors[seg.type] || COLOR_SECONDARY });
-          yCursor -= segH;
-        }
-      });
-    } else if (lane.m.kind === 'per-session') {
-      const n = lane.m.values.length;
-      const spacing = Math.min(24, GRID_LANE_W / Math.max(n, 1));
-      const startX = lane.x + GRID_LANE_W / 2 - (n - 1) * spacing / 2;
-      lane.m.values.forEach((v, i) => {
-        items.push({ kind: 'dot', column: null, cx: startX + i * spacing, cy: yFor(v), r: GRID_DOT_R, fill: COLOR_WITH });
-      });
-      const medianY = yFor(lane.m.median);
-      items.push({ kind: 'medianTick', column: null, x1: lane.x + 4, x2: lane.x + GRID_LANE_W - 4, y: medianY });
-    } else if (lane.m.kind === 'aggregate') {
-      const yMin = yFor(lane.m.min), yMax = yFor(lane.m.max), yMed = yFor(lane.m.median);
-      const cx = lane.x + GRID_LANE_W / 2;
-      items.push({ kind: 'rangeLine', column: null, x: cx, y1: yMin, y2: yMax });
-      items.push({ kind: 'medianTick', column: null, x1: cx - 14, x2: cx + 14, y: yMed });
-    }
+    cursor += GRID_STRIP_LANE_H;
   }
-  cursor += GRID_PLOT_H;
 
-  const bottomBandTop = cursor;
-  if (isStack) {
-    const present = new Set([...presentStackTypes(withMetric), ...presentStackTypes(withoutMetric)]);
-    const legendY = bottomBandTop + GRID_LEGEND_FS + 4;
-    let legendX = colX;
-    for (const t of types.filter((type) => present.has(type))) {
-      const swatchFill = typeColors[t] || COLOR_SECONDARY;
-      items.push({ kind: 'legendSwatch', column: null, x: legendX, y: legendY - GRID_LEGEND_SWATCH, w: GRID_LEGEND_SWATCH, h: GRID_LEGEND_SWATCH, fill: swatchFill });
-      const labelText = (typeLabels && typeLabels[t]) || t;
-      items.push(textItem('gridLegendLabel', null, legendX + GRID_LEGEND_SWATCH + 3, legendY, GRID_LEGEND_FS, 400, COLOR_SECONDARY, labelText));
-      legendX += GRID_LEGEND_SWATCH + 3 + labelText.length * GRID_LEGEND_FS * 0.6 + 10;
-    }
-  } else {
-    // ms carries its converted "s" unit on each value ("median 125.0 s vs 125.0 s"); every other
-    // unit keeps the existing single trailing suffix ("median 0.11 vs 0.17 USD").
-    const trailingUnit = unit && unit !== 'ms' ? ' ' + unit : '';
-    const valueLabel = `median ${fmtGridValue(withMetric, unit)} vs ${fmtGridValue(withoutMetric, unit)}${trailingUnit}`;
-    items.push(textItem('gridValueLabel', null, colX, bottomBandTop + GRID_VALUE_LABEL_FS + 4, GRID_VALUE_LABEL_FS, 400, COLOR_SECONDARY, valueLabel));
+  items.push({ kind: 'axisLine', column: null, y: cursor, x1: axisLeft, x2: axisRight });
+  const tickY = cursor + GRID_TICK_FS + 4;
+  const ticks = [[0, 'start'], [axisMax / 2, 'middle'], [axisMax, 'end']];
+  for (const [t, anchor] of ticks) {
+    items.push(textItem('gridTickLabel', null, xFor(t), tickY, GRID_TICK_FS, 400, COLOR_SECONDARY, fmtValue(t), anchor));
   }
-  cursor += GRID_BOTTOM_H + GRID_ROW_GAP;
+  cursor += GRID_TICK_H + GRID_ROW_GAP;
 
   return { items, rowHeight: cursor - rowY };
 }
 
-// Milliseconds read as seconds (1 decimal) -- "190.0 s vs 191.2 s" is legible at a glance; raw
-// millisecond medians ("189954.5 vs 191216.5 ms") are not. Every other unit (USD, unitless turns)
-// is unaffected. Only the printed value-line text changes; the plotted dot/tick geometry above it
-// still scales off the raw metric values, which carry no unit label of their own.
-function fmtGridValue(metric, unit) {
-  if (metric.kind === 'unavailable') return 'n/a';
-  const v = metric.median;
-  if (typeof v !== 'number') return 'n/a';
-  if (unit === 'ms') return `${(v / 1000).toFixed(1)} s`;
-  return Number.isInteger(v) ? String(v) : v.toFixed(2);
+// One COMPOSITION row (tool calls by kind / tokens by type) for one runtime column: header ->
+// two lanes, each ONE horizontal stacked bar of per-component MEDIANS with the total printed at
+// the end -> one shared legend line giving each present component's with-vs-without value -> gap.
+function renderCompositionRow(colX, rowY, headerText, agentLabel, withComp, withoutComp, compMax, types, typeColors, typeLabels, fmtValue) {
+  const items = [];
+  let cursor = rowY;
+  items.push(textItem('gridRowHeader', null, colX, cursor + GRID_HEADER_FS, GRID_HEADER_FS, 500, COLOR_TEXT, headerText));
+  cursor += GRID_HEADER_H;
+
+  if (!withComp && !withoutComp) {
+    items.push(textItem('gridNotRecorded', null, colX, cursor + 12, 12, 400, COLOR_SECONDARY, `not recorded for ${agentLabel}`));
+    cursor += 16 + GRID_ROW_GAP;
+    return { items, rowHeight: cursor - rowY };
+  }
+
+  const barX = colX + GRID_LANE_LABEL_W;
+  const lanes = [{ c: withComp, arm: 'with kmp-test' }, { c: withoutComp, arm: 'without' }];
+  for (const lane of lanes) {
+    const barY = cursor;
+    const barCenterY = barY + GRID_COMP_BAR_H / 2;
+    items.push(textItem('gridLaneLabel', null, colX, barCenterY + 4, GRID_LANE_LABEL_FS, 400, COLOR_SECONDARY, lane.arm));
+    if (!lane.c) {
+      items.push(textItem('gridNotRecorded', null, barX, barCenterY + 4, GRID_VALUE_LABEL_FS, 400, COLOR_SECONDARY, 'n/a'));
+    } else {
+      let xCursor = barX;
+      for (const seg of lane.c.segments) {
+        if (seg.value <= 0) continue;
+        const w = (seg.value / compMax) * GRID_COMP_BAR_W;
+        items.push({ kind: 'bar', column: null, x: xCursor, y: barY, w, h: GRID_COMP_BAR_H, rx: 1, fill: typeColors[seg.type] || COLOR_SECONDARY });
+        xCursor += w;
+      }
+      items.push(textItem('gridCompTotal', null, barX + GRID_COMP_BAR_W + 6, barCenterY + 4, GRID_VALUE_LABEL_FS, 400, COLOR_TEXT, fmtValue(lane.c.total)));
+    }
+    cursor += GRID_COMP_BAR_H + GRID_COMP_BAR_GAP;
+  }
+
+  const presentTypes = types.filter((t) => presentCompositionTypes(withComp, withoutComp).has(t));
+  const legendParts = presentTypes.map((t) => {
+    const wv = compositionValueFor(withComp, t);
+    const wov = compositionValueFor(withoutComp, t);
+    const label = (typeLabels && typeLabels[t]) || t;
+    return `${label} ${wv === null ? 'n/a' : fmtValue(wv)} vs ${wov === null ? 'n/a' : fmtValue(wov)}`;
+  });
+  // Greedily wrap parts across lines within COLUMN_W (tokens-by-type, up to 5 components, easily
+  // overflows one line -- confirmed by the real overlap this produced against Codex's own column
+  // before this fix existed). Same chars x fontSize x 0.6 estimator as the layout tests.
+  const SEP = ' · ';
+  const maxLineWidth = COLUMN_W;
+  const legendLines = [];
+  let currentLine = '';
+  for (const part of legendParts) {
+    const candidate = currentLine ? currentLine + SEP + part : part;
+    if (currentLine && candidate.length * GRID_LEGEND_FS * 0.6 > maxLineWidth) {
+      legendLines.push(currentLine);
+      currentLine = part;
+    } else {
+      currentLine = candidate;
+    }
+  }
+  if (currentLine) legendLines.push(currentLine);
+
+  let legendY = cursor + GRID_LEGEND_FS + 2;
+  for (const line of legendLines) {
+    items.push(textItem('gridLegendLine', null, colX, legendY, GRID_LEGEND_FS, 400, COLOR_SECONDARY, line));
+    legendY += GRID_LEGEND_FS + 4;
+  }
+  cursor = legendY + 2 + GRID_ROW_GAP;
+
+  return { items, rowHeight: cursor - rowY };
 }
 
-// One runtime's full row set: tokens (stack), tool calls by kind (stack), wall-clock (dot), cost
-// (dot), turns (dot). Tool-result volume is appended by the caller only when at least one runtime
-// actually has it, per the design's explicit "chart only if reliably measurable" rule.
-function buildMetricRowsForRuntime(runtimeId, summary, costEstimate) {
+// Formatting, all numbers-first per WO-C12 point 7 (min at 1 decimal like the scorecard; tokens
+// k/M; cost $; bytes KB/MB; plain counts for turns and tool-calls-by-kind).
+function fmtCount(v) { return Number.isInteger(v) ? String(v) : v.toFixed(1); }
+function fmtMinutesGrid(v) { return `${v.toFixed(1)} min`; }
+function fmtUsdGrid(v) { return `$${v.toFixed(2)}`; }
+function fmtTokensCompact(v) {
+  if (v >= 1e6) return `${(v / 1e6).toFixed(1)}M`;
+  if (v >= 1e3) return `${(v / 1e3).toFixed(1)}k`;
+  return String(Math.round(v));
+}
+function fmtBytesCompact(v) {
+  if (v >= 1e6) return `${(v / 1e6).toFixed(1)} MB`;
+  if (v >= 1e3) return `${(v / 1e3).toFixed(1)} KB`;
+  return `${Math.round(v)} B`;
+}
+
+// Converts a scalarMetric() result's numeric fields by `factor` (e.g. ms -> min) so the strip-row
+// renderer and its shared axis always work in the metric's OWN display unit, never raw milliseconds.
+function scaleMetric(metric, factor) {
+  if (metric.kind === 'per-session') return { kind: 'per-session', values: metric.values.map((v) => v * factor), median: metric.median * factor };
+  if (metric.kind === 'aggregate') return { kind: 'aggregate', min: metric.min * factor, median: metric.median * factor, max: metric.max * factor };
+  return metric;
+}
+
+// (with - without) / without from the medians, as a percent -- omitted (null) when either median
+// is missing or exactly zero, per WO-C12 point 3.
+function stripDiffPct(withMetric, withoutMetric) {
+  const wm = withMetric.median, wo = withoutMetric.median;
+  if (typeof wm !== 'number' || typeof wo !== 'number' || wo === 0 || wm === 0) return null;
+  return ((wm - wo) / wo) * 100;
+}
+
+// Split across up to 2 lines, not one long string: "API cost (USD) -- estimate: midpoint of
+// low/high" alone is already ~48 chars (~374px at 13px), leaving no room to also fit a diff% on
+// the same line within one COLUMN_W (396px) without overflowing into the next column -- confirmed
+// visually (real committed data: Claude's "API cost" header overlapped Codex's own header text).
+function stripHeaderLines(label, unit, diffPct, sourceNote) {
+  const mainParts = [unit ? `${label} (${unit})` : label];
+  if (sourceNote) mainParts.push(sourceNote);
+  const diffText = diffPct === null ? null : `median ${diffPct > 0 ? '+' : ''}${Math.round(diffPct)}% with kmp-test`;
+  return { mainText: mainParts.join(' — '), diffText };
+}
+
+// One runtime's full, FIXED row set and order (WO-C12 point 5) -- always all 6 rows; an agent
+// with nothing for a given row renders as a single "not recorded for <agent>" line there (point 6)
+// instead of the row being omitted campaign-wide.
+function buildGridRowData(runtimeId, summary, costEstimate) {
   const gp = findGroup(summary, runtimeId, 'product');
   const gf = findGroup(summary, runtimeId, 'free');
   const tokenTypes = runtimeId === 'claude-code' ? ['input', 'cached_input', 'cache_write', 'output'] : TOKEN_TYPE_ORDER;
-  const rows = [
+
+  const wallWith = scaleMetric(scalarMetric(summary, gp, runtimeId, 'product', 'duration_ms', (g) => g.duration_ms), 1 / 60000);
+  const wallWithout = scaleMetric(scalarMetric(summary, gf, runtimeId, 'free', 'duration_ms', (g) => g.duration_ms), 1 / 60000);
+
+  const costWith = costMetric(summary, gp, runtimeId, 'product', costEstimate);
+  const costWithout = costMetric(summary, gf, runtimeId, 'free', costEstimate);
+  // "provider-reported when every session has total_cost_usd" -- costMetric() already only sets
+  // provider:true on a lane when every counted cell IN THAT LANE carries total_cost_usd; the row
+  // note calls it provider-reported only when BOTH lanes independently qualified (or the other is
+  // simply unavailable), never when one lane is real and the other is an estimate.
+  const costSourceNote = (costWith.kind === 'unavailable' && costWithout.kind === 'unavailable') ? null
+    : (costWith.provider !== false && costWithout.provider !== false)
+      ? 'provider-reported'
+      : 'estimate: midpoint of low/high';
+
+  return [
     {
-      label: 'Tokens per session, by type', isStack: true, typeColors: TOKEN_TYPE_COLORS, types: tokenTypes, typeLabels: TOKEN_TYPE_LABEL,
-      with: stackedMetric(summary, gp, runtimeId, 'product', 'tokens', tokenTypes, (g) => g.tokens),
-      without: stackedMetric(summary, gf, runtimeId, 'free', 'tokens', tokenTypes, (g) => g.tokens),
+      kind: 'composition', label: 'Tool calls by kind', types: ['kmp_test', 'gradle', 'other'], typeColors: COMMAND_KIND_COLORS, typeLabels: COMMAND_KIND_LABEL, fmtValue: fmtCount,
+      with: compositionMedians(summary, gp, runtimeId, 'product', 'command_kind_counts', ['kmp_test', 'gradle', 'other'], commandKindAggregate),
+      without: compositionMedians(summary, gf, runtimeId, 'free', 'command_kind_counts', ['kmp_test', 'gradle', 'other'], commandKindAggregate),
     },
     {
-      label: 'Tool calls by kind', isStack: true, typeColors: COMMAND_KIND_COLORS, types: ['kmp_test', 'gradle', 'other'], typeLabels: COMMAND_KIND_LABEL,
-      with: stackedMetric(summary, gp, runtimeId, 'product', 'command_kind_counts', ['kmp_test', 'gradle', 'other'], commandKindAggregate),
-      without: stackedMetric(summary, gf, runtimeId, 'free', 'command_kind_counts', ['kmp_test', 'gradle', 'other'], commandKindAggregate),
+      kind: 'composition', label: 'Tokens per session, by type', types: tokenTypes, typeColors: TOKEN_TYPE_COLORS, typeLabels: TOKEN_TYPE_LABEL, fmtValue: fmtTokensCompact,
+      with: compositionMedians(summary, gp, runtimeId, 'product', 'tokens', tokenTypes, (g) => g.tokens),
+      without: compositionMedians(summary, gf, runtimeId, 'free', 'tokens', tokenTypes, (g) => g.tokens),
     },
+    { kind: 'strip', label: 'Wall-clock', unit: 'min', fmtValue: fmtMinutesGrid, sourceNote: null, with: wallWith, without: wallWithout },
+    { kind: 'strip', label: 'API cost', unit: 'USD', fmtValue: fmtUsdGrid, sourceNote: costSourceNote, with: costWith, without: costWithout },
     {
-      label: 'Wall-clock', unit: 'ms', isStack: false,
-      with: scalarMetric(summary, gp, runtimeId, 'product', 'duration_ms', (g) => g.duration_ms),
-      without: scalarMetric(summary, gf, runtimeId, 'free', 'duration_ms', (g) => g.duration_ms),
-    },
-    {
-      label: 'API cost (midpoint of low/high)', unit: 'USD', isStack: false,
-      with: costMetric(summary, gp, runtimeId, 'product', costEstimate),
-      without: costMetric(summary, gf, runtimeId, 'free', costEstimate),
-    },
-    {
-      label: 'Turns', unit: '', isStack: false,
+      kind: 'strip', label: 'Turns', unit: '', fmtValue: fmtCount, sourceNote: null,
       with: scalarMetric(summary, gp, runtimeId, 'product', 'num_turns', () => null),
       without: scalarMetric(summary, gf, runtimeId, 'free', 'num_turns', () => null),
     },
+    {
+      kind: 'strip', label: 'Tool output returned to the model', unit: 'bytes', fmtValue: fmtBytesCompact, sourceNote: null,
+      with: scalarMetric(summary, gp, runtimeId, 'product', 'output_bytes', () => null),
+      without: scalarMetric(summary, gf, runtimeId, 'free', 'output_bytes', () => null),
+    },
   ];
-  const toolResultVolume = {
-    label: 'Tool-result bytes fed back to the model', unit: 'bytes', isStack: false,
-    with: scalarMetric(summary, gp, runtimeId, 'product', 'output_bytes', () => null),
-    without: scalarMetric(summary, gf, runtimeId, 'free', 'output_bytes', () => null),
-  };
-  const hasToolResultVolume = toolResultVolume.with.kind !== 'unavailable' || toolResultVolume.without.kind !== 'unavailable';
-  return hasToolResultVolume ? [...rows, toolResultVolume] : rows;
 }
 
 export function computeMetricsGridLayout(summary, costEstimate) {
   const items = [];
   const titleFS = 20;
   const titleY = PAD + titleFS;
-  items.push(textItem('gridTitle', null, PAD, titleY, titleFS, 600, COLOR_TEXT, 'Session detail (descriptive)'));
+  items.push(textItem('gridTitle', null, PAD, titleY, titleFS, 600, COLOR_TEXT, 'Per-session detail (descriptive)'));
   const subtitleFS = 13;
   const subtitleY1 = titleY + ROW_GAP + subtitleFS;
   const subtitleY2 = subtitleY1 + subtitleFS + 4;
   items.push(textItem('gridSubtitle', null, PAD, subtitleY1, subtitleFS, 400, COLOR_SECONDARY,
-    'Every metric below is descriptive, not part of the pre-registered design.'));
+    'Each dot is one session; bars are the median session.'));
   items.push(textItem('gridSubtitle', null, PAD, subtitleY2, subtitleFS, 400, COLOR_SECONDARY,
-    'Dots are real sessions; a range mark is a campaign aggregate, not per-session.'));
+    'Descriptive only, not part of the pre-registered analysis.'));
   const headerBottom = subtitleY2 + ROW_GAP + 8;
 
   const columns = RUNTIME_ORDER.map((id, i) => ({ id, x: i === 0 ? PAD : PAD + COLUMN_W + COLUMN_GAP }));
+  // Both columns' full row data is built FIRST so shared cross-agent scales (WO-C12 addendum point
+  // 1) can be computed before anything is rendered -- a shared max needs both sides' raw values.
+  const rowDataByColumn = columns.map((col) => buildGridRowData(col.id, summary, costEstimate));
+  const rowCount = rowDataByColumn[0].length;
+
   const columnBottoms = [];
-  for (const col of columns) {
+  for (let ci = 0; ci < columns.length; ci++) {
+    const col = columns[ci];
+    const otherData = rowDataByColumn[1 - ci];
     let cy = headerBottom;
     const panelTitleFS = 14;
     items.push(textItem('gridPanelTitle', col.id, col.x, cy + panelTitleFS, panelTitleFS, 600, COLOR_TEXT,
       summary.schema === 2 ? `${RUNTIME_DISPLAY_NAME[col.id]} · ${provenanceValue(summary, 'model_resolved', col.id)}` : RUNTIME_DISPLAY_NAME[col.id]));
     cy += panelTitleFS + ROW_GAP;
-    for (const row of buildMetricRowsForRuntime(col.id, summary, costEstimate)) {
-      const { items: rowItems, rowHeight } = renderMetricRow(col.x, cy, row.label, row.unit, true, row.with, row.without, row.isStack, row.typeColors, row.types, row.typeLabels);
-      items.push(...rowItems);
-      cy += rowHeight;
+
+    for (let ri = 0; ri < rowCount; ri++) {
+      const row = rowDataByColumn[ci][ri];
+      const agentLabel = RUNTIME_DISPLAY_NAME[col.id];
+      let rendered;
+      if (row.kind === 'strip') {
+        const axisMax = sharedStripAxisMax(row.with, row.without, otherData[ri].with, otherData[ri].without);
+        const diffPct = stripDiffPct(row.with, row.without);
+        const { mainText, diffText } = stripHeaderLines(row.label, row.unit, diffPct, row.sourceNote);
+        rendered = renderStripRow(col.x, cy, mainText, diffText, agentLabel, row.with, row.without, axisMax, row.fmtValue);
+      } else {
+        const compMax = sharedCompositionMax(row.with, row.without, otherData[ri].with, otherData[ri].without);
+        rendered = renderCompositionRow(col.x, cy, row.label, agentLabel, row.with, row.without, compMax, row.types, row.typeColors, row.typeLabels, row.fmtValue);
+      }
+      items.push(...rendered.items);
+      cy += rendered.rowHeight;
     }
     columnBottoms.push(cy);
   }
@@ -913,24 +1034,26 @@ export function renderMetricsGridSvg(summary, costEstimate) {
   for (const item of layout.items) {
     if (item.kind === 'text') {
       const anchorAttr = item.anchor !== 'start' ? ` text-anchor="${item.anchor}"` : '';
-      parts.push(`<text x="${item.x}" y="${item.y.toFixed(1)}" font-size="${item.fontSize}" font-weight="${item.fontWeight}" fill="${item.fill}"${anchorAttr}>${escapeXml(item.text)}</text>`);
+      parts.push(`<text x="${item.x.toFixed(1)}" y="${item.y.toFixed(1)}" font-size="${item.fontSize}" font-weight="${item.fontWeight}" fill="${item.fill}"${anchorAttr}>${escapeXml(item.text)}</text>`);
     } else if (item.kind === 'bar') {
-      parts.push(`<rect x="${item.x.toFixed(1)}" y="${item.y.toFixed(1)}" width="${item.w}" height="${item.h.toFixed(1)}" rx="${item.rx}" fill="${item.fill}"/>`);
+      parts.push(`<rect x="${item.x.toFixed(1)}" y="${item.y.toFixed(1)}" width="${item.w.toFixed(1)}" height="${item.h.toFixed(1)}" rx="${item.rx}" fill="${item.fill}"/>`);
     } else if (item.kind === 'legendSwatch') {
       parts.push(`<rect x="${item.x.toFixed(1)}" y="${item.y.toFixed(1)}" width="${item.w}" height="${item.h}" fill="${item.fill}"/>`);
     } else if (item.kind === 'dot') {
       parts.push(`<circle cx="${item.cx.toFixed(1)}" cy="${item.cy.toFixed(1)}" r="${item.r}" fill="${item.fill}"/>`);
-    } else if (item.kind === 'medianTick') {
-      parts.push(`<line x1="${item.x1.toFixed(1)}" x2="${item.x2.toFixed(1)}" y1="${item.y.toFixed(1)}" y2="${item.y.toFixed(1)}" stroke="${COLOR_TEXT}" stroke-width="2"/>`);
-    } else if (item.kind === 'rangeLine') {
-      parts.push(`<line x1="${item.x.toFixed(1)}" x2="${item.x.toFixed(1)}" y1="${item.y1.toFixed(1)}" y2="${item.y2.toFixed(1)}" stroke="${COLOR_SECONDARY}" stroke-width="2"/>`);
+    } else if (item.kind === 'tickV') {
+      parts.push(`<line x1="${item.x.toFixed(1)}" x2="${item.x.toFixed(1)}" y1="${item.y1.toFixed(1)}" y2="${item.y2.toFixed(1)}" stroke="${COLOR_TEXT}" stroke-width="2"/>`);
+    } else if (item.kind === 'axisLine') {
+      parts.push(`<line x1="${item.x1.toFixed(1)}" x2="${item.x2.toFixed(1)}" y1="${item.y.toFixed(1)}" y2="${item.y.toFixed(1)}" stroke="${COLOR_GRID}" stroke-width="1"/>`);
+    } else if (item.kind === 'rangeLineH') {
+      parts.push(`<line x1="${item.x1.toFixed(1)}" x2="${item.x2.toFixed(1)}" y1="${item.y.toFixed(1)}" y2="${item.y.toFixed(1)}" stroke="${item.stroke}" stroke-width="2"/>`);
     }
   }
   const tokenLegendDesc = TOKEN_TYPE_ORDER.map((t) => `${TOKEN_TYPE_LABEL[t]} (${TOKEN_TYPE_COLORS[t]})`).join(', ');
   const commandLegendDesc = ['kmp_test', 'gradle', 'other'].map((t) => `${COMMAND_KIND_LABEL[t]} (${COMMAND_KIND_COLORS[t]})`).join(', ');
-  const desc = `Stacked-bar color legend. Token type: ${tokenLegendDesc}. Command kind: ${commandLegendDesc}.`;
+  const desc = `Color legend. With kmp-test (${COLOR_WITH}), without (${COLOR_WITHOUT}). Token type: ${tokenLegendDesc}. Command kind: ${commandLegendDesc}.`;
   return `<svg viewBox="0 0 ${layout.width} ${layout.height}" width="${layout.width}" height="${layout.height}" xmlns="http://www.w3.org/2000/svg" role="img" font-family="${FONT_STACK}">
-  <title>Session detail (descriptive)</title>
+  <title>Per-session detail (descriptive)</title>
   <desc>${escapeXml(desc)}</desc>
   <rect x="1" y="1" width="${layout.width - 2}" height="${layout.height - 2}" rx="12" fill="${COLOR_CARD_FILL}" stroke="${COLOR_CARD_STROKE}" stroke-width="1"/>
   ${parts.join('\n  ')}
@@ -1034,14 +1157,31 @@ function buildRuntimeBullet(runtimeId, summary, costEstimate, runsPath) {
   return `${displayName} (${model}): median ${toolsWith} tool calls with kmp-test vs ${toolsWithout} without; ${wallPhrase}.`;
 }
 
+// One descriptive bullet per arm comparing the two agents' medians (WO-C12 addendum point 2) --
+// n=4 per cell, no inferential wording (states the numbers, never "faster"/"better"/causal). Omitted
+// entirely for that arm when either agent's median is missing, rather than rendering a partial claim.
+function buildCrossAgentBullet(summary, arm, armLabel) {
+  const gClaude = findGroup(summary, 'claude-code', arm);
+  const gCodex = findGroup(summary, 'codex-cli', arm);
+  const claudeMedian = gClaude && gClaude.tool_calls_total && gClaude.tool_calls_total.median;
+  const codexMedian = gCodex && gCodex.tool_calls_total && gCodex.tool_calls_total.median;
+  if (typeof claudeMedian !== 'number' || typeof codexMedian !== 'number') return null;
+  return `${armLabel} (descriptive): Codex ${fmtToolCallsMedian(codexMedian)} tool calls vs Claude ${fmtToolCallsMedian(claudeMedian)}, median, n=4 per cell.`;
+}
+
 export function buildBullets(summary, costEstimate, runsPath) {
   const keyFactsBullet = buildKeyFactsBullet(summary);
   if (summary.schema === 2) {
-    return [
+    const bullets = [
       keyFactsBullet,
       buildRuntimeBullet('claude-code', summary, costEstimate, runsPath),
       buildRuntimeBullet('codex-cli', summary, costEstimate, runsPath),
     ];
+    const withBullet = buildCrossAgentBullet(summary, 'product', 'With kmp-test');
+    const withoutBullet = buildCrossAgentBullet(summary, 'free', 'Without kmp-test');
+    if (withBullet) bullets.push(withBullet);
+    if (withoutBullet) bullets.push(withoutBullet);
+    return bullets;
   }
   return [keyFactsBullet, buildClaudeBullet(summary, costEstimate, runsPath), buildCodexBullet(summary, runsPath)];
 }
@@ -1062,7 +1202,7 @@ function runtimeScopeClause(summary, runtimeId) {
 
 export function renderReadmeBlock(summary, campaignDate, costEstimate) {
   const runsPath = `tools/runs/evidence1-agentic-benchmark-${campaignDate}`;
-  const [bullet1, bullet2, bullet3] = buildBullets(summary, costEstimate, runsPath);
+  const bulletsText = buildBullets(summary, costEstimate, runsPath).map((b) => `- ${b}`).join('\n');
   const kmpTestVersion = kmpTestVersionOf(summary);
   const runtimeScopeText = summary.schema === 2
     ? `${runtimeScopeClause(summary, 'claude-code')}. ${runtimeScopeClause(summary, 'codex-cli')}.`
@@ -1075,11 +1215,9 @@ kmp-test hands an agent the test and coverage verdict as one JSON envelope inste
 
 ![${buildScorecardAlt(summary, costEstimate)}](${runsPath}/scorecard.svg)
 
-![Session detail (descriptive, not part of the pre-registered design): per-session tokens, tool calls, wall-clock, cost and turns for both agents, with vs without kmp-test.](${runsPath}/metrics-grid.svg)
+![Per-session detail (descriptive, not part of the pre-registered design): tool calls, tokens, wall-clock, cost, turns and tool-output bytes for both agents, with vs without kmp-test.](${runsPath}/metrics-grid.svg)
 
-- ${bullet1}
-- ${bullet2}
-- ${bullet3}
+${bulletsText}
 
 **Scope:** one scenario, tagged \`train\` (the skill was tuned on this task family); n=4 sessions per arm per agent in counterbalanced order; Windows 11 in an isolated VM with a restricted network (provider APIs only); design and metrics fixed before any live session. kmp-test ${kmpTestVersion}. ${runtimeScopeText} Key facts = module, outcome, coverage numbers. [Evidence, per-session detail and limitations](${runsPath}/README.md) · [controls audit](${runsPath}/controls-audit.md) · [pre-registration](${runsPath}/preregistration.md)
 <!-- agentic-benchmark:end -->`;

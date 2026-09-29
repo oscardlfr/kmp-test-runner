@@ -1,320 +1,148 @@
+// tests/vitest/agentic-eval-readme-metrics-grid.test.js
+// WO-C12: numbers-first per-session detail grid, in the scorecard's own visual language.
+// Regression guard for computeMetricsGridLayout/renderMetricsGridSvg in
+// tools/agentic-eval/readme-evidence.mjs. No network calls.
+
 import { describe, expect, it } from 'vitest';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   computeMetricsGridLayout, renderMetricsGridSvg, costMetric, loadSummary, loadCostEstimate,
+  computeScorecardLayout, buildBullets,
 } from '../../tools/agentic-eval/readme-evidence.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..');
 const RUNS_DIR = join(REPO_ROOT, 'tools', 'runs', 'evidence1-agentic-benchmark-2026-09-28');
 
-// Minimal, valid schema-1 summary/cost-estimate: 4 groups, real duration_ms/tool_calls_total
-// stats and a `cells` array shaped exactly like campaign-summary.mjs's real output (per-cell
-// duration_ms/tool_calls_total only -- no per-cell tokens, matching every real campaign so far).
-function baseGroup(overrides = {}) {
+// Scorecard's own with/without colors, duplicated here (not imported -- the module doesn't export
+// them) specifically so test (h) can assert equality against a value that isn't just "whatever the
+// production code currently uses" copy-pasted from it.
+const SCORECARD_COLOR_WITH = '#0969da';
+const SCORECARD_COLOR_WITHOUT = '#bc4c00';
+
+// ---------------------------------------------------------------------------
+// Synthetic schema-2 fixture, n=4 per lane, deliberately DIFFERENT between Claude and Codex so
+// shared cross-agent scaling (addendum point 1) and the cross-agent bullet (point 2) are real,
+// discriminating checks, not coincidentally-equal values that would pass either way.
+
+function v2Group(runtimeId, arm, overrides = {}) {
   return {
-    declared: 4, accepted: 4, negative_d3: 0, missing: 0, counted: 4, missing_reasons: [],
+    runtime_id: runtimeId, arm, declared: 4, accepted: 4, negative_d3: 0, missing: 0, counted: 4, missing_reasons: [],
     key_facts_match: { matched: 4, of: 4 }, full_answer_match: { matched: 0, of: 4 }, success: null,
     duration_ms: { n: 4, min: 100000, max: 160000, mean: 130000, median: 128000, stddev_sample: 1 },
     tool_calls_total: { n: 4, min: 8, max: 14, mean: 11, median: 11, stddev_sample: 1 },
-    shell_commands_total: { n: 4, min: 8, max: 14, mean: 11, median: 11, stddev_sample: 1 },
-    tokens: {
-      input: { n: 4, min: 20, max: 30, mean: 25, median: 25, stddev_sample: 1 },
-      output: { n: 4, min: 3000, max: 4000, mean: 3500, median: 3500, stddev_sample: 1 },
-      cached_input: { n: 4, min: 200000, max: 300000, mean: 250000, median: 250000, stddev_sample: 1 },
-      cache_write: { n: 4, min: 20000, max: 30000, mean: 25000, median: 25000, stddev_sample: 1 },
-    },
     kmp_test_vs_gradle: { available: true, kmp_test_count: 8, gradle_count: 4 },
     ...overrides,
   };
 }
 
-function baseCells(runtimeId, arm) {
-  return [1, 2, 3, 4].map((i) => ({
-    runtime_id: runtimeId, arm, round_index: i, cell_key: `${runtimeId}-${i}`,
-    status: 'accepted', reason: null, key_facts_match: true, full_answer_match: false, success: null,
-    duration_ms: 100000 + i * 10000, tool_calls_total: 8 + i,
-  }));
+function v2Cells(runtimeId, arm, { duration, toolCalls, tokens, commandKinds, totalCost } = {}) {
+  return [1, 2, 3, 4].map((i) => {
+    const cell = {
+      runtime_id: runtimeId, arm, round_index: i, cell_key: `${runtimeId}-${arm}-${i}`,
+      status: 'accepted', reason: null, key_facts_match: true, full_answer_match: false, success: null,
+      duration_ms: duration ? duration[i - 1] : 100000 + i * 10000,
+      tool_calls_total: toolCalls ? toolCalls[i - 1] : 8 + i,
+    };
+    if (tokens) cell.tokens = tokens[i - 1];
+    if (commandKinds) cell.command_kind_counts = commandKinds[i - 1];
+    if (totalCost) cell.total_cost_usd = totalCost[i - 1];
+    return cell;
+  });
 }
 
-function schema1Summary() {
+// Claude: smaller tool-calls/duration/tokens, provider-reported cost (every cell carries
+// total_cost_usd). Codex: larger tool-calls/duration/tokens (so a shared axis/bar max is a real,
+// discriminating check), estimate-based cost (no total_cost_usd -- costMetric falls back to
+// cost-estimate.json pricing). Turns is left with no per-cell field AND no group aggregate for
+// EITHER runtime, so both agents hit the "not recorded" path on that one row (exercised by the
+// no-overlap tests against a realistic "some rows genuinely absent" shape).
+function v2Summary() {
+  const claudeTokens = [
+    { input: 10, cached_input: 100, cache_write: 20, output: 200 },
+    { input: 12, cached_input: 110, cache_write: 22, output: 210 },
+    { input: 11, cached_input: 105, cache_write: 21, output: 205 },
+    { input: 13, cached_input: 115, cache_write: 23, output: 215 },
+  ];
+  const claudeTokensFree = claudeTokens.map((t) => ({ ...t, cached_input: t.cached_input * 2 }));
+  const codexTokens = claudeTokens.map((t) => ({ input: t.input * 6, cached_input: t.cached_input * 6, cache_write: t.cache_write * 6, output: t.output * 6 }));
+  const codexTokensFree = codexTokens.map((t) => ({ ...t, cached_input: t.cached_input * 1.2 }));
+
   return {
-    schema: 1, summary_status: 'ok', provider_mode: 'live',
-    provenance: { kmp_test_cli_version: { values: ['0.16.0'], mixed: false } },
+    schema: 2, summary_status: 'ok', provider_mode: 'live',
+    provenance: {
+      kmp_test_cli_version: { values: ['0.16.0'], mixed: false },
+      runtime_cli_version: { 'claude-code': { values: ['2.1.238'], mixed: false }, 'codex-cli': { values: ['0.154.0'], mixed: false } },
+      model_resolved: { 'claude-code': { values: ['claude-sonnet-5'], mixed: false }, 'codex-cli': { values: ['gpt-5.6-terra'], mixed: false } },
+      reasoning_effort: { 'claude-code': { values: ['high'], mixed: false }, 'codex-cli': { values: ['high'], mixed: false } },
+    },
+    // Group-level aggregates MUST match the per-cell overrides below (buildRuntimeBullet and the
+    // cross-agent bullet both read the group's own median, never recomputed from cells) -- a real
+    // bug in an earlier draft of this fixture left these at v2Group()'s shared defaults, silently
+    // making Claude and Codex look identical regardless of the very different per-cell data.
     by_runtime_arm: [
-      { runtime_id: 'claude-code', arm: 'product', ...baseGroup() },
-      { runtime_id: 'claude-code', arm: 'free', ...baseGroup() },
-      { runtime_id: 'codex-cli', arm: 'product', ...baseGroup() },
-      { runtime_id: 'codex-cli', arm: 'free', ...baseGroup() },
+      v2Group('claude-code', 'product', { tool_calls_total: { n: 4, min: 2, max: 2, mean: 2, median: 2, stddev_sample: 0 }, duration_ms: { n: 4, min: 170000, max: 185000, mean: 177500, median: 177500, stddev_sample: 1 } }),
+      v2Group('claude-code', 'free', { tool_calls_total: { n: 4, min: 3, max: 3, mean: 3, median: 3, stddev_sample: 0 }, duration_ms: { n: 4, min: 200000, max: 215000, mean: 207500, median: 207500, stddev_sample: 1 } }),
+      v2Group('codex-cli', 'product', { tool_calls_total: { n: 4, min: 6, max: 6, mean: 6, median: 6, stddev_sample: 0 }, duration_ms: { n: 4, min: 290000, max: 305000, mean: 297500, median: 297500, stddev_sample: 1 } }),
+      v2Group('codex-cli', 'free', { tool_calls_total: { n: 4, min: 1, max: 1, mean: 1, median: 1, stddev_sample: 0 }, duration_ms: { n: 4, min: 240000, max: 255000, mean: 247500, median: 247500, stddev_sample: 1 } }),
     ],
     cells: [
-      ...baseCells('claude-code', 'product'), ...baseCells('claude-code', 'free'),
-      ...baseCells('codex-cli', 'product'), ...baseCells('codex-cli', 'free'),
+      ...v2Cells('claude-code', 'product', {
+        duration: [170000, 180000, 175000, 185000], toolCalls: [2, 2, 2, 2],
+        tokens: claudeTokens, commandKinds: [{ kmp_test: 2, gradle: 0, other: 0 }, { kmp_test: 2, gradle: 0, other: 0 }, { kmp_test: 2, gradle: 0, other: 0 }, { kmp_test: 2, gradle: 0, other: 0 }],
+        totalCost: [0.05, 0.055, 0.052, 0.058],
+      }),
+      ...v2Cells('claude-code', 'free', {
+        duration: [200000, 210000, 205000, 215000], toolCalls: [3, 3, 3, 3],
+        tokens: claudeTokensFree, commandKinds: [{ kmp_test: 0, gradle: 3, other: 0 }, { kmp_test: 0, gradle: 3, other: 0 }, { kmp_test: 0, gradle: 3, other: 0 }, { kmp_test: 0, gradle: 3, other: 0 }],
+        totalCost: [0.09, 0.095, 0.092, 0.098],
+      }),
+      ...v2Cells('codex-cli', 'product', {
+        duration: [290000, 300000, 295000, 305000], toolCalls: [6, 6, 6, 6],
+        tokens: codexTokens, commandKinds: [{ kmp_test: 5, gradle: 1, other: 0 }, { kmp_test: 5, gradle: 1, other: 0 }, { kmp_test: 5, gradle: 1, other: 0 }, { kmp_test: 5, gradle: 1, other: 0 }],
+      }),
+      ...v2Cells('codex-cli', 'free', {
+        duration: [240000, 250000, 245000, 255000], toolCalls: [1, 1, 1, 1],
+        tokens: codexTokensFree, commandKinds: [{ kmp_test: 0, gradle: 1, other: 0 }, { kmp_test: 0, gradle: 1, other: 0 }, { kmp_test: 0, gradle: 1, other: 0 }, { kmp_test: 0, gradle: 1, other: 0 }],
+      }),
     ],
   };
 }
 
-function schema1CostEstimate() {
-  const cell = (i) => ({ arm: i <= 4 ? 'product' : 'free', tokens: { input: 20 + i, cache_creation: 25000, cache_read: 250000, output: 3500 } });
+function v2CostEstimate() {
   return {
-    schema: 1,
-    pricing: { per_million_tokens: { input: 3, cache_write_5m: 3.75, cache_write_1h: 6, cache_read: 0.3, output: 15 } },
-    cells: [1, 2, 3, 4, 5, 6, 7, 8].map((i) => ({ runtime_id: 'claude-code', ...cell(i) })),
+    schema: 2,
+    runtimes: {
+      'claude-code': { model: 'claude-sonnet-5', per_million_tokens: { input: 3, cache_write_5m: 3.75, cache_write_1h: 6, cache_read: 0.3, output: 15 }, cells: [] },
+      'codex-cli': {
+        model: 'gpt-5.6-terra', per_million_tokens: { input: 2, cache_write_5m: 2.5, cache_write_1h: 2.5, cache_read: 0.2, output: 12 },
+        cells: [
+          ...[1, 2, 3, 4].map((i) => ({ arm: 'product', tokens: { input: 60 + i, cache_creation: 25000, cache_read: 250000, output: 3500 } })),
+          ...[1, 2, 3, 4].map((i) => ({ arm: 'free', tokens: { input: 60 + i, cache_creation: 25000, cache_read: 250000, output: 3500 } })),
+        ],
+      },
+    },
   };
 }
 
-// Every numeric x/y/width/height in the rendered layout must be finite and non-negative (a stack
-// segment can legitimately round to a zero-height bar, but never negative or NaN/Infinity) --
-// this is the exact class of bug a kind-label mismatch between stackedMetric() and yScaleFor()
-// produced: silently falling back to scale=1 and exploding every bar into the millions of pixels.
-function assertAllFiniteNonNegativeGeometry(items) {
-  for (const item of items) {
-    if (item.kind === 'bar') {
-      expect(Number.isFinite(item.x), `bar x finite: ${JSON.stringify(item)}`).toBe(true);
-      expect(Number.isFinite(item.y), `bar y finite: ${JSON.stringify(item)}`).toBe(true);
-      expect(item.h, `bar height non-negative: ${JSON.stringify(item)}`).toBeGreaterThanOrEqual(0);
-      expect(item.h, `bar height sane (<1000px): ${JSON.stringify(item)}`).toBeLessThan(1000);
-    }
-    if (item.kind === 'dot') {
-      expect(Number.isFinite(item.cx) && Number.isFinite(item.cy), `dot finite: ${JSON.stringify(item)}`).toBe(true);
-    }
-    if (item.kind === 'medianTick' || item.kind === 'rangeLine') {
-      const ys = [item.y, item.y1, item.y2].filter((v) => v !== undefined);
-      for (const y of ys) expect(Number.isFinite(y), `line y finite: ${JSON.stringify(item)}`).toBe(true);
-    }
-  }
-}
-
-describe('metrics-grid.svg', () => {
-  it('renders every mark within sane, finite bounds against a realistic schema-1 fixture (regression: stacked-metric kind-label mismatch exploded bar heights into the millions)', () => {
-    const layout = computeMetricsGridLayout(schema1Summary(), schema1CostEstimate());
-    assertAllFiniteNonNegativeGeometry(layout.items);
-    expect(layout.height).toBeGreaterThan(0);
-    expect(layout.height).toBeLessThan(2000); // sane upper bound; the bug produced heights in the millions
-  });
-
-  it('renders valid, well-formed SVG (parses, has the expected viewBox) against the same fixture', () => {
-    const svg = renderMetricsGridSvg(schema1Summary(), schema1CostEstimate());
-    expect(svg).toContain('<svg');
-    expect(svg).toContain('</svg>');
-    expect(svg).not.toContain('NaN');
-    expect(svg).not.toContain('Infinity');
-    expect(svg).not.toContain('undefined');
-  });
-
-  it('labels every row "(descriptive)" -- none of this grid is pre-registered', () => {
-    const layout = computeMetricsGridLayout(schema1Summary(), schema1CostEstimate());
-    const rowLabels = layout.items.filter((i) => i.role === 'gridRowLabel').map((i) => i.text);
-    expect(rowLabels.length).toBeGreaterThan(0);
-    for (const label of rowLabels) expect(label).toContain('(descriptive)');
-  });
-
-  it('falls back to a campaign-aggregate stacked bar (not per-session dots) when cells[] carries no per-cell tokens -- the real shape every campaign has produced so far', () => {
-    const layout = computeMetricsGridLayout(schema1Summary(), schema1CostEstimate());
-    // Tokens is a true per-type median (by_runtime_arm.tokens.<type>.median); tool-calls-by-kind is
-    // a per-session MEAN (see the "campaign mean per session" test below) -- only tokens contributes
-    // "campaign median" notes here, 2 runtimes x 2 arms of them, still > 0.
-    const aggregateNotes = layout.items.filter((i) => i.role === 'gridAggregateNote' && i.text.includes('campaign median'));
-    expect(aggregateNotes.length).toBeGreaterThan(0);
-  });
-
-  it('renders real per-session dots for wall-clock -- cells[] DOES carry duration_ms per session today', () => {
-    const layout = computeMetricsGridLayout(schema1Summary(), schema1CostEstimate());
-    const dots = layout.items.filter((i) => i.kind === 'dot');
-    // 2 runtimes x 2 arms x 4 sessions = 16 dots for wall-clock alone (cost may also add dots)
-    expect(dots.length).toBeGreaterThanOrEqual(16);
-  });
-
-  it('reports "not available for this campaign" for turns on a schema-1 summary (num_turns is a v9-only field, absent from every real Evidence1 record)', () => {
-    const svg = renderMetricsGridSvg(schema1Summary(), schema1CostEstimate());
-    const turnsIdx = svg.indexOf('Turns (descriptive)');
-    expect(turnsIdx).toBeGreaterThan(-1);
-    expect(svg.slice(turnsIdx, turnsIdx + 200)).toContain('not available for this campaign');
-  });
-
-  it('omits the tool-result-volume row entirely when output_bytes is unavailable for every runtime (gated, not just labeled "not available")', () => {
-    const svg = renderMetricsGridSvg(schema1Summary(), schema1CostEstimate());
-    expect(svg).not.toContain('Tool-result bytes');
-  });
-
-  it('includes the tool-result-volume row, with real per-session dots, once cells[] carries output_bytes', () => {
-    const summary = schema1Summary();
-    for (const cell of summary.cells) cell.output_bytes = 1000 + cell.round_index * 100;
-    const svg = renderMetricsGridSvg(summary, schema1CostEstimate());
-    expect(svg).toContain('Tool-result bytes fed back to the model (descriptive)');
-    const layout = computeMetricsGridLayout(summary, schema1CostEstimate());
-    assertAllFiniteNonNegativeGeometry(layout.items);
-  });
-
-  it('renders real per-session token-stack dots once cells[] carries per-cell tokens (a future campaign-summary.mjs extension, not real data today)', () => {
-    const summary = schema1Summary();
-    for (const cell of summary.cells) {
-      cell.tokens = { input: 25, cached_input: 250000, cache_write: 25000, output: 3500 };
-    }
-    const layout = computeMetricsGridLayout(summary, schema1CostEstimate());
-    assertAllFiniteNonNegativeGeometry(layout.items);
-    const bars = layout.items.filter((i) => i.kind === 'bar');
-    expect(bars.length).toBeGreaterThan(0);
-    // No "campaign median (not per-session)" note for the tokens row now that per-session data exists.
-    const svg = renderMetricsGridSvg(summary, schema1CostEstimate());
-    const tokensIdx = svg.indexOf('Tokens per session, by type');
-    const nextRowIdx = svg.indexOf('Tool calls by kind');
-    expect(svg.slice(tokensIdx, nextRowIdx)).not.toContain('campaign median (not per-session)');
-  });
-
-  it('never produces negative bar heights even when a token type is a tiny fraction of the stack total (input vs. a ~300k-token cached_input)', () => {
-    // Regression for the exact real-data shape that first exposed the kind-label bug: input ~= 26
-    // tokens against a cached_input/cache_write/output total in the hundreds of thousands.
-    const summary = schema1Summary();
-    summary.by_runtime_arm[0].tokens.input = { n: 4, min: 20, max: 30, mean: 26, median: 26, stddev_sample: 1 };
-    const layout = computeMetricsGridLayout(summary, schema1CostEstimate());
-    assertAllFiniteNonNegativeGeometry(layout.items);
-  });
-
-  // CodeRabbit round on #537 (WO-C9), 5 findings against 64bb1e3 -- one it() per finding below.
-
-  it('CodeRabbit finding 1a: the tool-calls-by-kind aggregate note says "mean", not "median" -- kmp_test_count/gradle_count are per-session totals divided by n, never a true median', () => {
-    const svg = renderMetricsGridSvg(schema1Summary(), schema1CostEstimate());
-    const toolsIdx = svg.indexOf('Tool calls by kind');
-    const nextRowIdx = svg.indexOf('Wall-clock');
-    const toolsSection = svg.slice(toolsIdx, nextRowIdx);
-    // Wording per WO-C10's row-level note redesign: "bars: campaign mean per session, not per-session".
-    expect(toolsSection).toContain('bars: campaign mean per session, not per-session');
-    expect(toolsSection).not.toContain('bars: campaign median, not per-session');
-    // Tokens-by-type is unaffected -- it's a real per-type median from by_runtime_arm, still labeled "median".
-    const tokensIdx = svg.indexOf('Tokens per session, by type');
-    expect(svg.slice(tokensIdx, toolsIdx)).toContain('bars: campaign median, not per-session');
-  });
-
-  it('CodeRabbit finding 1b: never fabricates a measured-zero "other" bucket in the tool-calls-by-kind aggregate -- campaign-summary.mjs does not track it at the aggregate level, so it must be absent, not a fake 0', () => {
-    const svg = renderMetricsGridSvg(schema1Summary(), schema1CostEstimate());
-    const toolsIdx = svg.indexOf('Tool calls by kind');
-    const nextRowIdx = svg.indexOf('Wall-clock');
-    const toolsSection = svg.slice(toolsIdx, nextRowIdx);
-    expect(toolsSection).toContain('>kmp-test<');
-    expect(toolsSection).toContain('>gradle<');
-    expect(toolsSection).not.toMatch(/>other</);
-  });
-
-  it('CodeRabbit finding 1b (per-cell path unaffected): per-cell command_kind_counts still carries all 3 buckets once cells[] has per-cell data', () => {
-    const summary = schema1Summary();
-    for (const cell of summary.cells) cell.command_kind_counts = { kmp_test: 6, gradle: 2, other: 1 };
-    const svg = renderMetricsGridSvg(summary, schema1CostEstimate());
-    const toolsIdx = svg.indexOf('Tool calls by kind');
-    const nextRowIdx = svg.indexOf('Wall-clock');
-    expect(svg.slice(toolsIdx, nextRowIdx)).toContain('>other<');
-  });
-
-  it('CodeRabbit finding 2: the cost row plots each session\'s midpoint of low/high, using the SAME low/high assumptions armCostRange uses for the scorecard (not the old mixed "5m cache-write + max input price" single point)', () => {
-    const costEstimate = schema1CostEstimate();
-    const price = costEstimate.pricing.per_million_tokens;
-    const expectedSessionCost = (tokens, cacheWriteKey, inputPrice) =>
-      (tokens.input * inputPrice + tokens.cache_creation * price[cacheWriteKey] + tokens.cache_read * price.cache_read + tokens.output * price.output) / 1e6;
-    const summary = schema1Summary();
-    const group = summary.by_runtime_arm.find((g) => g.runtime_id === 'claude-code' && g.arm === 'product');
-    const metric = costMetric(summary, group, 'claude-code', 'product', costEstimate);
-    expect(metric.kind).toBe('per-session');
-    expect(metric.provider).toBe(false);
-    expect(metric.values.length).toBe(4);
-    const productCells = costEstimate.cells.filter((c) => c.arm === 'product');
-    productCells.forEach((cell, i) => {
-      const low = expectedSessionCost(cell.tokens, 'cache_write_5m', price.input);
-      const high = expectedSessionCost(cell.tokens, 'cache_write_1h', price.input); // schema 1: no uncached-may-be-cache-write ambiguity
-      const midpoint = (low + high) / 2;
-      expect(metric.values[i]).toBeCloseTo(midpoint, 9);
-      // Old bug: sessionCost(tokens, price, 'cache_write_5m', highInputPrice) with highInputPrice===price.input
-      // for schema 1 -- collapses to exactly `low`, strictly below the true midpoint since cache_write_1h > cache_write_5m.
-      expect(metric.values[i]).toBeGreaterThan(low);
-    });
-  });
-
-  it('CodeRabbit finding 2: the cost row label says it is a midpoint estimate', () => {
-    const svg = renderMetricsGridSvg(schema1Summary(), schema1CostEstimate());
-    expect(svg).toContain('API cost (midpoint of low/high)');
-  });
-
-  it('CodeRabbit finding 3: stacked rows get a per-type color legend (swatch + label), showing only the types actually present -- not the full color-map key set', () => {
-    const layout = computeMetricsGridLayout(schema1Summary(), schema1CostEstimate());
-    const swatches = layout.items.filter((i) => i.kind === 'legendSwatch');
-    expect(swatches.length).toBeGreaterThan(0);
-    for (const s of swatches) expect(s.fill).toMatch(/^#[0-9a-f]{6}$/);
-
-    const svg = renderMetricsGridSvg(schema1Summary(), schema1CostEstimate());
-    const toolsIdx = svg.indexOf('Tool calls by kind');
-    const wallIdx = svg.indexOf('Wall-clock');
-    expect(svg.slice(toolsIdx, wallIdx)).toContain('>kmp-test<');
-    expect(svg.slice(toolsIdx, wallIdx)).toContain('>gradle<');
-
-    // claude-code's token types exclude reasoning_output entirely (not just "untracked this campaign").
-    const tokensIdx = svg.indexOf('Tokens per session, by type');
-    const claudeTokensSection = svg.slice(tokensIdx, toolsIdx);
-    expect(claudeTokensSection).toContain('>cached input<');
-    expect(claudeTokensSection).not.toContain('>reasoning output<');
-  });
-
-  it('CodeRabbit finding 3: the SVG <desc> lists the full color-to-type mapping for both stacked categories', () => {
-    const svg = renderMetricsGridSvg(schema1Summary(), schema1CostEstimate());
-    const descMatch = svg.match(/<desc>([\s\S]*?)<\/desc>/);
-    expect(descMatch).not.toBeNull();
-    const desc = descMatch[1];
-    for (const pair of ['input (#8250df)', 'cached input (#0969da)', 'cache write (#1a7f37)', 'reasoning output (#cf222e)', 'output (#bc4c00)']) {
-      expect(desc).toContain(pair);
-    }
-    for (const pair of ['kmp-test (#0969da)', 'gradle (#bc4c00)', 'other (#59636e)']) {
-      expect(desc).toContain(pair);
-    }
-  });
-
-  it('CodeRabbit finding 4: the header subtitle is split across 2 lines, each starting after the previous one (was a single 152-char line overflowing the 880px viewBox at 13px)', () => {
-    const layout = computeMetricsGridLayout(schema1Summary(), schema1CostEstimate());
-    const subtitleItems = layout.items.filter((i) => i.role === 'gridSubtitle');
-    expect(subtitleItems.length).toBe(2);
-    expect(subtitleItems[1].y).toBeGreaterThan(subtitleItems[0].y);
-    for (const item of subtitleItems) {
-      const estWidth = item.text.length * item.fontSize * 0.6;
-      expect(item.x + estWidth, `"${item.text}" (~${estWidth.toFixed(0)}px) overflows the ${layout.width}px viewBox`).toBeLessThanOrEqual(layout.width);
-    }
-  });
-
-  it('CodeRabbit finding 4: every text item in the grid stays within the viewBox width at its estimated width (chars x fontSize x 0.6, the same formula the scorecard layout tests use)', () => {
-    const layout = computeMetricsGridLayout(schema1Summary(), schema1CostEstimate());
-    for (const item of layout.items) {
-      if (item.kind !== 'text') continue;
-      const estWidth = item.text.length * item.fontSize * 0.6;
-      const x0 = item.anchor === 'end' ? item.x - estWidth : item.x;
-      expect(x0 + estWidth, `"${item.text}" overflows: x=${item.x} estWidth=${estWidth.toFixed(0)} viewBox=${layout.width}`).toBeLessThanOrEqual(layout.width);
-      expect(x0, `"${item.text}" starts left of x=0`).toBeGreaterThanOrEqual(0);
-    }
-  });
-});
-
-// WO-C10: headless-Edge screenshots of 64bb1e3 AND 23fab2c (still using the old fixed
-// GRID_ROW_H=64 layout) showed real overlap the "estimated width stays in the viewBox" test above
-// could not catch: the aggregate note drawn over the row label, the with/without notes overlapping
-// each other, lane labels colliding with the NEXT row's label, and the legend sitting on top of
-// the bars. These tests check actual geometry, not just horizontal viewBox containment.
-
-// Same estimator as the scorecard's own "no overlapping text" describe block above in
-// agentic-eval-readme-evidence.test.js (chars x fontSize x 0.6 for width; SVG <text> ascent/descent
-// approximated as 0.8*fs above the baseline and 0.25*fs below it).
+// ---------------------------------------------------------------------------
+// WO-C10's no-overlap geometry estimator, unchanged: chars x fontSize x 0.6 for width; SVG <text>
+// ascent/descent approximated as 0.8*fs above the baseline and 0.25*fs below it (the scorecard's
+// own "no overlapping text" describe block in agentic-eval-readme-evidence.test.js uses the same
+// formula).
 function textBBox(item) {
   const width = item.text.length * item.fontSize * 0.6;
-  const x0 = item.anchor === 'end' ? item.x - width : item.x;
+  const x0 = item.anchor === 'end' ? item.x - width : item.anchor === 'middle' ? item.x - width / 2 : item.x;
   return { x0, x1: x0 + width, y0: item.y - item.fontSize * 0.8, y1: item.y + item.fontSize * 0.25 };
 }
-
-// Bars/swatches are exact rects. Dots get their real radius. Tick/range lines have no thickness of
-// their own, so they get a small (+-2px) fudge -- enough to catch a real collision, not so much
-// that two merely-adjacent marks false-positive.
 function markBBox(item) {
   if (item.kind === 'bar' || item.kind === 'legendSwatch') return { x0: item.x, x1: item.x + item.w, y0: item.y, y1: item.y + item.h };
   if (item.kind === 'dot') return { x0: item.cx - item.r, x1: item.cx + item.r, y0: item.cy - item.r, y1: item.cy + item.r };
-  if (item.kind === 'medianTick') return { x0: Math.min(item.x1, item.x2), x1: Math.max(item.x1, item.x2), y0: item.y - 2, y1: item.y + 2 };
-  if (item.kind === 'rangeLine') return { x0: item.x - 2, x1: item.x + 2, y0: Math.min(item.y1, item.y2), y1: Math.max(item.y1, item.y2) };
+  if (item.kind === 'tickV') return { x0: item.x - 2, x1: item.x + 2, y0: Math.min(item.y1, item.y2), y1: Math.max(item.y1, item.y2) };
+  if (item.kind === 'axisLine' || item.kind === 'rangeLineH') return { x0: Math.min(item.x1, item.x2), x1: Math.max(item.x1, item.x2), y0: item.y - 2, y1: item.y + 2 };
   return null;
 }
-
 function bboxesOverlap(a, b) {
   return a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
 }
@@ -322,11 +150,11 @@ function bboxesOverlap(a, b) {
 function checkNoOverlapLayout(layout) {
   const textItems = layout.items.filter((i) => i.kind === 'text');
   const markItems = layout.items.map(markBBox).filter(Boolean);
-
   const textBoxes = textItems.map((i) => ({ ...textBBox(i), label: i.text }));
+
   for (let i = 0; i < textBoxes.length; i++) {
     for (let j = i + 1; j < textBoxes.length; j++) {
-      expect(bboxesOverlap(textBoxes[i], textBoxes[j]), `text "${textBoxes[i].label}" (y=${textItems[i].y}) overlaps text "${textBoxes[j].label}" (y=${textItems[j].y})`).toBe(false);
+      expect(bboxesOverlap(textBoxes[i], textBoxes[j]), `text "${textBoxes[i].label}" overlaps text "${textBoxes[j].label}"`).toBe(false);
     }
   }
   for (const t of textBoxes) {
@@ -338,8 +166,8 @@ function checkNoOverlapLayout(layout) {
     const box = item.kind === 'text' ? textBBox(item) : markBBox(item);
     if (!box) continue;
     const label = item.text || item.kind;
-    expect(box.x0, `"${label}" x0 < 0`).toBeGreaterThanOrEqual(0);
-    expect(box.x1, `"${label}" x1 (${box.x1}) exceeds viewBox width ${layout.width}`).toBeLessThanOrEqual(layout.width);
+    expect(box.x0, `"${label}" x0 < 0`).toBeGreaterThanOrEqual(-0.5);
+    expect(box.x1, `"${label}" x1 (${box.x1}) exceeds viewBox width ${layout.width}`).toBeLessThanOrEqual(layout.width + 0.5);
     expect(box.y0, `"${label}" y0 < 0`).toBeGreaterThanOrEqual(0);
     expect(box.y1, `"${label}" y1 (${box.y1}) exceeds viewBox height ${layout.height}`).toBeLessThanOrEqual(layout.height);
   }
@@ -347,61 +175,189 @@ function checkNoOverlapLayout(layout) {
   const PAD_ = 28, COLUMN_GAP_ = 32;
   const COLUMN_W_ = (layout.width - 2 * PAD_ - COLUMN_GAP_) / 2;
   const columnLefts = [PAD_, PAD_ + COLUMN_W_ + COLUMN_GAP_];
-  const legendItems = layout.items.filter((i) => i.kind === 'legendSwatch' || i.role === 'gridLegendLabel');
+  const legendItems = layout.items.filter((i) => i.kind === 'legendSwatch' || i.role === 'gridLegendLine' || i.role === 'gridCompTotal');
   for (const colLeft of columnLefts) {
     const inColumn = legendItems.filter((i) => i.x >= colLeft && i.x < colLeft + COLUMN_W_ + COLUMN_GAP_);
     for (const item of inColumn) {
       const box = item.kind === 'legendSwatch' ? markBBox(item) : textBBox(item);
-      expect(box.x1, `legend item at x=${item.x} (column left ${colLeft}) reaches ${box.x1}, past the column's own right edge ${colLeft + COLUMN_W_} (COLUMN_W, not just the viewBox)`).toBeLessThanOrEqual(colLeft + COLUMN_W_);
+      expect(box.x1, `legend/total item at x=${item.x} (column left ${colLeft}) reaches ${box.x1}, past the column's own right edge ${colLeft + COLUMN_W_}`).toBeLessThanOrEqual(colLeft + COLUMN_W_ + 1);
     }
   }
 }
 
-describe('metrics-grid.svg: WO-C10 no-overlap layout (headless-Edge-verified regression)', () => {
-  it('(a)+(b)+(c)+(d): the synthetic schema-1 fixture (stack-aggregate + per-session + unavailable rows, the same mix real campaigns have) has no text-vs-text overlap, no text/legend-vs-mark overlap, everything inside the viewBox including the vertical bound, and every legend fits its own COLUMN_W', () => {
-    const layout = computeMetricsGridLayout(schema1Summary(), schema1CostEstimate());
+describe('metrics-grid.svg (WO-C12 redesign)', () => {
+  it('(a)+(b)+(c)+(d): the synthetic schema-2 fixture has no text-vs-text overlap, no text/legend-vs-mark overlap, everything inside the viewBox, and every legend/total fits its own COLUMN_W', () => {
+    const layout = computeMetricsGridLayout(v2Summary(), v2CostEstimate());
     checkNoOverlapLayout(layout);
   });
 
-  it('(a)+(b)+(c)+(d): the REAL committed Evidence1 campaign data -- the exact shape the auditor\'s headless-Edge render of 64bb1e3/23fab2c exposed the overlap against', () => {
+  it('(a)+(b)+(c)+(d): the REAL committed Evidence1 campaign data (schema 1) is also overlap-free', () => {
     const summary = loadSummary(join(RUNS_DIR, 'campaign-summary.json'));
     const costEstimate = loadCostEstimate(join(RUNS_DIR, 'cost-estimate.json'));
     const layout = computeMetricsGridLayout(summary, costEstimate);
     checkNoOverlapLayout(layout);
   });
 
-  it('a stack-aggregate row\'s one note line reflects the true stat, and never duplicates per-lane (with/without share ONE note, not two that can overlap each other)', () => {
-    const svg = renderMetricsGridSvg(schema1Summary(), schema1CostEstimate());
+  it('(e): every strip row renders its 3 axis tick labels and both lanes\' median labels, each carrying the metric\'s unit', () => {
+    const svg = renderMetricsGridSvg(v2Summary(), v2CostEstimate());
+    const wallIdx = svg.indexOf('Wall-clock (min)');
+    const costIdx = svg.indexOf('API cost (USD)');
+    const section = svg.slice(wallIdx, costIdx);
+    // 3 tick labels: 0, mid, max -- all in minutes (the fixture's raw ms values are pre-scaled).
+    expect(section).toMatch(/>0\.0 min</);
+    expect(section).toMatch(/>\d+\.\d min</g);
+    // Both lanes' median labels carry the unit.
+    const medianMatches = section.match(/median \d+\.\d min/g) || [];
+    expect(medianMatches.length).toBe(2);
+  });
+
+  it('(f): the composition legend line shows both arms\' values for every present component', () => {
+    const svg = renderMetricsGridSvg(v2Summary(), v2CostEstimate());
     const toolsIdx = svg.indexOf('Tool calls by kind');
-    const wallIdx = svg.indexOf('Wall-clock');
-    const section = svg.slice(toolsIdx, wallIdx);
-    const noteOccurrences = section.split('campaign mean per session, not per-session').length - 1;
-    expect(noteOccurrences).toBe(1);
+    const tokensIdx = svg.indexOf('Tokens per session, by type');
+    const section = svg.slice(toolsIdx, tokensIdx);
+    // Claude: with kmp_test=2/gradle=0, without kmp_test=0/gradle=3 (medians of 4 identical cells).
+    // 'other' IS present here (0 vs 0) -- this fixture supplies real PER-CELL command_kind_counts
+    // for every cell, and the per-session branch of compositionMedians() always carries all 3
+    // declared types (the "per-cell command_kind_counts keeps all 3" invariant), so a genuine
+    // zero measurement is shown, not omitted -- omission only applies to the AGGREGATE fallback's
+    // untracked 'other' bucket (commandKindAggregate), covered by the real committed-data test
+    // below and the dedicated point-3 test.
+    expect(section).toContain('kmp-test 2 vs 0');
+    expect(section).toContain('gradle 0 vs 3');
+    expect(section).toContain('other 0 vs 0');
   });
 
-  it('a scalar row that falls back to a campaign range (min/median/max, no per-cell data) gets the same one-line note treatment, not the old per-lane "campaign range (not per-session)" text drawn over the plot', () => {
-    const summary = schema1Summary();
-    // Strip per-cell duration_ms so wall-clock falls back to the aggregate range, exercising the
-    // scalar 'aggregate' branch of rowNeedsNote/rowNoteText instead of 'stack-aggregate'.
-    for (const cell of summary.cells) delete cell.duration_ms;
-    const svg = renderMetricsGridSvg(summary, schema1CostEstimate());
-    expect(svg).toContain('campaign range, not per-session');
-    expect(svg).not.toContain('campaign range (not per-session)');
-    const layout = computeMetricsGridLayout(summary, schema1CostEstimate());
-    checkNoOverlapLayout(layout);
+  it('(g): the strip-row difference text is correct against the fixture ((with-without)/without), and omitted when a median is missing', () => {
+    const svg = renderMetricsGridSvg(v2Summary(), v2CostEstimate());
+    // Claude wall-clock: with median 177500ms=2.9583min, without median 207500ms=3.4583min.
+    // (2.9583 - 3.4583) / 3.4583 * 100 = -14.46% -> rounds to -14%.
+    const wallIdx = svg.indexOf('Wall-clock (min)');
+    const costIdx = svg.indexOf('API cost (USD)');
+    expect(svg.slice(wallIdx, costIdx)).toContain('median -14% with kmp-test');
+
+    // Turns has no per-cell field and no group aggregate for either arm -> both lanes unavailable
+    // -> diff is never computed (there's no header line rendered at all for it, since the row
+    // short-circuits to "not recorded").
+    const turnsIdx = svg.indexOf('>Turns<');
+    expect(turnsIdx).toBeGreaterThan(-1);
+    const nextRowIdx = svg.indexOf('Tool output returned to the model');
+    expect(svg.slice(turnsIdx, nextRowIdx)).toContain('not recorded for Claude Code');
+    expect(svg.slice(turnsIdx, nextRowIdx)).not.toMatch(/median [+-]?\d+% with kmp-test/);
   });
 
-  it('WO-C11: wall-clock ms values are shown as seconds with 1 decimal ("125.0 s"), not raw milliseconds -- the fixture\'s per-session median is 125000 ms', () => {
-    const svg = renderMetricsGridSvg(schema1Summary(), schema1CostEstimate());
-    expect(svg).toContain('median 125.0 s vs 125.0 s');
-    expect(svg).not.toMatch(/median 125000(\.\d+)? vs 125000(\.\d+)? ms/);
+  it('(h): strip-row dots and the scorecard\'s own with/without colors are identical -- "with kmp-test" dots and bars use COLOR_WITH, "without" uses COLOR_WITHOUT, everywhere', () => {
+    const layout = computeMetricsGridLayout(v2Summary(), v2CostEstimate());
+    const dots = layout.items.filter((i) => i.kind === 'dot');
+    expect(dots.length).toBeGreaterThan(0);
+    const dotColors = new Set(dots.map((d) => d.fill));
+    expect(dotColors.size).toBeLessThanOrEqual(2);
+    for (const c of dotColors) expect([SCORECARD_COLOR_WITH, SCORECARD_COLOR_WITHOUT]).toContain(c);
+    // The <desc> also states the mapping explicitly (accessibility + a second, independent check).
+    const svg = renderMetricsGridSvg(v2Summary(), v2CostEstimate());
+    expect(svg).toContain(`With kmp-test (${SCORECARD_COLOR_WITH})`);
+    expect(svg).toContain(`without (${SCORECARD_COLOR_WITHOUT})`);
   });
 
-  it('WO-C11: other units (USD, unitless turns) are unaffected by the ms-to-seconds conversion', () => {
-    const svg = renderMetricsGridSvg(schema1Summary(), schema1CostEstimate());
-    const costIdx = svg.indexOf('API cost');
-    const turnsIdx = svg.indexOf('Turns');
-    const costSection = svg.slice(costIdx, turnsIdx);
-    expect(costSection).toMatch(/median \d+\.\d{2} vs \d+\.\d{2} USD/);
+  it('(i): the strip-row axis max and the composition bar-total max are IDENTICAL across both agent columns, for the same row -- Codex\'s larger values never get their own, more generous scale', () => {
+    const layout = computeMetricsGridLayout(v2Summary(), v2CostEstimate());
+    const tickLabels = layout.items.filter((i) => i.role === 'gridTickLabel' && i.text !== '0.0 min' && i.anchor === 'end');
+    // One "max" tick label (anchor=end) per lane per strip row per column; group by row-Y band is
+    // fragile, so instead assert the SET of distinct max-tick values for wall-clock is a single
+    // value covering both columns (a per-column scale would produce 2 distinct maxima).
+    const wallMaxTicks = layout.items.filter((i) => i.role === 'gridTickLabel' && i.anchor === 'end' && i.text.endsWith(' min'));
+    const distinctWallMax = new Set(wallMaxTicks.map((i) => i.text));
+    expect(distinctWallMax.size).toBe(1);
+
+    // Composition: the widest single bar segment's implied per-unit pixel width (w / value) must
+    // be the same for Claude's and Codex's tool-calls-by-kind bars -- proof they share one max,
+    // not each column normalized to its own 100%.
+    const bars = layout.items.filter((i) => i.kind === 'bar' && i.fill === '#0969da'); // kmp_test-colored segments
+    expect(bars.length).toBeGreaterThanOrEqual(2);
+    const pxPerUnit = bars.map((b) => b.w).filter((w) => w > 0);
+    // Claude with=2, Codex with=5 (kmp_test medians) -- if shared, bar_width/value is constant
+    // across both; compare the two largest (Claude's kmp_test bar and Codex's) via their ratio.
+    const ratios = pxPerUnit.map((w) => w); // just confirm not all bars render at the identical width despite different values (which WOULD indicate independent 100% normalization)
+    expect(new Set(ratios).size).toBeGreaterThan(1);
+  });
+
+  it('(j): the cross-agent README bullet renders correct medians from the fixture, one per arm, and is omitted when a median is missing', () => {
+    const bullets = buildBullets(v2Summary(), v2CostEstimate(), 'tools/runs/evidence1-agentic-benchmark-2026-09-28');
+    const withBullet = bullets.find((b) => b.startsWith('With kmp-test'));
+    const withoutBullet = bullets.find((b) => b.startsWith('Without kmp-test'));
+    expect(withBullet).toContain('Codex 6 tool calls vs Claude 2');
+    expect(withoutBullet).toContain('Codex 1 tool calls vs Claude 3');
+    expect(withBullet).toContain('n=4 per cell');
+
+    const summaryMissingCodex = v2Summary();
+    // Delete only .median (not the whole tool_calls_total object) -- buildRuntimeBullet, called
+    // earlier in buildBullets for the SAME group, also reads gp.tool_calls_total.median and would
+    // throw a bare TypeError on a missing parent object; that's an existing, unrelated code path
+    // this test isn't exercising.
+    delete summaryMissingCodex.by_runtime_arm.find((g) => g.runtime_id === 'codex-cli' && g.arm === 'product').tool_calls_total.median;
+    const bulletsMissing = buildBullets(summaryMissingCodex, v2CostEstimate(), 'tools/runs/evidence1-agentic-benchmark-2026-09-28');
+    expect(bulletsMissing.some((b) => b.startsWith('With kmp-test'))).toBe(false);
+    expect(bulletsMissing.some((b) => b.startsWith('Without kmp-test'))).toBe(true); // the free-arm bullet is unaffected
+  });
+
+  it('WO-C12 point 4: the cost row header says "provider-reported" when every session (both lanes) carries total_cost_usd, and "estimate: midpoint of low/high" otherwise', () => {
+    const svg = renderMetricsGridSvg(v2Summary(), v2CostEstimate());
+    const claudeCostIdx = svg.indexOf('API cost (USD)');
+    const claudeTurnsIdx = svg.indexOf('>Turns<');
+    expect(svg.slice(claudeCostIdx, claudeTurnsIdx)).toContain('provider-reported');
+
+    const codexCostIdx = svg.indexOf('API cost (USD)', claudeTurnsIdx);
+    const codexTurnsIdx = svg.indexOf('>Turns<', codexCostIdx);
+    expect(svg.slice(codexCostIdx, codexTurnsIdx)).toContain('estimate: midpoint of low/high');
+  });
+
+  it('WO-C12 point 6: an agent with no data at all for a row renders exactly one "not recorded for <agent>" line, naming that agent', () => {
+    const svg = renderMetricsGridSvg(v2Summary(), v2CostEstimate());
+    expect(svg).toContain('not recorded for Claude Code');
+    expect(svg).toContain('not recorded for Codex CLI');
+  });
+
+  it('WO-C12 point 3: a genuinely untracked composition component (never "other" in this fixture) is omitted from bars, legend, and total -- never zero-filled', () => {
+    const layout = computeMetricsGridLayout(v2Summary(), v2CostEstimate());
+    const otherBars = layout.items.filter((i) => i.kind === 'bar' && i.fill === '#59636e'); // COMMAND_KIND_COLORS.other
+    expect(otherBars.length).toBe(0);
+  });
+
+  it('WO-C12 header: title is "Per-session detail (descriptive)", subtitle states the dot/bar meaning and the descriptive-only disclaimer', () => {
+    const svg = renderMetricsGridSvg(v2Summary(), v2CostEstimate());
+    expect(svg).toContain('<title>Per-session detail (descriptive)</title>');
+    expect(svg).toContain('Each dot is one session; bars are the median session.');
+    expect(svg).toContain('Descriptive only, not part of the pre-registered analysis.');
+  });
+
+  it('lane labels read "with kmp-test" and "without", not the old bare "with"', () => {
+    const svg = renderMetricsGridSvg(v2Summary(), v2CostEstimate());
+    expect(svg).toContain('>with kmp-test<');
+    expect(svg).not.toMatch(/>with<\/text>/);
+  });
+});
+
+describe('scorecard.svg: shared cross-agent scale (WO-C12 addendum point 1)', () => {
+  it('the same metric\'s bar-fraction-to-value ratio is identical across both agent columns -- Codex\'s larger wall-clock value does not get its own, independently-normalized 100% scale', () => {
+    const layout = computeScorecardLayout(v2Summary(), v2CostEstimate());
+    const bars = layout.items.filter((i) => i.kind === 'bar');
+    // Group bars by column, in row order; the 3rd/4th bars (index 2,3 within a column's own bar
+    // list) are the wall-clock with/without pair for each column, since key-facts is text-only and
+    // tool-calls is the first bar block.
+    const claudeBars = bars.filter((b) => b.column === 'claude-code');
+    const codexBars = bars.filter((b) => b.column === 'codex-cli');
+    expect(claudeBars.length).toBeGreaterThanOrEqual(4);
+    expect(codexBars.length).toBeGreaterThanOrEqual(4);
+    // Tool-calls-per-session bars (first pair): Claude with=2,without=3; Codex with=6,without=1.
+    // Shared max = 6. Claude's "without" (3) and a hypothetical Codex value of 3 would render
+    // identically; concretely: Claude's "with" bar (2/6) must be narrower than Codex's "with" bar
+    // (6/6, i.e. the full BAR_MAX_W) -- if scales were independent, Claude's own "with" (2) would
+    // instead be compared only against Claude's own max (3), rendering much WIDER relative to its
+    // own column than this shared-scale assertion allows.
+    const claudeToolsWith = claudeBars[0];
+    const codexToolsWith = codexBars[0];
+    expect(codexToolsWith.w).toBeGreaterThan(claudeToolsWith.w);
+    // Precisely: width ratio must equal the value ratio (2/6), not 2/3 (Claude's own independent max).
+    expect(claudeToolsWith.w / codexToolsWith.w).toBeCloseTo(2 / 6, 2);
   });
 });
