@@ -325,6 +325,31 @@ describe('metrics-grid.svg (WO-C12 redesign)', () => {
     expect(bulletsMissing.some((b) => b.startsWith('Without kmp-test'))).toBe(true); // the free-arm bullet is unaffected
   });
 
+  // WO-C14 dry run (fake-provider fixture, n=1 per arm, not the real campaign's n=4) caught this:
+  // the cross-agent bullet's "n=4 per cell" was a hardcoded literal, never read from the group's own
+  // tool_calls_total.n -- always true for a real complete campaign, so never wrong in practice, but
+  // it would have silently printed "n=4" over 1-session data with nothing to catch it. Derived from
+  // the real n now, same as every other "never fabricate" figure in this generator.
+  it('the cross-agent bullet\'s n is read from the group\'s own tool_calls_total.n, never a hardcoded "n=4"', () => {
+    const summarySmallN = v2Summary();
+    for (const g of summarySmallN.by_runtime_arm) {
+      if (g.arm === 'product') g.tool_calls_total = { ...g.tool_calls_total, n: 1 };
+    }
+    const bullets = buildBullets(summarySmallN, v2CostEstimate(), 'tools/runs/evidence1-agentic-benchmark-2026-09-28');
+    const withBullet = bullets.find((b) => b.startsWith('With kmp-test'));
+    expect(withBullet).toContain('n=1 per cell');
+    expect(withBullet).not.toContain('n=4 per cell');
+
+    // Claude and Codex can in principle have different counted cells for the same arm (independent
+    // per-runtime data) -- a single shared "n=" would misrepresent whichever side it's wrong for.
+    const summaryDivergentN = v2Summary();
+    summaryDivergentN.by_runtime_arm.find((g) => g.runtime_id === 'claude-code' && g.arm === 'free').tool_calls_total.n = 4;
+    summaryDivergentN.by_runtime_arm.find((g) => g.runtime_id === 'codex-cli' && g.arm === 'free').tool_calls_total.n = 2;
+    const bulletsDivergent = buildBullets(summaryDivergentN, v2CostEstimate(), 'tools/runs/evidence1-agentic-benchmark-2026-09-28');
+    const withoutBullet = bulletsDivergent.find((b) => b.startsWith('Without kmp-test'));
+    expect(withoutBullet).toContain('n=4 for Claude, n=2 for Codex');
+  });
+
   it('WO-C12 point 4: the cost row header says "provider-reported" when every session (both lanes) carries total_cost_usd, and "estimate: midpoint of low/high" otherwise', () => {
     const svg = renderMetricsGridSvg(v2Summary(), v2CostEstimate());
     const claudeCostIdx = svg.indexOf('API cost (USD)');

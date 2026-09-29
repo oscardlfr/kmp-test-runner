@@ -1269,7 +1269,15 @@ function buildCrossAgentBullet(summary, arm, armLabel) {
   const claudeMedian = gClaude && gClaude.tool_calls_total && gClaude.tool_calls_total.median;
   const codexMedian = gCodex && gCodex.tool_calls_total && gCodex.tool_calls_total.median;
   if (typeof claudeMedian !== 'number' || typeof codexMedian !== 'number') return null;
-  return `${armLabel} (descriptive): Codex ${fmtToolCallsMedian(codexMedian)} tool calls vs Claude ${fmtToolCallsMedian(claudeMedian)}, median, n=4 per cell.`;
+  // Read from the group's own tool_calls_total.n (the exact count the median was computed from),
+  // never a hardcoded "n=4" -- true for every real, complete campaign (always exactly 4 per arm by
+  // design), but a literal would silently misreport a smaller/partial run (WO-C14 dry run: n=1).
+  // Claude and Codex are independent per-runtime data and can in principle diverge, so a shared
+  // figure is only used when they genuinely agree.
+  const claudeN = gClaude.tool_calls_total.n;
+  const codexN = gCodex.tool_calls_total.n;
+  const nLabel = claudeN === codexN ? `n=${claudeN} per cell` : `n=${claudeN} for Claude, n=${codexN} for Codex`;
+  return `${armLabel} (descriptive): Codex ${fmtToolCallsMedian(codexMedian)} tool calls vs Claude ${fmtToolCallsMedian(claudeMedian)}, median, ${nLabel}.`;
 }
 
 export function buildBullets(summary, costEstimate, runsPath) {
