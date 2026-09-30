@@ -163,10 +163,22 @@ function textBBox(item) {
 }
 function markBBox(item) {
   if (item.kind === 'bar' || item.kind === 'legendSwatch') return { x0: item.x, x1: item.x + item.w, y0: item.y, y1: item.y + item.h };
-  if (item.kind === 'dot') return { x0: item.cx - item.r, x1: item.cx + item.r, y0: item.cy - item.r, y1: item.cy + item.r };
-  if (item.kind === 'tickV') return { x0: item.x - 2, x1: item.x + 2, y0: Math.min(item.y1, item.y2), y1: Math.max(item.y1, item.y2) };
-  if (item.kind === 'axisLine' || item.kind === 'rangeLineH') return { x0: Math.min(item.x1, item.x2), x1: Math.max(item.x1, item.x2), y0: item.y - 2, y1: item.y + 2 };
   return null;
+}
+
+// Per column (Claude first, then Codex), how far one strip row's bars reach from the row's own
+// bar origin. Only a lane holding its scale's max reaches the full bar width, so a shared scale
+// gives two different extents and a per-column scale would give two equal ones.
+function stripRowExtents(layout, headerPrefix) {
+  const items = layout.items;
+  const starts = items.reduce((acc, it, idx) => (it.role === 'gridRowHeader' && it.text.startsWith(headerPrefix) ? [...acc, idx] : acc), []);
+  return starts.map((start) => {
+    const next = items.findIndex((it, idx) => idx > start && it.role === 'gridRowHeader');
+    const band = items.slice(start, next === -1 ? undefined : next);
+    const bars = band.filter((it) => it.kind === 'bar');
+    const origin = Math.min(...bars.map((b) => b.x));
+    return Math.max(...bars.map((b) => b.x + b.w)) - origin;
+  });
 }
 function bboxesOverlap(a, b) {
   return a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
@@ -223,17 +235,19 @@ describe('metrics-grid.svg (WO-C12 redesign)', () => {
     checkNoOverlapLayout(layout);
   });
 
-  it('(e): every strip row renders its 3 axis tick labels and both lanes\' median labels, each carrying the metric\'s unit', () => {
+  it('(e): every strip lane prints its median, carrying the metric\'s unit, at the end of its bar -- and the grid draws no axis, tick labels, dots or lines', () => {
     const svg = renderMetricsGridSvg(v2Summary(), v2CostEstimate());
     const wallIdx = svg.indexOf('Wall-clock (min)');
     const costIdx = svg.indexOf('API cost (USD)');
     const section = svg.slice(wallIdx, costIdx);
-    // 3 tick labels: 0, mid, max -- all in minutes (the fixture's raw ms values are pre-scaled).
-    expect(section).toMatch(/>0\.0 min</);
-    expect(section).toMatch(/>\d+\.\d min</g);
-    // Both lanes' median labels carry the unit.
-    const medianMatches = section.match(/median \d+\.\d min/g) || [];
-    expect(medianMatches.length).toBe(2);
+    // Exactly one value per lane, in minutes (the fixture's raw ms values are pre-scaled).
+    expect((section.match(/>\d+\.\d min</g) || []).length).toBe(2);
+    expect(section).not.toContain('>0.0 min<');
+    const layout = computeMetricsGridLayout(v2Summary(), v2CostEstimate());
+    expect(layout.items.some((i) => i.role === 'gridTickLabel')).toBe(false);
+    expect(layout.items.some((i) => ['dot', 'tickV', 'axisLine', 'rangeLineH', 'whisker'].includes(i.kind))).toBe(false);
+    expect(svg).not.toContain('<circle');
+    expect(svg).not.toContain('<line');
   });
 
   it('(f): the composition legend line shows both arms\' values for every present component', () => {
@@ -271,28 +285,31 @@ describe('metrics-grid.svg (WO-C12 redesign)', () => {
     expect(svg.slice(turnsIdx, nextRowIdx)).not.toMatch(/median [+-]?\d+% with kmp-test/);
   });
 
-  it('(h): strip-row dots and the scorecard\'s own with/without colors are identical -- "with kmp-test" dots and bars use COLOR_WITH, "without" uses COLOR_WITHOUT, everywhere', () => {
+  it('(h): one arm color rule for the whole grid -- strip bars and every lane label use the scorecard\'s COLOR_WITH / COLOR_WITHOUT', () => {
     const layout = computeMetricsGridLayout(v2Summary(), v2CostEstimate());
-    const dots = layout.items.filter((i) => i.kind === 'dot');
-    expect(dots.length).toBeGreaterThan(0);
-    const dotColors = new Set(dots.map((d) => d.fill));
-    expect(dotColors.size).toBeLessThanOrEqual(2);
-    for (const c of dotColors) expect([SCORECARD_COLOR_WITH, SCORECARD_COLOR_WITHOUT]).toContain(c);
+    const wallStart = layout.items.findIndex((i) => i.role === 'gridRowHeader' && i.text.startsWith('Wall-clock'));
+    const wallEnd = layout.items.findIndex((i, idx) => idx > wallStart && i.role === 'gridRowHeader');
+    const wallBars = layout.items.slice(wallStart, wallEnd).filter((i) => i.kind === 'bar');
+    expect(wallBars.map((b) => b.fill)).toEqual([SCORECARD_COLOR_WITH, SCORECARD_COLOR_WITHOUT]);
+    // Lane labels carry the arm color in EVERY row, composition rows included, so the arm colors
+    // are introduced from the first row rather than appearing only in the scalar rows.
+    const laneLabels = layout.items.filter((i) => i.role === 'gridLaneLabel');
+    expect(laneLabels.length).toBeGreaterThan(0);
+    for (const label of laneLabels) {
+      expect(label.fill, `lane label "${label.text}"`).toBe(label.text === 'without' ? SCORECARD_COLOR_WITHOUT : SCORECARD_COLOR_WITH);
+    }
     // The <desc> also states the mapping explicitly (accessibility + a second, independent check).
     const svg = renderMetricsGridSvg(v2Summary(), v2CostEstimate());
     expect(svg).toContain(`With kmp-test (${SCORECARD_COLOR_WITH})`);
     expect(svg).toContain(`without (${SCORECARD_COLOR_WITHOUT})`);
   });
 
-  it('(i): the strip-row axis max and the composition bar-total max are IDENTICAL across both agent columns, for the same row -- Codex\'s larger values never get their own, more generous scale', () => {
+  it('(i): the strip-row scale and the composition bar-total max are IDENTICAL across both agent columns, for the same row -- Codex\'s larger values never get their own, more generous scale', () => {
     const layout = computeMetricsGridLayout(v2Summary(), v2CostEstimate());
-    const tickLabels = layout.items.filter((i) => i.role === 'gridTickLabel' && i.text !== '0.0 min' && i.anchor === 'end');
-    // One "max" tick label (anchor=end) per lane per strip row per column; group by row-Y band is
-    // fragile, so instead assert the SET of distinct max-tick values for wall-clock is a single
-    // value covering both columns (a per-column scale would produce 2 distinct maxima).
-    const wallMaxTicks = layout.items.filter((i) => i.role === 'gridTickLabel' && i.anchor === 'end' && i.text.endsWith(' min'));
-    const distinctWallMax = new Set(wallMaxTicks.map((i) => i.text));
-    expect(distinctWallMax.size).toBe(1);
+    // Shared scale: only the column holding the row's overall max reaches the full bar width; a
+    // per-column scale would stretch each column's own max to the full width.
+    const [claudeWall, codexWall] = stripRowExtents(layout, 'Wall-clock');
+    expect(Math.abs(claudeWall - codexWall)).toBeGreaterThan(1);
 
     // Composition: the widest single bar segment's implied per-unit pixel width (w / value) must
     // be the same for Claude's and Codex's shell-commands-by-kind bars -- proof they share one max,
@@ -397,10 +414,10 @@ describe('metrics-grid.svg (WO-C12 redesign)', () => {
     expect(otherBars.length).toBe(0);
   });
 
-  it('WO-C12 header: title is "Per-session detail (descriptive)", subtitle states the dot/bar meaning and the descriptive-only disclaimer', () => {
+  it('WO-C12 header: title is "Per-session detail (descriptive)", subtitle states the bar and color meaning and the descriptive-only disclaimer', () => {
     const svg = renderMetricsGridSvg(v2Summary(), v2CostEstimate());
     expect(svg).toContain('<title>Per-session detail (descriptive)</title>');
-    expect(svg).toContain('Each dot is one session; bars are the median session.');
+    expect(svg).toContain('Bars are the median session: blue with kmp-test, orange without.');
     expect(svg).toContain('Descriptive only, not part of the pre-registered analysis.');
   });
 
@@ -672,11 +689,19 @@ describe('metrics-grid.svg (WO-C13 residual): aggregate-sourced shell-command to
 // (every FAKE-DATA session) rendered as a solid arm-colored bar, indistinguishable from the strip
 // rows' own with/without encoding.
 describe('metrics-grid.svg (WO-C15): legend swatches and consistent type coloring', () => {
+  // Strip rows draw bars too (in the arm colors), so these checks look only at the bars inside the
+  // two composition rows' own bands.
+  const compositionBars = (layout) => layout.items.flatMap((it, idx, items) => {
+    if (it.role !== 'gridRowHeader' || !['Shell commands by kind', 'Tokens per session, by type'].includes(it.text)) return [];
+    const next = items.findIndex((other, j) => j > idx && other.role === 'gridRowHeader');
+    return items.slice(idx, next === -1 ? undefined : next).filter((i) => i.kind === 'bar');
+  });
+
   it('every composition bar segment\'s fill color has a matching swatch in that row\'s legend', () => {
     const layout = computeMetricsGridLayout(v2Summary(), v2CostEstimate());
     const swatches = layout.items.filter((i) => i.kind === 'legendSwatch');
     expect(swatches.length).toBeGreaterThan(0);
-    const barFills = new Set(layout.items.filter((i) => i.kind === 'bar').map((i) => i.fill));
+    const barFills = new Set(compositionBars(layout).map((i) => i.fill));
     const swatchFills = new Set(swatches.map((i) => i.fill));
     for (const fill of barFills) {
       expect(swatchFills.has(fill), `bar fill ${fill} has no matching legend swatch`).toBe(true);
@@ -685,7 +710,7 @@ describe('metrics-grid.svg (WO-C15): legend swatches and consistent type colorin
 
   it('no composition bar segment reuses COLOR_WITH/COLOR_WITHOUT -- the type palette and the arm palette never collide', () => {
     const layout = computeMetricsGridLayout(v2Summary(), v2CostEstimate());
-    const bars = layout.items.filter((i) => i.kind === 'bar');
+    const bars = compositionBars(layout);
     expect(bars.length).toBeGreaterThan(0);
     for (const bar of bars) {
       expect([SCORECARD_COLOR_WITH, SCORECARD_COLOR_WITHOUT]).not.toContain(bar.fill);
@@ -722,16 +747,14 @@ describe('metrics-grid.svg (WO-C15): legend swatches and consistent type colorin
   });
 });
 
-// WO-C15: an integer-valued metric's shared axis max used to come straight from niceAxisMax, which
-// can return an odd "nice" value (1, 5, 50, ...) whose own midpoint tick is a fraction -- e.g.
-// niceAxisMax(1)=1 rendered ticks "0 / 0.5 / 1", and "0.5 turns" was found live in a WO-C14 FAKE-DATA
-// render.
-describe('metrics-grid.svg (WO-C15): integer metrics never render a fractional tick label', () => {
-  it('the Turns row\'s axis ticks are whole numbers even when the shared max would otherwise be odd', () => {
+// Strip rows used to draw a numeric axis with dots, and an integer metric's axis could label its
+// midpoint "0.5 turns". They now draw a bar to the median with the printed value, and no axis.
+describe('metrics-grid.svg: strip rows draw bars and printed values, never an axis', () => {
+  it('the Turns row prints whole-number values and no tick labels, even when every session has 1 turn', () => {
     const summary = v2Summary();
     // num_turns has no per-cell field in the base fixture and no group aggregate either (that row is
-    // deliberately "not recorded" elsewhere) -- give every cell a real value of 1, the smallest case
-    // that used to produce axisMax=1 (midpoint 0.5).
+    // deliberately "not recorded" elsewhere) -- give every cell a real value of 1, the case whose
+    // axis once rendered "0.5 turns".
     for (const cell of summary.cells) cell.num_turns = 1;
     const layout = computeMetricsGridLayout(summary, v2CostEstimate());
     checkNoOverlapLayout(layout);
@@ -741,16 +764,25 @@ describe('metrics-grid.svg (WO-C15): integer metrics never render a fractional t
     expect(turnsStart).toBeGreaterThan(-1);
     const nextRowStart = svg.indexOf('Tool output returned to the model', turnsStart);
     const section = svg.slice(turnsStart, nextRowStart);
-    const tickTexts = [...section.matchAll(/font-size="9"[^>]*>(\d+(?:\.\d+)?)<\/text>/g)].map((m) => m[1]);
-    expect(tickTexts.length).toBeGreaterThanOrEqual(3); // 0 / mid / max, shared across both columns' identical axis
-    for (const t of tickTexts) expect(t, `Turns tick "${t}" is not a whole number`).not.toContain('.');
+    expect((section.match(/>1<\/text>/g) || []).length).toBe(2);
+    expect(section).not.toMatch(/>0\.5</);
+    expect(layout.items.some((i) => i.role === 'gridTickLabel')).toBe(false);
   });
 
-  it('a non-integer strip row (wall-clock) is unaffected -- still allowed a fractional midpoint tick', () => {
-    const svg = renderMetricsGridSvg(v2Summary(), v2CostEstimate());
-    // Real fixture values (WO-C12's own v2Summary) already produce a non-round wall-clock axis;
-    // asserting the row still renders at all is enough to prove integerTicks wasn't applied globally.
-    expect(svg).toContain('Wall-clock (min)');
+  it('the Turns row prints its values without bars, in both columns', () => {
+    const summary = v2Summary();
+    for (const cell of summary.cells) cell.num_turns = 1;
+    const layout = computeMetricsGridLayout(summary, v2CostEstimate());
+    const turnsBands = layout.items.reduce((acc, it, idx, items) => {
+      if (it.role !== 'gridRowHeader' || it.text !== 'Turns') return acc;
+      const next = items.findIndex((other, j) => j > idx && other.role === 'gridRowHeader');
+      return [...acc, items.slice(idx, next === -1 ? undefined : next)];
+    }, []);
+    expect(turnsBands.length).toBe(2);
+    for (const band of turnsBands) {
+      expect(band.filter((i) => i.kind === 'bar').length).toBe(0);
+      expect(band.filter((i) => i.role === 'gridValueLabel').map((i) => i.text)).toEqual(['1', '1']);
+    }
   });
 });
 
@@ -758,8 +790,8 @@ describe('metrics-grid.svg (WO-C15): integer metrics never render a fractional t
 // (5-12 observed in canary 2), Codex reports one user turn per non-interactive session (always 1).
 // The Turns row's axis must be per-agent, everything else stays shared, and the row must carry a
 // caption saying so.
-describe('metrics-grid.svg (WO-C17, Amendment A9): Turns uses a per-agent axis, never shared', () => {
-  it('Turns\' own axis max differs per column when the real values differ, while every other strip row (wall-clock) keeps ONE shared max across both columns', () => {
+describe('metrics-grid.svg (WO-C17, Amendment A9): Turns is never drawn on a scale shared across agents', () => {
+  it('Turns prints values only in both columns, even when the real values differ, while every other strip row (wall-clock) keeps ONE shared scale across both columns', () => {
     const summary = v2Summary();
     // Claude: small, tight turns range. Codex: a much larger one -- if the axis were still shared
     // (the pre-fix behavior), both columns would show the SAME max tick, dominated by Codex's own
@@ -772,20 +804,19 @@ describe('metrics-grid.svg (WO-C17, Amendment A9): Turns uses a per-agent axis, 
     checkNoOverlapLayout(layout);
     const svg = renderMetricsGridSvg(summary, v2CostEstimate());
 
-    // Turns: the two columns' own max-tick text (anchor=end, inside each column's own Turns band)
-    // must be DIFFERENT -- proof the axis is computed per-column, not from combined data.
+    // Turns: no bars in either column, so no scale can suggest the two agents' turns compare.
+    const turnsHeaders = layout.items.reduce((acc, it, idx) => (it.role === 'gridRowHeader' && it.text === 'Turns' ? [...acc, idx] : acc), []);
+    expect(turnsHeaders.length).toBe(2);
+    for (const start of turnsHeaders) {
+      const next = layout.items.findIndex((it, idx) => idx > start && it.role === 'gridRowHeader');
+      expect(layout.items.slice(start, next).some((it) => it.kind === 'bar')).toBe(false);
+    }
     const claudeTurnsStart = svg.indexOf('>Turns<');
-    const claudeWallStart = svg.indexOf('Wall-clock', claudeTurnsStart); // next row header, same column
-    const claudeTurnsSection = svg.slice(claudeTurnsStart, claudeWallStart);
-    const codexTurnsStart = svg.indexOf('>Turns<', claudeWallStart);
-    const codexWallStart = svg.indexOf('Wall-clock', codexTurnsStart);
-    const codexTurnsSection = svg.slice(codexTurnsStart, codexWallStart);
-    const maxTick = (section) => [...section.matchAll(/text-anchor="end">(\d+)<\/text>/g)].map((m) => m[1]).pop();
-    const claudeTurnsMax = maxTick(claudeTurnsSection);
-    const codexTurnsMax = maxTick(codexTurnsSection);
-    expect(claudeTurnsMax).toBeDefined();
-    expect(codexTurnsMax).toBeDefined();
-    expect(claudeTurnsMax).not.toBe(codexTurnsMax);
+    const claudeTurnsEnd = svg.indexOf('Tool output returned to the model', claudeTurnsStart);
+    const claudeTurnsSection = svg.slice(claudeTurnsStart, claudeTurnsEnd);
+    const codexTurnsStart = svg.indexOf('>Turns<', claudeTurnsEnd);
+    const codexTurnsEnd = svg.indexOf('Tool output returned to the model', codexTurnsStart);
+    const codexTurnsSection = svg.slice(codexTurnsStart, codexTurnsEnd);
 
     // The caption appears under BOTH columns' Turns rows.
     const caption = 'Not comparable across agents: Claude counts assistant turns; Codex reports one turn per session.';
@@ -797,10 +828,10 @@ describe('metrics-grid.svg (WO-C17, Amendment A9): Turns uses a per-agent axis, 
     const extractCaptionWords = (section) => [...section.matchAll(/font-size="9"[^>]*>([^<]*)<\/text>/g)].map((m) => m[1]).join(' ');
     expect(extractCaptionWords(claudeTurnsSection).replace(/\s+/g, ' ')).toContain(caption.split(' ').slice(0, 5).join(' '));
 
-    // Control: Wall-clock (an ordinary, still-shared strip row) keeps ONE identical max across both
-    // columns -- proof the per-agent fix is scoped to Turns only, not applied to every strip row.
-    const wallMaxTicks = layout.items.filter((i) => i.role === 'gridTickLabel' && i.anchor === 'end' && i.text.endsWith(' min'));
-    expect(new Set(wallMaxTicks.map((i) => i.text)).size).toBe(1);
+    // Control: Wall-clock (an ordinary, still-shared strip row) keeps ONE scale across both columns
+    // -- only one column reaches the full width -- proof the per-agent fix is scoped to Turns only.
+    const [claudeWall, codexWall] = stripRowExtents(layout, 'Wall-clock');
+    expect(Math.abs(claudeWall - codexWall)).toBeGreaterThan(1);
   });
 
   it('a lane with no Turns caption (every other strip row) never renders the A9 note text', () => {

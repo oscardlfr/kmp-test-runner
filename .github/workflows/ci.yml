@@ -169,9 +169,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     # The Windows leg runs Pester, a Windows-only Gradle TestKit smoke,
     # coverage Vitest, and the Node 18 compatibility smoke. Keep a real cap,
-    # but give the full matrix enough room to finish instead of cancelling a
-    # passing Node 18 suite at the previous 20 minute job limit.
-    timeout-minutes: 30
+    # but give the full matrix enough room to finish: since the evaluation
+    # harness tests were published, that leg measured 27-33 minutes (Gradle
+    # smoke 9-11, each full Vitest run 7-9), and a 30 minute cap cancelled
+    # passing Node 18 suites on hosted runners.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
