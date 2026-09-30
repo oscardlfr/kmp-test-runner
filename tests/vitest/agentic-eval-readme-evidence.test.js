@@ -22,6 +22,10 @@ import {
   armCostRange,
   validatePairing,
   fmtToolCallsMedian,
+  computeMetricsGridLayout,
+  README_EVIDENCE,
+  ownsReadmeBlock,
+  resultsHeadingAnchor,
 } from '../../tools/agentic-eval/readme-evidence.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -533,7 +537,8 @@ describe('the committed evidence2-agentic-benchmark-2026-09-30 campaign (publish
     const end = readme.indexOf('<!-- agentic-benchmark:end -->') + '<!-- agentic-benchmark:end -->'.length;
     expect(start).toBeGreaterThan(-1);
     const committedBlock = readme.slice(start, end);
-    const regenerated = crlfNormalize(renderReadmeBlock(summary, CAMPAIGN_DATE_V2, costEstimate, RUNS_DIR_NAME_V2));
+    // 'results' is the anchor main() computes from the Evidence2 record README's own heading.
+    const regenerated = crlfNormalize(renderReadmeBlock(summary, CAMPAIGN_DATE_V2, costEstimate, RUNS_DIR_NAME_V2, 'results'));
     expect(regenerated).toBe(committedBlock);
   });
 
@@ -605,6 +610,132 @@ describe('the committed evidence2-agentic-benchmark-2026-09-30 campaign (publish
     expect(block.toLowerCase()).not.toContain('baseline');
     expect(block).not.toMatch(/\d+(\.\d+)?x\s*(faster|slower|cheaper)/i);
     expect(block).not.toMatch(/all agents/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Evidence2 errata: the breakdown link must reach a real heading, the grid image's alt text must
+// name the rows the grid draws, and only the evidence the root README shows may own its block.
+
+// GitHub's own heading-anchor rule, written out here independently of the generator's slugger so a
+// bug shared by both cannot pass: lowercase, drop every character that is not a letter, digit,
+// space, hyphen or underscore, turn each space into a hyphen.
+function githubSlug(heading) {
+  return heading.trim().toLowerCase().replace(/[^\p{L}\p{N} _-]/gu, '').replace(/ /g, '-');
+}
+function headingSlugs(markdown) {
+  const slugs = new Set();
+  let fenced = false;
+  for (const line of markdown.split(/\r?\n/)) {
+    if (/^\s*(```|~~~)/.test(line)) { fenced = !fenced; continue; }
+    const m = !fenced && line.match(/^#{1,6}\s+(.+?)\s*$/);
+    if (m) slugs.add(githubSlug(m[1]));
+  }
+  return slugs;
+}
+const breakdownFragments = (block) => [...block.matchAll(/README\.md#([^)\s]+)\)/g)].map((m) => m[1]);
+const gridAltOf = (block) => block.match(/!\[([^\]]*)\]\([^)]*metrics-grid\.svg\)/)[1];
+
+describe('the README block breakdown links reach a real heading in the evidence doc', () => {
+  it('every #fragment in the committed root README block is a heading of the Evidence2 doc', () => {
+    const readme = readFileSync(README_PATH, 'utf8');
+    const block = readme.slice(readme.indexOf('<!-- agentic-benchmark:start'), readme.indexOf('<!-- agentic-benchmark:end -->'));
+    const fragments = breakdownFragments(block);
+    expect(fragments.length).toBeGreaterThan(0);
+    const slugs = headingSlugs(readFileSync(join(RUNS_DIR_V2, 'README.md'), 'utf8'));
+    for (const fragment of fragments) {
+      expect(slugs.has(fragment), `#${fragment} is not a heading of the Evidence2 README`).toBe(true);
+    }
+  });
+
+  it.each([
+    ['Evidence1', RUNS_DIR, CAMPAIGN_DATE, `evidence1-agentic-benchmark-${CAMPAIGN_DATE}`, 'results--campaign-16-sessions'],
+    ['Evidence2', RUNS_DIR_V2, CAMPAIGN_DATE_V2, RUNS_DIR_NAME_V2, 'results'],
+  ])('%s: the anchor computed from the record README is one of its heading slugs and is the one every breakdown link carries', (_name, dir, date, dirName, expected) => {
+    const doc = readFileSync(join(dir, 'README.md'), 'utf8');
+    const anchor = resultsHeadingAnchor(doc);
+    expect(anchor).toBe(expected);
+    expect(headingSlugs(doc).has(anchor)).toBe(true);
+    const summary = loadSummary(join(dir, 'campaign-summary.json'));
+    const costEstimate = loadCostEstimate(join(dir, 'cost-estimate.json'));
+    const fragments = breakdownFragments(renderReadmeBlock(summary, date, costEstimate, dirName, anchor));
+    expect(fragments.length).toBeGreaterThan(0);
+    expect([...new Set(fragments)]).toEqual([anchor]);
+  });
+
+  it('without an anchor argument the links keep the legacy Evidence1 anchor, so existing synthetic callers render unchanged', () => {
+    const summary = loadSummary(join(RUNS_DIR_V2, 'campaign-summary.json'));
+    const costEstimate = loadCostEstimate(join(RUNS_DIR_V2, 'cost-estimate.json'));
+    const fragments = breakdownFragments(renderReadmeBlock(summary, CAMPAIGN_DATE_V2, costEstimate, RUNS_DIR_NAME_V2));
+    expect([...new Set(fragments)]).toEqual(['results--campaign-16-sessions']);
+  });
+});
+
+describe('resultsHeadingAnchor', () => {
+  it('takes the last level-2 heading that starts with "Results"', () => {
+    const doc = '# Record\n\n## Results — canary (4 sessions)\n\ntext\n\n## Results — campaign (16 sessions)\n\n## Limitations\n';
+    expect(resultsHeadingAnchor(doc)).toBe('results--campaign-16-sessions');
+  });
+
+  it('ignores level-3 headings and headings inside a fenced code block', () => {
+    const doc = '# Record\n\n## Results\n\n### Results by arm\n\n```md\n## Results — not a real heading\n```\n';
+    expect(resultsHeadingAnchor(doc)).toBe('results');
+  });
+
+  it('throws when the record has no level-2 "Results" heading, never guessing an anchor', () => {
+    expect(() => resultsHeadingAnchor('# Record\n\n## Summary\n\n### Results\n')).toThrow(/Results/);
+  });
+});
+
+describe('the grid image alt text', () => {
+  const SIX_ROWS = ['shell commands by kind', 'tokens per session by type', 'wall-clock', 'API cost', 'turns', 'tool output returned to the model'];
+  let summary, costEstimate;
+
+  beforeAll(() => {
+    summary = loadSummary(join(RUNS_DIR_V2, 'campaign-summary.json'));
+    costEstimate = loadCostEstimate(join(RUNS_DIR_V2, 'cost-estimate.json'));
+  });
+
+  it('names the six rows the grid draws, in the order it draws them, and never says "tool calls"', () => {
+    const alt = gridAltOf(renderReadmeBlock(summary, CAMPAIGN_DATE_V2, costEstimate, RUNS_DIR_NAME_V2, 'results'));
+    let from = 0;
+    for (const row of SIX_ROWS) {
+      const at = alt.indexOf(row, from);
+      expect(at, `"${row}" should follow position ${from} in: ${alt}`).toBeGreaterThan(-1);
+      from = at + row.length;
+    }
+    expect(alt).not.toContain('tool calls');
+    // The rows named are the rows drawn: the first column's row headers, top to bottom.
+    const drawn = computeMetricsGridLayout(summary, costEstimate).items
+      .filter((i) => i.role === 'gridRowHeader').slice(0, SIX_ROWS.length).map((i) => i.text.toLowerCase().replace(/,/g, ''));
+    expect(drawn.length).toBe(SIX_ROWS.length);
+    SIX_ROWS.forEach((row, i) => expect(drawn[i].startsWith(row.toLowerCase()), `row ${i}: "${drawn[i]}" should start with "${row}"`).toBe(true));
+  });
+
+  it('says Codex CLI tool output was not measured while its cells do not carry output_bytes_kind "command_output"', () => {
+    const alt = gridAltOf(renderReadmeBlock(summary, CAMPAIGN_DATE_V2, costEstimate, RUNS_DIR_NAME_V2, 'results'));
+    expect(alt).toContain('Codex CLI tool output was not measured in this campaign');
+  });
+
+  it('drops that sentence once every Codex cell carries output_bytes_kind "command_output"', () => {
+    const measured = structuredClone(summary);
+    for (const cell of measured.cells) if (cell.runtime_id === 'codex-cli') cell.output_bytes_kind = 'command_output';
+    const alt = gridAltOf(renderReadmeBlock(measured, CAMPAIGN_DATE_V2, costEstimate, RUNS_DIR_NAME_V2, 'results'));
+    expect(alt).not.toContain('not measured');
+  });
+});
+
+describe('which evidence owns the root README block', () => {
+  it('README_EVIDENCE names the evidence the root README shows, and that evidence owns the block', () => {
+    expect(README_EVIDENCE).toBe(2);
+    expect(ownsReadmeBlock(2)).toBe(true);
+    expect(ownsReadmeBlock('2')).toBe(true); // main() passes the raw --evidence= value, a string
+  });
+
+  it('every other evidence, --evidence=1 included, checks and writes its own SVGs only, never the README block', () => {
+    expect(ownsReadmeBlock('1')).toBe(false);
+    expect(ownsReadmeBlock(1)).toBe(false);
+    expect(ownsReadmeBlock('3')).toBe(false);
   });
 });
 
