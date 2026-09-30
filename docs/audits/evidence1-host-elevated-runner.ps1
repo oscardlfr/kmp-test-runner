@@ -102,7 +102,11 @@ $AllowedScripts = @(
   # chain, closed VMName/ExpectedVMId, no guest credential, never mutates
   # anything -- answers the host-disk-headroom question with evidence
   # instead of an assumed number.
-  'evidence1-hyperv-inspect-vhd-chain-direct.ps1'
+  'evidence1-hyperv-inspect-vhd-chain-direct.ps1',
+  # WO-A11 follow-up: content-free LastWriteTimeUtc/Length for the Claude OAuth
+  # credential file only (fixed guest path, never a parameter) -- Get-Item
+  # only, never Get-Content, structurally never reads the file's content.
+  'evidence1-hyperv-stat-guest-file-direct.ps1'
 )
 
 # Hash-bound support files are readable/importable by allowlisted entrypoints but

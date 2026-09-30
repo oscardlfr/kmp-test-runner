@@ -43,7 +43,9 @@ const replacePsFunction = (source, name, replacement) => {
 const literalRunnerArray = (source, name, nextName) => {
   const start = source.indexOf(`$${name} = @(`);
   const end = source.indexOf(nextName ? `$${nextName} = @(` : 'function Resolve-FullPath', start);
-  return [...source.slice(start, end).matchAll(/'([^']+)'/g)].map((match) => match[1]);
+  const slice = source.slice(start, end);
+  const withoutComments = slice.split(/\r?\n/).map((line) => line.replace(/#.*$/, '')).join('\n');
+  return [...withoutComments.matchAll(/'([^']+)'/g)].map((match) => match[1]);
 };
 
 const writeGuestWrapperFixture = (root) => {
@@ -265,6 +267,104 @@ describe('final Codex host/guest operational chain', () => {
       const result = psJson(`Import-Module ${psQuote(modulePath)} -Force; $mutations=0;New-E1FinalOperationReservation -ReportPath ${psQuote(report)} -ReportRoot ${psQuote(join(root, 'reports'))} -Kind 'test' -CampaignId ${psQuote(randomUUID())} -Prerequisites @{}|Out-Null;$blocked=$false;try{New-E1FinalOperationReservation -ReportPath ${psQuote(report)} -ReportRoot ${psQuote(join(root, 'reports'))} -Kind 'test' -CampaignId ${psQuote(randomUUID())} -Prerequisites @{}|Out-Null;$mutations++}catch{$blocked=$true};@{blocked=$blocked;mutations=$mutations;claims=@(Get-ChildItem ${psQuote(join(root, 'reports'))} -File).Count}|ConvertTo-Json -Compress`);
       expect(result).toEqual({ blocked: true, mutations: 0, claims: 1 });
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('literalRunnerArray strips comment text before matching, so an apostrophe inside a comment cannot corrupt extraction', () => {
+    const synthetic = [
+      '$AllowedScripts = @(',
+      "  'first-real-entry.ps1',",
+      "  # a comment mentioning the disk's own chain, with an apostrophe",
+      "  'second-real-entry.ps1',",
+      "  # another one -- the campaign's own root",
+      "  'third-real-entry.ps1'",
+      ')',
+      '',
+      '$TrustedSupportFiles = @(',
+      "  'unrelated.psm1'",
+      ')',
+    ].join('\n');
+    expect(literalRunnerArray(synthetic, 'AllowedScripts', 'TrustedSupportFiles')).toEqual([
+      'first-real-entry.ps1', 'second-real-entry.ps1', 'third-real-entry.ps1',
+    ]);
+  });
+
+  it('literalRunnerArray parses the real evidence1-host-elevated-runner.ps1 AllowedScripts into exactly the real allowlist', () => {
+    const runnerSource = read('evidence1-host-elevated-runner.ps1');
+    const names = literalRunnerArray(runnerSource, 'AllowedScripts', 'TrustedSupportFiles');
+    expect(names).toEqual([
+      'evidence1-host-elevated-runner-install.ps1',
+      'evidence1-host-broker-capability-dispatch.ps1',
+      'evidence1-hyperv-copy-live-artifacts.ps1',
+      'evidence1-hyperv-place-dual-condition-canary.ps1',
+      'evidence1-hyperv-start-dual-condition-canary.ps1',
+      'evidence1-hyperv-copy-dual-condition-canary.ps1',
+      'evidence1-hyperv-copy-dual-auth-canary-diagnostic.ps1',
+      'evidence1-hyperv-install-guest-codex-cli-direct.ps1',
+      'evidence1-hyperv-upgrade-canonical-codex-cli-direct.ps1',
+      'evidence1-hyperv-install-canonical-git-bash-direct.ps1',
+      'evidence1-hyperv-open-codex-auth-window-direct.ps1',
+      'evidence1-hyperv-inspect-final-codex-live-state.ps1',
+      'evidence1-hyperv-inspect-guest-interactive-logon-diagnostic.ps1',
+      'evidence1-hyperv-enable-guest-auto-logon.ps1',
+      'evidence1-hyperv-seal-final-codex-network.ps1',
+      'evidence1-hyperv-trigger-final-codex-direct.ps1',
+      'evidence1-hyperv-copy-final-codex-preflight-diagnostic.ps1',
+      'evidence1-hyperv-recover-readonly-diagnostic-mount.ps1',
+      'evidence1-hyperv-verify-guest-account-mapping-direct.ps1',
+      'evidence1-hyperv-inspect-vm-boot-state.ps1',
+      'evidence1-hyperv-verify-account-mapping-offline.ps1',
+      'evidence1-hyperv-sync-final-codex-source.ps1',
+      'evidence1-hyperv-retire-preflight-failed-final-codex.ps1',
+      'evidence1-hyperv-inspect-final-codex-closed-state.ps1',
+      'evidence1-hyperv-copy-final-codex-failure-diagnostic.ps1',
+      'evidence1-hyperv-create-final-codex-attestation.ps1',
+      'evidence1-hyperv-rotate-final-codex-attestation.ps1',
+      'evidence1-hyperv-run-codex-device-auth-direct.ps1',
+      'evidence1-hyperv-run-claude-auth-direct.ps1',
+      'evidence1-hyperv-warm-canonical-gradle-cache-direct.ps1',
+      'evidence1-hyperv-read-live-operational-tail.ps1',
+      'evidence1-hyperv-read-live-progress.ps1',
+      'evidence1-hyperv-regenerate-readiness-direct.ps1',
+      'evidence1-hyperv-stop-for-final-codex-auth-capture.ps1',
+      'evidence1-hyperv-copy-final-codex-attestation.ps1',
+      'evidence1-hyperv-inspect-final-codex-binding-inputs.ps1',
+      'evidence1-hyperv-restore-canonical-android-sdk.ps1',
+      'evidence1-hyperv-capture-final-codex-auth-blob.ps1',
+      'evidence1-hyperv-start-authorized-live.ps1',
+      'evidence1-hyperv-verify-guest-claude-auth-direct.ps1',
+      'evidence1-hyperv-verify-guest-dual-auth-direct.ps1',
+      'evidence1-hyperv-verify-guest-codex-preflight-direct.ps1',
+      'evidence1-hyperv-update-harness-from-bundle.ps1',
+      'evidence1-hyperv-verify-wet-gate-v2-direct.ps1',
+      'evidence1-hyperv-verify-canary-dryrun-v3-direct.ps1',
+      'evidence1-hyperv-read-wet-forensics-direct.ps1',
+      'evidence1-hyperv-read-source-inventory-direct.ps1',
+      'evidence1-hyperv-probe-gradle-offline-direct.ps1',
+      'evidence1-hyperv-provision-gradle-cache-direct.ps1',
+      'evidence1-hyperv-open-temporary-auth-egress.ps1',
+      'evidence1-hyperv-open-claude-login-interactive-task.ps1',
+      'evidence1-hyperv-open-vmconnect.ps1',
+      'evidence1-hyperv-run-network-seal-direct.ps1',
+      'evidence1-hyperv-place-final-codex.ps1',
+      'evidence1-hyperv-resume-final-codex-placement.ps1',
+      'evidence1-hyperv-retire-unstarted-final-codex.ps1',
+      'evidence1-hyperv-retire-unexecuted-final-codex.ps1',
+      'evidence1-hyperv-start-final-codex.ps1',
+      'evidence1-hyperv-copy-final-codex.ps1',
+      'evidence1-host-inspect-windows-iso.ps1',
+      'evidence1-host-delete-failed-canonical-windows-vm.ps1',
+      'evidence1-host-create-canonical-windows-vm.ps1',
+      'evidence1-host-install-canonical-windows-unattended.ps1',
+      'evidence1-host-apply-canonical-windows-offline.ps1',
+      'evidence1-host-new-unattended-retry-custody.ps1',
+      'evidence1-host-diagnose-windows-first-boot.ps1',
+      'evidence1-host-post-os-canonical-windows.ps1',
+      'evidence1-host-bootstrap-canonical-windows-toolchain.ps1',
+      'evidence1-host-checkpoint-canonical-windows-toolchain.ps1',
+      'evidence1-hyperv-set-vm-memory-direct.ps1',
+      'evidence1-hyperv-inspect-vhd-chain-direct.ps1',
+      'evidence1-hyperv-stat-guest-file-direct.ps1',
+    ]);
   });
 
   it.skipIf(process.platform !== 'win32').each(['subdir', 'symlink', 'tamper', 'support-tamper', 'node-tamper', 'extra'])('the elevated runner rejects %s allowlist substitution before invocation', (attack) => {

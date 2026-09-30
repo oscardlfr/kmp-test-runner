@@ -61,7 +61,14 @@ function stripKnownSuffix(tokens) {
   return tokens;
 }
 
-const GRADLEW_TOKENS = new Set(['./gradlew', './gradlew.bat', 'gradlew', 'gradlew.bat', '.\\gradlew.bat']);
+// Basename rule, not a literal Set: real transcripts (H16, and 2026-09-30 auditor finding) keep
+// surfacing gradlew invocation forms a fixed Set can't enumerate ahead of time -- a bare `.\gradlew`
+// (no .bat) and an absolute checkout path both slipped through the old Set the same way the forms
+// H16 added once already did. Matching on the trailing path segment instead closes the whole class:
+// any relative or absolute, POSIX or Windows-separated path ending in gradlew(.bat) matches, case-
+// insensitively (Windows filesystems are case-insensitive), while a same-directory decoy like
+// gradlew-wrapper.sh or a run-together gradlewbat still correctly falls through to {kind:'other'}.
+const GRADLEW_TOKEN_RE = /(^|[\\/])gradlew(\.bat)?$/i;
 
 /** Classifies one tool's raw command string. The direct-command grammar remains shared by
  * graders.mjs, junit-evidence.mjs, and junit-evidence-hook.mjs; a single Windows PowerShell
@@ -107,7 +114,7 @@ export function classifyBashCommand(command) {
     const coverageDisabled = tokens.includes('--no-coverage');
     return { kind: 'kmp-test', subcommand: tokens[1] ?? null, moduleFilter, testType, minMissedLines, coverageDisabled, isPlanOnly };
   }
-  if (GRADLEW_TOKENS.has(tokens[0])) {
+  if (GRADLEW_TOKEN_RE.test(tokens[0])) {
     const taskTokens = tokens.slice(1).filter((t) => !t.startsWith('-'));
     const isPlanOnly = tokens.includes('--dry-run');
     return { kind: 'gradle', taskTokens, isPlanOnly };

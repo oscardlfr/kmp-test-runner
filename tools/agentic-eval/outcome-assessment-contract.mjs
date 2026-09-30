@@ -10,8 +10,16 @@ export const PROVIDER_EVIDENCE_KIND_VALUES = Object.freeze([
 export const PROVIDER_EVIDENCE_STATUS_VALUES = Object.freeze([
   'matched', 'mismatched', 'partial', 'unavailable',
 ]);
+// 2026-09-29 (WO-A11, auditor-directed): 'test_count', not 'total' -- D5 renamed the agent-facing
+// requested field total -> test_count (prereg lines 61/162), but this vocabulary was never
+// updated. graders.mjs's compareKmpEvalResultBlockToObserved emits mismatch/missing field names
+// in the AGENT's own block-field naming (test_count), never the internal observed/ground-truth
+// shape's naming (total, still used internally there, deliberately -- see that function's own
+// comment) -- this constant is the schema's closed allow-list for those emitted names, so it must
+// match the emitter, not the internal shape. Position preserved so canonical ordering is
+// unaffected.
 export const TASK_OUTCOME_MISMATCH_FIELD_VALUES = Object.freeze([
-  'module', 'outcome_kind', 'total', 'passed', 'failed',
+  'module', 'outcome_kind', 'test_count', 'passed', 'failed',
   'missed_lines', 'threshold', 'modules_contributing',
 ]);
 

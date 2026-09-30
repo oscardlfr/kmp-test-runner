@@ -82,7 +82,7 @@ describe('buildRegistries -- accepts the three real initial registries', () => {
     const [claudeOpus, claudeFable, claudeHaiku, codexSol, codexAstra, codexLuna] = additionalShippedModels();
     expect(modelsJson).toEqual({ schema: 1, models: [...realModels(), claudeOpus, claudeFable, claudeHaiku, {
       runtime_id: 'codex-cli', model_id: 'gpt-5.6-terra', enabled: true, default: true,
-      model_vendor_expected: 'openai', default_reasoning_mode: 'low',
+      model_vendor_expected: 'openai', default_reasoning_mode: 'high',
       required_capabilities: ['structuredTranscript', 'correlatedToolResults', 'skillStateEvidence'],
       usage_dimensions: ['input', 'cached_input', 'output', 'reasoning_output'],
     }, codexSol, codexAstra, codexLuna] });

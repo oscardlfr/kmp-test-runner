@@ -1998,6 +1998,29 @@ describe('schema v8 (Evidence1 success-recovery PR B, Section 9.4/9.5) -- outcom
     }
   });
 
+  // 2026-09-29 (WO-A11): canonical ordering holds for multi-field mismatches -- the fields must
+  // appear in TASK_OUTCOME_MISMATCH_FIELD_VALUES's own order regardless of insertion order, and
+  // 'test_count' (not 'total') is the name the schema now accepts at that position.
+  it('accepts a multi-field mismatch only in canonical order, using test_count not total', () => {
+    const base = {
+      ...v8ScenarioBase().outcome_assessment,
+      schema: 2,
+      task_outcome_matched: false,
+      task_outcome_reason: 'mismatched',
+      task_outcome_unexpected_key_count: 0,
+    };
+    const canonicalOrder = {
+      ...v8ScenarioBase({ outcome_assessment: { ...base, task_outcome_mismatch_fields: ['test_count', 'failed', 'threshold'] } }),
+    };
+    expect(validateRun(canonicalOrder)).toEqual({ errors: [], warnings: [] });
+
+    const wrongOrder = v8ScenarioBase({ outcome_assessment: { ...base, task_outcome_mismatch_fields: ['failed', 'test_count', 'threshold'] } });
+    expect(validateRun(wrongOrder).errors.some((e) => e.field === 'outcome_assessment.task_outcome_mismatch_fields')).toBe(true);
+
+    const staleTotal = v8ScenarioBase({ outcome_assessment: { ...base, task_outcome_mismatch_fields: ['total'] } });
+    expect(validateRun(staleTotal).errors.some((e) => e.field === 'outcome_assessment.task_outcome_mismatch_fields')).toBe(true);
+  });
+
   it('uses null diagnostics when the neutral comparison was unavailable', () => {
     const unavailable = {
       ...v8ScenarioBase().outcome_assessment,

@@ -119,10 +119,44 @@ describe('classifyBashCommand', () => {
     ['bare gradlew (no leading ./)', 'gradlew :app:testDebugUnitTest --console=plain'],
     ['bare gradlew.bat (no leading ./)', 'gradlew.bat :app:testDebugUnitTest --console=plain'],
     ['Windows-style .\\gradlew.bat', String.raw`.\gradlew.bat :app:testDebugUnitTest --console=plain`],
+    ['Windows-style .\\gradlew (no .bat)', String.raw`.\gradlew :app:testDebugUnitTest --console=plain`],
+    ['uppercase GRADLEW.BAT', 'GRADLEW.BAT :app:testDebugUnitTest --console=plain'],
   ])('recognizes the %s form identically to ./gradlew.bat', (_label, command) => {
     const c = classifyBashCommand(command);
     expect(c.kind).toBe('gradle');
     expect(c.taskTokens).toEqual([':app:testDebugUnitTest']);
+  });
+
+  // Codex CLI on Windows reports the shell launcher as the command_execution.command (see
+  // commandTokens's own header comment) -- a bare-.\gradlew invocation must be recognized both
+  // directly and through that PowerShell -Command unwrap, not just the ./gradlew.bat form already
+  // covered above (recognizes the PowerShell command wrapper... kmp-test test, line 35).
+  it('recognizes a bare .\\gradlew invocation wrapped in the PowerShell command launcher', () => {
+    const command = String.raw`powershell.exe -Command '.\gradlew :app:testDebugUnitTest --console=plain'`;
+    const c = classifyBashCommand(command);
+    expect(c.kind).toBe('gradle');
+    expect(c.taskTokens).toEqual([':app:testDebugUnitTest']);
+  });
+
+  // No literal Set entry can enumerate every checkout's own absolute repo path -- the basename
+  // rule (GRADLEW_TOKEN_RE) must match on the trailing path segment regardless of what precedes it.
+  it.each([
+    ['bare', String.raw`C:\kmp-eval\agentic-eval-codex-runtime\gradlew.bat :app:testDebugUnitTest --console=plain`],
+    ['PowerShell-wrapped', String.raw`powershell.exe -Command 'C:\kmp-eval\agentic-eval-codex-runtime\gradlew.bat :app:testDebugUnitTest --console=plain'`],
+  ])('recognizes an absolute-path gradlew.bat invocation (%s)', (_label, command) => {
+    const c = classifyBashCommand(command);
+    expect(c.kind).toBe('gradle');
+    expect(c.taskTokens).toEqual([':app:testDebugUnitTest']);
+  });
+
+  // Guards the basename rule against over-matching: none of these end in a real gradlew/gradlew.bat
+  // path segment and must keep classifying as {kind:'other'} exactly like before this fix.
+  it.each([
+    ['a same-directory wrapper script, not the real gradlew', 'gradlew-wrapper.sh :app:testDebugUnitTest'],
+    ['a run-together non-extension suffix', './gradlewbat :app:testDebugUnitTest --console=plain'],
+    ['an unrelated recognized command (kmp-test)', 'kmp-test parallel --module-filter shared --json'],
+  ])('does not misclassify %s as gradle', (_label, command) => {
+    expect(classifyBashCommand(command).kind).not.toBe('gradle');
   });
 
   it('strips exactly one leading `cd <dir> &&` before classifying', () => {

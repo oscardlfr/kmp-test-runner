@@ -29,7 +29,7 @@ import { TEST_TYPE_VALUES, COVERAGE_TOOL_VALUES } from '../../lib/parsers/argv-c
 import { classifyBashCommand, normalizeModuleName } from './command-classify.mjs';
 import { matchModuleFilter } from '../../lib/orchestrators/module-filter.js';
 import { summarizeCoverageGateErrors } from './coverage-gate-observability.mjs';
-import { LATEST_OUTCOME_ASSESSMENT_SCHEMA } from './outcome-assessment-contract.mjs';
+import { LATEST_OUTCOME_ASSESSMENT_SCHEMA, TASK_OUTCOME_MISMATCH_FIELD_VALUES } from './outcome-assessment-contract.mjs';
 import { GRADING_CHECK_NAMES } from './grading-contract.mjs';
 
 export { GRADING_CHECK_NAMES } from './grading-contract.mjs';
@@ -1959,9 +1959,13 @@ const KMP_EVAL_RESULT_TESTS_EXECUTED_KEYS = new Set(['module', 'outcome_kind', '
 const KMP_EVAL_RESULT_COVERAGE_THRESHOLD_KEYS = new Set(['module', 'outcome_kind', 'test_count', 'passed', 'failed', 'missed_lines', 'threshold', 'modules_contributing']);
 const KMP_EVAL_RESULT_NO_APPLICABLE_KEYS = new Set(['module', 'outcome_kind']);
 const KMP_EVAL_RESULT_NO_APPLICABLE_OPTIONAL_COUNT_KEYS = ['test_count', 'passed', 'failed'];
-const KMP_EVAL_RESULT_FIELD_ORDER = [
-  'module', 'outcome_kind', 'test_count', 'passed', 'failed', 'missed_lines', 'threshold', 'modules_contributing',
-];
+// 2026-09-29 (WO-A11, auditor-directed): single source of truth. This used to be a second,
+// independently-maintained literal that drifted from TASK_OUTCOME_MISMATCH_FIELD_VALUES on one
+// name ('total' here vs 'test_count' there) -- a real live cell hit exactly that drift (the
+// schema rejected an otherwise-valid record because this array's order/membership no longer
+// matched the schema's own canonical list). Importing directly means the two can never diverge
+// again; orderedKmpEvalResultFields below only ever emits names this constant itself allows.
+const KMP_EVAL_RESULT_FIELD_ORDER = TASK_OUTCOME_MISMATCH_FIELD_VALUES;
 const KMP_EVAL_CANONICAL_OUTCOME_KINDS = new Set([
   'tests_executed',
   'no_applicable_tests',

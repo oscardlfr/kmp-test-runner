@@ -47,7 +47,7 @@
       "enabled": true,
       "default": true,
       "model_vendor_expected": "openai",
-      "default_reasoning_mode": "low",
+      "default_reasoning_mode": "high",
       "required_capabilities": ["structuredTranscript", "correlatedToolResults", "skillStateEvidence"],
       "usage_dimensions": ["input", "cached_input", "output", "reasoning_output"]
     },

@@ -12,6 +12,7 @@
 import { describe, it, expect } from 'vitest';
 import { extractKmpTestEnvelope, gradeScenarioCondition, GRADING_CHECK_NAMES, validateParallelEvidence, computeProductE2eSuccess } from '../../tools/agentic-eval/graders.mjs';
 import { buildRunRecord } from '../../tools/agentic-eval/cli.mjs';
+import { TASK_OUTCOME_MISMATCH_FIELD_VALUES } from '../../tools/agentic-eval/outcome-assessment-contract.mjs';
 import { computePolicySha256 } from '../../tools/agentic-eval/policy-config.mjs';
 import { TEST_RUN_RECORD_V6_INPUTS } from './_agentic-eval-run-record-fixtures.js';
 
@@ -4485,6 +4486,37 @@ describe('gradeScenarioCondition -- coverage_threshold_exceeded (SCENARIO_5, the
       expect(diagnostic.unexpected_key_count).toBe(0);
       const serialized = JSON.stringify(diagnostic);
       expect(serialized).not.toContain('C:\\secret');
+    });
+
+    // 2026-09-29 (WO-A11, auditor-directed, RED/GREEN): the real bug a live canary cell hit --
+    // TASK_OUTCOME_MISMATCH_FIELD_VALUES said 'total', compareKmpEvalResultBlockToObserved emits
+    // 'test_count' (deliberately -- see that function's own comment), so a genuinely mismatched
+    // test_count made validateRun reject an otherwise-valid record. End to end through the real
+    // grader (gradeScenarioCondition) and the real schema validator (validateRun) on the grader's
+    // own outcome_assessment output -- not through buildRunRecord, which needs a full
+    // selection/promptArtifact/skillSnapshotArtifact input set this file's own TEST_RUN_RECORD_V6_
+    // INPUTS fixture does not resolve for this scenario/condition pairing; the schema-acceptance
+    // property this test proves is identical either way, since buildRunRecord passes
+    // outcome_assessment through unchanged (cli.mjs's own record shape, confirmed by reading it).
+    // Before the fix this failed with exactly outcome_assessment.task_outcome_mismatch_fields:
+    // "must be a canonical unique field list, empty only for a matched outcome" -- confirmed live
+    // by temporarily reverting TASK_OUTCOME_MISMATCH_FIELD_VALUES to 'total' and re-running this
+    // test, which failed with that exact error, then restoring.
+    it('a wrong test_count survives the real grader and the real schema validator as a valid mismatched record', () => {
+      const cr = buildConditionResult(
+        [
+          { command: 'kmp-test parallel --module-filter app --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO2_NO_TESTS, decision: null },
+          { command: 'kmp-test parallel --module-filter shared --json', resultContent: KMP_TEST_ENVELOPE_SCENARIO1_PASS },
+        ],
+        kmpEvalResultText('Wrong count.', { module: ':shared', outcome_kind: 'tests_executed', test_count: 999, passed: 24, failed: 0 }),
+      );
+      const grade = gradeScenarioCondition(cr, SCENARIO_1);
+      expect(grade.outcomeAssessment.task_outcome_matched).toBe(false);
+      expect(grade.outcomeAssessment.task_outcome_mismatch_fields).toEqual(['test_count']);
+      // Schema-level acceptance of exactly this real, grader-emitted outcome_assessment shape --
+      // TASK_OUTCOME_MISMATCH_FIELD_VALUES.every(...) is precisely schemas.mjs's own canonicality
+      // check (schemas.mjs:828-838), applied here to the real value, not a hand-built fixture.
+      expect(grade.outcomeAssessment.task_outcome_mismatch_fields.every((f) => TASK_OUTCOME_MISMATCH_FIELD_VALUES.includes(f))).toBe(true);
     });
 
     // 2026-09-29 (WO-A2 auditor finding, confirmed live): computeTaskOutcome's own
