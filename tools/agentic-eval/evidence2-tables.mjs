@@ -79,7 +79,7 @@ function fmtDisjointTokens(tokens, runtimeId) {
 // The one matching cost-estimate.json cell for a specific campaign-summary cell (arm + round_index
 // == order_index) -- costMetric() in readme-evidence.mjs operates arm-wide (every cell in the arm at
 // once); this narrows that same lookup to a single cell for the per-cell table.
-function costEstimateCellEntry(costEstimate, runtimeId, arm, roundIndex) {
+export function costEstimateCellEntry(costEstimate, runtimeId, arm, roundIndex) {
   if (!costEstimate) return null;
   if (costEstimate.schema === 1 && runtimeId === 'claude-code') {
     return costEstimate.cells.find((c) => c.runtime_id === 'claude-code' && c.arm === arm && c.order_index === roundIndex) ?? null;
@@ -93,7 +93,7 @@ function costEstimateCellEntry(costEstimate, runtimeId, arm, roundIndex) {
 // Midpoint of the low(5m)/high(1h) estimate for ONE cell, the same low/high assumptions and
 // uncached_input_may_be_cache_writes handling as readme-evidence.mjs's own costMetric -- never a
 // separately-invented single-price estimate for the same cell.
-function costEstimateCellMidpoint(costEstimate, runtimeId, entry) {
+export function costEstimateCellMidpoint(costEstimate, runtimeId, entry) {
   const price = costEstimate.schema === 1 ? costEstimate.pricing.per_million_tokens : costEstimate.runtimes[runtimeId].per_million_tokens;
   const uncachedMayBeCacheWrites = costEstimate.schema === 2 && costEstimate.runtimes[runtimeId].uncached_input_may_be_cache_writes === true;
   const highInputPrice = uncachedMayBeCacheWrites ? Math.max(price.cache_write_5m, price.cache_write_1h) : price.input;

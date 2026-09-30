@@ -10,6 +10,7 @@ Reference documentation for `kmp-test-runner`.
 | [concurrency.md](concurrency.md) | Lockfile + `--isolated` semantics — when concurrent invocations conflict and how to opt out of shared state |
 | [token-cost-measurement.md](token-cost-measurement.md) | Methodology for measuring agent-context cost across coverage / module-info / leg-status read paths |
 | [agentic-usage-measurement.md](agentic-usage-measurement.md) | How agent sessions with and without kmp-test are measured — method, controls, and the published campaigns |
+| [agentic-benchmark.md](agentic-benchmark.md) | Detailed results of the agentic benchmark (figures, per-session values, cost breakdown) |
 | [troubleshooting-windows.md](troubleshooting-windows.md) | Windows-specific gotchas — corporate TLS interception (`--use-system-ca`), shell-script line endings |
 | [testing/](testing/) | Internal testing patterns (dispatcher scopes for ViewModel-style coroutine flows, etc.) |
 
