@@ -571,8 +571,9 @@ $script:calls|ConvertTo-Json -Compress
   });
 
   it.skipIf(process.platform !== 'win32')('re-registers only the canonical existing VM configuration during recovery', () => {
-    // Short-name-TEMP-alias root cause -- see publish-harness.mjs's TEST_FIXES comment for
-    // evidence1-codex-pilot-describe.test.js. This test already only runs on win32.
+    // Hosted Windows runners expose TEMP through a short-name alias (RUNNER~1), while recovery
+    // returns Import-VM's canonical long-name path. This exact-path assertion therefore needs a
+    // root with no alias: the canonical scratch root, as evidence1-readiness-custody.test.js uses.
     mkdirSync('C:/kmp-eval/scratch', { recursive: true });
     const fixture = mkdtempSync(resolve('C:/kmp-eval/scratch', 'e1-offline-reregister-'));
     try {

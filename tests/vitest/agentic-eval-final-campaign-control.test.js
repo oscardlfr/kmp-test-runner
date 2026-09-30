@@ -8,8 +8,10 @@ import {
 } from '../../tools/agentic-eval/final-campaign-control.mjs';
 import { runSingleCondition } from '../../tools/agentic-eval/matrix-runner.mjs';
 
-// See the NEW/run-36673233339 comment in publish-harness.mjs's TEST_FIXES for
-// evidence1-codex-pilot-describe.test.js -- identical short-name-TEMP-alias root cause.
+// Hosted Windows runners expose TEMP through a short-name alias (RUNNER~1). The controller's
+// realpathSync.native() tamper check resolves it to the long name and correctly rejects the path,
+// so on win32 the fixtures live under the canonical scratch root instead (no segment longer than
+// 8 characters, so no alias), as evidence1-readiness-custody.test.js does.
 const scratchParent = process.platform === 'win32' ? 'C:/kmp-eval/scratch' : tmpdir();
 if (process.platform === 'win32') mkdirSync(scratchParent, { recursive: true });
 

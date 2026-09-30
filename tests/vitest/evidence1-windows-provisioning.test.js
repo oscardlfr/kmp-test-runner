@@ -43,7 +43,9 @@ const installedCodexVersion = installedCodexPath
   ? spawnSync(installedCodexPath, ['--version'], { encoding: 'utf8', timeout: 10_000 }).stdout.trim()
   : null;
 
-describe('canonical Evidence1 Windows provisioning', () => {
+// Many tests here spawn Windows PowerShell with a 30 s budget of their own. The 5 s vitest default
+// would fail them on a loaded host before that budget runs out.
+describe('canonical Evidence1 Windows provisioning', { timeout: 60_000 }, () => {
   it('pins a closed Hyper-V profile and every required runtime', () => {
     const profile = JSON.parse(read(profilePath));
 
