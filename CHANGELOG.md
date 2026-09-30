@@ -59,6 +59,28 @@ bounded excerpt of the probe's stderr. When the probe never recovers, any result
 error is additionally flagged `probe_failed:true` so agents can tell a guessed task name apart from
 a genuinely missing one. This never changes `exit_code`.
 
+### Internal — agentic evaluation harness (Evidence2)
+
+Internal `tools/agentic-eval/` tooling and local-CI groundwork behind the README's "Agent sessions
+with and without kmp-test" section. Not part of the public CLI/Gradle surface.
+
+- Publishes the Evidence1 dual-condition canary evaluation harness (the paired benchmark tooling
+  for Claude Code and Codex CLI), fully dry-run validated across every CI lane before publication.
+- Reasoning effort is now equalized between the two agents (previously mismatched), so a
+  cross-runtime comparison is actually meaningful.
+- The evidence now includes a descriptive Claude-vs-Codex comparison within each arm — medians and
+  ranges only, no ranking or "faster"/"better" claim.
+- The per-session metrics chart is redesigned numbers-first, with one shared scale per metric
+  across both agent columns instead of two independently-normalized ones.
+- Token accounting no longer double-counts a runtime's own cached or reasoning tokens.
+- A new generator produces the Evidence2 results tables mechanically from the campaign data, with
+  no hand-transcribed numbers.
+- Three tooling bugs fixed: a classifier's CLI entry point silently doing nothing on Windows, a
+  stale field-name mismatch in outcome grading, and a shell-command classifier that missed some
+  Gradle invocations depending on how they were invoked.
+- Local CI's Windows lane now runs its test suites inside a real, autocrlf-converted clone, and no
+  longer silently swallows a lane failure.
+
 ## [0.15.1] — 2026-09-29
 
 0.15.0 reached GitHub Releases and GitHub Packages but never npm (see "Fixed — 0.15.0 never
