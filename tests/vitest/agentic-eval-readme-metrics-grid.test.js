@@ -163,13 +163,12 @@ function textBBox(item) {
 }
 function markBBox(item) {
   if (item.kind === 'bar' || item.kind === 'legendSwatch') return { x0: item.x, x1: item.x + item.w, y0: item.y, y1: item.y + item.h };
-  if (item.kind === 'whisker') return { x0: Math.min(item.x1, item.x2) - 1, x1: Math.max(item.x1, item.x2) + 1, y0: item.y - item.capH / 2, y1: item.y + item.capH / 2 };
   return null;
 }
 
-// Per column (Claude first, then Codex), how far one strip row's marks (bars and whiskers) reach
-// from the row's own bar origin. Only a lane holding its scale's max reaches the full bar width,
-// so a shared scale gives two different extents and a per-agent scale gives two equal ones.
+// Per column (Claude first, then Codex), how far one strip row's bars reach from the row's own
+// bar origin. Only a lane holding its scale's max reaches the full bar width, so a shared scale
+// gives two different extents and a per-column scale would give two equal ones.
 function stripRowExtents(layout, headerPrefix) {
   const items = layout.items;
   const starts = items.reduce((acc, it, idx) => (it.role === 'gridRowHeader' && it.text.startsWith(headerPrefix) ? [...acc, idx] : acc), []);
@@ -177,9 +176,8 @@ function stripRowExtents(layout, headerPrefix) {
     const next = items.findIndex((it, idx) => idx > start && it.role === 'gridRowHeader');
     const band = items.slice(start, next === -1 ? undefined : next);
     const bars = band.filter((it) => it.kind === 'bar');
-    const whiskers = band.filter((it) => it.kind === 'whisker');
     const origin = Math.min(...bars.map((b) => b.x));
-    return Math.max(...bars.map((b) => b.x + b.w), ...whiskers.map((w) => w.x2)) - origin;
+    return Math.max(...bars.map((b) => b.x + b.w)) - origin;
   });
 }
 function bboxesOverlap(a, b) {
@@ -237,7 +235,7 @@ describe('metrics-grid.svg (WO-C12 redesign)', () => {
     checkNoOverlapLayout(layout);
   });
 
-  it('(e): every strip lane prints its median, carrying the metric\'s unit, at the end of its bar -- and no strip row draws an axis, tick labels or dots', () => {
+  it('(e): every strip lane prints its median, carrying the metric\'s unit, at the end of its bar -- and the grid draws no axis, tick labels, dots or lines', () => {
     const svg = renderMetricsGridSvg(v2Summary(), v2CostEstimate());
     const wallIdx = svg.indexOf('Wall-clock (min)');
     const costIdx = svg.indexOf('API cost (USD)');
@@ -247,8 +245,9 @@ describe('metrics-grid.svg (WO-C12 redesign)', () => {
     expect(section).not.toContain('>0.0 min<');
     const layout = computeMetricsGridLayout(v2Summary(), v2CostEstimate());
     expect(layout.items.some((i) => i.role === 'gridTickLabel')).toBe(false);
-    expect(layout.items.some((i) => ['dot', 'tickV', 'axisLine', 'rangeLineH'].includes(i.kind))).toBe(false);
+    expect(layout.items.some((i) => ['dot', 'tickV', 'axisLine', 'rangeLineH', 'whisker'].includes(i.kind))).toBe(false);
     expect(svg).not.toContain('<circle');
+    expect(svg).not.toContain('<line');
   });
 
   it('(f): the composition legend line shows both arms\' values for every present component', () => {
@@ -286,12 +285,19 @@ describe('metrics-grid.svg (WO-C12 redesign)', () => {
     expect(svg.slice(turnsIdx, nextRowIdx)).not.toMatch(/median [+-]?\d+% with kmp-test/);
   });
 
-  it('(h): strip-row bars use the scorecard\'s own arm colors -- "with kmp-test" is COLOR_WITH, "without" is COLOR_WITHOUT', () => {
+  it('(h): one arm color rule for the whole grid -- strip bars and every lane label use the scorecard\'s COLOR_WITH / COLOR_WITHOUT', () => {
     const layout = computeMetricsGridLayout(v2Summary(), v2CostEstimate());
     const wallStart = layout.items.findIndex((i) => i.role === 'gridRowHeader' && i.text.startsWith('Wall-clock'));
     const wallEnd = layout.items.findIndex((i, idx) => idx > wallStart && i.role === 'gridRowHeader');
     const wallBars = layout.items.slice(wallStart, wallEnd).filter((i) => i.kind === 'bar');
     expect(wallBars.map((b) => b.fill)).toEqual([SCORECARD_COLOR_WITH, SCORECARD_COLOR_WITHOUT]);
+    // Lane labels carry the arm color in EVERY row, composition rows included, so the arm colors
+    // are introduced from the first row rather than appearing only in the scalar rows.
+    const laneLabels = layout.items.filter((i) => i.role === 'gridLaneLabel');
+    expect(laneLabels.length).toBeGreaterThan(0);
+    for (const label of laneLabels) {
+      expect(label.fill, `lane label "${label.text}"`).toBe(label.text === 'without' ? SCORECARD_COLOR_WITHOUT : SCORECARD_COLOR_WITH);
+    }
     // The <desc> also states the mapping explicitly (accessibility + a second, independent check).
     const svg = renderMetricsGridSvg(v2Summary(), v2CostEstimate());
     expect(svg).toContain(`With kmp-test (${SCORECARD_COLOR_WITH})`);
@@ -408,10 +414,10 @@ describe('metrics-grid.svg (WO-C12 redesign)', () => {
     expect(otherBars.length).toBe(0);
   });
 
-  it('WO-C12 header: title is "Per-session detail (descriptive)", subtitle states the bar/whisker meaning and the descriptive-only disclaimer', () => {
+  it('WO-C12 header: title is "Per-session detail (descriptive)", subtitle states the bar and color meaning and the descriptive-only disclaimer', () => {
     const svg = renderMetricsGridSvg(v2Summary(), v2CostEstimate());
     expect(svg).toContain('<title>Per-session detail (descriptive)</title>');
-    expect(svg).toContain('Bars are the median session; whiskers span the per-session range.');
+    expect(svg).toContain('Bars are the median session: blue with kmp-test, orange without.');
     expect(svg).toContain('Descriptive only, not part of the pre-registered analysis.');
   });
 
@@ -742,8 +748,7 @@ describe('metrics-grid.svg (WO-C15): legend swatches and consistent type colorin
 });
 
 // Strip rows used to draw a numeric axis with dots, and an integer metric's axis could label its
-// midpoint "0.5 turns". They now draw a bar to the median, a min-max whisker and the printed value,
-// with no axis at all.
+// midpoint "0.5 turns". They now draw a bar to the median with the printed value, and no axis.
 describe('metrics-grid.svg: strip rows draw bars and printed values, never an axis', () => {
   it('the Turns row prints whole-number values and no tick labels, even when every session has 1 turn', () => {
     const summary = v2Summary();
@@ -764,23 +769,20 @@ describe('metrics-grid.svg: strip rows draw bars and printed values, never an ax
     expect(layout.items.some((i) => i.role === 'gridTickLabel')).toBe(false);
   });
 
-  it('a lane whose sessions all share one value draws its bar and no zero-length whisker', () => {
+  it('the Turns row prints its values without bars, in both columns', () => {
     const summary = v2Summary();
     for (const cell of summary.cells) cell.num_turns = 1;
     const layout = computeMetricsGridLayout(summary, v2CostEstimate());
-    const turnsStart = layout.items.findIndex((i) => i.role === 'gridRowHeader' && i.text === 'Turns');
-    const turnsEnd = layout.items.findIndex((i, idx) => idx > turnsStart && i.role === 'gridRowHeader');
-    const band = layout.items.slice(turnsStart, turnsEnd);
-    expect(band.filter((i) => i.kind === 'bar').length).toBe(2);
-    expect(band.filter((i) => i.kind === 'whisker').length).toBe(0);
-  });
-
-  it('every whisker spans a real range and stays inside the bar area, clear of the value label', () => {
-    const layout = computeMetricsGridLayout(v2Summary(), v2CostEstimate());
-    const whiskers = layout.items.filter((i) => i.kind === 'whisker');
-    expect(whiskers.length).toBeGreaterThan(0);
-    for (const w of whiskers) expect(w.x2).toBeGreaterThan(w.x1);
-    checkNoOverlapLayout(layout);
+    const turnsBands = layout.items.reduce((acc, it, idx, items) => {
+      if (it.role !== 'gridRowHeader' || it.text !== 'Turns') return acc;
+      const next = items.findIndex((other, j) => j > idx && other.role === 'gridRowHeader');
+      return [...acc, items.slice(idx, next === -1 ? undefined : next)];
+    }, []);
+    expect(turnsBands.length).toBe(2);
+    for (const band of turnsBands) {
+      expect(band.filter((i) => i.kind === 'bar').length).toBe(0);
+      expect(band.filter((i) => i.role === 'gridValueLabel').map((i) => i.text)).toEqual(['1', '1']);
+    }
   });
 });
 
@@ -788,8 +790,8 @@ describe('metrics-grid.svg: strip rows draw bars and printed values, never an ax
 // (5-12 observed in canary 2), Codex reports one user turn per non-interactive session (always 1).
 // The Turns row's axis must be per-agent, everything else stays shared, and the row must carry a
 // caption saying so.
-describe('metrics-grid.svg (WO-C17, Amendment A9): Turns uses a per-agent axis, never shared', () => {
-  it('Turns\' own axis max differs per column when the real values differ, while every other strip row (wall-clock) keeps ONE shared max across both columns', () => {
+describe('metrics-grid.svg (WO-C17, Amendment A9): Turns is never drawn on a scale shared across agents', () => {
+  it('Turns prints values only in both columns, even when the real values differ, while every other strip row (wall-clock) keeps ONE shared scale across both columns', () => {
     const summary = v2Summary();
     // Claude: small, tight turns range. Codex: a much larger one -- if the axis were still shared
     // (the pre-fix behavior), both columns would show the SAME max tick, dominated by Codex's own
@@ -802,10 +804,13 @@ describe('metrics-grid.svg (WO-C17, Amendment A9): Turns uses a per-agent axis, 
     checkNoOverlapLayout(layout);
     const svg = renderMetricsGridSvg(summary, v2CostEstimate());
 
-    // Turns: each column's own max lane reaches the full bar width -- proof the scale is computed
-    // per column, not from combined data (a shared scale would leave Claude's 1-2 turns short).
-    const [claudeTurnsExtent, codexTurnsExtent] = stripRowExtents(layout, 'Turns');
-    expect(Math.abs(claudeTurnsExtent - codexTurnsExtent)).toBeLessThan(0.5);
+    // Turns: no bars in either column, so no scale can suggest the two agents' turns compare.
+    const turnsHeaders = layout.items.reduce((acc, it, idx) => (it.role === 'gridRowHeader' && it.text === 'Turns' ? [...acc, idx] : acc), []);
+    expect(turnsHeaders.length).toBe(2);
+    for (const start of turnsHeaders) {
+      const next = layout.items.findIndex((it, idx) => idx > start && it.role === 'gridRowHeader');
+      expect(layout.items.slice(start, next).some((it) => it.kind === 'bar')).toBe(false);
+    }
     const claudeTurnsStart = svg.indexOf('>Turns<');
     const claudeTurnsEnd = svg.indexOf('Tool output returned to the model', claudeTurnsStart);
     const claudeTurnsSection = svg.slice(claudeTurnsStart, claudeTurnsEnd);

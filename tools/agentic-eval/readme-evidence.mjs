@@ -578,16 +578,17 @@ export function buildScorecardAlt(summary, costEstimate) {
 // availability) is omitted from the grid entirely rather than showing either.
 
 const GRID_W = SCORECARD_W;
-// Numbers-first, in the scorecard's own visual language: every row is two horizontal bars, one
-// per arm, starting at the same x, with the value printed at the end. No axes, no dot clouds.
-//   STRIP rows (scalar metrics) -- each lane is ONE bar to the median in the arm's own color
-//   (scorecard COLOR_WITH/COLOR_WITHOUT), a thin whisker spanning the per-session min-max, and
-//   the median printed at the end.
+// Numbers-first, in the scorecard's own visual language, with one color rule for the whole image:
+// an arm is always blue (with kmp-test) or orange (without), the scorecard's own COLOR_WITH /
+// COLOR_WITHOUT, carried by every lane label; a component type always has its own palette color.
+// Every row is two horizontal bars, one per arm, starting at the same x, with the value printed at
+// the end. No axes, no dots, no lines.
+//   STRIP rows (scalar metrics) -- each lane is ONE bar to the median in the arm's color.
 //   COMPOSITION rows (tool calls by kind, tokens by type) -- each lane is ONE stacked bar of
 //   per-component MEDIANS (never per-session mini-bars), a total at the end, one legend line below
 //   both bars giving each component's with-vs-without value.
-// Both columns share one scale per row (Turns excepted, per Amendment A9), so bar lengths compare
-// directly across agents.
+// Both columns share one scale per row, so bar lengths compare directly across agents. Turns is
+// printed as values only: it is not comparable across agents (Amendment A9), so it gets no bars.
 const GRID_HEADER_FS = 13;
 const GRID_HEADER_H = 18;
 const GRID_LANE_LABEL_FS = 11;
@@ -597,10 +598,9 @@ const GRID_TICK_FS = 9;
 const GRID_TICK_H = 16;
 const GRID_COMP_BAR_H = 14;
 const GRID_COMP_BAR_GAP = 4;
-const GRID_VALUE_GAP = 12; // clearance between a bar (or its whisker cap) and its value label
+const GRID_VALUE_GAP = 8; // clearance between a bar and its value label
 const GRID_VALUE_TEXT_W = 54; // "10.2 min" / "426.1k" text budget
 const GRID_COMP_BAR_W = COLUMN_W - GRID_LANE_LABEL_W - GRID_VALUE_GAP - GRID_VALUE_TEXT_W;
-const GRID_WHISKER_CAP_H = 8;
 const GRID_ROW_GAP = 14; // clearance before the next row (at least 10px; kept generous)
 // Distinct from COLOR_WITH/COLOR_WITHOUT (#0969da/#bc4c00) on purpose -- kmp_test and gradle
 // used to reuse those exact hex values, so a lane whose bar happened to be 100% one type (every FAKE
@@ -828,21 +828,13 @@ export function costMetric(summary, group, runtimeId, arm, costEstimate) {
   return { kind: 'per-session', values, median: medianOf(values), provider: false };
 }
 
-// A strip lane's per-session range: the min/max of its own sessions, or the run-level aggregate's
-// own min/max when per-session values are unavailable. null for an unavailable lane.
-function scalarLaneRange(metric) {
-  if (metric.kind === 'per-session') return { min: Math.min(...metric.values), max: Math.max(...metric.values) };
-  if (metric.kind === 'aggregate') return { min: metric.min, max: metric.max };
-  return null;
-}
-
 // A strip row's shared scale max: the grid uses the SAME 0..max scale for both agent columns, so
-// bar lengths compare directly across agents -- computed over every lane's range max (whiskers
-// included) from BOTH runtimes' with/without lanes for this one metric, never per-runtime (an
-// earlier scorecard bug this also fixes). No axis is drawn, so the raw max needs no rounding.
+// bar lengths compare directly across agents -- the largest median among BOTH runtimes'
+// with/without lanes for this one metric, never per-runtime (an earlier scorecard bug this also
+// fixes). No axis is drawn, so the raw max needs no rounding.
 function sharedStripScaleMax(...metrics) {
-  const maxima = metrics.map(scalarLaneRange).filter(Boolean).map((r) => r.max);
-  return Math.max(...maxima, 1e-9);
+  const medians = metrics.filter((m) => m.kind !== 'unavailable').map((m) => m.median);
+  return Math.max(...medians, 1e-9);
 }
 
 // A composition row's shared bar-total max, same cross-agent reasoning as sharedStripScaleMax --
@@ -866,12 +858,12 @@ function compositionValueFor(composition, type) {
 }
 
 // One STRIP row (scalar metric) for one runtime column: header (metric/unit) -> the diff% line ->
-// two lanes, each a bar from 0 to the median in the arm's own scorecard color, a thin whisker over
-// the per-session min-max range, and the median printed at the end (the same geometry as a
-// composition row's bars) -> an optional word-wrapped caption (Amendment A9: Turns' own scale is
-// per-agent, not shared, and carries a caption explaining why -- see buildGridRowData) -> gap.
-// Each band advances a single cursor, so no band can silently overlap another.
-function renderStripRow(colX, rowY, mainHeaderText, diffText, agentLabel, withMetric, withoutMetric, scaleMax, fmtValue, caption) {
+// two lanes, each a bar from 0 to the median in the arm's own scorecard color with the median
+// printed at the end (the same geometry as a composition row's bars), or the median alone for a
+// valuesOnly row -> an optional word-wrapped caption (Amendment A9: Turns is values-only and
+// carries a caption explaining why -- see buildGridRowData) -> gap. Each band advances a single
+// cursor, so no band can silently overlap another.
+function renderStripRow(colX, rowY, mainHeaderText, diffText, agentLabel, withMetric, withoutMetric, scaleMax, fmtValue, caption, valuesOnly) {
   const items = [];
   let cursor = rowY;
   items.push(textItem('gridRowHeader', null, colX, cursor + GRID_HEADER_FS, GRID_HEADER_FS, 500, COLOR_TEXT, mainHeaderText));
@@ -897,15 +889,13 @@ function renderStripRow(colX, rowY, mainHeaderText, diffText, agentLabel, withMe
   for (const lane of lanes) {
     const barY = cursor;
     const barCenterY = barY + GRID_COMP_BAR_H / 2;
-    items.push(textItem('gridLaneLabel', null, colX, barCenterY + 4, GRID_LANE_LABEL_FS, 400, COLOR_SECONDARY, lane.arm));
-    const range = scalarLaneRange(lane.m);
-    if (!range) {
+    items.push(textItem('gridLaneLabel', null, colX, barCenterY + 4, GRID_LANE_LABEL_FS, 400, lane.color, lane.arm));
+    if (lane.m.kind === 'unavailable') {
       items.push(textItem('gridNotRecorded', null, barX, barCenterY + 4, GRID_VALUE_LABEL_FS, 400, COLOR_SECONDARY, 'n/a'));
+    } else if (valuesOnly) {
+      items.push(textItem('gridValueLabel', null, barX, barCenterY + 4, GRID_VALUE_LABEL_FS, 400, COLOR_TEXT, fmtValue(lane.m.median)));
     } else {
       items.push({ kind: 'bar', column: null, x: barX, y: barY, w: Math.max(xFor(lane.m.median) - barX, 1), h: GRID_COMP_BAR_H, rx: 1, fill: lane.color });
-      if (range.max > range.min) {
-        items.push({ kind: 'whisker', column: null, x1: xFor(range.min), x2: xFor(range.max), y: barCenterY, capH: GRID_WHISKER_CAP_H });
-      }
       items.push(textItem('gridValueLabel', null, barX + GRID_COMP_BAR_W + GRID_VALUE_GAP, barCenterY + 4, GRID_VALUE_LABEL_FS, 400, COLOR_TEXT, fmtValue(lane.m.median)));
     }
     cursor += GRID_COMP_BAR_H + GRID_COMP_BAR_GAP;
@@ -937,11 +927,11 @@ function renderCompositionRow(colX, rowY, headerText, agentLabel, withComp, with
   }
 
   const barX = colX + GRID_LANE_LABEL_W;
-  const lanes = [{ c: withComp, arm: 'with kmp-test' }, { c: withoutComp, arm: 'without' }];
+  const lanes = [{ c: withComp, arm: 'with kmp-test', color: COLOR_WITH }, { c: withoutComp, arm: 'without', color: COLOR_WITHOUT }];
   for (const lane of lanes) {
     const barY = cursor;
     const barCenterY = barY + GRID_COMP_BAR_H / 2;
-    items.push(textItem('gridLaneLabel', null, colX, barCenterY + 4, GRID_LANE_LABEL_FS, 400, COLOR_SECONDARY, lane.arm));
+    items.push(textItem('gridLaneLabel', null, colX, barCenterY + 4, GRID_LANE_LABEL_FS, 400, lane.color, lane.arm));
     if (!lane.c) {
       items.push(textItem('gridNotRecorded', null, barX, barCenterY + 4, GRID_VALUE_LABEL_FS, 400, COLOR_SECONDARY, 'n/a'));
     } else {
@@ -1126,11 +1116,10 @@ function buildGridRowData(runtimeId, summary, costEstimate) {
     {
       // Amendment A9: num_turns is not comparable across runtimes -- Claude counts assistant
       // turns (5-12 observed in canary 2), Codex reports one user turn per non-interactive
-      // session (always 1). perAgentScale keeps each column's own scale independent (see the
-      // computeMetricsGridLayout call site); the caption states the reason directly on the row
-      // rather than relying on a reader to infer it from two very different-looking scales.
+      // session (always 1). valuesOnly prints each lane's median without a bar, so no scale ever
+      // suggests the two columns' Turns are comparable; the caption states the reason on the row.
       kind: 'strip', label: 'Turns', unit: '', fmtValue: fmtCount, sourceNote: null,
-      perAgentScale: true,
+      valuesOnly: true,
       caption: 'Not comparable across agents: Claude counts assistant turns; Codex reports one turn per session.',
       with: scalarMetric(summary, gp, runtimeId, 'product', 'num_turns', () => null),
       without: scalarMetric(summary, gf, runtimeId, 'free', 'num_turns', () => null),
@@ -1152,7 +1141,7 @@ export function computeMetricsGridLayout(summary, costEstimate) {
   const subtitleY1 = titleY + ROW_GAP + subtitleFS;
   const subtitleY2 = subtitleY1 + subtitleFS + 4;
   items.push(textItem('gridSubtitle', null, PAD, subtitleY1, subtitleFS, 400, COLOR_SECONDARY,
-    'Bars are the median session; whiskers span the per-session range.'));
+    'Bars are the median session: blue with kmp-test, orange without.'));
   items.push(textItem('gridSubtitle', null, PAD, subtitleY2, subtitleFS, 400, COLOR_SECONDARY,
     'Descriptive only, not part of the pre-registered analysis.'));
   const headerBottom = subtitleY2 + ROW_GAP + 8;
@@ -1178,17 +1167,12 @@ export function computeMetricsGridLayout(summary, costEstimate) {
       const agentLabel = RUNTIME_DISPLAY_NAME[col.id];
       let rendered;
       if (row.kind === 'strip') {
-        // Amendment A9: Turns is not comparable across runtimes (Claude counts assistant turns;
-        // Codex reports one user turn per non-interactive session, always 1) -- perAgentScale
-        // rows compute their scale from ONLY this column's own two lanes, never otherData, so a
-        // shared scale never implies the two columns' Turns values are meant to be read side by
-        // side. Every other row is unaffected (perAgentScale is undefined => falsy there).
-        const scaleMax = row.perAgentScale
-          ? sharedStripScaleMax(row.with, row.without)
-          : sharedStripScaleMax(row.with, row.without, otherData[ri].with, otherData[ri].without);
+        // One scale per row across BOTH columns (otherData), so bar lengths compare across agents.
+        // A valuesOnly row (Turns, Amendment A9) draws no bars, so its scale is never used.
+        const scaleMax = sharedStripScaleMax(row.with, row.without, otherData[ri].with, otherData[ri].without);
         const diffPct = stripDiffPct(row.with, row.without);
         const { mainText, diffText } = stripHeaderLines(row.label, row.unit, diffPct, row.sourceNote);
-        rendered = renderStripRow(col.x, cy, mainText, diffText, agentLabel, row.with, row.without, scaleMax, row.fmtValue, row.caption);
+        rendered = renderStripRow(col.x, cy, mainText, diffText, agentLabel, row.with, row.without, scaleMax, row.fmtValue, row.caption, !!row.valuesOnly);
       } else {
         const compMax = sharedCompositionMax(row.with, row.without, otherData[ri].with, otherData[ri].without);
         rendered = renderCompositionRow(col.x, cy, row.label, agentLabel, row.with, row.without, compMax, row.types, row.typeColors, row.typeLabels, row.fmtValue, row.partialTotalNote);
@@ -1213,13 +1197,6 @@ export function renderMetricsGridSvg(summary, costEstimate) {
       parts.push(`<rect x="${item.x.toFixed(1)}" y="${item.y.toFixed(1)}" width="${item.w.toFixed(1)}" height="${item.h.toFixed(1)}" rx="${item.rx}" fill="${item.fill}"/>`);
     } else if (item.kind === 'legendSwatch') {
       parts.push(`<rect x="${item.x.toFixed(1)}" y="${item.y.toFixed(1)}" width="${item.w}" height="${item.h}" fill="${item.fill}"/>`);
-    } else if (item.kind === 'whisker') {
-      // Min-max range: a horizontal line with a short vertical cap at each end.
-      const x1 = item.x1.toFixed(1), x2 = item.x2.toFixed(1), y = item.y.toFixed(1);
-      const capTop = (item.y - item.capH / 2).toFixed(1), capBottom = (item.y + item.capH / 2).toFixed(1);
-      parts.push(`<line x1="${x1}" x2="${x2}" y1="${y}" y2="${y}" stroke="${COLOR_TEXT}" stroke-width="1.5"/>`);
-      parts.push(`<line x1="${x1}" x2="${x1}" y1="${capTop}" y2="${capBottom}" stroke="${COLOR_TEXT}" stroke-width="1.5"/>`);
-      parts.push(`<line x1="${x2}" x2="${x2}" y1="${capTop}" y2="${capBottom}" stroke="${COLOR_TEXT}" stroke-width="1.5"/>`);
     }
   }
   const tokenLegendDesc = Object.keys(TOKEN_COMPONENT_LABEL).map((t) => `${TOKEN_COMPONENT_LABEL[t]} (${TOKEN_COMPONENT_COLORS[t]})`).join(', ');
