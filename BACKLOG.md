@@ -3455,6 +3455,88 @@ All five gaps shipped in v0.5.2 (PRs #63 / #64 / #65 / #66 / #67). One scope red
 
 ## QUEUED — post-v0.3.4 ideas (newest first)
 
+### 💡 IDEA — Pin Codex CLI 0.154.0 in approved-inputs v3 and profile e2e-v2
+
+**Status: IDEA, no CLI milestone.** The live campaign launch path pins Codex CLI 0.154.0
+(`evidence1-dual-condition-canary-launch.ps1:330`), but the base provisioning profile's
+approved-inputs (v1/v2, both `codex-01534-e2e`) record the VM's original provisioning at 0.153.4.
+They are historical and must stay as they are. The current VM reached 0.154.0 through a one-off
+in-place upgrade (`evidence1-hyperv-upgrade-canonical-codex-cli-direct.ps1`), and no committed
+builder exists yet for that upgrade's required input. The gap is documented in
+`tools/evidence1/provisioning/README.md` under "Known base-vs-launch gap" and is drift-guarded by
+`tests/pester/Evidence1-Codex-Provisioning-Launch-Pin-Drift-Guard.Tests.ps1`.
+
+**Proposal — two gaps to close:**
+- **(a) A committed, deterministic builder for the upgrade script's layout artifact**, built from
+  the official npm package. It must produce these `$requiredRelativeFiles`: `codex-package.json`,
+  `bin\codex-code-mode-host.exe`, `bin\codex.exe`, `codex-path\rg.exe`,
+  `codex-resources\codex-command-runner.exe`, `codex-resources\codex-windows-sandbox-setup.exe`.
+  Codex has never gone through `evidence1-normalize-toolchain-archive.ps1`: its RuntimeId
+  ValidateSet excludes codex-cli. Extending that normalizer versus writing a dedicated script is
+  still an open choice.
+- **(b) approved-inputs v3 plus profile e2e-v2**, pinning codex-cli 0.154.0 as a base input, so a
+  fresh VM reaches the launch-pinned version directly.
+
+Verified facts to reuse (independently confirmed 2026-09-30): base identity is the raw signed
+single-exe (sha256 `be96b992178b1e467c225800da0d65f2c86d5eba1ef0b14632f65db381cbdfde`, 298169136
+bytes, Authenticode Valid, signer `CN="OpenAI OpCo, LLC"`, `--version` prints `codex-cli 0.154.0`);
+the `sources[]` entry is URI
+`https://registry.npmjs.org/@openai/codex/-/codex-0.154.0-win32-x64.tgz`, sha512-sri
+`sha512-Stg2KEJPIKVqPPR1wCverGOR4ey3RR3cvakR07w7FNKQUMzmHaOZomRsP2bR1qOT/67yHsks9rB+MCMfIWXcRA==`,
+142162836 bytes, from a fresh fetch whose sha512 matched the package-lock integrity; the
+upgrade-input artifact for gap (a) only, `codex-0.154.0-win32-x64-official-layout.zip` (hand-built),
+is sha256 `c19f977dcec5a9a85274a713a5fe9c49f6e8b6f49822f70ccabbbbb02745b4d7`, 143601799 bytes.
+
+**Why captured here:** verified facts collected 2026-09-30 while auditing the closing publication;
+captured so the two gaps can be implemented from these facts directly instead of re-deriving them.
+
+---
+
+### 💡 IDEA — Publication-hardening P1 follow-ups (parked as text, not implemented)
+
+**Status: IDEA, no CLI milestone.** Publication-hardening P0 items shipped 2026-09-30 (`137a05e`
+broker↔HEAD coherence guard, `d0b7d79`+`61b27a6` pre-registered `round_order` guard, `48bff5c`
+codex base-vs-launch provisioning-gap documentation, `bd2cbdb` principled VmReady disk guard
+replacing the flat 15GiB floor, `b93ce00` failure-safe-closure read-only evidence recovery). The
+follow-up items below were parked here as text, unimplemented, so this slot could move straight to
+the post-campaign `#537` publication work instead.
+
+**Proposal:**
+- `AutomaticStopAction=ShutDown` closed-VM script + provisioning parity + a drift check — today
+  nothing asserts the E2E VM's own `AutomaticStopAction` matches what provisioning intends to set
+  it to, so a manual VM edit or a provisioning-script change could silently drift from what
+  `Get-E1RunVmReadyRequiredDiskBytes` assumes when deciding whether a Save-state memory reservation
+  applies.
+- The guest disk cleanup bundle (`evidence1-guest-bundle-contract.psm1`) records success/failure
+  per cleanup entry but not a reason for a failed entry — worth adding for the same "evidence over
+  assumption" reason Amendment A6 already established for host disk accounting.
+- A guest directory-listing capability (GUID campaign-id param, returns per-entry mtimes; the
+  standalone `evidence1-hyperv-list-guest-directory-direct.ps1` script already exists at `1143968`
+  but is not wired into the broker-capability/queue-client dispatch path `evidence1-run.ps1`'s real
+  backend actually uses) plus a new `agentic-eval-incident-raw-transcript` copy spec keyed by a
+  discovered `JournalId` — the failure-safe closure's own tier-2 best-effort fallback explicitly
+  could not use this (no way to discover an in-flight cell's own JournalId without first listing
+  the guest directory; see `Invoke-E1RunFailureSafeEvidenceCopyAttempt`'s own header comment in
+  `evidence1-run.ps1`). Building this would let the failure-safe closure recover the still-failing
+  cell's own raw, not-yet-recorded journal too, not just already-completed sibling cells'
+  record/audit pairs.
+- Basename matching for `kmp-test` (absolute path, `.cmd` extension) in `classifyBashCommand`
+  (`tools/agentic-eval/command-classify.mjs`) — mirrors the same basename-not-token-set fix already
+  shipped for `gradlew` this round (`3a74db7`, `GRADLEW_TOKEN_RE`), not yet applied to the
+  `kmp-test` classifier.
+- AuthReady records a content-minimal `claude_oauth_expires_in_seconds` (computed in-guest; the
+  token itself never leaves the guest and is never recorded anywhere) — observability only, no
+  gate-behavior change.
+- Guest `C:` free space recorded in the LiveAuthorized and Closed receipts — extends the host-side
+  `C:` free-space accounting this round's own receipts already carry (the disk guard above,
+  EvidenceCopied's own accounting) to the guest side too.
+
+**Why captured here:** parked 2026-09-30 so this slot doesn't get silently dropped once the
+post-campaign publication work lands; each item cites its own concrete gap and fix shape so it
+stays independently actionable later.
+
+---
+
 ### 💡 IDEA — VmReady disk-space guard and AutomaticStopAction=ShutDown change (deferred, post-campaign hardening)
 
 **Status: IDEA, no CLI milestone.** Amendment A6 (2026-09-29) traced the harness's ~12 GiB host-disk gap to Hyper-V's `AutomaticStopAction=Save` default (`New-VM`'s own default, never overridden by this repo) -- a VM in the Saved state reserves a VMRS save-state file sized exactly to `MemoryStartup`. The A6 addendum resolved the immediate host risk directly (the user freed host space, from an order of magnitude below A6's own worst-case bound to well above it) rather than via a code change, since no campaign data depends on either fix. A principled `VmReady` guard (drafted mid-session as WO-A7: fail closed unless the volume holding the VM has free space >= max(15 GiB, the leaf disk's unallocated remainder + 3 GiB)) and switching the VM's `AutomaticStopAction` to `ShutDown` (avoiding the Save-state reservation entirely) were both deferred to a post-campaign publication-hardening work order.
@@ -3467,7 +3549,7 @@ All five gaps shipped in v0.5.2 (PRs #63 / #64 / #65 / #66 / #67). One scope red
 
 ### 💡 IDEA — Elevated runner's canonical self-install path is a code literal, not install-time config
 
-**Status: IDEA, no CLI milestone.** Surfaced during the WO-C1 harness publication dry run (2026-09-29): `evidence1-host-elevated-runner.ps1`'s `Assert-E1SelfInstallRunnerArguments` hardcodes its own trusted `-AllowedRoot`/`-RunnerPath` comparison value as a literal (`$canonicalAudits`, currently the checkout's absolute path). This is deliberate — it pins the ONE trusted self-install location so a copied/relocated runner can't self-validate against wherever it currently sits — but it also means any OTHER host that legitimately wants to deploy this broker (a different machine, a different checkout root) has to edit the script itself to change it, rather than setting an install-time value.
+**Status: IDEA, no CLI milestone.** Surfaced during the harness publication dry run (2026-09-29): `evidence1-host-elevated-runner.ps1`'s `Assert-E1SelfInstallRunnerArguments` hardcodes its own trusted `-AllowedRoot`/`-RunnerPath` comparison value as a literal (`$canonicalAudits`, currently the checkout's absolute path). This is deliberate — it pins the ONE trusted self-install location so a copied/relocated runner can't self-validate against wherever it currently sits — but it also means any OTHER host that legitimately wants to deploy this broker (a different machine, a different checkout root) has to edit the script itself to change it, rather than setting an install-time value.
 
 **Proposal:** make the canonical path an admin-owned configuration value set at install time (e.g. written by `evidence1-install.ps1` into a protected config file or registry value the elevated runner reads at dispatch time), instead of a literal baked into the script. Document the new install-time step in the runner's own README/install docs.
 
@@ -3477,7 +3559,7 @@ All five gaps shipped in v0.5.2 (PRs #63 / #64 / #65 / #66 / #67). One scope red
 
 ### 💡 IDEA — Host/VM layout roots (`C:\kmp-eval`, `C:\Evidence1Toolchain`, `C:\Evidence1Private`) are hardcoded literals, not configurable
 
-**Status: IDEA, no CLI milestone.** Surfaced during the WO-C1 harness publication dry run (2026-09-29): the Evidence1 harness hardcodes 3 machine-root paths throughout `docs/audits/*.ps1` as literal `C:\...` constants. An earlier pass in this same publication attempted genericizing them to `$env:KMP_EVAL_ROOT`/`$env:EVIDENCE1_TOOLCHAIN_ROOT`/`$env:EVIDENCE1_PRIVATE_ROOT` — reverted, because a meaningful fraction of this code runs INSIDE the guest VM via PowerShell remoting, where an env-var substitution resolves in the guest session (which doesn't have these vars set) and silently breaks rather than failing loudly.
+**Status: IDEA, no CLI milestone.** Surfaced during the harness publication dry run (2026-09-29): the Evidence1 harness hardcodes 3 machine-root paths throughout `docs/audits/*.ps1` as literal `C:\...` constants. An earlier pass in this same publication attempted genericizing them to `$env:KMP_EVAL_ROOT`/`$env:EVIDENCE1_TOOLCHAIN_ROOT`/`$env:EVIDENCE1_PRIVATE_ROOT` — reverted, because a meaningful fraction of this code runs INSIDE the guest VM via PowerShell remoting, where an env-var substitution resolves in the guest session (which doesn't have these vars set) and silently breaks rather than failing loudly.
 
 **Proposal:** a real fix needs to distinguish HOST-side code (where env-var/config-file substitution is safe) from GUEST-side code (where the value must already be resolved before crossing the remoting boundary, e.g. baked into the remoting command's own arguments rather than read from env at the far end) — not a blanket find/replace. Worth a dedicated design pass rather than a mechanical genericization.
 
@@ -3487,21 +3569,11 @@ All five gaps shipped in v0.5.2 (PRs #63 / #64 / #65 / #66 / #67). One scope red
 
 ### 💡 IDEA — Broader genericization sweep of legacy `docs/audits/` content
 
-**Status: IDEA, no CLI milestone.** The WO-C1 harness publication (2026-09-29) genericized the account identifier in exactly 5 files (the 4 originally-identified auth/account-mapping scripts, plus `evidence1-hyperv-verify-guest-dual-auth-direct.ps1`, found only because a newly-published test exercised it) — each found individually, via a specific failing test or an explicit account-identifier sweep of files entering PUBLISH, not via an exhaustive audit of the whole `docs/audits/` tree. The publication's own scope (which files are PUBLISH vs still-EXCLUDE) is now settled, but nothing has swept the full published tree end-to-end asking "does ANY file here still hardcode an identity, host-specific detail, or other value that should be a parameter/config instead" independent of whether a current test happens to exercise it.
+**Status: IDEA, no CLI milestone.** The harness publication (2026-09-29) genericized the account identifier in exactly 5 files (the 4 originally-identified auth/account-mapping scripts, plus `evidence1-hyperv-verify-guest-dual-auth-direct.ps1`, found only because a newly-published test exercised it) — each found individually, via a specific failing test or an explicit account-identifier sweep of files entering PUBLISH, not via an exhaustive audit of the whole `docs/audits/` tree. The publication's own scope (which files are PUBLISH vs still-EXCLUDE) is now settled, but nothing has swept the full published tree end-to-end asking "does ANY file here still hardcode an identity, host-specific detail, or other value that should be a parameter/config instead" independent of whether a current test happens to exercise it.
 
 **Proposal:** a dedicated pass over the full published `docs/audits/` tree (now stable post-publication) specifically hunting for this class of issue, rather than relying on test coverage to surface each instance one at a time.
 
 **Why captured here:** the pattern (a hardcoded value that "happens" to work because no test currently checks it) already produced one real gap this session (the `evidence1-hyperv-verify-guest-dual-auth-direct.ps1` account check) — worth checking there isn't a second one nothing has exercised yet.
-
----
-
-### 💡 IDEA — README's Codex base version is stale relative to what the harness actually requires
-
-**Status: IDEA, no CLI milestone.** `README.md` and `evidence1-windows-approved-inputs.schema.json` state Codex CLI base version `0.153.4`; the harness's own operational code requires `0.154.0` and upgrades to it via `evidence1-hyperv-upgrade-canonical-codex-cli-direct.ps1` as a normal part of provisioning. The README doesn't currently document that upgrade step, so a reader following it literally would end up on a version the harness doesn't actually run against.
-
-**Proposal:** document the upgrade step explicitly in the README, either as an explicit prerequisite ("provision at 0.153.4, then run the upgrade script before first use") or by updating the stated base version to 0.154.0 directly if that's the intended baseline going forward.
-
-**Why captured here:** found during the WO-C1 harness publication dry run (2026-09-29) while tracing the provisioning JSON files; a documentation-accuracy fix, not a code change, so it belongs in the next docs pass rather than blocking the publication itself.
 
 ---
 
@@ -3511,7 +3583,7 @@ All five gaps shipped in v0.5.2 (PRs #63 / #64 / #65 / #66 / #67). One scope red
 
 **Proposal:** rebuild it on current develop, keeping `AGENTS.md`'s sources of truth intact (`package.json` owns version/scripts, `README.md` owns the current CLI/Gradle/installer surface, `PRODUCT.md` owns principles/architecture) — the restructure should relocate content, not create a second source of truth for anything `AGENTS.md` already assigns.
 
-**Why captured here:** surfaced during the WO-C1 harness publication dry run (2026-09-29) as a docs item to fold into the same BACKLOG pass as the other 4 entries above.
+**Why captured here:** surfaced during the harness publication dry run (2026-09-29).
 
 ---
 
