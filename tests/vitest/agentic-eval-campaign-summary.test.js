@@ -11,7 +11,8 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import os from 'node:os';
 
-import { summarizeCampaign, renderMarkdown, CAMPAIGN_SUMMARY_SCHEMA } from '../../tools/agentic-eval/campaign-summary.mjs';
+import { summarizeCampaign, renderMarkdown, accessScanEffects, CAMPAIGN_SUMMARY_SCHEMA } from '../../tools/agentic-eval/campaign-summary.mjs';
+import { validateSummary } from '../../tools/agentic-eval/readme-evidence.mjs';
 import { GRADING_CHECK_NAMES } from '../../tools/agentic-eval/graders.mjs';
 import { computeExecutionProfileSha256 } from '../../tools/agentic-eval/registries.mjs';
 import { computeRunProvenanceSha256 } from '../../tools/agentic-eval/accepted-run-audit.mjs';
@@ -263,11 +264,13 @@ function v9RecordFields({ reasoningEffortRequested }) {
 }
 
 /** Writes one ACCEPTED, schema-v9 cell -- same layout as writeAcceptedCell, plus the 13 v9
- * recording fields so provenance.reasoning_effort has real data to aggregate over. */
-function writeAcceptedCellV9(campaignDir, cellKey, recordOverrides, { reasoningEffortRequested }) {
+ * recording fields so provenance.reasoning_effort has real data to aggregate over.
+ * `extraRecordFields` (default none) are merged over the record before the audit sidecar is built, so
+ * a test can set session_id_observed or the optional agent_state. */
+function writeAcceptedCellV9(campaignDir, cellKey, recordOverrides, { reasoningEffortRequested, extraRecordFields = {} }) {
   const cellDir = path.join(campaignDir, 'private', cellKey);
   mkdirSync(cellDir, { recursive: true });
-  const record = { ...acceptedRecord({ runId: `run-${cellKey}`, ...recordOverrides }), ...v9RecordFields({ reasoningEffortRequested }) };
+  const record = { ...acceptedRecord({ runId: `run-${cellKey}`, ...recordOverrides }), ...v9RecordFields({ reasoningEffortRequested }), ...extraRecordFields };
   const audit = sidecarFor(record);
   const auditText = JSON.stringify(audit, null, 2);
   const sha256 = createHash('sha256').update(auditText, 'utf8').digest('hex');
@@ -977,5 +980,436 @@ describe('summarizeCampaign -- WO-C7 per-cell schema-2 fields', () => {
         'shell_commands_total', 'success', 'tokens', 'tool_calls_total',
       ].sort());
     });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Session isolation as evidence: cells[] publishes each cell's provider
+// session id and whether its agent-state listing showed a change to anything a later session would
+// load; an access scan of the transcripts (transcript-access-scan.mjs) excludes every cell that
+// reached the corpus, the preregistration or a private-evidence path.
+// ---------------------------------------------------------------------------------------------
+
+const AGENT_STATE_CLEAN = {
+  listed: true, files_before: 12,
+  created: ['projects/p/sessions/s1.jsonl'], deleted: [], modified: ['history.jsonl'],
+  context_relevant_before: [{ path: 'settings.json', size: 10, mtimeMs: 1700000000000 }],
+  context_relevant_changed: [],
+};
+const AGENT_STATE_DIRTY = {
+  listed: true, files_before: 12,
+  created: ['projects/p/memory/MEMORY.md'], deleted: [], modified: [],
+  context_relevant_before: [],
+  context_relevant_changed: ['projects/p/memory/MEMORY.md'],
+};
+const AGENT_STATE_UNLISTED = { listed: false, reason: 'dir_unavailable' };
+
+const claudeCampaignRuntimes = (count) => [{
+  runtime_id: 'claude-code', model_id: 'claude-sonnet-5', campaign_design_id: 'claude-product-vs-free-baseline-v1',
+  campaign_cell_indices: Array.from({ length: count }, (_, i) => i),
+}];
+/** A schema-v9 product cell `claude-code-<n>` with the given extra record fields. */
+function writeV9Cell(dir, cellKey, extraRecordFields) {
+  writeAcceptedCellV9(
+    dir, cellKey,
+    { runtimeId: 'claude-code', condition: 'current-skill', roundIndex: Number(cellKey.split('-').pop()) },
+    { reasoningEffortRequested: 'high', extraRecordFields },
+  );
+}
+const cellOf = (result, key) => result.cells.find((c) => c.cell_key === key);
+
+describe('summarizeCampaign -- session-isolation evidence on cells[] (session_id, agent_state_clean)', () => {
+  it('an accepted cell publishes its provider session id, taken from record.session_id_observed', () => {
+    withTempDir((dir) => {
+      writeManifest(dir, { runtimes: claudeCampaignRuntimes(1) });
+      writeV9Cell(dir, 'claude-code-0', { session_id_observed: 'd3adb33f-0000-4000-8000-000000000001' });
+      expect(cellOf(summarizeCampaign(dir), 'claude-code-0').session_id).toBe('d3adb33f-0000-4000-8000-000000000001');
+    });
+  });
+
+  it('an older (schema 8) record publishes its session id too', () => {
+    withTempDir((dir) => {
+      writeManifest(dir, { runtimes: claudeCampaignRuntimes(1) });
+      writeAcceptedCell(dir, 'claude-code-0', { runtimeId: 'claude-code', condition: 'current-skill', roundIndex: 0 });
+      const cell = cellOf(summarizeCampaign(dir), 'claude-code-0');
+      expect(cell.status).toBe('accepted');
+      expect(cell.session_id).toBe('sess-run-claude-code-0');
+    });
+  });
+
+  it('session_id is null when the record observed no session', () => {
+    withTempDir((dir) => {
+      writeManifest(dir, { runtimes: claudeCampaignRuntimes(1) });
+      writeV9Cell(dir, 'claude-code-0', { session_id_observed: null });
+      const cell = cellOf(summarizeCampaign(dir), 'claude-code-0');
+      expect(cell.status).toBe('accepted');
+      expect(cell.session_id).toBeNull();
+    });
+  });
+
+  it('agent_state_clean is true when the listing succeeded and no context-relevant file changed, although other files did', () => {
+    withTempDir((dir) => {
+      writeManifest(dir, { runtimes: claudeCampaignRuntimes(1) });
+      writeV9Cell(dir, 'claude-code-0', { agent_state: AGENT_STATE_CLEAN });
+      const cell = cellOf(summarizeCampaign(dir), 'claude-code-0');
+      expect(cell.status).toBe('accepted');
+      expect(cell.agent_state_clean).toBe(true);
+    });
+  });
+
+  it('agent_state_clean is false when the listing shows a change to a context-relevant file', () => {
+    withTempDir((dir) => {
+      writeManifest(dir, { runtimes: claudeCampaignRuntimes(1) });
+      writeV9Cell(dir, 'claude-code-0', { agent_state: AGENT_STATE_DIRTY });
+      const cell = cellOf(summarizeCampaign(dir), 'claude-code-0');
+      expect(cell.status).toBe('accepted');
+      expect(cell.agent_state_clean).toBe(false);
+    });
+  });
+
+  it('agent_state_clean is null when the config directory could not be listed', () => {
+    withTempDir((dir) => {
+      writeManifest(dir, { runtimes: claudeCampaignRuntimes(1) });
+      writeV9Cell(dir, 'claude-code-0', { agent_state: AGENT_STATE_UNLISTED });
+      const cell = cellOf(summarizeCampaign(dir), 'claude-code-0');
+      expect(cell.status).toBe('accepted');
+      expect(cell.agent_state_clean).toBeNull();
+    });
+  });
+
+  it('agent_state_clean is null on a record that has no agent_state (every record older than the field)', () => {
+    withTempDir((dir) => {
+      writeManifest(dir, { runtimes: claudeCampaignRuntimes(2) });
+      writeV9Cell(dir, 'claude-code-0', {});
+      writeAcceptedCell(dir, 'claude-code-1', { runtimeId: 'claude-code', condition: 'current-skill', roundIndex: 1 });
+      const result = summarizeCampaign(dir);
+      expect(cellOf(result, 'claude-code-0').status).toBe('accepted');
+      expect(cellOf(result, 'claude-code-0').agent_state_clean).toBeNull();
+      expect(cellOf(result, 'claude-code-1').status).toBe('accepted');
+      expect(cellOf(result, 'claude-code-1').agent_state_clean).toBeNull();
+    });
+  });
+
+  it('a record whose agent_state is malformed is a missing cell, never a clean one', () => {
+    withTempDir((dir) => {
+      writeManifest(dir, { runtimes: claudeCampaignRuntimes(1) });
+      writeV9Cell(dir, 'claude-code-0', { agent_state: { listed: true } });
+      const cell = cellOf(summarizeCampaign(dir), 'claude-code-0');
+      expect(cell.status).toBe('missing');
+      expect(cell.reason).toBe('record_shape_invalid');
+      expect(cell.agent_state_clean).toBeNull();
+      expect(cell.session_id).toBeNull();
+    });
+  });
+
+  it('a D3-negative rejected cell and a missing cell publish null for both keys: a rejection carries neither', () => {
+    withTempDir((dir) => {
+      writeManifest(dir, { runtimes: [{ runtime_id: 'codex-cli', model_id: 'gpt-5.6-terra', campaign_design_id: 'codex-product-vs-free-baseline-v2', campaign_cell_indices: [0, 1] }] });
+      writeRejectedCell(dir, 'codex-cli-0', { runtimeId: 'codex-cli', condition: 'current-skill', roundIndex: 0, d3Qualifying: true });
+      // codex-cli-1 has no directory at all.
+      const result = summarizeCampaign(dir);
+      expect(cellOf(result, 'codex-cli-0').status).toBe('negative-d3');
+      expect(cellOf(result, 'codex-cli-0').session_id).toBeNull();
+      expect(cellOf(result, 'codex-cli-0').agent_state_clean).toBeNull();
+      expect(cellOf(result, 'codex-cli-1').status).toBe('missing');
+      expect(cellOf(result, 'codex-cli-1').session_id).toBeNull();
+      expect(cellOf(result, 'codex-cli-1').agent_state_clean).toBeNull();
+    });
+  });
+
+  it('adds no top-level key and keeps the summary schema number: the new keys live on cells[] only', () => {
+    withTempDir((dir) => {
+      writeManifest(dir, { runtimes: claudeCampaignRuntimes(1) });
+      writeV9Cell(dir, 'claude-code-0', { agent_state: AGENT_STATE_CLEAN });
+      const result = summarizeCampaign(dir);
+      expect(CAMPAIGN_SUMMARY_SCHEMA).toBe(2);
+      expect(result.schema).toBe(2);
+      expect(Object.keys(result).sort()).toEqual([
+        'benchmark_eligible_counts', 'by_runtime_arm', 'campaign_id', 'cells', 'limitations', 'provenance',
+        'provider_mode', 'reason_code', 'scenario_id', 'schema', 'summary_status',
+      ]);
+      for (const group of result.by_runtime_arm) {
+        expect(Object.keys(group)).not.toContain('session_id');
+        expect(Object.keys(group)).not.toContain('agent_state_clean');
+      }
+    });
+  });
+});
+
+describe('the Evidence2 committed campaign summary', () => {
+  const EVIDENCE2_SUMMARY = path.join(fileURLToPath(new URL('../..', import.meta.url)), 'tools', 'runs', 'evidence2-agentic-benchmark-2026-09-30', 'campaign-summary.json');
+
+  it('still validates: the new cell keys are optional, and it carries neither', () => {
+    const committed = JSON.parse(readFileSync(EVIDENCE2_SUMMARY, 'utf8'));
+    expect(committed.schema).toBe(CAMPAIGN_SUMMARY_SCHEMA);
+    expect(validateSummary(committed)).toEqual([]);
+    expect(committed.cells.length).toBeGreaterThan(0);
+    expect(committed.cells.some((c) => 'session_id' in c || 'agent_state_clean' in c)).toBe(false);
+  });
+});
+
+describe('accessScanEffects -- what an access scan does to a campaign summary', () => {
+  const CAMPAIGN = 'campaign-under-test';
+  const scan = (cells, extra = {}) => ({ schema: 1, campaign_id: CAMPAIGN, patterns: ['corpus', 'preregistration', 'private_evidence'], cells, ...extra });
+  const hitCell = (cell_key, hits = [{ label: 'corpus', count: 2 }]) => ({ cell_key, scanned: true, hits });
+  const cleanCell = (cell_key) => ({ cell_key, scanned: true, hits: [] });
+  const missingCell = (cell_key) => ({ cell_key, scanned: false, hits: [] });
+
+  it('excludes a cell with a hit and names it in a ground_truth_access limitation that carries the labels and counts', () => {
+    const effects = accessScanEffects(scan([hitCell('claude-code-1', [{ label: 'corpus', count: 2 }, { label: 'private_root', count: 1 }])]), CAMPAIGN);
+    expect([...effects.excludeCellKeys]).toEqual(['claude-code-1']);
+    expect(effects.limitations).toHaveLength(1);
+    expect(effects.limitations[0]).toContain('ground_truth_access');
+    expect(effects.limitations[0]).toContain('claude-code-1');
+    expect(effects.limitations[0]).toContain('corpus x2');
+    expect(effects.limitations[0]).toContain('private_root x1');
+  });
+
+  it('leaves a clean, scanned cell alone: nothing excluded, nothing reported', () => {
+    const effects = accessScanEffects(scan([cleanCell('claude-code-0')]), CAMPAIGN);
+    expect(effects.excludeCellKeys.size).toBe(0);
+    expect(effects.limitations).toEqual([]);
+  });
+
+  it('accepts a scan with no cells at all', () => {
+    const effects = accessScanEffects(scan([]), CAMPAIGN);
+    expect(effects.excludeCellKeys.size).toBe(0);
+    expect(effects.limitations).toEqual([]);
+  });
+
+  it('keeps a cell whose transcript is missing and reports that access was not verified for it', () => {
+    const effects = accessScanEffects(scan([missingCell('codex-cli-1')]), CAMPAIGN);
+    expect(effects.excludeCellKeys.size).toBe(0);
+    expect(effects.limitations).toHaveLength(1);
+    expect(effects.limitations[0]).toContain('transcript missing: access not verified');
+    expect(effects.limitations[0]).toContain('codex-cli-1');
+  });
+
+  it('orders the limitations by cell key, whatever the order of the scan', () => {
+    const effects = accessScanEffects(scan([missingCell('codex-cli-0'), hitCell('claude-code-2'), hitCell('claude-code-0')]), CAMPAIGN);
+    expect(effects.limitations.map((l) => /(claude-code-\d|codex-cli-\d)/.exec(l)[1])).toEqual(['claude-code-0', 'claude-code-2', 'codex-cli-0']);
+    expect([...effects.excludeCellKeys].sort()).toEqual(['claude-code-0', 'claude-code-2']);
+  });
+
+  it('rejects a scan made for another campaign instead of applying it', () => {
+    expect(() => accessScanEffects(scan([hitCell('claude-code-0')], { campaign_id: 'another-campaign' }), CAMPAIGN)).toThrow(/access scan.*campaign/);
+  });
+
+  it.each([
+    ['null', null],
+    ['an array', []],
+    ['a string', 'scan'],
+    ['another schema number', scan([], { schema: 2 })],
+    ['cells that is not an array', scan('nope')],
+    ['a cell with no cell_key', scan([{ scanned: true, hits: [] }])],
+    ['a cell whose scanned is not a boolean', scan([{ cell_key: 'a', scanned: 'yes', hits: [] }])],
+    ['a cell whose hits is not an array', scan([{ cell_key: 'a', scanned: true, hits: 'x' }])],
+    ['a hit with a zero count', scan([hitCell('a', [{ label: 'corpus', count: 0 }])])],
+    ['a hit with a fractional count', scan([hitCell('a', [{ label: 'corpus', count: 1.5 }])])],
+    ['a hit with an empty label', scan([hitCell('a', [{ label: '', count: 1 }])])],
+    ['a hit with no label at all', scan([hitCell('a', [{ count: 1 }])])],
+    ['a hit whose label is free text rather than a lowercase word', scan([hitCell('a', [{ label: 'C:\\some\\path', count: 1 }])])],
+    ['a cell listed twice', scan([cleanCell('a'), cleanCell('a')])],
+    ['hits on a cell that was not scanned', scan([{ cell_key: 'a', scanned: false, hits: [{ label: 'corpus', count: 1 }] }])],
+  ])('rejects a malformed scan: %s', (_what, bad) => {
+    expect(() => accessScanEffects(bad, CAMPAIGN)).toThrow(/access scan/);
+  });
+});
+
+describe('summarizeCampaign -- { accessScan }', () => {
+  const scan = (cells, extra = {}) => ({ schema: 1, campaign_id: 'campaign-under-test', patterns: ['corpus'], cells, ...extra });
+  const hitCell = (cell_key) => ({ cell_key, scanned: true, hits: [{ label: 'corpus', count: 1 }] });
+
+  function threeCellCampaign(dir) {
+    writeManifest(dir, { runtimes: claudeCampaignRuntimes(3) });
+    for (const i of [0, 1, 2]) writeAcceptedCell(dir, `claude-code-${i}`, { runtimeId: 'claude-code', condition: 'current-skill', roundIndex: i });
+  }
+
+  it('drops a cell with a hit exactly as excludeCellKeys drops it: same cells, groups and provenance, plus one limitation', () => {
+    withTempDir((dir) => {
+      threeCellCampaign(dir);
+      const viaScan = summarizeCampaign(dir, new Set(), { accessScan: scan([hitCell('claude-code-1')]) });
+      const viaExclusion = summarizeCampaign(dir, new Set(['claude-code-1']));
+      expect(viaScan.cells.map((c) => c.cell_key)).toEqual(['claude-code-0', 'claude-code-2']);
+      expect(viaScan.cells).toEqual(viaExclusion.cells);
+      expect(viaScan.by_runtime_arm).toEqual(viaExclusion.by_runtime_arm);
+      expect(viaScan.provenance).toEqual(viaExclusion.provenance);
+      expect(viaScan.by_runtime_arm[0].declared).toBe(2);
+      expect(viaScan.limitations.slice(0, viaExclusion.limitations.length)).toEqual(viaExclusion.limitations);
+      expect(viaScan.limitations).toHaveLength(viaExclusion.limitations.length + 1);
+      expect(viaScan.limitations.at(-1)).toContain('ground_truth_access');
+      expect(viaScan.limitations.at(-1)).toContain('claude-code-1');
+    });
+  });
+
+  it('composes with excludeCellKeys: a cell flagged by either is excluded', () => {
+    withTempDir((dir) => {
+      threeCellCampaign(dir);
+      const result = summarizeCampaign(dir, new Set(['claude-code-0']), { accessScan: scan([hitCell('claude-code-2')]) });
+      expect(result.cells.map((c) => c.cell_key)).toEqual(['claude-code-1']);
+    });
+  });
+
+  it('keeps a cell whose transcript is missing in the summary, and says access was not verified for it', () => {
+    withTempDir((dir) => {
+      threeCellCampaign(dir);
+      const result = summarizeCampaign(dir, new Set(), { accessScan: scan([{ cell_key: 'claude-code-1', scanned: false, hits: [] }]) });
+      expect(result.cells.map((c) => c.cell_key)).toEqual(['claude-code-0', 'claude-code-1', 'claude-code-2']);
+      expect(result.limitations.at(-1)).toContain('transcript missing: access not verified');
+      expect(result.limitations.at(-1)).toContain('claude-code-1');
+    });
+  });
+
+  it('a scan with nothing to report reproduces the output of no scan at all, byte for byte', () => {
+    withTempDir((dir) => {
+      threeCellCampaign(dir);
+      const clean = scan([0, 1, 2].map((i) => ({ cell_key: `claude-code-${i}`, scanned: true, hits: [] })));
+      expect(JSON.stringify(summarizeCampaign(dir, new Set(), { accessScan: clean }))).toBe(JSON.stringify(summarizeCampaign(dir)));
+    });
+  });
+
+  it('throws on a scan made for another campaign, rather than silently applying it', () => {
+    withTempDir((dir) => {
+      threeCellCampaign(dir);
+      expect(() => summarizeCampaign(dir, new Set(), { accessScan: scan([hitCell('claude-code-1')], { campaign_id: 'another-campaign' }) })).toThrow(/access scan.*campaign/);
+    });
+  });
+
+  it('leaves a refused (not live) summary exactly as it was, whatever the scan says', () => {
+    withTempDir((dir) => {
+      writeManifest(dir, { providerMode: 'fake' });
+      const result = summarizeCampaign(dir, new Set(), { accessScan: scan([hitCell('claude-code-1')]) });
+      expect(result.summary_status).toBe('refused');
+      expect(result.limitations).toEqual([]);
+    });
+  });
+});
+
+describe('CLI entry point -- --access-scan <file>', () => {
+  const runSummary = (...args) => spawnSync(process.execPath, [CAMPAIGN_SUMMARY_SCRIPT, ...args], { encoding: 'utf8' });
+  function campaign(dir, count) {
+    writeManifest(dir, { runtimes: claudeCampaignRuntimes(count) });
+    for (let i = 0; i < count; i += 1) writeAcceptedCell(dir, `claude-code-${i}`, { runtimeId: 'claude-code', condition: 'current-skill', roundIndex: i });
+  }
+  function writeScan(dir, cells, extra = {}) {
+    const scanPath = path.join(dir, 'access-scan.json');
+    writeFileSync(scanPath, JSON.stringify({ schema: 1, campaign_id: 'campaign-under-test', patterns: ['corpus'], cells, ...extra }));
+    return scanPath;
+  }
+  const hitCell = (cell_key) => ({ cell_key, scanned: true, hits: [{ label: 'corpus', count: 3 }] });
+
+  it('excludes a cell the scan flags: gone from cells[] and from the declared count', () => {
+    withTempDir((dir) => {
+      campaign(dir, 2);
+      const result = runSummary(dir, '--access-scan', writeScan(dir, [hitCell('claude-code-1')]));
+      expect(result.status).toBe(0);
+      const parsed = JSON.parse(result.stdout);
+      expect(parsed.cells.map((c) => c.cell_key)).toEqual(['claude-code-0']);
+      expect(parsed.by_runtime_arm[0].declared).toBe(1);
+    });
+  });
+
+  it('reports the exclusion as a ground_truth_access limitation that names the cell', () => {
+    withTempDir((dir) => {
+      campaign(dir, 2);
+      const parsed = JSON.parse(runSummary(dir, '--access-scan', writeScan(dir, [hitCell('claude-code-1')])).stdout);
+      const entry = parsed.limitations.find((l) => l.includes('ground_truth_access'));
+      expect(entry).toContain('claude-code-1');
+    });
+  });
+
+  it('composes with --exclude-cells: a cell flagged by either file is excluded', () => {
+    withTempDir((dir) => {
+      campaign(dir, 3);
+      const classificationPath = path.join(dir, 'infra-flake-classification.json');
+      writeFileSync(classificationPath, JSON.stringify({
+        schema: 1, classifier_version: 1,
+        cells: [{ cell_key: 'claude-code-0', runtime_id: 'claude-code', arm: 'product', infra_flake_suspected: true, reason: 'signature_match' }],
+        rollup: [],
+      }));
+      const result = runSummary(dir, '--access-scan', writeScan(dir, [hitCell('claude-code-2')]), '--exclude-cells', classificationPath);
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout).cells.map((c) => c.cell_key)).toEqual(['claude-code-1']);
+    });
+  });
+
+  it('keeps a cell whose transcript is missing, with a "transcript missing: access not verified" limitation', () => {
+    withTempDir((dir) => {
+      campaign(dir, 2);
+      const parsed = JSON.parse(runSummary(dir, '--access-scan', writeScan(dir, [{ cell_key: 'claude-code-1', scanned: false, hits: [] }])).stdout);
+      expect(parsed.cells.map((c) => c.cell_key)).toEqual(['claude-code-0', 'claude-code-1']);
+      expect(parsed.limitations.some((l) => l.includes('transcript missing: access not verified') && l.includes('claude-code-1'))).toBe(true);
+    });
+  });
+
+  it('a scan with nothing to report leaves the output byte-identical to a run without --access-scan', () => {
+    withTempDir((dir) => {
+      campaign(dir, 2);
+      const clean = writeScan(dir, [0, 1].map((i) => ({ cell_key: `claude-code-${i}`, scanned: true, hits: [] })));
+      expect(runSummary(dir, '--access-scan', clean).stdout).toBe(runSummary(dir).stdout);
+    });
+  });
+
+  it('--markdown lists the access-scan limitations too', () => {
+    withTempDir((dir) => {
+      campaign(dir, 2);
+      const markdownPath = path.join(dir, 'out.md');
+      const result = runSummary(dir, '--access-scan', writeScan(dir, [hitCell('claude-code-1')]), '--markdown', markdownPath);
+      expect(result.status).toBe(0);
+      expect(readFileSync(markdownPath, 'utf8')).toContain('ground_truth_access');
+    });
+  });
+
+  it('exits 1 and prints no summary when the scan was made for another campaign', () => {
+    withTempDir((dir) => {
+      campaign(dir, 2);
+      const result = runSummary(dir, '--access-scan', writeScan(dir, [hitCell('claude-code-1')], { campaign_id: 'another-campaign' }));
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toMatch(/access scan/);
+    });
+  });
+
+  it.each([
+    ['is not JSON', 'this is not json'],
+    ['has another schema number', JSON.stringify({ schema: 2, campaign_id: 'campaign-under-test', cells: [] })],
+    ['has a malformed cell', JSON.stringify({ schema: 1, campaign_id: 'campaign-under-test', cells: [{ scanned: true, hits: [] }] })],
+  ])('exits 1 and prints no summary when the scan file %s', (_what, text) => {
+    withTempDir((dir) => {
+      campaign(dir, 2);
+      const scanPath = path.join(dir, 'access-scan.json');
+      writeFileSync(scanPath, text);
+      const result = runSummary(dir, '--access-scan', scanPath);
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toMatch(/access scan/);
+    });
+  });
+
+  it('exits 1 and prints no summary when the scan file does not exist', () => {
+    withTempDir((dir) => {
+      campaign(dir, 2);
+      const result = runSummary(dir, '--access-scan', path.join(dir, 'no-such-scan.json'));
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe('');
+    });
+  });
+
+  it('exits 1 with the usage line when --access-scan has no value', () => {
+    withTempDir((dir) => {
+      campaign(dir, 2);
+      const result = runSummary(dir, '--access-scan');
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toMatch(/usage/i);
+    });
+  });
+
+  it('names --access-scan in its usage line, next to the options it already had', () => {
+    const result = runSummary(path.join(os.tmpdir(), 'aecs-never-created'));
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('--access-scan');
+    expect(result.stderr).toContain('--exclude-cells');
+    expect(result.stderr).toContain('--markdown');
   });
 });

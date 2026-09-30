@@ -1130,6 +1130,9 @@ function buildRunRecord({
     // runSingleCondition (matrix-runner.mjs), never part of the observation contract itself.
     argvSha256, deliveredPromptSha256, envKeys, reasoningEffortRequested, reasoningEffortSource,
     treatmentDeliverySha256, maxBudgetUsd: cellMaxBudgetUsd, timeoutMs: cellTimeoutMs,
+    // Optional: the content-free before/after listing of the agent's config
+    // directory -- absent on a condition result that never took one.
+    agentState,
   } = conditionResult;
   const isCodexCli = selection.runtime.runtime_id === 'codex-cli';
   const isScenario = runKind === 'scenario';
@@ -1433,6 +1436,9 @@ function buildRunRecord({
     // own documented result-event shape carries no cost field; codex-cli.mjs's usageFromTerminal
     // has no cost dimension) -- never speculatively parsed, always null+reason.
     total_cost_usd: nullableMetric(null, isCodexCli ? 'no_cost_reporting' : 'not present on this runtime\'s result event schema'),
+    // Optional schema-9 field, not canonical (schemas.mjs OPTIONAL_RUN_FIELDS_V9): recorded only when
+    // runSingleCondition took the listing, so a record built without one stays exactly as it was.
+    ...(agentState === undefined ? {} : { agent_state: agentState }),
     tokens: {
       input: nullableMetric(observation.terminal.usage.input, observation.terminal.present ? undefined : 'no result event'),
       output: nullableMetric(observation.terminal.usage.output, observation.terminal.present ? undefined : 'no result event'),

@@ -322,6 +322,117 @@ describe('runSingleCondition -- the Claude adapter env reaches the child of both
   }, 30000);
 });
 
+// agent_state (session-isolation evidence): runSingleCondition lists the agent's config
+// directory -- the child env's CLAUDE_CONFIG_DIR for claude-code, CODEX_HOME for codex-cli -- right
+// before the session starts (after beforeSpawn) and right after it ends, and returns the difference as
+// `agentState`. The record builder stores it as the optional record field agent_state.
+describe('runSingleCondition -- the agent state listing around the session', () => {
+  // Runs one free-arm cell against a stand-in adapter whose "session" is `session(stateDir)`, and returns
+  // the condition result. The state directory is pre-filled by `prepareState(stateDir)`, and `beforeSpawn(stateDir)`
+  // runs as runSingleCondition's beforeSpawn callback.
+  async function runCell({
+    runtimeId = 'claude-code', stateVar = 'CLAUDE_CONFIG_DIR', stateVarValue = undefined, prepareState = () => {},
+    beforeSpawn = null, session = () => {},
+  }) {
+    const dirs = ['home', 'fixture', 'shim', 'clean-path', 'state'].map((name) => mkdtempSync(path.join(os.tmpdir(), `aemr-agent-state-${name}-`)));
+    const [kmpEvalTempHome, fixtureDir, shimDir, cleanPathDir, stateDir] = dirs;
+    let result = null;
+    try {
+      prepareState(stateDir);
+      const adapter = makeEnvCaptureAdapter({ runtimeId, onCollect: () => session(stateDir) });
+      const stateValue = stateVarValue === undefined ? stateDir : stateVarValue;
+      result = await runSingleCondition({
+        condition: 'no-skill',
+        materializeFixture: () => ({ fixtureDir }),
+        previousFixtureDir: undefined,
+        cleanupFixtureOnce: () => {},
+        resetGradleToSnapshot: () => {},
+        kmpEvalTempHome,
+        sharedEnv: {
+          Path: cleanPathDir,
+          PATH: `${shimDir}${path.delimiter}${cleanPathDir}`,
+          ...(stateValue === null ? {} : { [stateVar]: stateValue }),
+        },
+        baseArgv: ['fake'],
+        snapshotDir: null,
+        targetPluginName: 'kmp-test-runner',
+        targetSkillName: 'kmp-test-runner',
+        timeoutMs: 30000,
+        runtimeAdapter: adapter,
+        productAccessMode: 'free-baseline-no-product',
+        shimDir,
+        cellOrdinal: 0,
+        ...(beforeSpawn ? { beforeSpawn: async () => beforeSpawn(stateDir) } : {}),
+      });
+      return result;
+    } finally {
+      if (result?.evidenceDir) rmSync(result.evidenceDir, { recursive: true, force: true });
+      for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  const put = (dir, relativePath, content = 'x') => {
+    const full = path.join(dir, ...relativePath.split('/'));
+    mkdirSync(path.dirname(full), { recursive: true });
+    writeFileSync(full, content);
+  };
+
+  it('returns what the session created in the claude-code config directory, and which of it a later session would load', async () => {
+    const result = await runCell({
+      prepareState: (dir) => put(dir, 'CLAUDE.md', 'pre-existing'),
+      session: (dir) => { put(dir, 'projects/x/memory/MEMORY.md'); put(dir, 'history.jsonl'); },
+    });
+    expect(result.agentState).toMatchObject({
+      listed: true,
+      files_before: 1,
+      created: ['history.jsonl', 'projects/x/memory/MEMORY.md'],
+      deleted: [],
+      modified: [],
+      context_relevant_changed: ['projects/x/memory/MEMORY.md'],
+    });
+    expect(result.agentState.context_relevant_before.map((f) => f.path)).toEqual(['CLAUDE.md']);
+  }, 30000);
+
+  it('a session that changes nothing has no change at all', async () => {
+    const result = await runCell({ prepareState: (dir) => put(dir, 'CLAUDE.md') });
+    expect(result.agentState).toMatchObject({ listed: true, created: [], deleted: [], modified: [], context_relevant_changed: [] });
+  }, 30000);
+
+  it('takes the before-listing after beforeSpawn returns: a file beforeSpawn creates is "before", never "created"', async () => {
+    const result = await runCell({
+      beforeSpawn: (dir) => put(dir, 'rules/from-before-spawn.md'),
+      session: (dir) => put(dir, 'skills/a/SKILL.md'),
+    });
+    expect(result.agentState.created).toEqual(['skills/a/SKILL.md']);
+    expect(result.agentState.context_relevant_before.map((f) => f.path)).toEqual(['rules/from-before-spawn.md']);
+  }, 30000);
+
+  it('takes the after-listing right after the session, so a file the session deletes is reported deleted', async () => {
+    const result = await runCell({
+      prepareState: (dir) => put(dir, 'agents/reviewer.md'),
+      session: (dir) => rmSync(path.join(dir, 'agents', 'reviewer.md')),
+    });
+    expect(result.agentState.deleted).toEqual(['agents/reviewer.md']);
+    expect(result.agentState.context_relevant_changed).toEqual(['agents/reviewer.md']);
+  }, 30000);
+
+  it('lists CODEX_HOME for codex-cli', async () => {
+    const result = await runCell({ runtimeId: 'codex-cli', stateVar: 'CODEX_HOME', session: (dir) => put(dir, 'AGENTS.md') });
+    expect(result.agentState).toMatchObject({ listed: true, created: ['AGENTS.md'], context_relevant_changed: ['AGENTS.md'] });
+  }, 30000);
+
+  it('records listed:false with reason dir_unavailable, and the cell still runs, when the child env has no config directory variable', async () => {
+    const result = await runCell({ stateVarValue: null });
+    expect(result.agentState).toEqual({ listed: false, reason: 'dir_unavailable' });
+    expect(result.didSpawn).toBe(true);
+  }, 30000);
+
+  it('records listed:false with reason dir_unavailable when the variable points at a directory that does not exist', async () => {
+    const result = await runCell({ stateVarValue: path.join(os.tmpdir(), 'aemr-agent-state-never-created') });
+    expect(result.agentState).toEqual({ listed: false, reason: 'dir_unavailable' });
+  }, 30000);
+});
+
 describe("runScenarioMatrix -- crash-safety journal preserves an earlier cell across a later cell's materialization exception", () => {
   it("cell 0 spawns and completes for real; cell 1's materializeFixture throws -- cell 0's raw survives, tagged materializing_cell/cellOrdinal:1", async () => {
     const journalRunsRoot = mkdtempSync(path.join(os.tmpdir(), 'aemr-journal-root-'));

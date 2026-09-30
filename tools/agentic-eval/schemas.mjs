@@ -194,6 +194,11 @@ const RUN_CANONICAL_FIELDS_V9 = [
   ...RUN_CANONICAL_FIELDS_V8,
   ...V9_FIELDS,
 ];
+// Optional schema-9 fields: recorded when the harness has the evidence, never required, hence never
+// canonical -- a record without one (every record that predates it) stays valid, and on schema 9 none
+// is an "unrecognized field". agent_state is the content-free before/after listing
+// of the agent's config directory (agent-state.mjs); validateRun checks its shape when present.
+const OPTIONAL_RUN_FIELDS_V9 = ['agent_state'];
 
 // Section 9.5's exact closed vocabularies -- exported so graders.mjs (the sole producer) and this
 // file's own validator can never independently drift on what values are legal.
@@ -858,6 +863,79 @@ function validateOutcomeAssessment(obj, errors) {
   }
 }
 
+// agent_state, either {listed:false, reason} (the config directory could not be listed) or the listing:
+// counts and path lists, never file contents. Closed key sets in both directions, so a stray key can
+// never carry anything along, and context_relevant_changed must be drawn from the three change lists it
+// summarizes. Error messages never echo a path.
+const AGENT_STATE_UNLISTED_REASON_VALUES = ['dir_unavailable'];
+const AGENT_STATE_UNLISTED_KEYS = ['listed', 'reason'];
+const AGENT_STATE_LISTED_KEYS = [
+  'listed', 'files_before', 'created', 'deleted', 'modified', 'context_relevant_before', 'context_relevant_changed',
+];
+const AGENT_STATE_FILE_KEYS = ['path', 'size', 'mtimeMs'];
+
+function agentStatePathList(state, key, errors) {
+  const field = `agent_state.${key}`;
+  const value = state[key];
+  if (!Array.isArray(value) || value.some((p) => typeof p !== 'string' || p.length === 0)) {
+    errors.push({ field, message: 'must be an array of non-empty strings' });
+    return [];
+  }
+  return value;
+}
+
+function validateAgentState(state, errors) {
+  if (!isPlainObjectLike(state)) {
+    errors.push({ field: 'agent_state', message: 'must be an object' });
+    return;
+  }
+  if (state.listed === false) {
+    checkExactObjectKeysV6(state, AGENT_STATE_UNLISTED_KEYS, 'agent_state', errors);
+    if (Object.hasOwn(state, 'reason') && !AGENT_STATE_UNLISTED_REASON_VALUES.includes(state.reason)) {
+      errors.push({ field: 'agent_state.reason', message: `must be one of ${AGENT_STATE_UNLISTED_REASON_VALUES.join('|')} when listed is false` });
+    }
+    return;
+  }
+  if (state.listed !== true) {
+    errors.push({ field: 'agent_state.listed', message: 'must be a boolean' });
+    return;
+  }
+  checkExactObjectKeysV6(state, AGENT_STATE_LISTED_KEYS, 'agent_state', errors);
+  if (Object.hasOwn(state, 'files_before') && !nonNegInt(state.files_before)) {
+    errors.push({ field: 'agent_state.files_before', message: 'must be a non-negative integer' });
+  }
+  const changedPaths = new Set();
+  for (const key of ['created', 'deleted', 'modified']) {
+    if (Object.hasOwn(state, key)) for (const p of agentStatePathList(state, key, errors)) changedPaths.add(p);
+  }
+  if (Object.hasOwn(state, 'context_relevant_changed')) {
+    for (const p of agentStatePathList(state, 'context_relevant_changed', errors)) {
+      if (!changedPaths.has(p)) {
+        errors.push({ field: 'agent_state.context_relevant_changed', message: 'every entry must also be in created, deleted or modified' });
+      }
+    }
+  }
+  if (Object.hasOwn(state, 'context_relevant_before')) {
+    if (!Array.isArray(state.context_relevant_before)) {
+      errors.push({ field: 'agent_state.context_relevant_before', message: 'must be an array' });
+      return;
+    }
+    state.context_relevant_before.forEach((entry, index) => {
+      const field = `agent_state.context_relevant_before[${index}]`;
+      if (!checkExactObjectKeysV6(entry, AGENT_STATE_FILE_KEYS, field, errors)) return;
+      if (Object.hasOwn(entry, 'path') && (typeof entry.path !== 'string' || entry.path.length === 0)) {
+        errors.push({ field: `${field}.path`, message: 'must be a non-empty string' });
+      }
+      if (Object.hasOwn(entry, 'size') && !nonNegInt(entry.size)) {
+        errors.push({ field: `${field}.size`, message: 'must be a non-negative integer' });
+      }
+      if (Object.hasOwn(entry, 'mtimeMs') && !(typeof entry.mtimeMs === 'number' && Number.isFinite(entry.mtimeMs) && entry.mtimeMs >= 0)) {
+        errors.push({ field: `${field}.mtimeMs`, message: 'must be a non-negative finite number' });
+      }
+    });
+  }
+}
+
 export function validateRun(run) {
   const errors = [];
   const warnings = [];
@@ -876,7 +954,9 @@ export function validateRun(run) {
   const canonicalFields = runCanonicalFieldsFor(run.schema);
   const keys = new Set(Object.keys(run));
   for (const f of canonicalFields) if (!keys.has(f)) errors.push({ field: f, message: 'missing required field' });
-  for (const k of keys) if (!canonicalFields.includes(k)) warnings.push({ field: k, message: 'unrecognized field' });
+  const optionalFields = run.schema === 9 ? OPTIONAL_RUN_FIELDS_V9 : [];
+  for (const k of keys) if (!canonicalFields.includes(k) && !optionalFields.includes(k)) warnings.push({ field: k, message: 'unrecognized field' });
+  if (run.schema === 9 && keys.has('agent_state')) validateAgentState(run.agent_state, errors);
 
   if (typeof run.run_id !== 'string' || run.run_id.length === 0) errors.push({ field: 'run_id', message: 'must be a non-empty string' });
   if (!RUN_KIND_VALUES.includes(run.run_kind)) errors.push({ field: 'run_kind', message: `must be one of ${RUN_KIND_VALUES.join('|')}` });

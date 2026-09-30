@@ -114,6 +114,20 @@ export function validateSummary(summary) {
       }
     }
   }
+  // Optional per-cell isolation keys (campaign-summary.mjs, session-isolation evidence): absent from every summary
+  // that predates them (Evidence2's, for one), and never required. When a cell does carry one it must
+  // have its type, so a corrupted value can never read as "clean" downstream.
+  const cells = Array.isArray(summary.cells) ? summary.cells : [];
+  cells.forEach((cell, index) => {
+    if (cell == null || typeof cell !== 'object') return;
+    const name = typeof cell.cell_key === 'string' ? cell.cell_key : `#${index}`;
+    if ('session_id' in cell && cell.session_id !== null && !(typeof cell.session_id === 'string' && cell.session_id.length > 0)) {
+      errors.push(`cells[${name}].session_id must be a non-empty string or null`);
+    }
+    if ('agent_state_clean' in cell && cell.agent_state_clean !== null && typeof cell.agent_state_clean !== 'boolean') {
+      errors.push(`cells[${name}].agent_state_clean must be true, false or null`);
+    }
+  });
   return errors;
 }
 

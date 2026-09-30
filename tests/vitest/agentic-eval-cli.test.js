@@ -2846,7 +2846,7 @@ describe('finalizeAndWriteMatrixRecords -- gate rejection precedence over sideca
   // TEST_RUN_RECORD_V6_INPUTS seam, matching the sibling "provenance-bound field redacted" describe
   // block's own realV6ScenarioRecord pattern -- not shared across describe blocks (this file's own
   // established convention), so duplicated locally rather than hoisted.
-  function completeScenarioMatrix() {
+  function completeScenarioMatrix(conditionExtras = {}) {
     const shared = {
       runKind: 'scenario', daemonPolicy: 'disabled-via-gradle-user-home-properties',
       allowedGradleTasks: [], allowedKmpTestSubcommands: ['doctor'], policySha256: computePolicySha256(),
@@ -2876,15 +2876,34 @@ describe('finalizeAndWriteMatrixRecords -- gate rejection precedence over sideca
     };
     return [
       buildRunRecord({
-        ...shared, conditionResult: { observation: minimalObservation(), startedAt, endedAt, cellOrdinal: 0, ...v9RecordingFields },
+        ...shared, conditionResult: { observation: minimalObservation(), startedAt, endedAt, cellOrdinal: 0, ...v9RecordingFields, ...conditionExtras },
         condition: 'current-skill', scenarioId: 'test-gate-precedence', skillSourceSha: 'a'.repeat(40), orderIndex: 0,
       }),
       buildRunRecord({
-        ...shared, conditionResult: { observation: minimalObservation(), startedAt, endedAt, cellOrdinal: 1, ...v9RecordingFields },
+        ...shared, conditionResult: { observation: minimalObservation(), startedAt, endedAt, cellOrdinal: 1, ...v9RecordingFields, ...conditionExtras },
         condition: 'no-skill', scenarioId: 'test-gate-precedence', skillSourceSha: null, orderIndex: 1,
       }),
     ];
   }
+
+  // agent_state (session-isolation evidence): runSingleCondition's result carries the before/after
+  // listing of the agent's config directory as `agentState`, and buildRunRecord passes it through as the
+  // optional schema-9 field `agent_state`. A result without it leaves the field out, as before.
+  it('a condition result that carries agentState lands in the record as agent_state, and that field validates', () => {
+    const agentState = {
+      listed: true, files_before: 2, created: [], deleted: [], modified: ['CLAUDE.md'],
+      context_relevant_before: [{ path: 'CLAUDE.md', size: 1, mtimeMs: 2 }], context_relevant_changed: ['CLAUDE.md'],
+    };
+    const records = completeScenarioMatrix({ agentState });
+    for (const record of records) {
+      expect(record.agent_state).toEqual(agentState);
+      expect(validateRun(record).errors.filter((e) => e.field === 'agent_state' || e.field.startsWith('agent_state.'))).toEqual([]);
+    }
+  });
+
+  it('a condition result without agentState leaves agent_state out of the record', () => {
+    for (const record of completeScenarioMatrix()) expect(Object.keys(record)).not.toContain('agent_state');
+  });
 
   it('an ACCEPTED matrix promotes NOTHING when the sidecar builder fails, and reports why', async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'aec-gate-precedence-accept-fail-'));

@@ -21,6 +21,7 @@
 import { mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { delimiter as pathDelimiter, join, normalize } from 'node:path';
 
+import { agentStateDir, takeAgentStateListing, buildAgentState } from './agent-state.mjs';
 import { buildPathShim } from './path-shim.mjs';
 import { materializeSkillSnapshot, materializeGradleUserHome, mkdtempLongPathSafe, realpath, applyFixtureSetup } from './materialize.mjs';
 import { computeSkillSnapshotArtifact, computeArgvArtifact, computeDeliveredSnapshotArtifact, computePromptArtifact } from './input-artifacts.mjs';
@@ -466,11 +467,17 @@ export async function runSingleCondition({ condition, materializeFixture, previo
   // Opt-in durable campaign claim. This is deliberately the last fallible operation before the
   // provider spawn; once it succeeds, a crash burns the slot. Historical callers omit it.
   if (beforeSpawn) await beforeSpawn();
+  // Session-isolation evidence: list the agent's config directory -- metadata only, no file
+  // is ever read -- right before the spawn and right after the session ends. A listing that cannot be
+  // taken is recorded as dir_unavailable (agent-state.mjs never throws) and never stops the cell.
+  const agentStateDirectory = agentStateDir(runtimeAdapter.id, conditionEnv);
+  const agentStateBefore = takeAgentStateListing(agentStateDirectory);
   const sources = await runtimeAdapter.collectObservationSources(argv, {
     env: conditionEnv, cwd: fixtureDir, timeoutMs,
     onSpawned: () => { didSpawn = true; spawnStartedAt = Date.now(); },
   });
   const endedAt = new Date();
+  const agentStateAfter = takeAgentStateListing(agentStateDirectory);
 
   // The next operation after collectObservationSources resolves, before any normalization touches
   // anything -- persists spawn_started/spawn_failed through raw_persisted as one journal operation.
@@ -548,6 +555,9 @@ export async function runSingleCondition({ condition, materializeFixture, previo
     argvSha256: argvArtifact.argv_sha256,
     deliveredPromptSha256: deliveredPromptArtifact?.prompt_sha256 ?? null,
     envKeys,
+    // The content-free before/after listing of the agent's config directory; buildRunRecord records it
+    // as the optional schema-9 field agent_state.
+    agentState: buildAgentState(runtimeAdapter.id, agentStateBefore, agentStateAfter),
     reasoningEffortRequested,
     reasoningEffortSource,
     treatmentDeliverySha256: treatmentDeliveryArtifact?.delivery_sha256 ?? null,

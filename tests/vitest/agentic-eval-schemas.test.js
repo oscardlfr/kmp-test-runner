@@ -2442,6 +2442,72 @@ describe('schema v9 (eval-v2 recording fields, design.md (d)) -- reasoning effor
       expect(validateRun(v9Base({ max_budget_usd: { value: -0.01, reason: null } })).errors.some((e) => e.field === 'max_budget_usd')).toBe(true);
     });
   });
+
+  // agent_state (session-isolation evidence): the content-free before/after listing of the
+  // agent's config directory, an OPTIONAL field of schema-9 records. It is not a canonical field and
+  // does not bump the schema: a record without it stays valid, and a record that has it is checked.
+  describe('agent_state -- optional, validated when present, never an unrecognized-field warning on schema 9', () => {
+    const LISTED = {
+      listed: true, files_before: 12, created: ['projects/x/session.jsonl'], deleted: [], modified: ['history.jsonl'],
+      context_relevant_before: [{ path: 'projects/x/memory/MEMORY.md', size: 10, mtimeMs: 1750000000000.5 }],
+      context_relevant_changed: [],
+    };
+    const UNLISTED = { listed: false, reason: 'dir_unavailable' };
+
+    it('GREEN: a schema-9 record with no agent_state (the Evidence2 shape) validates cleanly', () => {
+      expect(validateRun(v9Base())).toEqual({ errors: [], warnings: [] });
+    });
+
+    it('GREEN: a listed agent_state validates, with no error and no unrecognized-field warning', () => {
+      expect(validateRun(v9Base({ agent_state: LISTED }))).toEqual({ errors: [], warnings: [] });
+    });
+
+    it('GREEN: an unlisted agent_state (listed:false, reason:dir_unavailable) validates', () => {
+      expect(validateRun(v9Base({ agent_state: UNLISTED }))).toEqual({ errors: [], warnings: [] });
+    });
+
+    it('GREEN: a listed agent_state whose context-relevant changes are a subset of the created, deleted and modified files validates', () => {
+      const state = { ...LISTED, created: ['rules/a.md'], deleted: ['skills/b/SKILL.md'], modified: ['CLAUDE.md'], context_relevant_changed: ['CLAUDE.md', 'rules/a.md', 'skills/b/SKILL.md'] };
+      expect(validateRun(v9Base({ agent_state: state })).errors).toEqual([]);
+    });
+
+    it('agent_state is still an unrecognized field on a record of an older schema, as before', () => {
+      const result = validateRun(v8BaseV9({ agent_state: UNLISTED }));
+      expect(result.warnings).toContainEqual({ field: 'agent_state', message: 'unrecognized field' });
+    });
+
+    it.each([
+      ['null', null],
+      ['an array', []],
+      ['a string', 'listed'],
+      ['an empty object', {}],
+      ['listed that is not a boolean', { ...LISTED, listed: 'yes' }],
+      ['listed:false without a reason', { listed: false }],
+      ['listed:false with a reason outside the closed vocabulary', { listed: false, reason: 'because' }],
+      ['listed:false carrying listing fields', { ...UNLISTED, files_before: 0 }],
+      ['listed:true without its listing fields', { listed: true }],
+      ['listed:true that also carries a reason', { ...LISTED, reason: 'dir_unavailable' }],
+      ['a negative files_before', { ...LISTED, files_before: -1 }],
+      ['a fractional files_before', { ...LISTED, files_before: 1.5 }],
+      ['created that is not an array', { ...LISTED, created: 'a' }],
+      ['created with a non-string path', { ...LISTED, created: [1] }],
+      ['deleted with an empty path', { ...LISTED, deleted: [''] }],
+      ['modified that is null', { ...LISTED, modified: null }],
+      ['a context_relevant_before entry without size and mtimeMs', { ...LISTED, context_relevant_before: [{ path: 'a' }] }],
+      ['a context_relevant_before entry with a negative size', { ...LISTED, context_relevant_before: [{ path: 'a', size: -1, mtimeMs: 1 }] }],
+      ['a context_relevant_before entry with an extra key', { ...LISTED, context_relevant_before: [{ path: 'a', size: 1, mtimeMs: 1, content: 'x' }] }],
+      ['a context_relevant_changed path that is in none of created, deleted and modified', { ...LISTED, context_relevant_changed: ['CLAUDE.md'] }],
+      ['an unrecognized key', { ...LISTED, extra: 1 }],
+    ])('RED: %s is rejected', (_label, bad) => {
+      const errors = validateRun(v9Base({ agent_state: bad })).errors;
+      expect(errors.some((e) => e.field === 'agent_state' || e.field.startsWith('agent_state.'))).toBe(true);
+    });
+
+    it('agent_state is not a canonical field: RUN_CANONICAL_FIELDS for schema 9 never listed it, so its absence is never a missing-field error', () => {
+      const { agent_state: _absent, ...without } = v9Base({ agent_state: UNLISTED });
+      expect(validateRun(without).errors.some((e) => e.field === 'agent_state')).toBe(false);
+    });
+  });
 });
 
 // Explicit backward-validation proof (task requirement): loads and validates all 8 historical
