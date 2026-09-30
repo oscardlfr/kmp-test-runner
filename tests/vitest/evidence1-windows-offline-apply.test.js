@@ -571,7 +571,10 @@ $script:calls|ConvertTo-Json -Compress
   });
 
   it.skipIf(process.platform !== 'win32')('re-registers only the canonical existing VM configuration during recovery', () => {
-    const fixture = mkdtempSync(resolve(tmpdir(), 'e1-offline-reregister-'));
+    // Short-name-TEMP-alias root cause -- see publish-harness.mjs's TEST_FIXES comment for
+    // evidence1-codex-pilot-describe.test.js. This test already only runs on win32.
+    mkdirSync('C:/kmp-eval/scratch', { recursive: true });
+    const fixture = mkdtempSync(resolve('C:/kmp-eval/scratch', 'e1-offline-reregister-'));
     try {
       const vmRoot = resolve(fixture, 'vm-root');
       const config = resolve(vmRoot, 'Evidence1-Runner-E2E/Evidence1-Runner-E2E/Virtual Machines/11111111-1111-1111-1111-111111111111.vmcx');

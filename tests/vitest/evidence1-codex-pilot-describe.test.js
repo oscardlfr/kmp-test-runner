@@ -18,6 +18,13 @@ import { canonicalJsonSha256 } from '../../tools/agentic-eval/canonical-json.mjs
 import { GRADING_CHECK_NAMES } from '../../tools/agentic-eval/graders.mjs';
 import { validateRun } from '../../tools/agentic-eval/schemas.mjs';
 
+// See the NEW/run-36673233339 comment in publish-harness.mjs's TEST_FIXES for this file: avoids
+// GitHub-hosted windows-latest's short-name (RUNNER~1) TEMP alias, which readStrictJson()'s own
+// realpathSync.native() tamper check in the production reducer correctly (and unrelatedly) flags
+// as a path-identity mismatch.
+const scratchParent = process.platform === 'win32' ? 'C:/kmp-eval/scratch' : tmpdir();
+if (process.platform === 'win32') mkdirSync(scratchParent, { recursive: true });
+
 const HASH_A = canonicalJsonSha256({
   id: 'sandboxed-unrestricted-v1',
   isolation_kind: 'external-sandbox',
@@ -243,7 +250,7 @@ function realSidecarFor(record) {
 }
 
 function createFixture({ mutateRecord, mutateSidecar, secret = null, realValidators = false } = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'e1-codex-describe-'));
+  const root = mkdtempSync(join(scratchParent, 'e1-codex-describe-'));
   roots.push(root);
   const auditDir = join(root, 'audit');
   mkdirSync(auditDir);
@@ -489,7 +496,7 @@ describe('Evidence1 Codex ineligible pilot descriptive reducer', () => {
 
   it('requires a sidecar to live at the record-relative accepted_audit path exactly', () => {
     const manifest = createFixture();
-    const alternateRoot = mkdtempSync(join(tmpdir(), 'e1-codex-sidecar-substitute-'));
+    const alternateRoot = mkdtempSync(join(scratchParent, 'e1-codex-sidecar-substitute-'));
     roots.push(alternateRoot);
     const alternateAudit = join(alternateRoot, 'audit');
     mkdirSync(alternateAudit);

@@ -8,6 +8,11 @@ import {
 } from '../../tools/agentic-eval/final-campaign-control.mjs';
 import { runSingleCondition } from '../../tools/agentic-eval/matrix-runner.mjs';
 
+// See the NEW/run-36673233339 comment in publish-harness.mjs's TEST_FIXES for
+// evidence1-codex-pilot-describe.test.js -- identical short-name-TEMP-alias root cause.
+const scratchParent = process.platform === 'win32' ? 'C:/kmp-eval/scratch' : tmpdir();
+if (process.platform === 'win32') mkdirSync(scratchParent, { recursive: true });
+
 const roots = [];
 afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -29,7 +34,7 @@ function plan() {
 }
 
 function fixture(overrides = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'e1-final-control-')); roots.push(root);
+  const root = mkdtempSync(join(scratchParent, 'e1-final-control-')); roots.push(root);
   const campaignId = randomUUID(); const groupRunId = randomUUID();
   const authorizationSha = hash(Buffer.from(FINAL_CODEX_AUTHORIZATION_LITERAL));
   const scopeDigest = hash(Buffer.from([
