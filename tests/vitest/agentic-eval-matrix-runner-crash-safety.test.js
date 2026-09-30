@@ -254,6 +254,74 @@ describe('runSingleCondition -- free-baseline-no-product strips product surface 
   }, 30000);
 });
 
+// What the Claude adapter puts in the env (prepareIsolatedHome) must reach the child of BOTH arms. The
+// free arm's env is the adapter's env minus every KMP_EVAL_/KMP_TEST_ name and the kmp-test shim, so this
+// runs the real adapter's env through runSingleCondition's per-arm build and reads what the child is
+// spawned with, rather than trusting that the one shared object is used as it is.
+describe('runSingleCondition -- the Claude adapter env reaches the child of both arms', () => {
+  const PROFILES = [
+    ['strict-policy-v1', undefined],
+    ['sandboxed-unrestricted-v1', { policy_mode: 'not_applicable' }],
+  ];
+
+  async function spawnedEnv({ condition, productAccessMode, executionProfile }) {
+    const dirs = ['home', 'fixture', 'shim', 'clean-path', 'gradle', 'snapshot'].map((name) => mkdtempSync(path.join(os.tmpdir(), `aemr-claude-env-${name}-`)));
+    const [kmpEvalTempHome, fixtureDir, shimDir, cleanPathDir, gradleUserHome, snapshotDir] = dirs;
+    // The product arm reads the skill text from its snapshot to build the explicit skill treatment.
+    mkdirSync(path.join(snapshotDir, '.skills', 'kmp-test-runner'), { recursive: true });
+    writeFileSync(path.join(snapshotDir, '.skills', 'kmp-test-runner', 'SKILL.md'), 'test skill text');
+    let prepared = null;
+    let result = null;
+    let captured = null;
+    try {
+      prepared = await claudeCodeRuntimeAdapter.prepareIsolatedHome({
+        shimDir, gradleUserHome, kmpEvalTempHome, expectedFixtureRoot: fixtureDir,
+        allowedGradleTasks: [':app:test'], allowedKmpTestSubcommands: ['parallel'], executionProfile,
+      });
+      const adapter = makeEnvCaptureAdapter({ runtimeId: 'claude-code', onCollect: ({ env }) => { captured = env; } });
+      result = await runSingleCondition({
+        condition,
+        materializeFixture: () => ({ fixtureDir }),
+        previousFixtureDir: undefined,
+        cleanupFixtureOnce: () => {},
+        resetGradleToSnapshot: () => {},
+        kmpEvalTempHome,
+        // The adapter's own env, except PATH: a host that has kmp-test on its PATH would otherwise fail the
+        // free arm's product-access preflight for a reason that has nothing to do with this test.
+        sharedEnv: { ...prepared.sharedEnv, Path: cleanPathDir, PATH: `${shimDir}${path.delimiter}${cleanPathDir}` },
+        baseArgv: { argv: ['fake'], stdinText: 'test prompt' },
+        snapshotDir,
+        targetPluginName: 'kmp-test-runner',
+        targetSkillName: 'kmp-test-runner',
+        timeoutMs: 30000,
+        runtimeAdapter: adapter,
+        ...(productAccessMode ? { productAccessMode } : {}),
+        shimDir,
+        cellOrdinal: 0,
+      });
+      return captured;
+    } finally {
+      if (result?.evidenceDir) rmSync(result.evidenceDir, { recursive: true, force: true });
+      for (const p of prepared?.cleanupPaths ?? []) rmSync(p, { recursive: true, force: true });
+      for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it.each(PROFILES)('the product arm child env carries CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 (%s)', async (_id, executionProfile) => {
+    const env = await spawnedEnv({ condition: 'current-skill', executionProfile });
+    expect(env).not.toBeNull();
+    expect(env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1');
+    expect(Object.keys(env).some((key) => /^KMP_EVAL_/i.test(key))).toBe(true); // this really is the product arm's env
+  }, 30000);
+
+  it.each(PROFILES)('the free arm child env carries CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 although it drops every KMP_EVAL_/KMP_TEST_ name (%s)', async (_id, executionProfile) => {
+    const env = await spawnedEnv({ condition: 'no-skill', productAccessMode: 'free-baseline-no-product', executionProfile });
+    expect(env).not.toBeNull();
+    expect(env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1');
+    expect(Object.keys(env).filter((key) => /^KMP_(EVAL|TEST)_/i.test(key))).toEqual([]); // and this really is the free arm's env
+  }, 30000);
+});
+
 describe("runScenarioMatrix -- crash-safety journal preserves an earlier cell across a later cell's materialization exception", () => {
   it("cell 0 spawns and completes for real; cell 1's materializeFixture throws -- cell 0's raw survives, tagged materializing_cell/cellOrdinal:1", async () => {
     const journalRunsRoot = mkdtempSync(path.join(os.tmpdir(), 'aemr-journal-root-'));

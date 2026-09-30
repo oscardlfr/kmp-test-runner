@@ -148,6 +148,13 @@ export async function prepareIsolatedHome({
       extraAllowedEnvNames: [
         'CLAUDE_CODE_GIT_BASH_PATH',
         'CLAUDE_CODE_USE_POWERSHELL_TOOL',
+        // The guest launcher sets these five on the node process; without an entry here the allowlist
+        // drops them before the agent starts. Passed through, with the parent's value, in every profile.
+        'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
+        'DISABLE_TELEMETRY',
+        'DISABLE_ERROR_REPORTING',
+        'ENABLE_CLAUDEAI_MCP_SERVERS',
+        'CLAUDE_CODE_DISABLE_ARTIFACT',
         ...(policyApplies ? [] : ['CLAUDE_CONFIG_DIR', 'KMP_AGENTIC_EVAL_LIVE_SPAWN_PREFLIGHT']),
       ],
     });
@@ -159,7 +166,18 @@ export async function prepareIsolatedHome({
     // `condition` -- so setting it here applies to both arms by construction. Codex's own
     // prepareIsolatedHome (runtimes/codex-cli.mjs) is untouched; these vars are Claude Code-only
     // (docs.claude.com/en/docs/claude-code/env-vars).
-    sharedEnv = { ...sharedEnv, BASH_DEFAULT_TIMEOUT_MS: '600000', BASH_MAX_TIMEOUT_MS: '600000' };
+    // The timeouts are 30 minutes, so a long multi-module Gradle run is not cut by the tool: the largest
+    // default Claude Code does not also apply to background commands ("longer than 30 minutes").
+    // CLAUDE_CODE_DISABLE_AUTO_MEMORY=1: "Claude does not create or load auto memory files"
+    // (code.claude.com/docs/en/env-vars). Auto memory is on by default and its directory is keyed by the
+    // git repository, so without this every session of a campaign, in both arms, shared one memory
+    // directory. Set here, never inherited: the allowlist drops any ambient value.
+    sharedEnv = {
+      ...sharedEnv,
+      BASH_DEFAULT_TIMEOUT_MS: '1800000',
+      BASH_MAX_TIMEOUT_MS: '1800000',
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+    };
   } catch (err) {
     rmSync(settingsDir, { recursive: true, force: true });
     throw err;
