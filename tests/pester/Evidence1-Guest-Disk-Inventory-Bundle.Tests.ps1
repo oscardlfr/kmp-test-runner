@@ -5,7 +5,7 @@
 # temp fixtures rather than the "extract source, shadow cmdlets" pattern this file's other tests
 # (which DO call real Hyper-V cmdlets) need.
 BeforeAll {
-    $script:AuditsRoot = 'C:\kmp-eval\agentic-eval-codex-runtime\docs\audits'
+    $script:AuditsRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\docs\audits')).Path
     Import-Module (Join-Path $script:AuditsRoot 'evidence1-guest-bundle-contract.psm1') -Force
 
     $script:Registry = Get-E1GuestBundleRegistry

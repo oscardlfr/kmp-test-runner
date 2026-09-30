@@ -181,7 +181,7 @@ export function removeDirRobust(path, { delays = [50, 100, 200, 400], rmFn = rmS
   }
 }
 
-function ensureCommitAvailable(repoRoot, sha) {
+export function ensureCommitAvailable(repoRoot, sha) {
   if (isCommitAvailable(repoRoot, sha)) return;
   // Not hex-shaped -- definitely not a real commit; let `git archive` report it directly rather
   // than spending a network round-trip on input that can never resolve.

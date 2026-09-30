@@ -20,7 +20,7 @@
 # in Windows PowerShell 5.1. See evidence1-guest-bundle-contract.psm1's matching note above the
 # 'run-agentic-eval-disk-cleanup' bundle for the full isolation matrix.
 BeforeAll {
-    $script:AuditsRoot = 'C:\kmp-eval\agentic-eval-codex-runtime\docs\audits'
+    $script:AuditsRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\docs\audits')).Path
     Import-Module (Join-Path $script:AuditsRoot 'evidence1-guest-bundle-contract.psm1') -Force
     $script:BundleName = 'run-agentic-eval-disk-cleanup'
 }

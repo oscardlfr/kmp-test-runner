@@ -9,7 +9,7 @@ BeforeAll {
     # $PSScriptRoot-relative rather than a hardcoded checkout path (2026-09-30, same fix as every
     # other file in this round) -- this always tests whichever checkout this copy of the file
     # itself lives in.
-    $script:RunScriptSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\evidence1-run.ps1') -Raw
+    $script:RunScriptSource = (Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\evidence1-run.ps1') -Raw) -replace "`r`n", "`n"
     foreach ($name in @('Get-E1RunPropertyValue', 'Get-E1RunRequiredPositiveInt64', 'Get-E1RunVmReadyRequiredDiskBytes')) {
         $start = $script:RunScriptSource.IndexOf("function $name")
         if ($start -lt 0) { throw "$name not found in evidence1-run.ps1 -- P0 #4 fix not applied" }

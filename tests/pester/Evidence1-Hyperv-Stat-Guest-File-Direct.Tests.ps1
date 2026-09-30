@@ -1,7 +1,7 @@
 # evidence1-hyperv-stat-guest-file-direct.ps1 has no injectable seam and #Requires
 # -RunAsAdministrator -- same extraction/shadowed-cmdlet discipline as its siblings.
 BeforeAll {
-    $script:AuditsRoot = 'C:\kmp-eval\agentic-eval-codex-runtime\docs\audits'
+    $script:AuditsRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\docs\audits')).Path
     $scriptSource = Get-Content -LiteralPath (Join-Path $script:AuditsRoot 'evidence1-hyperv-stat-guest-file-direct.ps1') -Raw
     $start = $scriptSource.IndexOf('$reportFull = [IO.Path]::GetFullPath($ReportPath)')
     if ($start -lt 0) { throw 'extraction anchor not found -- evidence1-hyperv-stat-guest-file-direct.ps1 changed shape' }

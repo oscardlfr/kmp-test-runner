@@ -28,6 +28,7 @@ import { createHash } from 'node:crypto';
 import { readdirSync, statSync, readFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { canonicalJsonSha256 } from './canonical-json.mjs';
+import { ensureCommitAvailable } from './materialize.mjs';
 
 /** Runs one read-only git plumbing command against `repoRoot`. Never routed through a shell/bash
  * wrapper: every argument here is either a revision specifier (a sha, or `${sha}:${root}`, always
@@ -190,6 +191,13 @@ export function computeSkillSnapshotArtifact({ repoRoot, sha, root }) {
   if (typeof repoRoot !== 'string' || repoRoot.length === 0) throw new TypeError('computeSkillSnapshotArtifact: repoRoot must be a non-empty string');
   if (typeof sha !== 'string' || sha.length === 0) throw new TypeError('computeSkillSnapshotArtifact: sha must be a non-empty string');
   if (typeof root !== 'string' || root.length === 0) throw new TypeError('computeSkillSnapshotArtifact: root must be a non-empty string');
+
+  // A CI checkout of this repo (or any shallow clone) may not have this pinned commit's objects
+  // locally even though it is a valid, reachable commit on the remote (PINNED_SKILL_SHA is
+  // deliberately an old, frozen release tag -- see cli.mjs) -- self-heal the same way
+  // materializeSkillSnapshot already does (ensureCommitAvailable's own backfill fetch), rather
+  // than requiring every caller to carry a full, unshallowed clone just for this.
+  ensureCommitAvailable(repoRoot, sha);
 
   const treeOid = gitPlumbing(repoRoot, ['rev-parse', '--verify', `${sha}:${root}`]).trim();
   const lsOutBuf = gitPlumbingBuffer(repoRoot, ['ls-tree', '-r', '-l', '-z', treeOid]);

@@ -75,6 +75,7 @@ function Resolve-E1Path([string]$Path, [string]$Root = 'C:\kmp-eval') {
 }
 
 function Get-E1CanonicalRuntimeRoot([string]$Id, [string]$Version) {
+    if ($env:OS -ne 'Windows_NT') { return $null }
     $root = "C:\Evidence1Toolchain\$Id\$Version"
     $marker = Join-Path $root '.evidence1-artifact.json'
     if (Test-Path -LiteralPath $marker -PathType Leaf) { return $root }

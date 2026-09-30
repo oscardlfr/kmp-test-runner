@@ -10,7 +10,7 @@
 # 2026-09-30 (auditor-directed revert): reverted alongside the script itself -- see that file's own
 # header. This is the pre-P0#4 version, testing the script's own independent inline walk directly.
 BeforeAll {
-    $script:AuditsRoot = 'C:\kmp-eval\agentic-eval-codex-runtime\docs\audits'
+    $script:AuditsRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\docs\audits')).Path
     $scriptSource = Get-Content -LiteralPath (Join-Path $script:AuditsRoot 'evidence1-hyperv-inspect-vhd-chain-direct.ps1') -Raw
     $start = $scriptSource.IndexOf('$reportFull = [IO.Path]::GetFullPath($ReportPath)')
     if ($start -lt 0) { throw 'extraction anchor not found -- evidence1-hyperv-inspect-vhd-chain-direct.ps1 changed shape' }

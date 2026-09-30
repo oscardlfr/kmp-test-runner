@@ -463,7 +463,7 @@ Describe 'Evidence1 LiveRunning/EvidenceCopied: a session missing benchmark_stat
     # discipline the trust-root-portability Describe below already uses via $script:RunScriptSource.
     BeforeAll {
         $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-        $runScriptSource = Get-Content -LiteralPath (Join-Path $repoRoot 'evidence1-run.ps1') -Raw
+        $runScriptSource = (Get-Content -LiteralPath (Join-Path $repoRoot 'evidence1-run.ps1') -Raw) -replace "`r`n", "`n"
         $script:LiveRunningFixSource = $runScriptSource
         $start = $runScriptSource.IndexOf('function Get-E1SafeBenchmarkStatus')
         if ($start -lt 0) { throw 'Get-E1SafeBenchmarkStatus not found in evidence1-run.ps1 -- fix not applied' }
@@ -524,7 +524,7 @@ Describe 'Evidence1 failure-safe closure attempt on a mid-campaign crash (2026-0
     # above -- evidence1-run.ps1 cannot be dot-sourced (its top-level body would execute).
     BeforeAll {
         $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-        $runScriptSource = Get-Content -LiteralPath (Join-Path $repoRoot 'evidence1-run.ps1') -Raw
+        $runScriptSource = (Get-Content -LiteralPath (Join-Path $repoRoot 'evidence1-run.ps1') -Raw) -replace "`r`n", "`n"
         $script:FailureSafeClosureFixSource = $runScriptSource
         $start = $runScriptSource.IndexOf('function Invoke-E1RunFailureSafeClosureAttempt')
         if ($start -lt 0) { throw 'Invoke-E1RunFailureSafeClosureAttempt not found in evidence1-run.ps1 -- fix not applied' }
@@ -808,7 +808,7 @@ Describe 'Evidence1 failure-safe closure attempt on a mid-campaign crash (2026-0
 Describe 'Evidence1 broker stall recovery on a hung dispatch (2026-09-28 orphan-runner incident, items 2-3)' {
     BeforeAll {
         $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-        $runScriptSource = Get-Content -LiteralPath (Join-Path $repoRoot 'evidence1-run.ps1') -Raw
+        $runScriptSource = (Get-Content -LiteralPath (Join-Path $repoRoot 'evidence1-run.ps1') -Raw) -replace "`r`n", "`n"
         $script:StallRecoveryFixSource = $runScriptSource
         $start = $runScriptSource.IndexOf('function Invoke-E1RunBrokerStallRecoveryAttempt')
         if ($start -lt 0) { throw 'Invoke-E1RunBrokerStallRecoveryAttempt not found in evidence1-run.ps1 -- fix not applied' }

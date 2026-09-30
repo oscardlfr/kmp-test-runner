@@ -130,7 +130,9 @@ function Import-Module {
       while($current) {
         if(Test-Path -LiteralPath $current) {
           $item=Get-Item -LiteralPath $current -Force
-          if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $item.LinkType -eq 'HardLink') { throw 'path_link' }
+          $isLink=(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+          if(-not $isLink) { try { $isLink=($item.LinkType -eq 'HardLink') } catch { } }
+          if($isLink) { throw 'path_link' }
         }
         $current=[IO.Path]::GetDirectoryName($current)
       }

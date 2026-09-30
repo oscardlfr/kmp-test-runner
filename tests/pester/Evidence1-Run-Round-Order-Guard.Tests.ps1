@@ -145,7 +145,7 @@ Describe 'Invoke-E1RunLiveAuthorizedState round_order pre-registration guard' {
 # the one test that would catch a broken path, a missing node.exe, or a CLI contract drift.
 Describe 'Get-E1RunPreregisteredRoundOrder real subprocess' {
     BeforeAll {
-        $script:RunScriptSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\evidence1-run.ps1') -Raw
+        $script:RunScriptSource = (Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\evidence1-run.ps1') -Raw) -replace "`r`n", "`n"
         $start = $script:RunScriptSource.IndexOf('function Get-E1RunPreregisteredRoundOrder')
         if ($start -lt 0) { throw 'Get-E1RunPreregisteredRoundOrder not found -- P0 #2 fix not applied' }
         $end = $script:RunScriptSource.IndexOf("`n}`n", $start)
