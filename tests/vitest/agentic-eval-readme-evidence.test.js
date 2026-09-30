@@ -908,8 +908,8 @@ describe('schema 2 (Evidence2): multi-runtime cost + reasoning effort', () => {
     expect(block).toContain('tools/runs/evidence1-agentic-benchmark-2026-09-30');
   });
 
-  // Task B4: Evidence1's own run dir carries a controls-audit.md; Evidence2 does not produce one
-  // (tracked separately), so the Scope line must not link a file that doesn't exist there.
+  // Both campaigns' run dirs carry a controls-audit.md, so the schema-2 Scope line links it exactly
+  // as schema 1 does.
   it('the Scope line links the evidence doc, controls audit, and pre-registration for schema 2, same as schema 1', () => {
     const block = renderReadmeBlock(baseSummaryV2(), '2026-09-30', baseCostEstimateV2(), 'evidence2-agentic-benchmark-2026-09-30');
     const dir = 'tools/runs/evidence2-agentic-benchmark-2026-09-30';
@@ -919,9 +919,18 @@ describe('schema 2 (Evidence2): multi-runtime cost + reasoning effort', () => {
   });
 
   it('the scorecard alt text reads the model from provenance for schema 2, not hardcoded RUNTIME_LABELS', () => {
-    const alt = buildScorecardAlt(baseSummaryV2(), baseCostEstimateV2());
-    expect(alt).toContain('Claude Code · claude-sonnet-5 —');
-    expect(alt).toContain('Codex CLI · gpt-5.6-terra —');
+    // Distinct fixture models: the defaults equal the fixed labels, which would pass either way.
+    const summary = baseSummaryV2();
+    summary.provenance.model_resolved['claude-code'] = { values: ['claude-fixture-model'], mixed: false };
+    summary.provenance.model_resolved['codex-cli'] = { values: ['codex-fixture-model'], mixed: false };
+    const costEstimate = baseCostEstimateV2();
+    costEstimate.runtimes['claude-code'].model = 'claude-fixture-model';
+    costEstimate.runtimes['codex-cli'].model = 'codex-fixture-model';
+    const alt = buildScorecardAlt(summary, costEstimate);
+    expect(alt).toContain('Claude Code · claude-fixture-model —');
+    expect(alt).toContain('Codex CLI · codex-fixture-model —');
+    expect(alt).not.toContain('claude-sonnet-5');
+    expect(alt).not.toContain('gpt-5.6-terra');
   });
 
   it('rejects mixed reasoning_effort for a runtime', () => {
