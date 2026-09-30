@@ -358,6 +358,82 @@ function perCellSchema2Fields(cell, status) {
   };
 }
 
+/** Per-cell session-isolation evidence, additive like perCellSchema2Fields above and read
+ * from an accepted record only -- a rejection carries neither, and never a guess:
+ *  - session_id: the provider's own session id (record.session_id_observed), null when none was observed;
+ *  - agent_state_clean: true when the agent-state listing succeeded and no file a later session would
+ *    load into its context changed, false when one did, null when there is no usable listing (a record
+ *    that predates the field, or a config directory that could not be listed).
+ * Both live on cells[] only; by_runtime_arm and the top-level keys stay exactly as they were. */
+function perCellIsolationFields(cell, status) {
+  if (status !== 'accepted') return { session_id: null, agent_state_clean: null };
+  const { record } = cell.loaded;
+  const state = record.agent_state;
+  return {
+    session_id: typeof record.session_id_observed === 'string' && record.session_id_observed.length > 0 ? record.session_id_observed : null,
+    agent_state_clean: state?.listed === true && Array.isArray(state.context_relevant_changed)
+      ? state.context_relevant_changed.length === 0
+      : null,
+  };
+}
+
+// The access scan (transcript-access-scan.mjs) is this summary's only input besides the campaign
+// directory: {schema, campaign_id, patterns, cells:[{cell_key, scanned, hits:[{label, count}]}]}.
+const ACCESS_SCAN_SCHEMA = 1;
+const ACCESS_SCAN_LABEL_RE = /^[a-z][a-z0-9_]{0,63}$/;
+
+class AccessScanError extends Error {}
+
+function accessScanError(message) {
+  return new AccessScanError(`access scan: ${message}`);
+}
+
+/** What an access scan does to this campaign's summary: the cells to drop, and the limitations that say
+ * why. A cell with at least one hit is excluded exactly as --exclude-cells excludes one (its key joins
+ * the same exclusion set, so it leaves cells[], the declared counts and every aggregate); the cells
+ * carry no reason, so the reason -- ground_truth_access -- goes in a limitation that names the cell. A
+ * cell whose transcript was missing (scanned:false) stays in, with a limitation saying access was not
+ * verified for it. Limitations are ordered by cell key. Throws, with a message that starts "access
+ * scan:", on a scan that is malformed or was made for another campaign: applying a scan the summary
+ * cannot vouch for would be worse than refusing it. */
+export function accessScanEffects(scan, campaignId) {
+  if (scan === null || typeof scan !== 'object' || Array.isArray(scan)) throw accessScanError('not an object');
+  if (scan.schema !== ACCESS_SCAN_SCHEMA) throw accessScanError(`schema must be ${ACCESS_SCAN_SCHEMA}, got ${JSON.stringify(scan.schema)}`);
+  if (scan.campaign_id !== campaignId) {
+    throw accessScanError(`campaign_id ${JSON.stringify(scan.campaign_id)} is not this campaign's (${JSON.stringify(campaignId)})`);
+  }
+  if (!Array.isArray(scan.cells)) throw accessScanError('cells must be an array');
+
+  const excludeCellKeys = new Set();
+  const entries = [];
+  const seen = new Set();
+  for (const cell of scan.cells) {
+    if (cell === null || typeof cell !== 'object' || Array.isArray(cell)) throw accessScanError('every cell must be an object');
+    const key = cell.cell_key;
+    if (typeof key !== 'string' || key === '') throw accessScanError('every cell needs a non-empty cell_key');
+    if (seen.has(key)) throw accessScanError(`cell ${key} is listed twice`);
+    seen.add(key);
+    if (typeof cell.scanned !== 'boolean') throw accessScanError(`cell ${key}: scanned must be a boolean`);
+    if (!Array.isArray(cell.hits)) throw accessScanError(`cell ${key}: hits must be an array`);
+    for (const hit of cell.hits) {
+      if (hit === null || typeof hit !== 'object' || typeof hit.label !== 'string' || !ACCESS_SCAN_LABEL_RE.test(hit.label)
+        || !Number.isInteger(hit.count) || hit.count < 1) {
+        throw accessScanError(`cell ${key}: every hit needs a lowercase label and a positive integer count`);
+      }
+    }
+    if (!cell.scanned) {
+      if (cell.hits.length > 0) throw accessScanError(`cell ${key}: hits on a cell that was not scanned`);
+      entries.push({ key, text: `cell ${key}: transcript missing: access not verified` });
+    } else if (cell.hits.length > 0) {
+      excludeCellKeys.add(key);
+      const matches = cell.hits.map((hit) => `${hit.label} x${hit.count}`).join(', ');
+      entries.push({ key, text: `ground_truth_access: cell ${key} excluded (transcript matches: ${matches})` });
+    }
+  }
+  entries.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  return { excludeCellKeys, limitations: entries.map((entry) => entry.text) };
+}
+
 /** Loads every COUNTED (accepted + D3-negative) cell's runtime/model/arm/round + raw per-cell
  * token usage, reusing the SAME expectedCellsFromManifest/loadCell/armFor/
  * qualifiesForD3NegativeReclassification/countedCellMetrics this module's own summarizeCampaign
@@ -407,11 +483,15 @@ export function loadCountedCellTokens(campaignDir) {
  *   (tools/runs/evidence2-agentic-benchmark-2026-09-30/preregistration.md Amendment A2 D13/R8). Defaults to an empty Set, so
  *   an omitted or empty argument reproduces today's output byte-for-byte (Amendment A2 R7's required
  *   regression test) -- this parameter changes nothing about CAMPAIGN_SUMMARY_SCHEMA itself.
+ * @param {{accessScan?: object|null}} [options] -- `accessScan` is a parsed transcript-access-scan.mjs
+ *   result (see accessScanEffects): the cells it flags are excluded exactly like excludeCellKeys, and its
+ *   limitations are appended after every other one. A scan with nothing to report changes nothing, byte
+ *   for byte. Throws (message starting "access scan:") when the scan is malformed or for another campaign.
  * @returns {object} CAMPAIGN_SUMMARY_SCHEMA-shaped result -- see this file's own README/tests for
  *   the full field list; never throws for an individual cell's own defects (those become that
  *   cell's `status:'missing'` + `reason`, not a whole-campaign failure).
  */
-export function summarizeCampaign(campaignDir, excludeCellKeys = new Set()) {
+export function summarizeCampaign(campaignDir, excludeCellKeys = new Set(), { accessScan = null } = {}) {
   const manifestPath = join(campaignDir, 'manifest.json');
   let manifest;
   try {
@@ -429,9 +509,14 @@ export function summarizeCampaign(campaignDir, excludeCellKeys = new Set()) {
     };
   }
 
+  // The access scan is applied only to a live, readable campaign (the two refusals above never look at
+  // it); its flagged cells join the same exclusion set --exclude-cells feeds.
+  const scanEffects = accessScan === null ? null : accessScanEffects(accessScan, manifest.campaign_id ?? null);
+  const excluded = scanEffects === null ? excludeCellKeys : new Set([...excludeCellKeys, ...scanEffects.excludeCellKeys]);
+
   const privateRoot = join(campaignDir, 'private');
   const expected = expectedCellsFromManifest(manifest)
-    .filter((cell) => !excludeCellKeys.has(cell.cellKey))
+    .filter((cell) => !excluded.has(cell.cellKey))
     .sort((a, b) => a.runtimeId.localeCompare(b.runtimeId) || a.roundIndex - b.roundIndex);
 
   const loadedCells = expected.map((cell) => {
@@ -516,6 +601,7 @@ export function summarizeCampaign(campaignDir, excludeCellKeys = new Set()) {
         duration_ms: status === 'missing' ? null : countedCellMetrics(cell).duration_ms,
         tool_calls_total: status === 'missing' ? null : countedCellMetrics(cell).tool_calls_total,
         ...perCellSchema2Fields(cell, status),
+        ...perCellIsolationFields(cell, status),
       });
     }
 
@@ -560,6 +646,7 @@ export function summarizeCampaign(campaignDir, excludeCellKeys = new Set()) {
     'kmp-test vs Gradle invocation split is only available for accepted cells, never for D3-reclassified negative cells',
     'JUnit-XML capture is not verified for codex-cli (its PostToolUse hook correlation has never been validated against a real transcript)',
     ...provenanceLimitationLines(provenance),
+    ...(scanEffects === null ? [] : scanEffects.limitations),
   ];
 
   // Descriptive only, never a gate: what the campaign's OWN accepted records already say about
@@ -679,8 +766,10 @@ function main(argv) {
   const markdownPath = markdownIndex >= 0 ? argv[markdownIndex + 1] : null;
   const excludeCellsIndex = argv.indexOf('--exclude-cells');
   const excludeCellsPath = excludeCellsIndex >= 0 ? argv[excludeCellsIndex + 1] : null;
-  if (!campaignDir || !existsSync(campaignDir)) {
-    console.error('usage: campaign-summary.mjs <campaign-dir> [--markdown <file>] [--exclude-cells <infra-flake-classification.json>]');
+  const accessScanIndex = argv.indexOf('--access-scan');
+  const accessScanPath = accessScanIndex >= 0 ? argv[accessScanIndex + 1] : null;
+  if (!campaignDir || !existsSync(campaignDir) || (accessScanIndex >= 0 && !accessScanPath)) {
+    console.error('usage: campaign-summary.mjs <campaign-dir> [--markdown <file>] [--exclude-cells <infra-flake-classification.json>] [--access-scan <access-scan.json>]');
     return 1;
   }
   // Sensitivity-analysis seam (tools/runs/evidence2-agentic-benchmark-2026-09-30/preregistration.md Amendment A2 D13/R8):
@@ -697,7 +786,26 @@ function main(argv) {
         .map((c) => c.cell_key),
     );
   }
-  const summary = summarizeCampaign(campaignDir, excludeCellKeys);
+  // Session-isolation evidence: transcript-access-scan.mjs's own output file. A cell with a hit is excluded like
+  // an --exclude-cells cell, and the scan's limitations are appended; an unreadable, malformed or
+  // foreign scan prints no summary at all, since a summary that silently ignored it would read as clean.
+  let accessScan = null;
+  if (accessScanPath) {
+    try {
+      accessScan = JSON.parse(readFileSync(accessScanPath, 'utf8'));
+    } catch (error) {
+      console.error(`error: access scan file cannot be read as JSON (${error.code ?? error.name})`);
+      return 1;
+    }
+  }
+  let summary;
+  try {
+    summary = summarizeCampaign(campaignDir, excludeCellKeys, { accessScan });
+  } catch (error) {
+    if (!(error instanceof AccessScanError)) throw error;
+    console.error(`error: ${error.message}`);
+    return 1;
+  }
   console.log(JSON.stringify(summary, null, 2));
   if (markdownPath) writeFileSync(markdownPath, renderMarkdown(summary), 'utf8');
   return summary.summary_status === 'ok' ? 0 : 1;

@@ -161,6 +161,73 @@ describe('validateSummary', () => {
 });
 
 // ---------------------------------------------------------------------------
+// validateSummary -- the optional cells[] isolation keys: session_id and agent_state_clean.
+// Both are optional (Evidence2's committed summary carries neither) and the schema number does not
+// change, but a cell that does carry one must carry it with the right type, so a corrupted value
+// can never read as "clean".
+
+describe('validateSummary -- the optional cells[] isolation keys', () => {
+  const validDuration = () => ({ n: 4, min: 100000, median: 150000, max: 200000 });
+  const withCells = (cells) => ({
+    schema: 1,
+    summary_status: 'ok',
+    provider_mode: 'live',
+    by_runtime_arm: [
+      { runtime_id: 'claude-code', arm: 'product', declared: 4, duration_ms: validDuration() },
+      { runtime_id: 'claude-code', arm: 'free', declared: 4, duration_ms: validDuration() },
+      { runtime_id: 'codex-cli', arm: 'product', declared: 4, duration_ms: validDuration() },
+      { runtime_id: 'codex-cli', arm: 'free', declared: 4, duration_ms: validDuration() },
+    ],
+    provenance: { kmp_test_cli_version: { values: ['0.15.0'], mixed: false } },
+    cells,
+  });
+  const cell = (extra = {}) => ({ runtime_id: 'claude-code', arm: 'product', round_index: 0, cell_key: 'claude-code-0', status: 'accepted', ...extra });
+
+  it('accepts cells that carry neither key (the Evidence2 shape)', () => {
+    expect(validateSummary(withCells([cell()]))).toEqual([]);
+  });
+
+  it.each([
+    ['clean', { session_id: 'd3adb33f-0000-4000-8000-000000000001', agent_state_clean: true }],
+    ['changed', { session_id: 'd3adb33f-0000-4000-8000-000000000001', agent_state_clean: false }],
+    ['not listed', { session_id: null, agent_state_clean: null }],
+  ])('accepts a cell that carries both keys (%s)', (_what, extra) => {
+    expect(validateSummary(withCells([cell(extra)]))).toEqual([]);
+  });
+
+  it('accepts the real committed Evidence2 summary with both keys added to every cell: schema 2 is unchanged', () => {
+    const real = JSON.parse(readFileSync(join(RUNS_DIR_V2, 'campaign-summary.json'), 'utf8'));
+    expect(real.schema).toBe(2);
+    real.cells = real.cells.map((c, i) => ({ ...c, session_id: `session-${i}`, agent_state_clean: i % 2 === 0 ? true : null }));
+    expect(validateSummary(real)).toEqual([]);
+  });
+
+  it.each([
+    ['a number', 7],
+    ['an empty string', ''],
+    ['an object', {}],
+    ['a boolean', true],
+  ])('rejects a session_id that is %s', (_what, bad) => {
+    const errors = validateSummary(withCells([cell({ session_id: bad })]));
+    expect(errors.some(e => e.includes('session_id'))).toBe(true);
+  });
+
+  it.each([
+    ['the string "true"', 'true'],
+    ['a number', 1],
+    ['an object', {}],
+  ])('rejects an agent_state_clean that is %s', (_what, bad) => {
+    const errors = validateSummary(withCells([cell({ agent_state_clean: bad })]));
+    expect(errors.some(e => e.includes('agent_state_clean'))).toBe(true);
+  });
+
+  it('names the offending cell in the error', () => {
+    const errors = validateSummary(withCells([cell(), cell({ cell_key: 'claude-code-1', agent_state_clean: 'yes' })]));
+    expect(errors.some(e => e.includes('claude-code-1') && e.includes('agent_state_clean'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // validateCostEstimate -- fail-closed guard, same philosophy as validateSummary
 
 describe('validateCostEstimate', () => {

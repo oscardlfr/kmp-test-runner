@@ -255,6 +255,7 @@ $TrustedNodeFiles = @(
   'lib/runners/script-dispatcher.js',
   'lib/runners/shell-runner.js',
   'lib/user-config.js',
+  'tools/agentic-eval/agent-state.mjs',
   'tools/agentic-eval/aggregate.mjs',
   'tools/agentic-eval/analysis.mjs',
   'tools/agentic-eval/auth-preflight.mjs',
