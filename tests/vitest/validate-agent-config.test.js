@@ -78,7 +78,7 @@ const SOURCE_FIXTURES = {
 - Pass gh the \`GH_TOKEN\` environment variable, not the \`GITHUB_TOKEN\`
   environment variable.
 - Trusted Publishing needs npm 11.5.1 and Node 22.14.0; pin Node 24.18.0.
-- Keep a 45-minute timeout for the second CI run.
+- Keep a 60-minute timeout for the second CI run.
 `,
 };
 

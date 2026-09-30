@@ -56,7 +56,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           node tools/release-gate.mjs poll-checks "$GITHUB_SHA" .github/required-checks.json \
-            --repo "$GITHUB_REPOSITORY" --timeout-minutes 45
+            --repo "$GITHUB_REPOSITORY" --timeout-minutes 60
 
       - name: Read version from package.json
         id: ver
