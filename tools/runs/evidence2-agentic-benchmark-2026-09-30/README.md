@@ -405,10 +405,10 @@ own design:
 
 ## Threats to validity
 
-Full detail: a dedicated controls audit (to be run the same way as Evidence1's own, read-only
-against the measured checkout) — **[PENDING: this campaign's own `controls-audit.md` has not been
-written; tracked as a queued follow-up in `BACKLOG.md`, out of scope for this closing pass]**. This
-section distills what is already known without it, same convention as Evidence1's README.
+Full detail: a dedicated controls audit (2026-09-30, read-only against the measured checkout,
+harness commit `c15aae3`) is published alongside this document as
+[`controls-audit.md`](./controls-audit.md). This section distills that audit's own findings, same
+convention as Evidence1's README.
 
 Known in advance, stated now so the shape is right when real numbers land:
 
