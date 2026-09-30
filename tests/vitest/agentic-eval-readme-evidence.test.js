@@ -540,22 +540,25 @@ describe('the committed evidence2-agentic-benchmark-2026-09-30 campaign (publish
     }
   });
 
-  it('the README block links to the evidence doc and pre-registration, but NOT a controls audit (Evidence2 does not produce one)', () => {
+  it('the README block links to the evidence doc, controls audit, and pre-registration inside the Evidence2 directory', () => {
     const block = renderReadmeBlock(summary, CAMPAIGN_DATE_V2, costEstimate, RUNS_DIR_NAME_V2);
     const dir = `tools/runs/${RUNS_DIR_NAME_V2}`;
     expect(block).toContain(`(${dir}/README.md)`);
+    expect(block).toContain(`(${dir}/controls-audit.md)`);
     expect(block).toContain(`(${dir}/preregistration.md)`);
-    expect(block).not.toContain('controls-audit.md');
-    expect(block).not.toContain('controls audit');
   });
 
   it('every file the README block links to (or embeds as an image) actually exists on disk', () => {
-    for (const name of ['README.md', 'preregistration.md', 'campaign-summary.json', 'cost-estimate.json', 'scorecard.svg', 'metrics-grid.svg']) {
+    for (const name of ['README.md', 'controls-audit.md', 'preregistration.md', 'campaign-summary.json', 'cost-estimate.json', 'scorecard.svg', 'metrics-grid.svg']) {
       expect(existsSync(join(RUNS_DIR_V2, name)), `${name} should exist in ${RUNS_DIR_V2}`).toBe(true);
     }
-    // Evidence2 genuinely has no controls-audit.md (unlike Evidence1) -- confirms the omission
-    // above is because the file doesn't exist, not a generator bug hiding a real one.
-    expect(existsSync(join(RUNS_DIR_V2, 'controls-audit.md'))).toBe(false);
+  });
+
+  it('fmtToolCallsMedian renders a missing median as n/a instead of throwing', () => {
+    expect(fmtToolCallsMedian(undefined)).toBe('n/a');
+    expect(fmtToolCallsMedian(null)).toBe('n/a');
+    expect(fmtToolCallsMedian(4.5)).toBe('4.5');
+    expect(fmtToolCallsMedian(13)).toBe('13');
   });
 
   it('the README block contains no unresolved {{placeholder}} markers', () => {
@@ -898,13 +901,12 @@ describe('schema 2 (Evidence2): multi-runtime cost + reasoning effort', () => {
 
   // Task B4: Evidence1's own run dir carries a controls-audit.md; Evidence2 does not produce one
   // (tracked separately), so the Scope line must not link a file that doesn't exist there.
-  it('the Scope line omits the controls-audit link for schema 2 (Evidence2 does not produce a controls-audit.md) but still links the evidence doc and pre-registration (task B4)', () => {
+  it('the Scope line links the evidence doc, controls audit, and pre-registration for schema 2, same as schema 1', () => {
     const block = renderReadmeBlock(baseSummaryV2(), '2026-09-30', baseCostEstimateV2(), 'evidence2-agentic-benchmark-2026-09-30');
     const dir = 'tools/runs/evidence2-agentic-benchmark-2026-09-30';
     expect(block).toContain(`[Evidence, per-session detail and limitations](${dir}/README.md)`);
+    expect(block).toContain(`[controls audit](${dir}/controls-audit.md)`);
     expect(block).toContain(`[pre-registration](${dir}/preregistration.md)`);
-    expect(block).not.toContain('controls-audit.md');
-    expect(block).not.toContain('controls audit');
   });
 
   it('the scorecard alt text reads the model from provenance for schema 2, not hardcoded RUNTIME_LABELS', () => {
