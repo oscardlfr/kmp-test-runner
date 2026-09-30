@@ -64,8 +64,11 @@ a genuinely missing one. This never changes `exit_code`.
 Internal `tools/agentic-eval/` tooling and local-CI groundwork behind the README's "Agent sessions
 with and without kmp-test" section. Not part of the public CLI/Gradle surface.
 
-- Publishes the Evidence1 dual-condition canary evaluation harness (the paired benchmark tooling
-  for Claude Code and Codex CLI), fully dry-run validated across every CI lane before publication.
+- Publishes the evaluation harness behind Evidence1 and Evidence2 (Windows/Hyper-V provisioning,
+  the elevated broker, and the campaign driver for Claude Code and Codex CLI), validated end to end
+  on the evaluation VM before publication.
+- Harness hardening: pre-run guards for broker/harness coherence, the pre-registered arm order, and
+  host disk headroom; a failed run's closure now recovers its evidence read-only.
 - Reasoning effort is now equalized between the two agents (previously mismatched), so a
   cross-runtime comparison is actually meaningful.
 - The evidence now includes a descriptive Claude-vs-Codex comparison within each arm — medians and
