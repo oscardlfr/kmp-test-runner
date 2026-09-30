@@ -86,6 +86,11 @@ export const AUDIT_PUBLIC_RULES = [
     ..._baseDeviceSerial,
     // Skip device_serial check on lines whose content is an npm/yarn integrity hash.
     excludeLineRe: /"integrity"\s*:\s*"sha\d+-/,
+    // Microsoft KB identifiers are public servicing references, not device
+    // serials. Exact-token match, applied per match (see lineHasUnallowedMatch
+    // below) rather than per line, so a real serial-shaped token sharing a
+    // line with a KB identifier still flags.
+    excludeMatchRe: /\bKB[0-9]{7}\b/g,
     // EVIDENCE1 is the published agentic-benchmark campaign name
     // (tools/runs/evidence1-agentic-benchmark-*), not a device serial, but it
     // matches this rule's shape. Exact-token match, applied per match (see
@@ -99,6 +104,20 @@ export const AUDIT_PUBLIC_RULES = [
     // blocking single-char examples (X), regex patterns (|), and ellipsis (...).
     re: /[A-Za-z]:\\(?:Users|home)\\\w{3,}\\[^\s"]+/g,
     replacement: '<USER_PATH>',
+    // Three specific, known-non-private path segments this rule's shape otherwise catches.
+    // Anchored to the WHOLE matched token (matchIsExempt wraps this in ^(?:...)$), never a bare
+    // substring, so a real user path merely CONTAINING one of these words still flags -- see the
+    // paired test's "still flags" negative cases.
+    //   Evidence1E2E -- the dedicated guest-VM service account name (docs/audits/evidence1-
+    //     hyperv-inspect-final-codex-live-state.ps1, evidence1-hyperv-trigger-final-codex-direct.
+    //     ps1), not a personal user.
+    //   Public       -- C:\Users\Public is the standard Windows shared-profile directory that
+    //     ships on every Windows install, not a personal path (tests/pester/Evidence1-Run-
+    //     Manifest-Contract.Tests.ps1).
+    //   SomeRealUser -- a deliberate "this looks like a leak" fixture value inside the test suite
+    //     for the redaction machinery itself (tests/pester/Evidence1-Dual-Condition-Canary-
+    //     Session.Tests.ps1's $leakyPath), never a real username.
+    excludeMatchRe: /^[A-Za-z]:\\(?:Users|home)\\(?:Evidence1E2E|Public|SomeRealUser)\\[^\s"]*$/,
   },
   {
     class: 'user_path_posix',
@@ -160,14 +179,34 @@ export function shouldSkip(rel, selfRel) {
 }
 
 // ---------------------------------------------------------------------------
+// matchIsExempt — true if a single matched token is exempt from reporting,
+// either by exact membership in `rule.allowTokens` or by fully matching
+// `rule.excludeMatchRe` end-to-end (not merely overlapping it). The
+// excludeMatchRe check anchors the rule's own source between ^ and $ so a
+// token that only *contains* an excluded substring (e.g. a real serial that
+// happens to start with a KB-shaped prefix but keeps going) is NOT exempted
+// -- only a token that IS, in full, the excluded shape.
+// ---------------------------------------------------------------------------
+function matchIsExempt(matchedText, rule) {
+  if (rule.allowTokens && rule.allowTokens.has(matchedText)) return true;
+  if (rule.excludeMatchRe) {
+    const flags = rule.excludeMatchRe.flags.replace('g', '');
+    const wholeRe = new RegExp(`^(?:${rule.excludeMatchRe.source})$`, flags);
+    if (wholeRe.test(matchedText)) return true;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
 // lineHasUnallowedMatch — true if `line` has at least one match of `rule.re`
-// whose exact matched text is not in `rule.allowTokens` (when the rule has
-// one). Applied per match, not per line: a line can carry one allowlisted
-// token and one real hit at the same time, and the real hit still flags —
-// this is what keeps a token-level allowlist fail-closed instead of
-// widening into a line-level exemption.
+// that is not exempt per matchIsExempt (when the rule carries allowTokens
+// and/or excludeMatchRe). Applied per match, not per line: a line can carry
+// one exempt token and one real hit at the same time, and the real hit still
+// flags -- this is what keeps a token-level exemption fail-closed instead of
+// widening into a line-level exemption. A rule with neither field keeps the
+// plain rule.re.test(line) fast path.
 //
-// The allowTokens path iterates via matchAll on a FRESH RegExp built from
+// The per-match path iterates via matchAll on a FRESH RegExp built from
 // rule.re's own source/flags (global flag added if not already present) --
 // never rule.re itself, even when rule.re is already global. A fresh
 // RegExp always starts at lastIndex 0 and is never mutated afterward.
@@ -184,13 +223,13 @@ export function shouldSkip(rel, selfRel) {
 // replaced. A fresh RegExp per call is immune to both failure modes.
 // ---------------------------------------------------------------------------
 export function lineHasUnallowedMatch(line, rule) {
-  if (!rule.allowTokens) {
+  if (!rule.allowTokens && !rule.excludeMatchRe) {
     rule.re.lastIndex = 0;
     return rule.re.test(line);
   }
   const globalRe = new RegExp(rule.re.source, rule.re.global ? rule.re.flags : `${rule.re.flags}g`);
   for (const m of line.matchAll(globalRe)) {
-    if (!rule.allowTokens.has(m[0])) return true;
+    if (!matchIsExempt(m[0], rule)) return true;
   }
   return false;
 }

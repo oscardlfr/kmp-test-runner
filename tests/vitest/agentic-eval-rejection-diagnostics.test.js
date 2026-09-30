@@ -11,6 +11,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createFakeClaudeCommandPath } from './_fake-claude-command.js';
 import {
   LATEST_REJECTION_DIAGNOSTICS_SCHEMA,
   SUPPORTED_REJECTION_DIAGNOSTICS_SCHEMAS,
@@ -1173,8 +1174,12 @@ describe('writeRejectedRunDiagnostics -- wired into cli.mjs end-to-end (real sub
 
   function fakeClaudeEnv(scenario, runsRoot) {
     const fakeDir = path.join(FIXTURES_DIR, `fake-claude-${scenario}`);
-    const delimiter = process.platform === 'win32' ? ';' : ':';
-    return { ...process.env, PATH: `${fakeDir}${delimiter}${process.env.PATH ?? process.env.Path ?? ''}`, KMP_EVAL_RUNS_ROOT: runsRoot };
+    const command = createFakeClaudeCommandPath({
+      fixtureDir: fakeDir,
+      basePath: process.env.PATH ?? process.env.Path ?? '',
+      shimRoot: path.join(runsRoot, 'cmd-shim'),
+    });
+    return { ...process.env, PATH: command.path, KMP_EVAL_RUNS_ROOT: runsRoot };
   }
 
   it('a real calibrate rejection writes exactly one committed + one raw rejection-diagnostics file, and nothing under the real evidence directory', () => {

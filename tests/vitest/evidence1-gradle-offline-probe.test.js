@@ -176,7 +176,7 @@ describe.skipIf(process.platform !== 'win32')('Evidence1 offline cache contract 
       $fn=$ast.Find({param($a) $a -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $a.Name -eq 'Get-E1OfflineSealHash'},$true)
       . ([scriptblock]::Create($fn.Extent.Text))
       $testPort='443'; $testProtocol='TCP'; $testDynamic='Any'; $testAddress='192.0.2.1'; $testProgram='Any'; $testService='Any'; $testPackage='Any'; $testDefault='Block'
-      function Read-E1Json {return @{sha256=('a'*64);value=@{verdict='PASS';network_mode='restricted';allowed_resolved_ips_by_host=@{'api.anthropic.com'=@('192.0.2.1');'platform.claude.com'=@('192.0.2.1');'claude.ai'=@('192.0.2.1');'claude.com'=@('192.0.2.1')}}}}
+      function Read-E1Json {return @{sha256=('a'*64);value=@{verdict='PASS';network_mode='restricted';allowed_resolved_ips_by_host=@{'api.anthropic.com'=@('192.0.2.1');'platform.claude.com'=@('192.0.2.1');'claude.ai'=@('192.0.2.1');'claude.com'=@('192.0.2.1');'auth.openai.com'=@('192.0.2.1');'chatgpt.com'=@('192.0.2.1');'ab.chatgpt.com'=@('192.0.2.1')}}}}
       function Get-NetFirewallProfile {foreach($n in @('Domain','Private','Public')) {[pscustomobject]@{Name=$n;Enabled=$true;DefaultOutboundAction=$testDefault}}}
       function Get-NetFirewallRule {[pscustomobject]@{Name='PRIVATE_RULE';Enabled=$true;Direction='Outbound';Action='Allow';Profile='Any'}}
       function Get-NetFirewallApplicationFilter {param([Parameter(ValueFromPipeline)]$InputObject) process {[pscustomobject]@{Program=$testProgram;Package=$testPackage}}}

@@ -92,8 +92,8 @@ $guest=$expression[0].ScriptBlock
 $text=$guest.Extent.Text
 $stubs=@{
   'Add-StageBPath'='function Add-StageBPath {}'
-  'Command-Source'='function Command-Source($Name) { switch($Name) { "node.exe" { "Fixture-Node" }; "git.exe" { "git.exe" }; "claude.cmd" { "Fixture-Claude" }; default { throw "unexpected_tool" } } }'
-  'Assert-RestrictedNetwork'='function Assert-RestrictedNetwork { @{allowed_probe_count=4;blocked_probe_count=6;blocked_probe_success_count=0} }'
+  'Command-Source'='function Command-Source($Name) { switch($Name) { "node.exe" { "Fixture-Node" }; "git.exe" { "git.exe" }; "claude.cmd" { "Fixture-Claude" }; "codex.exe" { "Fixture-Codex" }; default { throw "unexpected_tool" } } }'
+  'Assert-RestrictedNetwork'='function Assert-RestrictedNetwork { @{allowed_probe_count=7;blocked_probe_count=6;blocked_probe_success_count=0} }'
 }
 $functions=$guest.FindAll({param($a) $a -is [Management.Automation.Language.FunctionDefinitionAst] -and $stubs.ContainsKey($a.Name)},$true)
 if($functions.Count -ne $stubs.Count) { throw 'fixture_boundary_missing' }
@@ -150,6 +150,11 @@ function Fixture-Claude {
   $global:LASTEXITCODE=0
   if($args[0] -eq '--version') { '2.1.238 (Claude Code)' }
 }
+function Fixture-Codex {
+  if(($args -join ' ') -notin @('--version','login status')) { throw 'unexpected_codex_call' }
+  $global:LASTEXITCODE=0
+  if($args[0] -eq '--version') { 'codex-cli 0.154.0' }
+}
 function java.exe { $global:LASTEXITCODE=0; 'openjdk version "21"' }
 function npm.cmd {
   $global:LASTEXITCODE=0
@@ -192,7 +197,12 @@ $ledger=if(Test-Path -LiteralPath $ledgerPath) { Get-Content -LiteralPath $ledge
   return JSON.parse(result.stdout);
 }
 
-describe.skipIf(!hasPowerShell)('readiness source custody guest integration', { timeout: 45_000 }, () => {
+// Windows-only: exercises the guest's own readiness-custody semantics (ACLs, reparse points,
+// hardlinks via Resolve-E1Path) under a real pwsh subprocess -- concepts this harness's readiness
+// custody only ever runs inside a Windows guest for, and that pwsh/Linux cannot faithfully
+// reproduce (confirmed: more than one property read in this file's own Linux simulation throws
+// PlatformNotSupportedException there). Still runs on windows-latest and on this host.
+describe.skipIf(!hasPowerShell || process.platform !== 'win32')('readiness source custody guest integration', { timeout: 45_000 }, () => {
   it.skipIf(process.platform !== 'win32')('keeps a valid guest fixture when Windows TEMP uses a short-name alias', async () => {
     const parent = 'C:/kmp-eval/scratch';
     await mkdir(parent, { recursive: true });

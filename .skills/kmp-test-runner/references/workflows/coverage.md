@@ -109,7 +109,8 @@ If the XML doesn't exist (tests never ran, or `--skip-tests` was passed without 
 ```json
 {
   "tool": "kmp-test",
-  "schema_version": 2,
+  "schema_version": 3,
+  "contracts": { "coverage_evidence": 1 },
   "subcommand": "coverage",
   "exit_code": 0,
   "tests": { "total": 0, "passed": 0, "failed": 0, "skipped": 0 },

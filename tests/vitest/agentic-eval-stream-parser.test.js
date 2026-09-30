@@ -99,6 +99,16 @@ describe('parseStreamJsonl', () => {
 });
 
 describe('tool-result correlation ids', () => {
+  it('accepts Claude rate-limit metadata before the unique init event', () => {
+    const raw = [
+      '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}',
+      '{"type":"system","subtype":"init","tools":["Bash","Skill"],"mcp_servers":[],"permissionMode":"bypassPermissions"}',
+      '{"type":"result","subtype":"success","is_error":false}',
+    ].join('\n');
+    const { events } = parseStreamJsonl(raw);
+    expect(findTranscriptStructuralIssues(events)).toEqual([]);
+  });
+
   it('never correlates an empty tool_use id with an empty tool_result id', () => {
     const raw = [
       '{"type":"system","subtype":"init"}',

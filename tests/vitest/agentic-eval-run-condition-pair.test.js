@@ -32,6 +32,7 @@ import { runConditionPair } from '../../tools/agentic-eval/cli.mjs';
 // the real Claude adapter (spawnCondition itself is never reached here), so it injects the real
 // singleton directly rather than going through the registry default.
 import { claudeCodeRuntimeAdapter } from '../../tools/agentic-eval/runtimes/claude-code.mjs';
+import { createFakeClaudeCommandPath } from './_fake-claude-command.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = path.join(__dirname, '..', 'fixtures');
@@ -57,14 +58,15 @@ function restoreEnvVar(key, value) {
 
 async function withFakeClaudePath(scenario, fn) {
   const fakeDir = path.join(FIXTURES_DIR, `fake-claude-${scenario}`);
-  const delimiter = process.platform === 'win32' ? ';' : ':';
   const savedPath = process.env.PATH;
-  process.env.PATH = `${fakeDir}${delimiter}${savedPath ?? ''}`;
+  const command = createFakeClaudeCommandPath({ fixtureDir: fakeDir, basePath: savedPath ?? '' });
+  process.env.PATH = command.path;
   try {
     return await fn();
   } finally {
     // Post-review fix (P3): restoreEnvVar (not a bare assignment) -- see its own doc comment.
     restoreEnvVar('PATH', savedPath);
+    command.cleanup();
   }
 }
 

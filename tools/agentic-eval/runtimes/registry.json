@@ -1,6 +1,7 @@
 {
   "schema": 1,
   "runtimes": [
-    { "runtime_id": "claude-code", "enabled": true, "default": true }
+    { "runtime_id": "claude-code", "enabled": true, "default": true },
+    { "runtime_id": "codex-cli", "enabled": true, "default": false }
   ]
 }

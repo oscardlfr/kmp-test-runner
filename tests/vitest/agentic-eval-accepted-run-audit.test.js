@@ -747,9 +747,26 @@ describe('validateAcceptedRunAuditSidecar', () => {
       expect(validateAcceptedRunAuditSidecar(sidecar).errors.length).toBeGreaterThan(0);
     });
 
-    it('rejects an event ref whose type is not exactly "user.tool_result"', () => {
+    it('rejects an event ref outside the closed normalized result-event vocabulary', () => {
       const sidecar = validSidecar({ terminal_authoritative_event: { type: 'assistant.tool_use', index: 2 } });
       expect(validateAcceptedRunAuditSidecar(sidecar).errors.length).toBeGreaterThan(0);
+    });
+
+    it('accepts the normalized Codex command-result event type', () => {
+      const sidecar = validSidecar({
+        terminal_authoritative_event: { type: 'runtime.command_result', index: 2 },
+        first_useful_signal_event: { type: 'runtime.command_result', index: 2 },
+        tool_calls: [validEntryForSignal(2)],
+        summary: {
+          ...validSidecar().summary,
+          tool_calls_total: 1,
+          shell_commands_total: 1,
+          post_signal_tool_calls: 0,
+          policy_denials_before_first_signal: 0,
+          policy_denials_after_first_signal: 0,
+        },
+      });
+      expect(validateAcceptedRunAuditSidecar(sidecar).errors).toEqual([]);
     });
 
     it('rejects a negative event-ref index', () => {
@@ -1357,6 +1374,7 @@ describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / cross
           module_failed: 0,
           gradle_timeout: 0,
           no_test_modules: 0,
+          coverage_data_unavailable: 0,
           environment_other: 0,
           configuration: 0,
           other: 0,
@@ -1393,6 +1411,7 @@ describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / cross
         module_failed: 0,
         gradle_timeout: 0,
         no_test_modules: 0,
+        coverage_data_unavailable: 0,
         environment_other: 0,
         configuration: 0,
         other: 0,
@@ -1441,6 +1460,7 @@ describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / cross
             module_failed: 0,
             gradle_timeout: 0,
             no_test_modules: 0,
+            coverage_data_unavailable: 0,
             environment_other: 0,
             configuration: 0,
             other: 0,
@@ -1490,6 +1510,7 @@ describe('buildAcceptedRunAuditSidecar / validateAcceptedRunAuditSidecar / cross
             module_failed: 0,
             gradle_timeout: 0,
             no_test_modules: 0,
+            coverage_data_unavailable: 0,
             environment_other: 0,
             configuration: 0,
             other: 0,

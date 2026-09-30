@@ -6,7 +6,8 @@
 // symlink/wrapper resolution). Nothing under this module ever runs a measured session with a
 // cwd inside this repo or any repo/config-ancestor tree -- every fixture is copied/checked out
 // into a fresh temp directory immediately before use.
-import { mkdtempSync, rmSync, mkdirSync, cpSync, writeFileSync, appendFileSync, realpathSync, existsSync, statSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, cpSync, writeFileSync, readFileSync, appendFileSync, realpathSync, existsSync, statSync } from 'node:fs';
+import { randomBytes, createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, dirname, basename, isAbsolute, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -65,6 +66,40 @@ function bestEffortRemove(path) {
   try {
     rmSync(path, { recursive: true, force: true });
   } catch { /* best-effort: the original acquisition error is what matters, not this */ }
+}
+
+// Confirmed empirically: mkdtempSync's own libuv binding
+// (uv_fs_mkdtemp) does NOT reliably create a directory once the resolved path exceeds Windows'
+// classic MAX_PATH (260 chars) on this harness's hosts, even with HKLM
+// FileSystem\LongPathsEnabled=1 set system-wide -- confirmed by direct measurement: mkdirSync,
+// realpathSync, realpathSync.native, readFileSync, and writeFileSync all succeed at resolved
+// lengths past 350 chars on the same host where mkdtempSync fails past ~260. mkdirSync is the one
+// proven-safe primitive that still gives the same "fresh, unique, prefix-named temp directory"
+// contract mkdtempSync provides, so every caller in this module that needs one goes through these
+// two functions instead of calling mkdtempSync directly.
+// baseDir is injectable (defaults to the real tmpdir()) purely so tests can force a resolved
+// length past MAX_PATH deterministically, without mutating process.env.TEMP/TMP for the whole
+// test process -- matching this repo's own node-runtime rule ("prefer pure helpers and
+// dependency injection for process, filesystem, clock, and environment behavior").
+function allocateTempDirPath(prefix, { baseDir = tmpdir() } = {}) {
+  return `${join(baseDir, prefix)}${randomBytes(3).toString('hex')}`;
+}
+
+/** Long-path-safe replacement for `mkdtempSync(join(tmpdir(), prefix))` -- see this file's own
+ * comment on allocateTempDirPath for why. On failure, throws a new Error whose message carries
+ * `err.code`/`err.syscall` (the underlying OS diagnosis) plus the candidate directory's own
+ * basename (this module's own prefix + a random suffix -- never any part of the real tmpdir()
+ * root, which can carry a real username) and its FULL resolved character length -- exactly the
+ * three facts a future long-path failure needs to be diagnosed from `result.reason` alone,
+ * without ever putting a raw absolute path into text that flows toward an incident diagnostic. */
+export function mkdtempLongPathSafe(prefix, opts) {
+  const dir = allocateTempDirPath(prefix, opts);
+  try {
+    mkdirSync(dir);
+  } catch (err) {
+    throw new Error(`mkdtemp_long_path_failed: code=${err.code ?? 'unknown'} syscall=${err.syscall ?? 'unknown'} target=${basename(dir)} target_length=${dir.length}`);
+  }
+  return dir;
 }
 
 function sleepSync(ms) {
@@ -146,7 +181,7 @@ export function removeDirRobust(path, { delays = [50, 100, 200, 400], rmFn = rmS
   }
 }
 
-function ensureCommitAvailable(repoRoot, sha) {
+export function ensureCommitAvailable(repoRoot, sha) {
   if (isCommitAvailable(repoRoot, sha)) return;
   // Not hex-shaped -- definitely not a real commit; let `git archive` report it directly rather
   // than spending a network round-trip on input that can never resolve.
@@ -169,7 +204,7 @@ function ensureCommitAvailable(repoRoot, sha) {
  * @param {{repoRoot: string, sha: string, validateFn: Function}} opts
  */
 export async function materializeSkillSnapshot({ repoRoot, sha, validateFn }) {
-  const dest = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-skill-'));
+  const dest = mkdtempLongPathSafe('kmp-agentic-eval-skill-');
   // Everything after mkdtempSync is wrapped so a failure at ANY step (missing commit, archive
   // failure, validation failure) still removes `dest` before rethrowing -- previously a
   // validation failure specifically left the temp directory behind forever, since nothing
@@ -337,8 +372,11 @@ export function materializeScenarioProject({ sourceRepoDir, pinnedCommit, existi
     runGitViaBash(['reset', '--hard', pinnedCommit], existingWorktreeDir);
     return { fixtureDir: existingWorktreeDir };
   }
-  const dest = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-scenario-'));
-  rmSync(dest, { recursive: true, force: true }); // git worktree add requires the target not exist
+  // allocateTempDirPath, not mkdtempLongPathSafe: `git worktree add` requires the target not
+  // exist, so this only ever needs a guaranteed-unique candidate name, never an actually-created
+  // directory (the previous mkdtempSync-then-immediately-rmSync round trip served no purpose
+  // beyond generating that name, and mkdtempSync is the long-path-unsafe primitive besides).
+  const dest = allocateTempDirPath('kmp-agentic-eval-scenario-');
   // `git worktree add` can leave partial state registered (or a partially-populated directory)
   // if it fails partway through -- clean up via the same removeScenarioWorktree() path a
   // successful worktree's own teardown uses, before rethrowing the ORIGINAL error. The rollback's
@@ -374,9 +412,66 @@ export function materializeScenarioProject({ sourceRepoDir, pinnedCommit, existi
  * (byte-identical reset between conditions) holds either way.
  * @param {{runPrewarm?: (gradleUserHome: string) => void, seedFromDir?: string | null}} [opts]
  */
+// Amendment A5: NiA's
+// own project-level gradle.properties commits -Xms4g for the Gradle daemon PLUS -Xms4g for the
+// Kotlin daemon -- 8GB up front against this harness's VM profile's fixed, non-dynamic 8GB RAM
+// allocation (two live "Gradle build daemon disappeared unexpectedly" deaths, campaign 99f67197).
+// GRADLE_USER_HOME-level properties take precedence over the project's own, so this override
+// applies without ever touching the checked-out project tree.
+//
+// Round 1 (a06c14f family) wrote ONLY the memory-cap lines, unconditionally overwriting whatever
+// gradle.properties the seed copy already carried -- for the PowerShell paths specifically, that
+// silently DROPPED the certified seed's own org.gradle.daemon=false and
+// org.gradle.java.installations.auto-download=false (written at warm time,
+// evidence1-hyperv-warm-canonical-gradle-cache-direct.ps1:41), the opposite of the goal: the
+// daemon then stayed alive after each build (MORE memory held, not less), and toolchain
+// auto-download stopped being disabled in this offline-network VM. Found live, before any of the
+// 5 invalidated smoke runs were trusted.
+//
+// Fix: ONE canonical five-key content, byte-identical (LF line endings) in both this file and the
+// PowerShell guest bundles (run-agentic-eval-product-smoke, run-gradle-task-offline,
+// run-gradle-diagnostic-probe) -- proven identical by a cross-language SHA-256 test, not assumed.
+// Never a blind overwrite: the seed's own gradle.properties (if any) is read back first and every
+// key it carries must already be one of these five, or this fails closed
+// (gradle_user_home_properties_unexpected_key) rather than silently dropping an unknown one a
+// future re-provisioning might add.
+export const GRADLE_USER_HOME_CANONICAL_PROPERTIES =
+  'org.gradle.daemon=false\n'
+  + 'org.gradle.java.installations.auto-download=false\n'
+  + 'org.gradle.configuration-cache=false\n'
+  + 'org.gradle.jvmargs=-Dfile.encoding=UTF-8 -XX:+UseG1GC -XX:SoftRefLRUPolicyMSPerMB=1 -XX:ReservedCodeCacheSize=256m -XX:+HeapDumpOnOutOfMemoryError -Xmx3g\n'
+  + 'kotlin.daemon.jvmargs=-Dfile.encoding=UTF-8 -XX:+UseG1GC -XX:SoftRefLRUPolicyMSPerMB=1 -XX:ReservedCodeCacheSize=320m -XX:+HeapDumpOnOutOfMemoryError -Xmx2g\n';
+
+const GRADLE_USER_HOME_CANONICAL_KEYS = new Set([
+  'org.gradle.daemon',
+  'org.gradle.java.installations.auto-download',
+  'org.gradle.configuration-cache',
+  'org.gradle.jvmargs',
+  'kotlin.daemon.jvmargs',
+]);
+
+/** Fails closed (never silently drops a key the canonical content doesn't know about) if
+ * `existingContent` -- whatever gradle.properties the seed copy already carried, or null if it had
+ * none -- declares any key outside GRADLE_USER_HOME_CANONICAL_KEYS. Comment/blank lines are
+ * skipped, matching Java .properties syntax; a malformed line with no '=' is treated as its own
+ * (almost certainly unrecognized) key rather than silently ignored. */
+function assertNoUnexpectedGradleUserHomePropertiesKeys(existingContent) {
+  if (existingContent == null) return;
+  for (const rawLine of existingContent.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line === '' || line.startsWith('#') || line.startsWith('!')) continue;
+    const eqIndex = line.indexOf('=');
+    const key = eqIndex === -1 ? line : line.slice(0, eqIndex).trim();
+    if (!GRADLE_USER_HOME_CANONICAL_KEYS.has(key)) {
+      throw new Error(`gradle_user_home_properties_unexpected_key: ${key}`);
+    }
+  }
+}
+
 export function materializeGradleUserHome({ runPrewarm, seedFromDir = null } = {}) {
-  const gradleUserHome = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-gradle-'));
+  const gradleUserHome = mkdtempLongPathSafe('kmp-agentic-eval-gradle-');
   let snapshotDir;
+  let gradleMemoryOverrideSha256;
   try {
     if (seedFromDir) {
       const seedStat = statSync(seedFromDir);
@@ -385,10 +480,16 @@ export function materializeGradleUserHome({ runPrewarm, seedFromDir = null } = {
       }
       cpSync(seedFromDir, gradleUserHome, { recursive: true });
     }
-    writeFileSync(join(gradleUserHome, 'gradle.properties'), 'org.gradle.daemon=false\n');
-    snapshotDir = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-gradle-snapshot-'));
+    const gradlePropertiesPath = join(gradleUserHome, 'gradle.properties');
+    const existingContent = existsSync(gradlePropertiesPath) ? readFileSync(gradlePropertiesPath, 'utf8') : null;
+    assertNoUnexpectedGradleUserHomePropertiesKeys(existingContent);
+    gradleMemoryOverrideSha256 = createHash('sha256').update(GRADLE_USER_HOME_CANONICAL_PROPERTIES, 'utf8').digest('hex');
+    writeFileSync(gradlePropertiesPath, GRADLE_USER_HOME_CANONICAL_PROPERTIES);
+    // allocateTempDirPath, not mkdtempLongPathSafe: cpSync below creates snapshotDir itself
+    // (recursive cp semantics), so this only ever needed a guaranteed-unique candidate name -- the
+    // previous mkdtempSync-then-immediately-rmSync round trip served no purpose beyond that name.
+    snapshotDir = allocateTempDirPath('kmp-agentic-eval-gradle-snapshot-');
     if (runPrewarm) runPrewarm(gradleUserHome);
-    rmSync(snapshotDir, { recursive: true, force: true });
     cpSync(gradleUserHome, snapshotDir, { recursive: true });
   } catch (err) {
     // Whichever of the two temp directories got created before the failure -- writeFileSync,
@@ -406,7 +507,11 @@ export function materializeGradleUserHome({ runPrewarm, seedFromDir = null } = {
     cpSync(snapshotDir, gradleUserHome, { recursive: true });
   }
 
-  return { gradleUserHome, snapshotDir, resetToSnapshot, daemonPolicy: 'disabled-via-gradle-user-home-properties' };
+  return {
+    gradleUserHome, snapshotDir, resetToSnapshot,
+    daemonPolicy: 'disabled-via-gradle-user-home-properties',
+    gradleMemoryOverrideSha256,
+  };
 }
 
 /** Resolve a path via the real filesystem (symlinks/junctions followed) -- never lexical. */

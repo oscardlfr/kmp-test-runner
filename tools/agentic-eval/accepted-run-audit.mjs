@@ -588,7 +588,9 @@ export function buildAcceptedRunAuditSidecar({ record, conditionResult, terminal
     condition: record.condition,
     scenario_id: record.scenario_id,
     first_useful_signal_event: record.first_useful_signal_event ?? null,
-    terminal_authoritative_event: terminalAuthoritativeEventIndex != null ? { type: 'user.tool_result', index: terminalAuthoritativeEventIndex } : null,
+    terminal_authoritative_event: terminalAuthoritativeEventIndex != null
+      ? { type: record.agent_runtime?.runtime_id === 'codex-cli' ? 'runtime.command_result' : 'user.tool_result', index: terminalAuthoritativeEventIndex }
+      : null,
     tool_calls: toolCalls,
     summary: {
       tool_calls_total: toolCalls.length,
@@ -639,11 +641,12 @@ export function buildAcceptedRunAuditSidecar({ record, conditionResult, terminal
 }
 
 const EVENT_REF_KEYS = ['type', 'index'];
+const EVENT_REF_TYPES = ['user.tool_result', 'runtime.command_result'];
 
 /**
  * Strict event-ref shape (review finding 1a) -- must be null, or an object with EXACTLY the keys
- * type/index (no more, no less), `type` exactly the literal `"user.tool_result"` (not merely any
- * string), and `index` a non-negative INTEGER (not merely any number -- a fractional or negative
+ * type/index (no more, no less), `type` in the closed provider-neutral result-event vocabulary,
+ * and `index` a non-negative INTEGER (not merely any number -- a fractional or negative
  * value can never correlate to a real event position). Applies identically to both
  * first_useful_signal_event and terminal_authoritative_event.
  */
@@ -657,8 +660,8 @@ function validateEventRefField(ref, field, errors) {
   if (keys.length !== EVENT_REF_KEYS.length || !EVENT_REF_KEYS.every((k) => keys.includes(k))) {
     errors.push({ field, message: `must have exactly the keys ${EVENT_REF_KEYS.join('/')}, got ${JSON.stringify(keys)}` });
   }
-  if (ref.type !== 'user.tool_result') {
-    errors.push({ field: `${field}.type`, message: 'must be exactly "user.tool_result"' });
+  if (!EVENT_REF_TYPES.includes(ref.type)) {
+    errors.push({ field: `${field}.type`, message: `must be one of ${EVENT_REF_TYPES.join('|')}` });
   }
   if (!Number.isInteger(ref.index) || ref.index < 0) {
     errors.push({ field: `${field}.index`, message: 'must be a non-negative integer' });

@@ -3,6 +3,7 @@ param(
     [string]$RunId,
     [string]$CanaryArm = '',
     [string]$CanaryBindingSha256 = '',
+    [Parameter(Mandatory = $true)][string]$RemoteAuthCanaryOperationId,
 
     [string]$LauncherPath = 'C:\Evidence1Ops\evidence1-stageb-live-launch.ps1',
     [string]$OpsDir = 'C:\Evidence1Ops',
@@ -16,6 +17,11 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$remoteAuthOperationGuid = [guid]::Empty
+if (-not [guid]::TryParseExact($RemoteAuthCanaryOperationId, 'D', [ref]$remoteAuthOperationGuid) -or
+    $remoteAuthOperationGuid -eq [guid]::Empty -or $RemoteAuthCanaryOperationId -cne $remoteAuthOperationGuid.ToString('D')) {
+    throw 'remote_auth_operation_id_invalid'
+}
 
 $contractPath = Join-Path $PSScriptRoot 'evidence1-live-run-contract.psm1'
 Import-Module $contractPath -Force
@@ -199,7 +205,8 @@ try {
         '-ExecutionPolicy', 'Bypass',
         '-File', $LauncherPath,
         '-RunId', $RunId,
-        '-TerminalRecordPath', $launcherTerminalPath
+        '-TerminalRecordPath', $launcherTerminalPath,
+        '-RemoteAuthCanaryOperationId', $RemoteAuthCanaryOperationId
     )
     if ($canary) { $argumentValues += @('-CanaryArm', $CanaryArm, '-CanaryBindingSha256', $CanaryBindingSha256) }
     if ($canary) {

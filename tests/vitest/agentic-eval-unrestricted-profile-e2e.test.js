@@ -33,6 +33,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveBash } from '../../tools/agentic-eval/resolve-bash.mjs';
+import { createFakeClaudeCommandPath } from './_fake-claude-command.js';
 import { validateAcceptedRunAuditSidecar, crossValidateAcceptedRunAuditAgainstRecord } from '../../tools/agentic-eval/accepted-run-audit.mjs';
 import { validateRejectionRow, REJECTION_DIAGNOSTICS_SCHEMA_V13 } from '../../tools/agentic-eval/rejection-diagnostics.mjs';
 
@@ -43,6 +44,7 @@ const FIXTURES_DIR = path.join(__dirname, '..', 'fixtures');
 
 let runsRoot;
 let isolatedTmp;
+let commandShimRoot;
 let sourceRepoDir;
 let scenariosDir;
 let pinnedCommit;
@@ -61,6 +63,7 @@ function gitViaBash(argv, cwd) {
 beforeEach(() => {
   runsRoot = mkdtempSync(path.join(os.tmpdir(), 'aeup-runs-root-'));
   isolatedTmp = mkdtempSync(path.join(os.tmpdir(), 'aeup-isolated-tmp-'));
+  commandShimRoot = mkdtempSync(path.join(os.tmpdir(), 'aeup-claude-cmd-shim-'));
 
   sourceRepoDir = mkdtempSync(path.join(os.tmpdir(), 'aeup-source-'));
   gitViaBash(['init', '-q'], sourceRepoDir);
@@ -100,16 +103,21 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(runsRoot, { recursive: true, force: true });
   rmSync(isolatedTmp, { recursive: true, force: true });
+  rmSync(commandShimRoot, { recursive: true, force: true });
   rmSync(sourceRepoDir, { recursive: true, force: true });
   rmSync(scenariosDir, { recursive: true, force: true });
 });
 
 function fakeClaudeEnv(scenario) {
   const fakeDir = path.join(FIXTURES_DIR, `fake-claude-${scenario}`);
-  const delimiter = process.platform === 'win32' ? ';' : ':';
+  const command = createFakeClaudeCommandPath({
+    fixtureDir: fakeDir,
+    basePath: process.env.PATH ?? process.env.Path ?? '',
+    shimRoot: commandShimRoot,
+  });
   return {
     ...process.env,
-    PATH: `${fakeDir}${delimiter}${process.env.PATH ?? process.env.Path ?? ''}`,
+    PATH: command.path,
     KMP_EVAL_RUNS_ROOT: runsRoot,
     KMP_EVAL_SCENARIOS_DIR: scenariosDir,
     TEMP: isolatedTmp,

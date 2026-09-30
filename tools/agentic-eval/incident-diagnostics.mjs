@@ -24,11 +24,13 @@
 // run_kind/phase/counter -- whether from a caller bug or a corrupted journal summary -- can never
 // reach disk; a guaranteed-valid minimal diagnostic is written instead.
 import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RUNS_ROOT, isRawDirSafeFromAccidentalCommit, promoteTargetsAtomically } from './evidence-io.mjs';
 import { redactAndVerify, assertCleanOrThrowObject } from './privacy.mjs';
 import { AGENTIC_EVAL_INCIDENT_PHASES } from './durable-journal.mjs';
 import { validateCorrelationObservability } from './correlation-observability.mjs';
+import { resolveBash } from './resolve-bash.mjs';
 
 // One pre-approved, closed fallback code per phase -- used ONLY when the real reason text can't be
 // verified clean by the redaction pipeline. Never the raw text in that case, committed or local.
@@ -179,7 +181,68 @@ const DIAGNOSTIC_SCHEMA_1_KEYS = new Set([
   'emergency_raw_persisted', 'emergency_raw_write_error', 'provenance', 'created_at',
 ]);
 const DIAGNOSTIC_SCHEMA_2_KEYS = new Set([...DIAGNOSTIC_SCHEMA_1_KEYS, 'failed_cell_correlation']);
+// Schema 3/4: adds path_diagnostics on top of schema 1/2's own
+// key set respectively -- the SAME additive pattern schema 2 already established for
+// failed_cell_correlation, one axis (path_diagnostics) independent of the other (failed_cell_correlation).
+// finalizeIncident always computes path_diagnostics itself now (see computePathDiagnostics), so
+// every NEW diagnostic is schema 3 or 4 going forward; schema 1/2 stay valid here purely to keep
+// historical committed diagnostics readable.
+const DIAGNOSTIC_SCHEMA_3_KEYS = new Set([...DIAGNOSTIC_SCHEMA_1_KEYS, 'path_diagnostics']);
+const DIAGNOSTIC_SCHEMA_4_KEYS = new Set([...DIAGNOSTIC_SCHEMA_2_KEYS, 'path_diagnostics']);
 const COUNTS_ALLOWED_KEYS = new Set(['planned', 'spawn_started', 'spawn_completed', 'raw_persisted', 'parsed', 'evaluated', 'spawn_failed']);
+const PATH_DIAGNOSTICS_ALLOWED_KEYS = new Set([
+  'schema', 'temp_dir_relative', 'temp_dir_length', 'cwd_relative', 'cwd_length', 'runtime_command_length',
+]);
+
+// Windows drive letter ("C:\" / "C:/") or a leading POSIX slash -- the one segment of an absolute
+// path that is NEVER itself identifying (unlike the account-name segment typically right after
+// it). Anything this doesn't recognize (a UNC path, a mapped drive under a different scheme) is
+// left unchanged -- assertCleanOrThrowObject's existing redaction pass is the backstop for that
+// case, the same safety net `reason` already relies on.
+function stripFilesystemRoot(p) {
+  if (typeof p !== 'string') return '';
+  return p.replace(/^[A-Za-z]:[\\/]/, '').replace(/^[\\/]/, '');
+}
+
+/** Computed once per finalizeIncident call, entirely from this process's own ambient state
+ * (tmpdir()/process.cwd()/resolveBash()) -- never caller-supplied, so no wiring change is needed
+ * at any of this repo's 12 call sites. Settles the Windows long-path hypothesis
+ * from an incident diagnostic alone, without a live guest shell: the `*_length` fields are plain
+ * numbers (never PII, always exact -- the actually load-bearing signal for a MAX_PATH-class
+ * failure), and the `*_relative` fields strip the filesystem root so a normal reading never needs
+ * the raw absolute path. resolveBash() failing to resolve at all is itself a real, reportable fact
+ * (runtime_command_length: null), never a reason for this function to throw. */
+function computePathDiagnostics() {
+  const tempDirValue = tmpdir();
+  const cwdValue = process.cwd();
+  let runtimeCommandLength = null;
+  try {
+    runtimeCommandLength = resolveBash().length;
+  } catch {
+    runtimeCommandLength = null;
+  }
+  return {
+    schema: 1,
+    temp_dir_relative: stripFilesystemRoot(tempDirValue),
+    temp_dir_length: tempDirValue.length,
+    cwd_relative: stripFilesystemRoot(cwdValue),
+    cwd_length: cwdValue.length,
+    runtime_command_length: runtimeCommandLength,
+  };
+}
+
+function isValidPathDiagnostics(pd) {
+  if (pd == null || typeof pd !== 'object' || Array.isArray(pd)) return false;
+  const keys = Object.keys(pd);
+  if (keys.length !== PATH_DIAGNOSTICS_ALLOWED_KEYS.size || keys.some((k) => !PATH_DIAGNOSTICS_ALLOWED_KEYS.has(k))) return false;
+  if (pd.schema !== 1) return false;
+  if (typeof pd.temp_dir_relative !== 'string') return false;
+  if (typeof pd.cwd_relative !== 'string') return false;
+  if (!Number.isInteger(pd.temp_dir_length) || pd.temp_dir_length < 0) return false;
+  if (!Number.isInteger(pd.cwd_length) || pd.cwd_length < 0) return false;
+  if (pd.runtime_command_length !== null && (!Number.isInteger(pd.runtime_command_length) || pd.runtime_command_length < 0)) return false;
+  return true;
+}
 // Union of every provenance shape actually passed at any of this repo's 12 finalizeIncident call
 // sites (cmdCalibrate: model_requested+scenario_id; cmdSmoke: +project_alias+project_commit;
 // cmdRun: scenario_id+project_alias+project_commit+seed+model_requested) -- re-verified directly
@@ -207,9 +270,12 @@ function isValidIncidentDiagnostic(d) {
   if (d == null || typeof d !== 'object' || Array.isArray(d)) return false;
   const keys = Object.keys(d);
   const allowedKeys = d.schema === 1 ? DIAGNOSTIC_SCHEMA_1_KEYS
-    : d.schema === 2 ? DIAGNOSTIC_SCHEMA_2_KEYS : null;
+    : d.schema === 2 ? DIAGNOSTIC_SCHEMA_2_KEYS
+    : d.schema === 3 ? DIAGNOSTIC_SCHEMA_3_KEYS
+    : d.schema === 4 ? DIAGNOSTIC_SCHEMA_4_KEYS : null;
   if (allowedKeys == null || keys.length !== allowedKeys.size || keys.some((k) => !allowedKeys.has(k))) return false;
-  if (d.schema === 2 && !validateCorrelationObservability(d.failed_cell_correlation).ok) return false;
+  if ((d.schema === 2 || d.schema === 4) && !validateCorrelationObservability(d.failed_cell_correlation).ok) return false;
+  if ((d.schema === 3 || d.schema === 4) && !isValidPathDiagnostics(d.path_diagnostics)) return false;
   if (typeof d.incident_id !== 'string' || d.incident_id.length === 0) return false;
   if (!VALID_RUN_KINDS.has(d.run_kind)) return false;
   if (!AGENTIC_EVAL_INCIDENT_PHASES.includes(d.phase)) return false;
@@ -273,6 +339,16 @@ export function finalizeIncident({
   const failedCellCorrelation = Number.isInteger(cellOrdinal) && cellOrdinal >= 0
     ? summary.correlationSummaries?.[cellOrdinal] ?? null
     : null;
+  // Never lets a computation failure here corrupt the rest of the diagnostic -- degrades to the
+  // pre-existing schema 1/2 shape (no path_diagnostics key at all) exactly like an absent
+  // failed_cell_correlation already does, rather than including a malformed value that would fail
+  // isValidIncidentDiagnostic and fall through to the much less useful minimalFallbackDiagnostic.
+  let pathDiagnostics = null;
+  try {
+    pathDiagnostics = computePathDiagnostics();
+  } catch {
+    pathDiagnostics = null;
+  }
 
   // Emergency raw fallback -- its own independent, best-effort local transaction. Only attempted
   // for phase:'persisting_cell_journal' (the only phase that ever attaches a raw payload in the
@@ -305,7 +381,7 @@ export function finalizeIncident({
   }
 
   const diagnostic = {
-    schema: failedCellCorrelation == null ? 1 : 2,
+    schema: (failedCellCorrelation == null ? 1 : 2) + (pathDiagnostics == null ? 0 : 2),
     incident_id: incidentId,
     run_kind: runKind,
     phase,
@@ -317,6 +393,7 @@ export function finalizeIncident({
     provenance,
     created_at: new Date().toISOString(),
     ...(failedCellCorrelation == null ? {} : { failed_cell_correlation: failedCellCorrelation }),
+    ...(pathDiagnostics == null ? {} : { path_diagnostics: pathDiagnostics }),
   };
 
   // A guaranteed-valid stand-in -- built fresh each time it's needed (created_at must reflect

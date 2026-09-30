@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+set -eu
+
+if [ "${1:-}" = "--version" ]; then
+  echo 'codex-cli 0.154.0'
+  exit 0
+fi
+
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then
+  echo 'Logged in using ChatGPT'
+  exit 0
+fi
+
+if [ "${1:-}" = "debug" ] && [ "${2:-}" = "prompt-input" ]; then
+  node -e '
+const fs = require("fs");
+const path = require("path");
+const skill = path.join(process.cwd(), ".agents", "skills", "kmp-test-runner", "SKILL.md");
+const root = path.join(process.cwd(), ".agents", "skills");
+const text = fs.existsSync(skill)
+  ? `### Skill roots\n- \`r0\` = \`${root}\`\n### Available skills\n- kmp-test-runner: fake skill (file: r0/kmp-test-runner/SKILL.md)`
+  : "### Skill roots\n### Available skills";
+process.stdout.write(JSON.stringify([{ type: "message", role: "developer", content: [{ type: "input_text", text }] }]));
+'
+  exit 0
+fi
+
+if [ "${1:-}" != "exec" ]; then
+  echo 'fake codex: unexpected argv' >&2
+  exit 2
+fi
+
+# Scenario-generic (WO-A2 step 8, design.md (i)): mirrors fake-claude-campaign-success/claude's own
+# identical 5-variable parameterization exactly -- see that fixture's header comment for the full
+# rationale. Every default below is the exact literal this fixture always hardcoded
+# (coverage-threshold-failure-v2's own :core:domain); an invocation that sets none of them behaves
+# byte-for-byte as before.
+FAKE_SCENARIO_PROJECT_NAME="${KMP_FAKE_SCENARIO_PROJECT_NAME:-nowinandroid}"
+FAKE_SCENARIO_INCLUDE_MARKER="${KMP_FAKE_SCENARIO_INCLUDE_MARKER:-include(\":core:domain\")}"
+FAKE_SCENARIO_MODULE="${KMP_FAKE_SCENARIO_MODULE:-:core:domain}"
+FAKE_SCENARIO_MIN_MISSED_LINES="${KMP_FAKE_SCENARIO_MIN_MISSED_LINES:-15}"
+FAKE_SCENARIO_GRADLE_TASKS="${KMP_FAKE_SCENARIO_GRADLE_TASKS:-:core:domain:testDemoDebugUnitTest :core:domain:createDemoDebugUnitTestCoverageReport}"
+
+# Provider-free exec gate: true only when cwd is the real materialized workspace for the
+# CURRENTLY-CONFIGURED scenario (never any synthetic/temp source repo any existing test uses). When
+# true, this fixture stops emitting the hardcoded :fakemod literal below and genuinely invokes the
+# real product/gradle against FAKE_SCENARIO_MODULE instead, wrapped in powershell.exe -Command
+# exactly as real Codex does on Windows -- both in the transcript and in what actually runs (no
+# kmp-test.ps1 is introduced anywhere: the real product shim only ever ships kmp-test/kmp-test.cmd,
+# and bare `kmp-test` already resolves to kmp-test.cmd from inside a powershell.exe -Command
+# invocation regardless of execution policy, since .cmd files are never policy-gated -- verified
+# empirically. Introducing a stray .ps1 here would shadow that working resolution and break under
+# Restricted policy instead of faithfully reproducing the real product's own internal dispatch bug).
+is_real_scenario_workspace() {
+  [ -f "$PWD/gradlew.bat" ] || return 1
+  [ -f "$PWD/settings.gradle.kts" ] || return 1
+  grep -q "rootProject.name = \"$FAKE_SCENARIO_PROJECT_NAME\"" "$PWD/settings.gradle.kts" || return 1
+  grep -q "$FAKE_SCENARIO_INCLUDE_MARKER" "$PWD/settings.gradle.kts" || return 1
+  return 0
+}
+
+if is_real_scenario_workspace; then
+  HAS_SKILL=0
+  [ -f "$PWD/.agents/skills/kmp-test-runner/SKILL.md" ] && HAS_SKILL=1
+
+  if [ "$HAS_SKILL" = "1" ]; then
+    INNER_CMD="kmp-test parallel --module-filter $FAKE_SCENARIO_MODULE --min-missed-lines $FAKE_SCENARIO_MIN_MISSED_LINES --json --project-root ."
+  else
+    INNER_CMD="./gradlew.bat $FAKE_SCENARIO_GRADLE_TASKS --offline --console=plain"
+  fi
+  # Real Codex-on-Windows shape (transcript AND actual dispatch use the SAME string): full launcher
+  # path, single-quoted inner command, no -NoProfile -- matches command-classify.mjs's unwrap regex
+  # (`^(?:[A-Za-z]:[\\/].*[\\/])?(?:powershell|pwsh)\.exe$`) and real observed transcripts.
+  POWERSHELL_EXE='C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+  REAL_CMD="\"$POWERSHELL_EXE\" -Command '$INNER_CMD'"
+
+  echo '{"type":"thread.started","thread_id":"fake-codex-thread"}'
+  echo '{"type":"turn.started"}'
+  node -e "console.log(JSON.stringify({type:'item.started',item:{id:'cmd-1',type:'command_execution',command:process.argv[1]}}))" "$REAL_CMD"
+
+  set +e
+  if [ "$HAS_SKILL" = "1" ]; then
+    # The real kmp-test (migrated subcommands, e.g. `parallel`) writes failure diagnostics to
+    # stderr BEFORE the JSON envelope whenever it exits non-zero (script-dispatcher.js's
+    # formatFailureDiagnostics call, in the migrated-envelope path) --
+    # coverage_threshold_exceeded is exit_code 1, so this is the real shape, not an edge case.
+    # Capturing merged like the free branch below would make the envelope unparseable. Parse
+    # stdout alone; still relay both streams combined in the transcript (stderr first, matching
+    # the real write order), same as what a real command_execution's aggregated_output shows.
+    REAL_STDERR_FILE=$(mktemp)
+    REAL_STDOUT=$("$POWERSHELL_EXE" -Command "$INNER_CMD" 2>"$REAL_STDERR_FILE")
+    REAL_EXIT=$?
+    REAL_STDERR=$(cat "$REAL_STDERR_FILE")
+    rm -f "$REAL_STDERR_FILE"
+    if [ -n "$REAL_STDERR" ]; then
+      REAL_OUTPUT="$REAL_STDERR
+$REAL_STDOUT"
+    else
+      REAL_OUTPUT="$REAL_STDOUT"
+    fi
+  else
+    REAL_OUTPUT=$("$POWERSHELL_EXE" -Command "$INNER_CMD" 2>&1)
+    REAL_EXIT=$?
+    REAL_STDOUT="$REAL_OUTPUT"
+  fi
+  set -e
+  REAL_STATUS='completed'
+  [ "$REAL_EXIT" != "0" ] && REAL_STATUS='failed'
+  node -e "console.log(JSON.stringify({type:'item.completed',item:{id:'cmd-1',type:'command_execution',command:process.argv[1],aggregated_output:process.argv[2],exit_code:Number(process.argv[3]),status:process.argv[4]}}))" "$REAL_CMD" "$REAL_OUTPUT" "$REAL_EXIT" "$REAL_STATUS"
+
+  if [ "$HAS_SKILL" = "1" ]; then
+    FINAL_ANSWER=$(node -e '
+const raw = process.argv[1];
+const module = process.argv[2];
+const threshold = Number(process.argv[3]);
+let parsed = null;
+try { parsed = JSON.parse(raw); } catch { parsed = null; }
+const hasEnvelope = parsed && typeof parsed === "object" && typeof parsed.exit_code === "number" && parsed.tests && parsed.coverage;
+if (!hasEnvelope) {
+  console.log("The " + module + " check did not produce a result I could make sense of.");
+} else {
+  // test_count/passed are individual_total, not tests.total -- the latter counts Gradle TASKS (1
+  // for this module), while the grader canonicalizes against individual_total (graders.mjs, the
+  // per-test-case count) for every outcome kind below. H15 fix: the requested field is named
+  // test_count, never total, so an agent can never reasonably copy the differently-scoped total
+  // field name straight from the kmp-test tool output by mistake. No apostrophes in this comment
+  // block -- it lives inside a single-quoted bash string; one would prematurely close it.
+  const t = parsed.tests;
+  let block;
+  if ((t.failed || 0) > 0) {
+    block = { module, outcome_kind: "tests_failed", test_count: t.individual_total, passed: t.individual_total - t.failed, failed: t.failed };
+  } else if ((t.individual_total || 0) === 0) {
+    block = { module, outcome_kind: "no_applicable_tests" };
+  } else {
+    const missed = parsed.coverage && typeof parsed.coverage.missed_lines === "number" ? parsed.coverage.missed_lines : null;
+    if (missed !== null && missed > threshold) {
+      block = { module, outcome_kind: "coverage_threshold_exceeded", test_count: t.individual_total, passed: t.individual_total, failed: 0, missed_lines: missed, threshold, modules_contributing: parsed.coverage.modules_contributing };
+    } else {
+      block = { module, outcome_kind: "tests_executed", test_count: t.individual_total, passed: t.individual_total, failed: 0 };
+    }
+  }
+  console.log("Investigated " + module + ".\n\nKMP_EVAL_RESULT\n" + JSON.stringify(block) + "\nKMP_EVAL_RESULT_END");
+}
+' "$REAL_STDOUT" "$FAKE_SCENARIO_MODULE" "$FAKE_SCENARIO_MIN_MISSED_LINES")
+  else
+    FINAL_ANSWER="Ran the $FAKE_SCENARIO_MODULE unit tests and coverage report directly via Gradle for this condition (no product access)."
+  fi
+  node -e "console.log(JSON.stringify({type:'item.completed',item:{id:'msg-1',type:'agent_message',text:process.argv[1]}}))" "$FINAL_ANSWER"
+  echo '{"type":"turn.completed","usage":{"input_tokens":11,"cached_input_tokens":2,"output_tokens":7,"reasoning_output_tokens":3}}'
+  exit 0
+fi
+
+KMP_ENVELOPE='{"tool":"kmp-test","schema_version":3,"subcommand":"parallel","version":"0.14.0","project_root":"/fake","exit_code":2,"duration_ms":21,"tests":{"total":0,"passed":0,"failed":0,"skipped":0,"individual_total":0},"modules":[],"skipped":[{"module":"fakemod","reason":"no test source set"}],"coverage":{"tool":"auto","missed_lines":null,"modules_with_kover_plugin":[],"modules_with_jacoco_plugin":[]},"errors":[{"code":"no_test_modules","message":"No modules found matching filter: :fakemod","test_type":"","caused_by_filter":true}],"warnings":[],"isolated":{"enabled":false,"cache_dir":null,"kept":false,"locked":true}}'
+FINAL_ANSWER='The :fakemod module has no applicable unit tests.
+
+KMP_EVAL_RESULT
+{"module": ":fakemod", "outcome_kind": "no_applicable_tests"}
+KMP_EVAL_RESULT_END'
+
+echo '{"type":"thread.started","thread_id":"fake-codex-thread"}'
+echo '{"type":"turn.started"}'
+echo '{"type":"item.started","item":{"id":"cmd-1","type":"command_execution","command":"kmp-test parallel --module-filter :fakemod --json"}}'
+node -e 'console.log(JSON.stringify({type:"item.completed",item:{id:"cmd-1",type:"command_execution",command:"kmp-test parallel --module-filter :fakemod --json",aggregated_output:process.argv[1],exit_code:2,status:"failed"}}))' "$KMP_ENVELOPE"
+node -e 'console.log(JSON.stringify({type:"item.completed",item:{id:"msg-1",type:"agent_message",text:process.argv[1]}}))' "$FINAL_ANSWER"
+echo '{"type":"turn.completed","usage":{"input_tokens":11,"cached_input_tokens":2,"output_tokens":7,"reasoning_output_tokens":3}}'

@@ -16,7 +16,7 @@
       "id": "sandboxed-unrestricted-v1",
       "enabled": true,
       "default": false,
-      "supported_runtime_ids": ["claude-code"],
+      "supported_runtime_ids": ["claude-code", "codex-cli"],
       "isolation_kind": "external-sandbox",
       "network_mode": "restricted",
       "isolation_attestation_required": true,

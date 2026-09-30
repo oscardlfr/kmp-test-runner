@@ -1,6 +1,29 @@
 # `--json` envelope contract
 
-Stable from `v0.9.0`. Bumped via `schema_version` on breaking change.
+Versioned from `v0.9.0`. The current contract is `schema_version: 3`; breaking
+shape or exit/error semantic changes bump it.
+
+## Runner identity and capability preflight
+
+Before invoking Gradle, consumers can probe the installed binary with:
+
+```bash
+kmp-test --version --json
+```
+
+```json
+{"tool":"kmp-test","version":"0.16.0","schema_version":3,"contracts":{"coverage_evidence":1}}
+```
+
+Plain `kmp-test --version` remains the semver-only text form. A consumer that
+depends on fail-closed coverage must JSON-parse the identity and require
+`tool === "kmp-test"` plus integer `contracts.coverage_evidence >= 1`. Missing,
+non-JSON, malformed, or lower values are incompatible. The same `contracts`
+object appears on every canonical execution envelope so consumers can verify
+the contract again before trusting results. If a migrated wrapper falls back
+to the coarse legacy text parser, the execution envelope deliberately reports
+`coverage_evidence: 0` because that parser cannot reconstruct the rich coverage
+fields; reject that run even when the preflight identity was compatible.
 
 `stdout` contains the single JSON envelope. For a failed migrated command, `stderr`
 also retains a bounded excerpt of the runner's captured human diagnostics (at most
@@ -22,7 +45,8 @@ Every subcommand emits the same canonical envelope on `--json`. Subcommand-speci
 ```jsonc
 {
   "tool": "kmp-test",
-  "schema_version": 2,
+  "schema_version": 3,
+  "contracts": { "coverage_evidence": 1 },
   "subcommand": "parallel",        // | "android" | "benchmark" | "changed" | "coverage" | "doctor" | "info" | "describe" | "clean" | "update"
   "version": "<semver>",           // CLI version reading package.json
   "project_root": "<absolute path>",
@@ -121,6 +145,13 @@ know whether ANY real coverage data exists must read `modules_contributing`, nev
 the two are not interchangeable, and a project where every `with_data` module happens to be
 zero-coverage-real will show `modules_contributing: 0` alongside a non-empty `with_data` array.
 
+For `parallel` / `changed`, explicitly passing `--coverage-tool auto|kover|jacoco`
+activates contract `coverage_evidence: 1`: zero real contributors fail closed as
+`coverage_data_unavailable` (exit `3`), even without `--min-missed-lines`. If at
+least one selected module contributes real XML while another is `no_xml`, the run
+may succeed and the three numeric totals are computed only from the contributors;
+the non-contributor remains visible in `module_buckets.no_xml`.
+
 ## Exit codes
 
 | Exit | Meaning | Source |
@@ -150,11 +181,11 @@ Exit codes 124+ are reserved for OS-level signals; the orchestrator never emits 
 | `flavor_unused` | parallel(`androidInstrumented`/`all`) | 2 | `--flavor <name>` supplied but no discovered module declares `productFlavors {}`; orchestrator early-exits before any gradle dispatch |
 | `isolated_runtime_race` | parallel | 2 | `--isolated` combined with a test-type that hits a shared runtime resource (`ios` simulator, `androidInstrumented` without `--device`, or `all`) |
 | `coverage_threshold_exceeded` | parallel/changed(`--min-missed-lines`), coverage | 1 | aggregated (unfiltered) `coverage.missed_lines` exceeds the threshold. `--min-missed-lines` never removes coverage data — it only decides this gate and narrows the *markdown report's* per-class detail section; `coverage.missed_lines` / `modules_contributing` / `module_buckets` always reflect the complete project even when this error fires |
-| `coverage_data_unavailable` | parallel/changed(`--min-missed-lines`), coverage | 3 | a positive coverage budget could not be evaluated — the run can never silently exit 0 in this state. Carries `threshold:number` and a closed `reason` enum: `no-contributing-data` (zero modules contributed any coverage data), `target-not-detected` (a module `parallel`/`changed` actually dispatched for tests carries no coverage plugin at all), `target-no-xml` / `target-parse-error` (a dispatched module's coverage XML is missing / failed to parse), `report-dispatch-failed` (the jacoco/kover report task itself exited non-zero this run — never trust possibly-stale XML left on disk from an earlier run), `aggregation-failed` (the in-process aggregation step threw). Never emitted together with `coverage_threshold_exceeded`. `changed` inherits this unchanged — it delegates to `parallel` in-process and forwards `errors[]`/`warnings[]` verbatim |
+| `coverage_data_unavailable` | parallel/changed(explicit `--coverage-tool` or `--min-missed-lines`), coverage | 3 | requested coverage evidence could not be evaluated — the run can never silently exit 0 in this state. Carries the closed `reason` enum: `no-contributing-data`, `target-not-detected`, `target-no-xml`, `target-parse-error`, `report-dispatch-failed`, or `aggregation-failed`. A positive budget additionally carries `threshold:number`; an explicit tool without a budget carries `required_by:"explicit-coverage-tool"`. Never emitted together with `coverage_threshold_exceeded`. `changed` inherits the complete coverage/errors/warnings blocks from its in-process `parallel` delegate. |
 | `coverage_budget_without_coverage` | parallel/changed(`--min-missed-lines`), coverage | 2 | `--min-missed-lines N>0` was combined with `--no-coverage` / `--coverage-tool none` — a usage contradiction caught before any gradle dispatch or XML read |
 | `git_error` | changed | 3 | a git command failed — repo unreadable, corrupted, or access denied. `errors[].git_command` carries the invoked subcommand (e.g. `rev-parse --is-inside-work-tree`, `status --porcelain`, `diff --cached --name-only`); `errors[].exit_status` the numeric git exit code; `errors[].stderr_summary` the first 300 chars of stderr with CR/LF collapsed to spaces (omitted when empty). This is a **hard** code — `exit_code` is always 3 |
 | `gradle_timeout` | parallel, benchmark | 3 | the gradle spawn process was killed by the `--timeout` deadline (SIGTERM on POSIX; ETIMEDOUT on Windows). **`parallel`** errors carry `module:string`, `task:string`, `timeout_ms:number`. **`benchmark`** errors additionally carry `platform:string` and `log_path:string`. Never retried — a spawn timeout is an infra failure, not a flaky test |
-| `task_not_found` | any | 3 | gradle task class missing — usually a plugin not applied to the requested module |
+| `task_not_found` | any | 3 | gradle task class missing — usually a plugin not applied to the requested module. Carries `probe_failed:true` when the gradle-tasks probe never recovered real task-graph data for this run (see `gradle_probe_failed` below) — dispatch fell back to statically guessing the task name, so this may be a wrong guess rather than a genuinely missing task. Absent (not `false`) when the probe succeeded normally |
 | `unsupported_class_version` | any | 3 | JDK toolchain mismatch — gradle daemon ran on an older JVM than the test classes target |
 | `invalid_*` | any | 2 | CLI validation failure (e.g. `invalid_flag_value`, `invalid_regex`) — a value-bearing flag was dangling (no value) or otherwise malformed. Carries `flag` and/or `value` when known |
 | `no_project` | describe, any | 3 | no gradle project found at `--project-root` |
@@ -199,6 +230,7 @@ Non-fatal signals. They never change the exit code — an agent can branch on th
 | `coverage_xml_oversized` | coverage, parallel | a module's coverage XML exceeded the parser's size cap (default 128 MB; tunable via `KMP_COVERAGE_XML_MAX_MB`) and was skipped — a size-cap-specific subset of `coverage_parse_failed`, discriminated so a legitimately huge report (e.g. a large monorepo's Kover XML) is distinguishable from a malformed one. Carries `modules` |
 | `coverage_report_write_failed` | coverage, parallel | the coverage markdown report could not be written to disk (full disk, permissions) — the JSON envelope and its `coverage` data are still valid; only the on-disk `.md` file failed. Message carries the short fs error code (e.g. `ENOSPC`/`EACCES`) only, never a resolved path |
 | `gradle_config_applied` | parallel (envelope payload, not a `warnings[]` entry) | the project's `gradle.properties` had `org.gradle.parallel=false`, so the CLI dropped its own `--parallel` injection to respect user intent. Surfaces as a top-level `gradle_config_applied: { parallel_dropped: bool }` field |
+| `gradle_probe_failed` | parallel, coverage, android, benchmark, describe | the `gradlew tasks --all --quiet` probe that resolves real per-module task names didn't succeed cleanly on the first try. The probe retries exactly once on `exit_nonzero` or `empty_output` (never on `timeout` or `spawn_error`); this warning fires whenever that first attempt failed, including when the retry then succeeded. Carries `reason` (`timeout` \| `exit_nonzero` \| `empty_output` \| `spawn_error`), `exit_code` (number or null), `attempts`, `recovered` (`true` when the retry succeeded and task names came from real probe data; `false` when every attempt failed and dispatch fell back to static guessing), and `message` (a short summary plus a bounded, de-duplicated stderr excerpt — capped at 2 KB — covering the probe's own "What went wrong" line, any `cannot be cast`/`Exception` line, and the last 10 lines of stderr). Never affects `exit_code`. When `recovered:false`, any `task_not_found` entry in `errors[]` this run also carries `probe_failed:true` |
 
 Other codes are reserved for orchestrator-internal use; agents should treat unknown codes as opaque (forward to the user verbatim).
 

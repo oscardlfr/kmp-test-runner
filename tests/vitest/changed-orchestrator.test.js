@@ -634,9 +634,13 @@ describe('runChanged error code discrimination', () => {
 // warning/error survive the extra buildJsonReport rebuild at changed's own
 // step 9, not just runParallel's own envelope construction.
 // ---------------------------------------------------------------------------
-describe('changed coverage aggregation against a project with no coverage plugin anywhere (real runParallel, real coverage-orchestrator.js)', () => {
-  it('no --min-missed-lines -> warnings includes no_coverage_data, exit 0', async () => {
-    const dir = makeProject(['core']);
+describe('changed coverage aggregation against unavailable explicitly requested coverage (real runParallel, real coverage-orchestrator.js)', () => {
+  it('--coverage-tool kover + every selected module no_xml -> coverage_data_unavailable, exit 3', async () => {
+    const dir = makeProject(['core'], {
+      moduleBuild: {
+        core: 'plugins { id("org.jetbrains.kotlinx.kover"); kotlin("jvm") }\n',
+      },
+    });
     for (const ss of ['commonMain', 'jvmMain', 'jvmTest']) mkdirSync(path.join(dir, 'core', 'src', ss, 'kotlin'), { recursive: true });
     const spawn = makeSpawnStub({
       git: { statusOutput: porcelain(['core/src/jvmTest/kotlin/X.kt']) },
@@ -644,15 +648,60 @@ describe('changed coverage aggregation against a project with no coverage plugin
     });
     const { envelope, exitCode } = await runChanged({
       projectRoot: dir,
-      args: ['--test-type', 'desktop'],
+      args: ['--test-type', 'desktop', '--coverage-tool', 'kover'],
       spawn,
     });
     expect(envelope.warnings.some(w => w.code === 'no_coverage_data')).toBe(true);
-    expect(envelope.errors).toEqual([]);
-    expect(exitCode).toBe(0);
+    expect(envelope.errors).toEqual([
+      expect.objectContaining({
+        code: 'coverage_data_unavailable',
+        reason: 'target-no-xml',
+        required_by: 'explicit-coverage-tool',
+      }),
+    ]);
+    expect(exitCode).toBe(3);
+    expect(envelope.exit_code).toBe(3);
+    expect(envelope.coverage.modules_contributing).toBe(0);
+    expect(envelope.coverage.module_buckets.no_xml).toEqual(['core']);
     expect(envelope.coverage.missed_lines).toBeNull();
     expect(envelope.coverage.covered_lines).toBeNull();
     expect(envelope.coverage.total_lines).toBeNull();
+  });
+
+  it('--coverage-tool kover rejects unrelated XML when every changed module is no_xml', async () => {
+    const dir = makeProject(['core', 'other'], {
+      moduleBuild: {
+        core: 'plugins { id("org.jetbrains.kotlinx.kover"); kotlin("jvm") }\n',
+        other: 'plugins { id("org.jetbrains.kotlinx.kover"); kotlin("jvm") }\n',
+      },
+    });
+    for (const ss of ['commonMain', 'jvmMain', 'jvmTest']) mkdirSync(path.join(dir, 'core', 'src', ss, 'kotlin'), { recursive: true });
+    const otherReportDir = path.join(dir, 'other', 'build', 'reports', 'kover');
+    mkdirSync(otherReportDir, { recursive: true });
+    writeFileSync(path.join(otherReportDir, 'reportDesktop.xml'),
+      '<report><package name="p"><sourcefile name="F.kt">'
+      + '<counter type="LINE" missed="2" covered="8"/>'
+      + '</sourcefile></package></report>');
+    const spawn = makeSpawnStub({
+      git: { statusOutput: porcelain(['core/src/jvmTest/kotlin/X.kt']) },
+      parallelSuite: { stdout: 'BUILD SUCCESSFUL in 1s\n' },
+    });
+    const { envelope, exitCode } = await runChanged({
+      projectRoot: dir,
+      args: ['--test-type', 'desktop', '--coverage-tool', 'kover'],
+      spawn,
+    });
+    expect(exitCode).toBe(3);
+    expect(envelope.errors).toEqual([
+      expect.objectContaining({
+        code: 'coverage_data_unavailable',
+        reason: 'target-no-xml',
+        required_by: 'explicit-coverage-tool',
+      }),
+    ]);
+    expect(envelope.coverage.modules_contributing).toBe(1);
+    expect(envelope.coverage.module_buckets.with_data).toEqual(['other']);
+    expect(envelope.coverage.module_buckets.no_xml).toEqual(['core']);
   });
 
   it('--min-missed-lines 15 -> errors includes coverage_data_unavailable/target-not-detected, exit 3', async () => {

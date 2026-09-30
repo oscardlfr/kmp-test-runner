@@ -1,14 +1,16 @@
 #Requires -RunAsAdministrator
 
 param(
-    [string]$VMName = 'Evidence1-Runner',
-    [string]$GuestUserName = 'Evidence1',
+    [Parameter(Mandatory = $true)][string]$ProfilePath,
+    [Parameter(Mandatory = $true)][string]$CreatedInspectionReceiptPath,
+    [Parameter(Mandatory = $true)][string]$GuestCredentialPath,
     [string]$LiveLauncherSourcePath = (Join-Path $PSScriptRoot 'evidence1-stageb-live-launch.ps1'),
     [string]$LiveWrapperSourcePath = (Join-Path $PSScriptRoot 'evidence1-stageb-live-wrapper.ps1'),
     [string]$ContractSourcePath = (Join-Path $PSScriptRoot 'evidence1-live-run-contract.psm1'),
     [string]$GuestOpsDir = 'C:\Evidence1Ops',
     [string]$GuestScratchDir = 'C:\kmp-eval\scratch\agentic-evidence1-claude-2x2-windows-stage-b-readiness-v1',
-    [string]$ReportPath = 'C:\kmp-eval\scratch\hyperv-place-live-autorun\HYPERV-PLACE-LIVE-AUTORUN.json',
+    [string]$ReportPath = 'C:\kmp-eval\scratch\hyperv-e2e-place-live-autorun\HYPERV-PLACE-LIVE-AUTORUN.json',
+    [Parameter(Mandatory = $true)][string]$RemoteAuthCanaryOperationId,
     [string]$LiveAuthorizationPhrase = '',
     [string]$CanaryArm = '',
     [string]$CanaryRunId = '',
@@ -20,6 +22,14 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'evidence1-vm-identity-contract.psm1') -Force -DisableNameChecking
+$vmIdentity=Get-Evidence1CanonicalE2EVmIdentity -ProfilePath $ProfilePath -CreatedInspectionReceiptPath $CreatedInspectionReceiptPath -GuestCredentialPath $GuestCredentialPath
+$VMName=$vmIdentity.vm_name;$ExpectedVMId=$vmIdentity.vm_id;$GuestUserName=$vmIdentity.guest_user
+$remoteAuthOperationGuid = [guid]::Empty
+if (-not [guid]::TryParseExact($RemoteAuthCanaryOperationId, 'D', [ref]$remoteAuthOperationGuid) -or
+    $remoteAuthOperationGuid -eq [guid]::Empty -or $RemoteAuthCanaryOperationId -cne $remoteAuthOperationGuid.ToString('D')) {
+    throw 'remote_auth_operation_id_invalid'
+}
 
 $RequiredLivePhrase = (
     'AUTORIZO HASTA 8 SESIONES LIVE NUEVAS DEL EVIDENCE' +
@@ -66,10 +76,10 @@ if (-not $GuestScratchDir.StartsWith('C:\kmp-eval\scratch\', [StringComparison]:
 $canary = $null
 if ($CanaryArm -or $CanaryRunId -or $CanaryBindingPath -or $CanaryBindingSha256) {
     if ($CanaryArm -cnotin @('product','free-baseline') -or -not $CanaryRunId -or -not $CanaryBindingPath -or -not $CanaryBindingSha256 -or
-        $VMName -cne 'Evidence1-Runner' -or $GuestUserName -cne 'Evidence1' -or $SkipStartupEntry) { Fail 'canary placement parameters invalid' }
+        $SkipStartupEntry) { Fail 'canary placement parameters invalid' }
     Import-Module (Join-Path $PSScriptRoot 'evidence1-live-run-contract.psm1') -ErrorAction Stop
     Import-Module (Join-Path $PSScriptRoot 'evidence1-live-handoff-contract.psm1') -ErrorAction Stop
-    $expectedBindingPath = 'C:\kmp-eval\scratch\hyperv-start-authorized-live\canary\' + $CanaryRunId + '\binding.json'
+    $expectedBindingPath = 'C:\kmp-eval\scratch\hyperv-e2e-start-authorized-live\canary\' + $CanaryRunId + '\binding.json'
     if ((Resolve-FullPath $CanaryBindingPath) -cne $expectedBindingPath) { Fail 'canary binding path mismatch' }
     $canary = Read-Evidence1CanaryBundle (Split-Path -Parent $CanaryBindingPath) $CanaryRunId $CanaryArm $CanaryBindingSha256
     Assert-Evidence1CanaryAuthorization $canary.binding $LiveAuthorizationPhrase
@@ -86,11 +96,12 @@ if ($ClosedPriorRunId) {
 }
 
 $vm = Get-VM -Name $VMName -ErrorAction Stop
+if (([string]$vm.Id).ToLowerInvariant() -cne $ExpectedVMId) { Fail 'E2E VM id mismatch' }
 if ($vm.State -ne 'Off') { Fail "placing live autorun requires $VMName to be Off, got $($vm.State)" }
 $diskDrive = Get-VMHardDiskDrive -VMName $VMName | Select-Object -First 1
 if (-not $diskDrive -or -not $diskDrive.Path) { Fail "could not resolve active VM disk for $VMName" }
 $vhdPath = Resolve-FullPath $diskDrive.Path
-Assert-PathInside $vhdPath 'C:\kmp-eval\hyperv\' 'active VHD'
+Assert-PathInside $vhdPath 'C:\kmp-eval\hyperv-e2e\' 'active VHD'
 
 $runId = if ($canary) { $CanaryRunId } else { [guid]::NewGuid().ToString('D') }
 $mount = $null
@@ -202,7 +213,7 @@ try {
         Set-Content -LiteralPath $startupPath -Encoding ASCII -Value @"
 @echo off
 set "SELF=%~f0"
-C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$wrapperGuestPath" -RunId "$runId" -ShutdownOnExit$canaryArguments
+C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$wrapperGuestPath" -RunId "$runId" -RemoteAuthCanaryOperationId "$RemoteAuthCanaryOperationId" -ShutdownOnExit$canaryArguments
 set "WRAPPER_EXIT=%ERRORLEVEL%"
 del "%SELF%" >nul 2>nul
 if exist "%SELF%" exit /b 91

@@ -284,12 +284,13 @@ describe('parity / envelope JSON schema snapshot', () => {
   // runtime-race CONFIG_ERROR) all change exit-code/error-code semantics
   // per the bump policy in lib/cli.js#ENVELOPE_SCHEMA_VERSION comment.
   for (const { sub, args, env, skipFixture } of CASES) {
-    it(`${sub} envelope carries top-level schema_version === 2 (Bug-K + wet-audit OBS-3/4/7)`, () => {
+    it(`${sub} envelope carries top-level schema_version === 3 (coverage-evidence semantics)`, () => {
       const cwd = skipFixture ? REPO_ROOT : fixtureRoot;
       const fullArgs = skipFixture ? args : ['--project-root', fixtureRoot, ...args];
       const { envelope } = runSubcommand(sub, fullArgs, { cwd, env });
       expect(envelope).toBeTruthy();
-      expect(envelope.schema_version).toBe(2);
+      expect(envelope.schema_version).toBe(3);
+      expect(envelope.contracts).toEqual({ coverage_evidence: 1 });
     });
   }
 

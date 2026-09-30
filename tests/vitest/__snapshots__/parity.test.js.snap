@@ -8,6 +8,9 @@ exports[`parity / envelope JSON schema snapshot > android --dry-run --json envel
     "flavor": "",
     "instrumented_modules": [],
   },
+  "contracts": {
+    "coverage_evidence": 1,
+  },
   "coverage": {
     "covered_lines": null,
     "missed_lines": null,
@@ -43,7 +46,7 @@ exports[`parity / envelope JSON schema snapshot > android --dry-run --json envel
     "test_filter": null,
   },
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 2,
+  "schema_version": 3,
   "skipped": [],
   "subcommand": "android",
   "tests": {
@@ -65,6 +68,9 @@ exports[`parity / envelope JSON schema snapshot > android --list-only --json env
     "device_task": "",
     "flavor": "",
     "instrumented_modules": [],
+  },
+  "contracts": {
+    "coverage_evidence": 1,
   },
   "coverage": {
     "covered_lines": null,
@@ -96,7 +102,7 @@ exports[`parity / envelope JSON schema snapshot > android --list-only --json env
   },
   "modules": [],
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 2,
+  "schema_version": 3,
   "skipped": [],
   "subcommand": "android",
   "tests": {
@@ -121,6 +127,9 @@ exports[`parity / envelope JSON schema snapshot > benchmark --dry-run --json env
     "timed_out": 0,
     "timeout_ms": 0,
     "total": 0,
+  },
+  "contracts": {
+    "coverage_evidence": 1,
   },
   "coverage": {
     "covered_lines": null,
@@ -157,7 +166,7 @@ exports[`parity / envelope JSON schema snapshot > benchmark --dry-run --json env
     "test_filter": null,
   },
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 2,
+  "schema_version": 3,
   "skipped": [],
   "subcommand": "benchmark",
   "tests": {
@@ -178,6 +187,9 @@ exports[`parity / envelope JSON schema snapshot > changed --dry-run --json --sta
     "base_ref": "HEAD",
     "detected_modules": [],
     "staged_only": true,
+  },
+  "contracts": {
+    "coverage_evidence": 1,
   },
   "coverage": {
     "covered_lines": null,
@@ -225,7 +237,7 @@ exports[`parity / envelope JSON schema snapshot > changed --dry-run --json --sta
     "test_filter": null,
   },
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 2,
+  "schema_version": 3,
   "skipped": [],
   "subcommand": "changed",
   "tests": {
@@ -242,6 +254,9 @@ exports[`parity / envelope JSON schema snapshot > changed --dry-run --json --sta
 
 exports[`parity / envelope JSON schema snapshot > coverage --dry-run --json envelope shape is stable 1`] = `
 {
+  "contracts": {
+    "coverage_evidence": 1,
+  },
   "coverage": {
     "covered_lines": null,
     "missed_lines": null,
@@ -277,7 +292,7 @@ exports[`parity / envelope JSON schema snapshot > coverage --dry-run --json enve
     "test_filter": null,
   },
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 2,
+  "schema_version": 3,
   "skipped": [],
   "subcommand": "coverage",
   "tests": {
@@ -294,6 +309,9 @@ exports[`parity / envelope JSON schema snapshot > coverage --dry-run --json enve
 
 exports[`parity / envelope JSON schema snapshot > describe --json --skip-probe envelope shape is stable 1`] = `
 {
+  "contracts": {
+    "coverage_evidence": 1,
+  },
   "coverage": {
     "missed_lines": null,
     "tool": "none",
@@ -343,7 +361,7 @@ exports[`parity / envelope JSON schema snapshot > describe --json --skip-probe e
   "exit_code": 0,
   "modules": [],
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 2,
+  "schema_version": 3,
   "skipped": [],
   "subcommand": "describe",
   "tests": {
@@ -368,6 +386,9 @@ exports[`parity / envelope JSON schema snapshot > doctor --json envelope shape i
       "value": "<string>",
     },
   ],
+  "contracts": {
+    "coverage_evidence": 1,
+  },
   "coverage": {
     "missed_lines": null,
     "tool": "none",
@@ -389,7 +410,7 @@ exports[`parity / envelope JSON schema snapshot > doctor --json envelope shape i
   },
   "modules": [],
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 2,
+  "schema_version": 3,
   "skipped": [],
   "subcommand": "doctor",
   "tests": {
@@ -406,6 +427,9 @@ exports[`parity / envelope JSON schema snapshot > doctor --json envelope shape i
 
 exports[`parity / envelope JSON schema snapshot > info --json --no-adb envelope shape is stable 1`] = `
 {
+  "contracts": {
+    "coverage_evidence": 1,
+  },
   "coverage": {
     "missed_lines": null,
     "tool": "auto",
@@ -458,7 +482,7 @@ exports[`parity / envelope JSON schema snapshot > info --json --no-adb envelope 
   },
   "modules": [],
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 2,
+  "schema_version": 3,
   "skipped": [],
   "subcommand": "info",
   "tests": {
@@ -475,6 +499,9 @@ exports[`parity / envelope JSON schema snapshot > info --json --no-adb envelope 
 
 exports[`parity / envelope JSON schema snapshot > parallel --dry-run --json envelope shape is stable 1`] = `
 {
+  "contracts": {
+    "coverage_evidence": 1,
+  },
   "coverage": {
     "covered_lines": null,
     "missed_lines": null,
@@ -527,7 +554,7 @@ exports[`parity / envelope JSON schema snapshot > parallel --dry-run --json enve
     "test_filter": null,
   },
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 2,
+  "schema_version": 3,
   "skipped": [],
   "subcommand": "parallel",
   "tests": {
@@ -544,6 +571,9 @@ exports[`parity / envelope JSON schema snapshot > parallel --dry-run --json enve
 
 exports[`parity / envelope JSON schema snapshot > update --check --json envelope shape is stable 1`] = `
 {
+  "contracts": {
+    "coverage_evidence": 1,
+  },
   "coverage": {
     "missed_lines": null,
     "tool": "auto",
@@ -553,7 +583,7 @@ exports[`parity / envelope JSON schema snapshot > update --check --json envelope
   "exit_code": 0,
   "modules": [],
   "project_root": "<PROJECT_ROOT>",
-  "schema_version": 2,
+  "schema_version": 3,
   "skipped": [],
   "subcommand": "update",
   "tests": {

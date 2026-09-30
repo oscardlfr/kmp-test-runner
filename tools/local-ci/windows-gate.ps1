@@ -50,6 +50,7 @@ $npmScriptShellScope = $null
 $sensitiveEnvironment = $null
 $pushedLocation = $false
 $nodeExeScope = $null
+$vitestCloneDir = $null
 # Post-review hardening (round 4): set ONLY as the try block's own last statement, right after the
 # success Write-Host -- if the body throws anywhere before reaching that point, this stays $false,
 # so the finally block below knows NOT to raise a new cleanup-triggered failure on top of (and
@@ -122,7 +123,28 @@ try {
         Pop-Location
     }
 
-    Invoke-NativeChecked (Join-Path $Node24Home 'npx.cmd') @('vitest', 'run', '--coverage') 'Vitest coverage (Node 24)'
+    # Vitest (both Node versions) runs inside a fresh core.autocrlf=true clone of committed HEAD,
+    # not this worktree in place -- a Windows checkout (actions/checkout on windows-latest, or a
+    # local `git clone` with core.autocrlf=true) is the ONLY place CRLF conversion actually
+    # happens; an already-checked-out worktree's on-disk bytes don't change just because autocrlf
+    # is set afterward, so this worktree's own files can never reproduce the gap #533's hosted-CI
+    # failure exposed (a CRLF-converted shebang module broke vitest's ESM import) no matter how
+    # thorough the .gitattributes pins are -- only a real checkout conversion can prove they hold.
+    # This moves where the existing two vitest invocations run; it does not add a second run.
+    if (git -C $RepoRoot status --porcelain) {
+        Write-Warning 'worktree has uncommitted changes -- the Windows vitest lane clones and tests committed HEAD only (uncommitted changes are not included), the same way the Linux lanes bundle a HEAD snapshot for their own container run.'
+    }
+    $vitestCloneDir = Join-Path ([System.IO.Path]::GetTempPath()) "kmp-local-ci-win-vitest-$([guid]::NewGuid().ToString('N'))"
+    Invoke-NativeChecked 'git' @('clone', '--no-hardlinks', '--config', 'core.autocrlf=true', $RepoRoot, $vitestCloneDir) 'git clone (Windows vitest lane, core.autocrlf=true)'
+
+    Push-Location $vitestCloneDir
+    try {
+        Invoke-NativeChecked (Join-Path $Node24Home 'npm.cmd') @('ci', "--script-shell=$npmScriptShell") 'npm ci (Node 24, vitest clone)'
+        Invoke-NativeChecked (Join-Path $Node24Home 'npx.cmd') @('vitest', 'run', '--coverage') 'Vitest coverage (Node 24, autocrlf clone)'
+    }
+    finally {
+        Pop-Location
+    }
 
     $node18 = Join-Path $Node18Home 'node.exe'
     if (-not (Test-Path $node18)) {
@@ -138,8 +160,15 @@ try {
     if ($node18Arch -ne 'x64') {
         throw "expected x64 Node 18 under $Node18Home; found $node18Arch"
     }
-    Invoke-NativeChecked (Join-Path $Node18Home 'npm.cmd') @('ci', "--script-shell=$npmScriptShell") 'npm ci (Node 18)'
-    Invoke-NativeChecked (Join-Path $Node18Home 'npx.cmd') @('vitest', 'run') 'Vitest (Node 18)'
+
+    Push-Location $vitestCloneDir
+    try {
+        Invoke-NativeChecked (Join-Path $Node18Home 'npm.cmd') @('ci', "--script-shell=$npmScriptShell") 'npm ci (Node 18, vitest clone)'
+        Invoke-NativeChecked (Join-Path $Node18Home 'npx.cmd') @('vitest', 'run') 'Vitest (Node 18, autocrlf clone)'
+    }
+    finally {
+        Pop-Location
+    }
 
     Write-Host '[local-ci] Windows Node 24/18, Pester, and Gradle lane passed' -ForegroundColor Green
     $bodySucceeded = $true
@@ -164,6 +193,9 @@ finally {
     }
     if ($nodeExeScope) {
         try { Restore-ScopedEnvVar -Saved $nodeExeScope } catch { $cleanupErrors += "KMP_LOCAL_CI_NODE_EXE restore: $($_.Exception.Message)" }
+    }
+    if ($vitestCloneDir -and (Test-Path $vitestCloneDir)) {
+        try { Remove-Item -Recurse -Force $vitestCloneDir } catch { $cleanupErrors += "vitest clone cleanup ($vitestCloneDir): $($_.Exception.Message)" }
     }
     if ($sensitiveEnvironment) {
         try { Restore-SensitiveEnvironment -Entries $sensitiveEnvironment } catch { $cleanupErrors += "sensitive-environment restore: $($_.Exception.Message)" }

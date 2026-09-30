@@ -158,7 +158,10 @@ const DISCOVERY_KMP_OPERATIONS = new Set(['describe', 'doctor', 'info']);
 const EXECUTION_KMP_OPERATIONS = new Set(['android', 'benchmark', 'changed', 'coverage', 'parallel']);
 const SUPPORT_KMP_OPERATIONS = new Set(['clean', 'update']);
 const COVERAGE_OUTCOME_FIELDS = new Set(['missed_lines', 'threshold', 'modules_contributing']);
-const TEST_COUNT_FIELDS = new Set(['total', 'passed', 'failed']);
+// 'test_count', matching TASK_OUTCOME_MISMATCH_FIELD_VALUES's own emitted
+// name (D5 renamed the agent-facing field total -> test_count; this set names fields as they
+// appear in that constant, which buildTaskFieldCorrectness below iterates directly).
+const TEST_COUNT_FIELDS = new Set(['test_count', 'passed', 'failed']);
 // A run_id is only ever echoed (per-run entries, or an errors[] entry for an OTHERWISE-validated
 // duplicate) once it matches this closed charset -- mirrors the charset schemas.mjs's own
 // ACCEPTED_AUDIT_RELATIVE_PATH_RE indirectly enforces on any schema-5 scenario record's run_id
@@ -315,7 +318,7 @@ function fieldAppliesToDeclaredOutcome(field, declaredOutcomeKind) {
  * mismatch names. `not-applicable` describes fields the declared outcome intentionally omits;
  * `not-observed` is reserved for historical/unevaluable claims. No expected or declared values are
  * copied into analysis output. */
-function buildTaskFieldCorrectness(outcomeAssessment, finalAnswerBlock) {
+export function buildTaskFieldCorrectness(outcomeAssessment, finalAnswerBlock) {
   const result = {};
   const assessmentAvailable = outcomeAssessment?.schema >= 2
     && typeof outcomeAssessment.task_outcome_matched === 'boolean'

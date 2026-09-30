@@ -1033,13 +1033,14 @@ describe('schema v1/v2/v3/v4/v5 dispatch (decision 6, extended for v3 -- foreign
 // legacy fields -- these four groups are the sole canonical source for runtime/profile/skill/
 // usage identity going forward.
 describe('schema v6/v7 (agentic-eval-runtime-neutral-records-v1 + product-access mode) -- agent_runtime/execution_profile/skill_observation/usage/product_access_mode', () => {
-  // Evidence1 success-recovery PR B adds schema 8 -- SUPPORTED_RUN_SCHEMAS/LATEST_RUN_SCHEMA are a
-  // single CURRENT array/value, never a frozen historical snapshot (mirrors the identical
-  // maintenance pattern this exact assertion already went through at v6 -> v7); see the dedicated
-  // "schema v8" describe block below for schema 8's own full contract.
-  it('SUPPORTED_RUN_SCHEMAS accepts 1 through 8; LATEST_RUN_SCHEMA is 8', () => {
-    expect(SUPPORTED_RUN_SCHEMAS).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
-    expect(LATEST_RUN_SCHEMA).toBe(8);
+  // Evidence1 success-recovery PR B adds schema 8, eval-v2 recording fields add schema 9 --
+  // SUPPORTED_RUN_SCHEMAS/LATEST_RUN_SCHEMA are a single CURRENT array/value, never a frozen
+  // historical snapshot (mirrors the identical maintenance pattern this exact assertion already
+  // went through at v6 -> v7 -> v8); see the dedicated "schema v8" and "schema v9" describe blocks
+  // below for each version's own full contract.
+  it('SUPPORTED_RUN_SCHEMAS accepts 1 through 9; LATEST_RUN_SCHEMA is 9', () => {
+    expect(SUPPORTED_RUN_SCHEMAS).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(LATEST_RUN_SCHEMA).toBe(9);
   });
 
   const VALID_SCOPE_ID_V6 = '22222222-3333-4444-8555-666666666666';
@@ -1551,8 +1552,8 @@ describe('schema v6/v7 (agentic-eval-runtime-neutral-records-v1 + product-access
       // claude-code's OWN invariant (delivery_mode must be exactly none/runtime-extension for its
       // two real conditions) is proven separately by the no-skill/current-skill describe blocks
       // below. This test isolates the SCHEMA-level enum domain itself -- project-instructions/
-      // inline-context are reserved shapes for a future non-Claude runtime, so they are exercised
-      // against a non-claude-code runtime_id, where claude's own delivery_mode invariant does not
+      // inline-context remains reserved, while project-instructions is exercised by Codex. Both
+      // are checked against a non-claude-code runtime_id, where Claude's delivery_mode invariant does not
       // apply (invariant 3's non-Claude branch only constrains claude_code_version).
       expect(validateRun(v6Base()).errors.filter((e) => e.field === 'skill_observation.delivery_mode')).toEqual([]); // 'none'
       expect(validateRun(v6CurrentSkillBase()).errors.filter((e) => e.field === 'skill_observation.delivery_mode')).toEqual([]); // 'runtime-extension'
@@ -1956,9 +1957,9 @@ describe('schema v8 (Evidence1 success-recovery PR B, Section 9.4/9.5) -- outcom
     });
   }
 
-  it('SUPPORTED_RUN_SCHEMAS accepts 1 through 8; LATEST_RUN_SCHEMA is 8', () => {
-    expect(SUPPORTED_RUN_SCHEMAS).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
-    expect(LATEST_RUN_SCHEMA).toBe(8);
+  it('SUPPORTED_RUN_SCHEMAS accepts 1 through 9; LATEST_RUN_SCHEMA is 9', () => {
+    expect(SUPPORTED_RUN_SCHEMAS).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(LATEST_RUN_SCHEMA).toBe(9);
   });
 
   it('a fully well-formed schema:8 calibration record requires outcome_assessment:null and validates cleanly', () => {
@@ -1997,6 +1998,29 @@ describe('schema v8 (Evidence1 success-recovery PR B, Section 9.4/9.5) -- outcom
     }
   });
 
+  // 2026-09-29 (WO-A11): canonical ordering holds for multi-field mismatches -- the fields must
+  // appear in TASK_OUTCOME_MISMATCH_FIELD_VALUES's own order regardless of insertion order, and
+  // 'test_count' (not 'total') is the name the schema now accepts at that position.
+  it('accepts a multi-field mismatch only in canonical order, using test_count not total', () => {
+    const base = {
+      ...v8ScenarioBase().outcome_assessment,
+      schema: 2,
+      task_outcome_matched: false,
+      task_outcome_reason: 'mismatched',
+      task_outcome_unexpected_key_count: 0,
+    };
+    const canonicalOrder = {
+      ...v8ScenarioBase({ outcome_assessment: { ...base, task_outcome_mismatch_fields: ['test_count', 'failed', 'threshold'] } }),
+    };
+    expect(validateRun(canonicalOrder)).toEqual({ errors: [], warnings: [] });
+
+    const wrongOrder = v8ScenarioBase({ outcome_assessment: { ...base, task_outcome_mismatch_fields: ['failed', 'test_count', 'threshold'] } });
+    expect(validateRun(wrongOrder).errors.some((e) => e.field === 'outcome_assessment.task_outcome_mismatch_fields')).toBe(true);
+
+    const staleTotal = v8ScenarioBase({ outcome_assessment: { ...base, task_outcome_mismatch_fields: ['total'] } });
+    expect(validateRun(staleTotal).errors.some((e) => e.field === 'outcome_assessment.task_outcome_mismatch_fields')).toBe(true);
+  });
+
   it('uses null diagnostics when the neutral comparison was unavailable', () => {
     const unavailable = {
       ...v8ScenarioBase().outcome_assessment,
@@ -2008,6 +2032,82 @@ describe('schema v8 (Evidence1 success-recovery PR B, Section 9.4/9.5) -- outcom
       task_outcome_unexpected_key_count: null,
     };
     expect(validateRun(v8ScenarioBase({ outcome_assessment: unavailable }))).toEqual({ errors: [], warnings: [] });
+  });
+
+  // 2026-09-29 (WO-A2 auditor finding, confirmed live): graders.mjs used to be able to produce
+  // task_outcome_matched:false with an EMPTY task_outcome_mismatch_fields (whenever the only
+  // deviation was an unexpected key), which this exact validator rejected -- losing a real run
+  // record in production. graders.mjs is now fixed so task_outcome_matched is always exactly
+  // (missing fields empty AND mismatch fields empty), by construction -- this combinatorial test
+  // covers the full {missing, mismatch, unexpected} x {empty, non-empty} matrix (8 cases) as
+  // graders.mjs would now shape each one, confirming every one of them is schema-VALID, not just
+  // the specific case that broke.
+  it.each([
+    // [label, mismatchFields (already in TASK_OUTCOME_MISMATCH_FIELD_VALUES canonical order), unexpectedKeyCount]
+    ['none', [], 0],
+    ['unexpected-only', [], 3],
+    ['deviation-only', ['module'], 0],
+    ['deviation-and-unexpected', ['module'], 2],
+    ['two-field-deviation-only', ['module', 'threshold'], 0],
+    ['two-field-deviation-and-unexpected', ['module', 'threshold'], 4],
+  ])('combinatorial: %s deviation shape is schema-valid the way graders.mjs now builds it', (_label, mismatchFields, unexpectedKeyCount) => {
+    const contentCorrect = mismatchFields.length === 0;
+    const outcomeAssessment = {
+      ...v8ScenarioBase().outcome_assessment,
+      schema: 2,
+      task_outcome_matched: contentCorrect,
+      task_outcome_reason: contentCorrect ? 'matched' : 'mismatched',
+      task_outcome_mismatch_fields: mismatchFields,
+      task_outcome_unexpected_key_count: unexpectedKeyCount,
+    };
+    expect(validateRun(v8ScenarioBase({ outcome_assessment: outcomeAssessment }))).toEqual({ errors: [], warnings: [] });
+  });
+
+  // 2026-09-29 (WO-A2 auditor finding, defense-in-depth): computeProductE2eSuccess already rejects
+  // a hedged current-skill answer at the grader layer (see its own comment) -- this proves the same
+  // rule ALSO holds at the written-record's own schema layer, independent of which code path
+  // produced the record, so a differently-written future caller cannot reintroduce "hedge still
+  // credited as product_e2e_success:true" without validateRun catching it.
+  it('RED: REJECTS product_e2e_success:true when task_outcome_unexpected_key_count > 0', () => {
+    const outcomeAssessment = {
+      ...v8ScenarioBase().outcome_assessment,
+      schema: 2,
+      task_outcome_matched: true,
+      task_outcome_reason: 'matched',
+      task_outcome_mismatch_fields: [],
+      task_outcome_unexpected_key_count: 1,
+      product_e2e_success: true,
+    };
+    const result = validateRun(v8ScenarioBase({ outcome_assessment: outcomeAssessment }));
+    expect(result.errors).toContainEqual({ field: 'outcome_assessment.product_e2e_success', message: 'must not be true when task_outcome_unexpected_key_count > 0' });
+  });
+
+  it('GREEN: product_e2e_success:true is schema-valid when task_outcome_unexpected_key_count is 0', () => {
+    const outcomeAssessment = {
+      ...v8ScenarioBase().outcome_assessment,
+      schema: 2,
+      task_outcome_matched: true,
+      task_outcome_reason: 'matched',
+      task_outcome_mismatch_fields: [],
+      task_outcome_unexpected_key_count: 0,
+      product_e2e_success: true,
+    };
+    expect(validateRun(v8ScenarioBase({ outcome_assessment: outcomeAssessment }))).toEqual({ errors: [], warnings: [] });
+  });
+
+  it('product_e2e_success:false/null stay schema-valid alongside a positive unexpected-key count -- the new rule targets only true', () => {
+    for (const productE2eSuccess of [false, null]) {
+      const outcomeAssessment = {
+        ...v8ScenarioBase().outcome_assessment,
+        schema: 2,
+        task_outcome_matched: true,
+        task_outcome_reason: 'matched',
+        task_outcome_mismatch_fields: [],
+        task_outcome_unexpected_key_count: 2,
+        product_e2e_success: productE2eSuccess,
+      };
+      expect(validateRun(v8ScenarioBase({ outcome_assessment: outcomeAssessment }))).toEqual({ errors: [], warnings: [] });
+    }
   });
 
   // Requirement 1 (Section 9.11): run schema 8 exige exactamente outcome_assessment.
@@ -2109,6 +2209,238 @@ describe('schema v8 (Evidence1 success-recovery PR B, Section 9.4/9.5) -- outcom
   it('never selects a historical accepted_audit shape via schema === LATEST_RUN_SCHEMA -- the run-record field-list dispatcher uses explicit literal numbers only', () => {
     const source = readFileSync(path.join(REPO_ROOT, 'tools', 'agentic-eval', 'schemas.mjs'), 'utf8');
     expect(source).not.toMatch(/schema\s*===\s*LATEST_RUN_SCHEMA/);
+  });
+});
+
+// eval-v2 recording fields (design.md (d)) -- schema 9. v9Base intentionally duplicates v8Base's
+// exact shape (this file's own established convention -- see the "schema v8" describe block's own
+// comment immediately above it) rather than reaching into that describe's private closure.
+describe('schema v9 (eval-v2 recording fields, design.md (d)) -- reasoning effort / argv+prompt+treatment hashes / env keys / executed commands / budget+timeout / result subtype+turns / cost', () => {
+  const V9_FIELD_NAMES = [
+    'reasoning_effort_requested', 'reasoning_effort_source', 'served_model_snapshot',
+    'argv_sha256', 'delivered_prompt_sha256', 'treatment_delivery_sha256', 'env_keys',
+    'executed_commands', 'max_budget_usd', 'timeout_ms', 'result_subtype', 'num_turns',
+    'total_cost_usd',
+  ];
+
+  function v6BaseV9(overrides = {}) {
+    return {
+      ...v5Base(overrides),
+      schema: 6,
+      agent_runtime: {
+        runtime_id: 'claude-code', cli_version: '1.2.3-fake',
+        model_requested: 'claude-sonnet-5', model_resolved: 'claude-sonnet-5',
+        model_vendor_expected: 'anthropic', model_vendor_observed: null,
+      },
+      execution_profile: {
+        id: 'strict-policy-v1', sha256: STRICT_POLICY_V1_SHA256,
+        isolation_kind: 'runtime-policy-hooks', isolation_attestation_sha256: null,
+        isolation_attestation_required: false, network_mode: 'runtime-default',
+        policy_mode: 'required', required_capabilities: ['softPermissionDenial'],
+      },
+      skill_observation: {
+        delivery_mode: 'none',
+        availability: { status: 'observed-absent', evidence_kind: 'runtime-catalog' },
+        activation: { status: 'not-observed', evidence_kind: 'runtime-explicit-event' },
+        source_sha: null,
+        treatment_size: {
+          snapshot_sha256: null, snapshot_bytes: null, snapshot_file_count: null,
+          prompt_sha256: 'd'.repeat(64), prompt_bytes: 55,
+          absent_reason: 'condition-no-skill',
+        },
+      },
+      usage: {
+        source: 'runtime-reported',
+        input: 2, cached_input: 0, cache_write: 0, output: 4, reasoning_output: null,
+        attributable_to_skill_load: {
+          status: 'not-recorded',
+          dimensions: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null },
+          unit: null,
+          reason: 'condition-no-skill',
+        },
+      },
+      ...overrides,
+    };
+  }
+  function v7BaseV9(overrides = {}) {
+    return { ...v6BaseV9(overrides), schema: 7, product_access_mode: 'product-visible-no-skill', ...overrides };
+  }
+  function v8BaseV9(overrides = {}) {
+    return { ...v7BaseV9(overrides), schema: 8, outcome_assessment: null, ...overrides };
+  }
+  function v9Base(overrides = {}) {
+    return {
+      ...v8BaseV9(overrides),
+      schema: 9,
+      reasoning_effort_requested: 'high',
+      reasoning_effort_source: 'harness-pinned-cli-flag',
+      served_model_snapshot: { value: 'claude-sonnet-5', reason: null },
+      argv_sha256: 'a'.repeat(64),
+      delivered_prompt_sha256: 'b'.repeat(64),
+      treatment_delivery_sha256: { value: null, reason: 'condition-no-skill' },
+      env_keys: ['PATH', 'TEMP'],
+      executed_commands: ['./gradlew :core:domain:test'],
+      max_budget_usd: { value: 0.60, reason: null },
+      timeout_ms: 300000,
+      result_subtype: { value: 'success', reason: null },
+      num_turns: { value: 3, reason: null },
+      total_cost_usd: { value: null, reason: 'no_cost_reporting' },
+      ...overrides,
+    };
+  }
+  function v9ScenarioBase(overrides = {}) {
+    return v9Base({
+      run_kind: 'scenario', benchmark_eligible: true, scenario_id: 'coverage-threshold-failure-v2',
+      grading_checks: { value: GRADING_CHECK_NAMES.map((name) => ({ name, passed: true, detail: 'ok', evidence_event_indices: [] })), reason: null },
+      repetition_index: 0, run_id: 'scenario-no-skill-abcd1234',
+      // schema 8+ (not just exactly 8 -- see schemas.mjs's own `run.schema >= 8` fix, made
+      // alongside this schema-v9 addition) always requires sidecar v10 exactly, in either policy
+      // mode (accepted-run-audit.mjs's expectedAcceptedAuditSchemaFor).
+      accepted_audit: { schema: 10, relative_path: 'audit/scenario-no-skill-abcd1234.json', sha256: 'a'.repeat(64) },
+      outcome_assessment: {
+        schema: 1, task_outcome_matched: true, task_outcome_reason: 'matched',
+        answer_protocol_matched: true, provider_evidence_kind: 'claim-only',
+        provider_evidence_status: 'unavailable', product_e2e_success: null,
+      },
+      ...overrides,
+    });
+  }
+
+  it('GREEN: a fully well-formed schema:9 record validates cleanly', () => {
+    expect(validateRun(v9Base())).toEqual({ errors: [], warnings: [] });
+  });
+
+  it('GREEN: a fully well-formed schema:9 scenario record validates cleanly', () => {
+    expect(validateRun(v9ScenarioBase())).toEqual({ errors: [], warnings: [] });
+  });
+
+  // Regression lock for a real latent bug this schema-v9 addition surfaced and fixed: the
+  // compatibleSidecarSchemas ternary previously checked `run.schema === 8`, not `>= 8`, silently
+  // diverging from accepted-run-audit.mjs's own already-forward-compatible
+  // expectedAcceptedAuditSchemaFor (`record?.schema >= 8`). Every real fake-runtime E2E test
+  // failed the moment LATEST_RUN_SCHEMA advanced to 9 -- this locks the fix so a schema 10 bump
+  // can't silently regress the same way.
+  describe('accepted_audit -- v9 requires sidecar schema 10 exactly too (>= 8, never === 8)', () => {
+    it('ACCEPTS sidecar schema 10 for a schema:9 scenario record', () => {
+      const run = v9ScenarioBase({ accepted_audit: { schema: 10, relative_path: 'audit/scenario-no-skill-abcd1234.json', sha256: 'a'.repeat(64) } });
+      expect(validateRun(run).errors.some((e) => e.field === 'accepted_audit.schema')).toBe(false);
+    });
+
+    it.each([1, 2, 3, 4, 5, 6, 7, 8, 9])('REJECTS sidecar schema %i for a schema:9 scenario record (v9 requires v10 exactly, same as v8)', (schema) => {
+      const run = v9ScenarioBase({ accepted_audit: { schema, relative_path: 'audit/scenario-no-skill-abcd1234.json', sha256: 'a'.repeat(64) } });
+      expect(validateRun(run).errors.some((e) => e.field === 'accepted_audit.schema')).toBe(true);
+    });
+  });
+
+  // Requirement mirrors v8's own "schemas historicos siguen validando sin los campos" test:
+  // a schema:8 record (none of the 13 new keys at all) is completely unaffected by v9 existing.
+  it('a fully well-formed schema:8 record (no v9 fields at all) still validates cleanly, unaffected by v9', () => {
+    expect(validateRun(v8BaseV9())).toEqual({ errors: [], warnings: [] });
+  });
+
+  it.each(V9_FIELD_NAMES)('RED: a schema:9 record MISSING %s fails validation as a required field', (field) => {
+    const run = v9Base();
+    delete run[field];
+    const { errors } = validateRun(run);
+    expect(errors.some((e) => e.field === field || e.field.startsWith(`${field}.`))).toBe(true);
+  });
+
+  it.each(V9_FIELD_NAMES)('RED: %s must be absent or null for a schema:8 record -- forbidden below v9', (field) => {
+    const value = v9Base()[field];
+    const run = v8BaseV9({ [field]: value });
+    const { errors } = validateRun(run);
+    expect(errors.some((e) => e.field === field && e.message.includes('introduced in schema v9'))).toBe(true);
+  });
+
+  // The 7 plain (non-nullable-metric) v9 fields tolerate a bare `null` below schema 9 -- the v9
+  // absent-or-null gate (`f in run && run[f] != null`) is the only check that applies to them
+  // pre-v9. The other 6 are ALSO in NULLABLE_METRIC_FIELDS, whose own shape check
+  // (`for (const f of NULLABLE_METRIC_FIELDS) if (f in run) validateNullableMetric(...)`) runs
+  // UNCONDITIONALLY on any record where the key is merely present, regardless of run.schema --
+  // so for those 6, a bare `null` is never a valid present-value (only a real {value,reason}
+  // object, or true key absence, ever validates). Two real, distinct rules -- proven separately
+  // rather than assumed identical, since asserting the wrong one silently would hide a bug in
+  // either the plain-field gate or the schema-unaware nullable-metric shape check.
+  // Zero ERRORS (the schema-introduction gate treats present-but-null as legitimately absent, per
+  // its own `f in run && run[f] != null` check) but each key IS still a real "unrecognized field"
+  // WARNING relative to schema 8's own canonical field list -- the same universal, harmless
+  // unknown-key warning every schema bump produces for a record carrying a not-yet-applicable key
+  // (confirmed unconditional, not v9-specific, by validateRun's own generic canonicalFields loop).
+  it('GREEN (zero errors): schema:8 with the 7 plain v9 fields explicitly null still validates without error (absent-or-null, not merely absent) -- each surfaces only as an unrecognized-field warning', () => {
+    const plainFields = ['reasoning_effort_requested', 'reasoning_effort_source', 'argv_sha256', 'delivered_prompt_sha256', 'env_keys', 'executed_commands', 'timeout_ms'];
+    const nulledPlainFields = Object.fromEntries(plainFields.map((f) => [f, null]));
+    const { errors, warnings } = validateRun(v8BaseV9(nulledPlainFields));
+    expect(errors).toEqual([]);
+    expect(warnings.map((w) => w.field).sort()).toEqual([...plainFields].sort());
+    expect(warnings.every((w) => w.message === 'unrecognized field')).toBe(true);
+  });
+
+  it.each(['served_model_snapshot', 'treatment_delivery_sha256', 'max_budget_usd', 'result_subtype', 'num_turns', 'total_cost_usd'])(
+    'RED: schema:8 with %s explicitly set to bare null (not a {value,reason} object) is rejected -- must be omitted entirely, not null-valued',
+    (field) => {
+      const run = v8BaseV9({ [field]: null });
+      expect(validateRun(run).errors.some((e) => e.field === field)).toBe(true);
+    },
+  );
+
+  describe('argv_sha256 / delivered_prompt_sha256 -- real 64-hex SHA-256 strings, never a placeholder', () => {
+    it.each(['not-a-hash', 'a'.repeat(63), 'a'.repeat(65), 'G'.repeat(64), '', null, 42])('RED: argv_sha256 %j is rejected', (bad) => {
+      expect(validateRun(v9Base({ argv_sha256: bad })).errors.some((e) => e.field === 'argv_sha256')).toBe(true);
+    });
+    it.each(['not-a-hash', '', null])('RED: delivered_prompt_sha256 %j is rejected', (bad) => {
+      expect(validateRun(v9Base({ delivered_prompt_sha256: bad })).errors.some((e) => e.field === 'delivered_prompt_sha256')).toBe(true);
+    });
+  });
+
+  describe('env_keys / executed_commands -- arrays of strings, empty is a legitimate real value', () => {
+    it('GREEN: env_keys/executed_commands may legitimately be empty arrays (a real, not-missing observation)', () => {
+      expect(validateRun(v9Base({ env_keys: [], executed_commands: [] }))).toEqual({ errors: [], warnings: [] });
+    });
+    it.each([null, 'PATH', ['PATH', 42], ['PATH', '']])('RED: env_keys %j is rejected', (bad) => {
+      expect(validateRun(v9Base({ env_keys: bad })).errors.some((e) => e.field === 'env_keys')).toBe(true);
+    });
+    it.each([null, 'a command', [42]])('RED: executed_commands %j is rejected', (bad) => {
+      expect(validateRun(v9Base({ executed_commands: bad })).errors.some((e) => e.field === 'executed_commands')).toBe(true);
+    });
+  });
+
+  describe('timeout_ms / reasoning_effort_requested / reasoning_effort_source -- plain required fields', () => {
+    it.each([0, -1, 1.5, null, '300000'])('RED: timeout_ms %j is rejected (must be a positive integer)', (bad) => {
+      expect(validateRun(v9Base({ timeout_ms: bad })).errors.some((e) => e.field === 'timeout_ms')).toBe(true);
+    });
+    it.each(['', null, 42])('RED: reasoning_effort_requested %j is rejected', (bad) => {
+      expect(validateRun(v9Base({ reasoning_effort_requested: bad })).errors.some((e) => e.field === 'reasoning_effort_requested')).toBe(true);
+    });
+    it.each(['', null])('RED: reasoning_effort_source %j is rejected', (bad) => {
+      expect(validateRun(v9Base({ reasoning_effort_source: bad })).errors.some((e) => e.field === 'reasoning_effort_source')).toBe(true);
+    });
+  });
+
+  describe('the six {value,reason} nullable-metric v9 fields -- never infer, store null with a reason', () => {
+    it.each(['served_model_snapshot', 'treatment_delivery_sha256', 'max_budget_usd', 'result_subtype', 'num_turns', 'total_cost_usd'])(
+      'RED: %s value:null with no reason is rejected -- never infer, always explain',
+      (field) => {
+        const run = v9Base({ [field]: { value: null, reason: null } });
+        expect(validateRun(run).errors.some((e) => e.field === field)).toBe(true);
+      },
+    );
+    it.each(['served_model_snapshot', 'treatment_delivery_sha256', 'max_budget_usd', 'result_subtype', 'num_turns', 'total_cost_usd'])(
+      'RED: %s a real value paired with a non-null reason is rejected -- reason is only for explaining an absence',
+      (field) => {
+        const validValue = { served_model_snapshot: 'claude-sonnet-5', treatment_delivery_sha256: 'c'.repeat(64), max_budget_usd: 0.6, result_subtype: 'success', num_turns: 1, total_cost_usd: 0.01 }[field];
+        const run = v9Base({ [field]: { value: validValue, reason: 'should not be here' } });
+        expect(validateRun(run).errors.some((e) => e.field === field)).toBe(true);
+      },
+    );
+    it('GREEN: max_budget_usd null+reason (Codex: no cap mechanism) validates cleanly', () => {
+      expect(validateRun(v9Base({ max_budget_usd: { value: null, reason: 'no_budget_cap_mechanism' } }))).toEqual({ errors: [], warnings: [] });
+    });
+    it('RED: num_turns non-integer value is rejected (kind:count)', () => {
+      expect(validateRun(v9Base({ num_turns: { value: 1.5, reason: null } })).errors.some((e) => e.field === 'num_turns')).toBe(true);
+    });
+    it('RED: max_budget_usd negative value is rejected (kind:amount)', () => {
+      expect(validateRun(v9Base({ max_budget_usd: { value: -0.01, reason: null } })).errors.some((e) => e.field === 'max_budget_usd')).toBe(true);
+    });
   });
 });
 

@@ -4,6 +4,7 @@
 // idiom of real subprocess tests over mocking.
 import { describe, it, expect, afterEach } from 'vitest';
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
@@ -13,6 +14,7 @@ import {
   materializeCalibrationProject,
   materializeScenarioProject,
   materializeGradleUserHome,
+  GRADLE_USER_HOME_CANONICAL_PROPERTIES,
 } from '../../tools/agentic-eval/materialize.mjs';
 import { resolveBash } from '../../tools/agentic-eval/resolve-bash.mjs';
 import { runValidator } from '../../tools/validate-plugin.mjs';
@@ -84,14 +86,14 @@ describe('materializeSkillSnapshot', { timeout: 30_000 }, () => {
   // above (mechanism-only) and from the live-HEAD test above (tracks develop's tip forever, never
   // references this constant). calibrate/smoke both materialize current-skill via
   // runConditionPair's one call site using exactly PINNED_SKILL_SHA. This is a tripwire, not a
-  // general staleness detector: it deliberately hardcodes 0bb958d and will need its own edit on
+  // general staleness detector: it deliberately hardcodes 27c943d and will need its own edit on
   // every future legitimate pin advance -- the next test verifies the semantics that should
   // survive such an advance. Split into two independent it() blocks on purpose: expect().toBe()
   // throws synchronously, so a single block with the equality check first would hide whether the
   // content assertions below actually discriminate -- two blocks means a run against a stale pin
   // shows both failing for real, not just the first one.
-  it('PINNED_SKILL_SHA is locked to the PR A coverage-budget skill squash snapshot', () => {
-    expect(PINNED_SKILL_SHA).toBe('2112aed96686ee159f851e00c2efa553e58473fc');
+  it('PINNED_SKILL_SHA is locked to the v0.15.0 release tag commit (D1 -- measure the published version)', () => {
+    expect(PINNED_SKILL_SHA).toBe('27c943dc392675f78209a78ce09adb4f79283e3e');
   });
 
   it('the pinned current-skill snapshot reflects the PR #403 target-binding fix', async () => {
@@ -766,6 +768,21 @@ describe('materializeGradleUserHome', () => {
     expect(daemonPolicy).toBe('disabled-via-gradle-user-home-properties');
   });
 
+  it('disables the configuration cache alongside the daemon in gradle.properties', () => {
+    // H9 (AUDITORIA-EVIDENCE1-2026-09-27.md): with a sealed network and a compact prewarmed seed,
+    // the fixture's own org.gradle.configuration-cache=true leaves aapt2 unresolved for test tasks
+    // run under this per-cell GRADLE_USER_HOME. Configuration cache was only ever disabled via
+    // GRADLE_OPTS set in the HARNESS's own environment (evidence1-dual-condition-canary-launch.ps1),
+    // which the agent's env allowlist drops -- agents were left to discover and pass
+    // --no-configuration-cache themselves. Writing it once, here, applies it symmetrically to
+    // product and free-baseline alike, without relying on either the harness env or the agent.
+    const { gradleUserHome } = materializeGradleUserHome({});
+    cleanupDirs.push(gradleUserHome);
+    const properties = readFileSync(path.join(gradleUserHome, 'gradle.properties'), 'utf8');
+    expect(properties).toContain('org.gradle.daemon=false');
+    expect(properties).toContain('org.gradle.configuration-cache=false');
+  });
+
   it('resetToSnapshot restores the exact prewarmed state, discarding later mutation', () => {
     const { gradleUserHome, resetToSnapshot } = materializeGradleUserHome({});
     cleanupDirs.push(gradleUserHome);
@@ -810,18 +827,111 @@ describe('materializeGradleUserHome', () => {
     cleanupDirs.push(seedDir);
     mkdirSync(path.join(seedDir, 'caches', 'modules-2'), { recursive: true });
     writeFileSync(path.join(seedDir, 'caches', 'modules-2', 'prewarmed.bin'), 'seeded-cache');
-    writeFileSync(path.join(seedDir, 'gradle.properties'), 'org.gradle.daemon=true\n');
+    // The certified seed's own REAL content (evidence1-hyperv-warm-canonical-gradle-cache-direct.ps1:41)
+    // -- both keys already canonical (values differ, org.gradle.daemon=true here), so the guard
+    // must NOT reject this; it only rejects an unrecognized KEY, never a differing value.
+    writeFileSync(path.join(seedDir, 'gradle.properties'), 'org.gradle.daemon=true\norg.gradle.java.installations.auto-download=false\n');
 
-    const { gradleUserHome, resetToSnapshot } = materializeGradleUserHome({ seedFromDir: seedDir });
+    const { gradleUserHome, resetToSnapshot, gradleMemoryOverrideSha256 } = materializeGradleUserHome({ seedFromDir: seedDir });
     cleanupDirs.push(gradleUserHome);
 
     const seededFile = path.join(gradleUserHome, 'caches', 'modules-2', 'prewarmed.bin');
     expect(readFileSync(seededFile, 'utf8')).toBe('seeded-cache');
-    expect(readFileSync(path.join(gradleUserHome, 'gradle.properties'), 'utf8')).toBe('org.gradle.daemon=false\n');
+    // 2026-09-29 (WO-A2 auditor decision, Amendment A5, round 2): the seed's own gradle.properties
+    // is unconditionally overwritten with the canonical five-key content -- correct here (every key
+    // the seed carried IS canonical), never silently dropping an unrecognized one (see the
+    // fail-closed guard tests below).
+    expect(readFileSync(path.join(gradleUserHome, 'gradle.properties'), 'utf8')).toBe(GRADLE_USER_HOME_CANONICAL_PROPERTIES);
+    expect(gradleMemoryOverrideSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(gradleMemoryOverrideSha256).toBe(createHash('sha256').update(GRADLE_USER_HOME_CANONICAL_PROPERTIES, 'utf8').digest('hex'));
 
     writeFileSync(seededFile, 'mutated');
     resetToSnapshot();
     expect(readFileSync(seededFile, 'utf8')).toBe('seeded-cache');
+  });
+
+  // 2026-09-29 (WO-A2 auditor decision, Amendment A5, round 2 -- round 1 found broken live): NiA's
+  // own gradle.properties commits -Xms4g for the Gradle daemon PLUS -Xms4g for the Kotlin daemon --
+  // 8GB up front against this harness's VM profile's fixed, non-dynamic 8GB RAM allocation,
+  // root-caused to two live "Gradle build daemon disappeared unexpectedly" deaths (campaign
+  // 99f67197). Round 1 wrote ONLY the memory-cap lines, unconditionally overwriting the seed's own
+  // org.gradle.daemon=false/org.gradle.java.installations.auto-download=false -- found live before
+  // any of round 1's own smoke validation runs were trusted. Pins the mitigation's own content
+  // directly (independent of the read-back-from-disk test above, so a future accidental edit to
+  // the constant itself is caught here even if the write/read-back path stays internally
+  // self-consistent).
+  // 2026-09-29 (Amendment A5, round 4): round 3 tried dropping the jvmargs caps entirely and
+  // raising the E2E VM's startup memory 8GiB -> 16GiB instead (evidence1-hyperv-set-vm-memory-direct.ps1).
+  // 16GiB failed to start the VM twice (unexplained -- host had ~32GB free at the time; left for
+  // separate investigation, not memory-config-related). The fallback, 12GiB, started the VM but hit
+  // a reproducible (2/2) coverage-report-dispatch failure with no daemon-death signature -- also
+  // left unexplained, recorded verbatim in Amendment A5, NOT treated as a classifier signature. The
+  // caps are restored here at 12GiB (not reverted to 8GiB): this is the final validated
+  // configuration once it clears 3 consecutive smokes.
+  it('GRADLE_USER_HOME_CANONICAL_PROPERTIES preserves daemon-disable/no-auto-download, lowers both daemons\' caps, commits neither via -Xms', () => {
+    expect(GRADLE_USER_HOME_CANONICAL_PROPERTIES).toMatch(/^org\.gradle\.daemon=false\n/);
+    expect(GRADLE_USER_HOME_CANONICAL_PROPERTIES).toMatch(/\norg\.gradle\.java\.installations\.auto-download=false\n/);
+    expect(GRADLE_USER_HOME_CANONICAL_PROPERTIES).toMatch(/\norg\.gradle\.configuration-cache=false\n/);
+    expect(GRADLE_USER_HOME_CANONICAL_PROPERTIES).toMatch(/\norg\.gradle\.jvmargs=.*-Xmx3g\n/);
+    expect(GRADLE_USER_HOME_CANONICAL_PROPERTIES).toMatch(/\nkotlin\.daemon\.jvmargs=.*-Xmx2g\n$/);
+    expect(GRADLE_USER_HOME_CANONICAL_PROPERTIES).not.toMatch(/-Xms/);
+    // LF only -- never CRLF, so this is provably the SAME bytes the PowerShell guest bundles now
+    // also write (see the cross-language hash-equality test below).
+    expect(GRADLE_USER_HOME_CANONICAL_PROPERTIES).not.toMatch(/\r/);
+  });
+
+  it('fails closed (never silently drops a key) when the seed carries a key outside the canonical five', () => {
+    const seedDir = mkdtempSync(path.join(os.tmpdir(), 'aemat-gradle-seed-unexpected-'));
+    cleanupDirs.push(seedDir);
+    writeFileSync(path.join(seedDir, 'gradle.properties'), 'org.gradle.daemon=false\norg.gradle.caching=true\n');
+    expect(() => materializeGradleUserHome({ seedFromDir: seedDir }))
+      .toThrow('gradle_user_home_properties_unexpected_key: org.gradle.caching');
+  });
+
+  it('accepts a seed gradle.properties with comments/blank lines and every canonical key', () => {
+    const seedDir = mkdtempSync(path.join(os.tmpdir(), 'aemat-gradle-seed-comments-'));
+    cleanupDirs.push(seedDir);
+    writeFileSync(
+      path.join(seedDir, 'gradle.properties'),
+      '# a comment\n\norg.gradle.daemon=false\n! another comment style\norg.gradle.jvmargs=-Xmx1g\n',
+    );
+    const { gradleUserHome } = materializeGradleUserHome({ seedFromDir: seedDir });
+    cleanupDirs.push(gradleUserHome);
+    expect(readFileSync(path.join(gradleUserHome, 'gradle.properties'), 'utf8')).toBe(GRADLE_USER_HOME_CANONICAL_PROPERTIES);
+  });
+
+  it('never fails closed when the seed has no gradle.properties at all', () => {
+    const seedDir = mkdtempSync(path.join(os.tmpdir(), 'aemat-gradle-seed-empty-'));
+    cleanupDirs.push(seedDir);
+    mkdirSync(path.join(seedDir, 'caches'), { recursive: true });
+    expect(() => materializeGradleUserHome({ seedFromDir: seedDir })).not.toThrow();
+  });
+
+  it('materializeGradleUserHome always writes the canonical properties, even with no seed at all', () => {
+    const { gradleUserHome, gradleMemoryOverrideSha256 } = materializeGradleUserHome({});
+    cleanupDirs.push(gradleUserHome);
+    const written = readFileSync(path.join(gradleUserHome, 'gradle.properties'), 'utf8');
+    expect(written).toBe(GRADLE_USER_HOME_CANONICAL_PROPERTIES);
+    expect(gradleMemoryOverrideSha256).toBe(createHash('sha256').update(written, 'utf8').digest('hex'));
+  });
+
+  // 2026-09-29 (WO-A2 auditor decision, Amendment A5, round 2): the PowerShell guest bundles
+  // (run-agentic-eval-product-smoke, run-gradle-task-offline, run-gradle-diagnostic-probe) write
+  // their OWN literal copy of this exact content -- proven byte-identical here directly, not
+  // assumed from eyeballing two source files side by side. Extracts each bundle's own
+  // $gradleMemoryOverrideContent literal from the real .psm1 source text (PowerShell `n unescaped
+  // to a real LF) and hashes it the same way materializeGradleUserHome does.
+  it('every PowerShell guest bundle\'s own gradle.properties content hashes identically to node\'s GRADLE_USER_HOME_CANONICAL_PROPERTIES', () => {
+    const psm1Path = path.join(REPO_ROOT, 'docs', 'audits', 'evidence1-guest-bundle-contract.psm1');
+    const psm1Source = readFileSync(psm1Path, 'utf8');
+    const matches = [...psm1Source.matchAll(/\$gradleMemoryOverrideContent = "((?:[^"\\]|\\.)*)"/g)];
+    expect(matches.length).toBe(3);
+    const expectedSha256 = createHash('sha256').update(GRADLE_USER_HOME_CANONICAL_PROPERTIES, 'utf8').digest('hex');
+    for (const match of matches) {
+      const powershellLiteralAsRealLf = match[1].replace(/`n/g, '\n');
+      expect(powershellLiteralAsRealLf).toBe(GRADLE_USER_HOME_CANONICAL_PROPERTIES);
+      expect(createHash('sha256').update(powershellLiteralAsRealLf, 'utf8').digest('hex')).toBe(expectedSha256);
+    }
   });
 
   // Regression coverage: a failure inside runPrewarm (or writeFileSync/cpSync) partway through

@@ -68,7 +68,11 @@ export const TEXT_STATUS_VALUES = Object.freeze(['text', 'missing', 'unsupported
 
 const RUNTIME_REF_KEYS = ['id', 'protocolVersion'];
 const PROCESS_KEYS = ['exitCode', 'terminated', 'terminationReason', 'spawnHrtimeNs', 'endedHrtimeNs'];
-const SESSION_KEYS = ['initPresent', 'modelResolved', 'sessionIdObserved', 'runtimeVersion', 'toolProfileMatchesExpected'];
+// modelSnapshot (eval-v2 recording fields): the LAST assistant-turn's own reported model, distinct
+// from modelResolved (the session-init/session-start value) -- catches serving drift across turns
+// that a session-level field alone can never reveal. Always null for codex-cli (no per-turn model
+// signal exists on its wire format -- see runtimes/codex-cli.mjs's own normalizeObservations).
+const SESSION_KEYS = ['initPresent', 'modelResolved', 'sessionIdObserved', 'runtimeVersion', 'toolProfileMatchesExpected', 'modelSnapshot'];
 const TRANSCRIPT_KEYS = ['malformedLineCount', 'strictStructuralIssues', 'effectiveStructuralIssues', 'strictIncompleteToolResults', 'effectiveIncompleteToolResults'];
 // {strict,effective}StructuralIssues/{strict,effective}IncompleteToolResults are ARRAYS (the
 // native findTranscriptStructuralIssues()/findIncompleteToolResults() shapes), not counts --
@@ -311,6 +315,7 @@ function validateSession(session, errors) {
   if (session.sessionIdObserved !== null && typeof session.sessionIdObserved !== 'string') errors.push({ field: 'session.sessionIdObserved', code: 'invalid_type' });
   if (session.runtimeVersion !== null && typeof session.runtimeVersion !== 'string') errors.push({ field: 'session.runtimeVersion', code: 'invalid_type' });
   if (typeof session.toolProfileMatchesExpected !== 'boolean') errors.push({ field: 'session.toolProfileMatchesExpected', code: 'invalid_type' });
+  if (session.modelSnapshot !== null && typeof session.modelSnapshot !== 'string') errors.push({ field: 'session.modelSnapshot', code: 'invalid_type' });
 }
 
 function validateStructuralIssues(issues, field, errors) {

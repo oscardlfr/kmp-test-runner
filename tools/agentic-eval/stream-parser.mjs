@@ -69,6 +69,20 @@ export function findResultEvent(events) {
   return events.find((e) => e.type === 'result') ?? null;
 }
 
+/** The most recent assistant-turn's own reported `message.model` (eval-v2 recording fields) --
+ * distinct from the ONE session-init `model` findInitEvent reads, which never changes across turns
+ * even if the served model actually did. Scans from the end so a multi-turn session's LAST turn
+ * (the one whose output the final answer actually reflects) wins, not the first. Returns null when
+ * no assistant event carries a string `message.model` (e.g. a session that never got past init).
+ */
+export function findLastAssistantModel(events) {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const ev = events[i];
+    if (ev.type === 'assistant' && typeof ev.message?.model === 'string') return ev.message.model;
+  }
+  return null;
+}
+
 /** Plugin availability from the init event's `plugins[]` array -- NOT `skills[]`, which lists
  * an unrelated, ambient set of bundled/managed skills present identically regardless of
  * --plugin-dir (confirmed empirically during Step 1). `pluginName` is the PLUGIN's own name (from
@@ -573,15 +587,11 @@ export function findTranscriptStructuralIssues(events) {
     if (resultIndex !== events.length - 1) {
       issues.push({ type: 'result_not_last', resultIndex, eventsLength: events.length });
     }
-    // `init` must be the literal FIRST event in the transcript, not merely "before every tool_use/
-    // tool_result" -- a review-round-6 finding demonstrated a plain assistant TEXT message (no
-    // tool_use at all) sitting before init was invisible to a check scoped to only tool_use/
-    // tool_result indices: findTranscriptStructuralIssues() returned [] and calibrationHardGate()
-    // returned {ok:true} for it. The real stream-json protocol begins with init and ends with
-    // result, with nothing of any kind preceding the former -- this also subsumes the narrower
-    // "no tool_use/tool_result before init" property a prior round checked directly (any such call
-    // now trivially implies initIndex > 0 too).
-    if (initIndex !== 0) {
+    // Claude Code 2.1.238 can emit a provider-owned rate_limit_event immediately
+    // before init. Treat only that closed event type as transport metadata; any
+    // assistant/user/tool content before init remains structurally invalid.
+    const invalidPreInit = events.slice(0, initIndex).some((event) => event.type !== 'rate_limit_event');
+    if (invalidPreInit) {
       issues.push({ type: 'init_not_first', initIndex });
     }
   }

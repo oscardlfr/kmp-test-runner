@@ -182,7 +182,7 @@ describe('gradeScenarioCondition -- production-real envelope (genuine runParalle
       tags: ['train'],
     };
 
-    const finalAnswer = `24/24 tests passed.\n\nKMP_EVAL_RESULT\n${JSON.stringify({ module: ':shared', outcome_kind: 'tests_executed', total: 24, passed: 24, failed: 0 })}\nKMP_EVAL_RESULT_END\n`;
+    const finalAnswer = `24/24 tests passed.\n\nKMP_EVAL_RESULT\n${JSON.stringify({ module: ':shared', outcome_kind: 'tests_executed', test_count: 24, passed: 24, failed: 0 })}\nKMP_EVAL_RESULT_END\n`;
 
     const events = [
       { type: 'system', subtype: 'init' },
@@ -329,7 +329,7 @@ describe('runChanged() -- production-real envelope never carries a parallel key,
     return async () => ({
       exitCode: 0,
       envelope: {
-        tool: 'kmp-test', schema_version: 2, subcommand: 'parallel', version: '0.14.0',
+        tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', version: '0.14.0',
         exit_code: 0, duration_ms: 42,
         tests: { total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 1 },
         modules: [{ name: 'shared', type: 'jvm' }], skipped: [], coverage: {}, errors: [], warnings: [],
@@ -394,7 +394,7 @@ describe('runChanged() -- production-real envelope never carries a parallel key,
       first_useful_signal_predicate: { description: 'n/a' },
       tags: ['held-out'],
     };
-    const finalAnswer = `1/1 tests passed.\n\nKMP_EVAL_RESULT\n${JSON.stringify({ module: ':shared', outcome_kind: 'tests_executed', total: 1, passed: 1, failed: 0 })}\nKMP_EVAL_RESULT_END\n`;
+    const finalAnswer = `1/1 tests passed.\n\nKMP_EVAL_RESULT\n${JSON.stringify({ module: ':shared', outcome_kind: 'tests_executed', test_count: 1, passed: 1, failed: 0 })}\nKMP_EVAL_RESULT_END\n`;
     const command = 'kmp-test changed --json --project-root . --no-coverage';
     const events = [
       { type: 'system', subtype: 'init' },

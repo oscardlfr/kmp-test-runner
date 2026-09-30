@@ -195,6 +195,10 @@ foreach ($logonName in $candidates) {
 
       $npmPrefix = Join-Path $env:USERPROFILE 'AppData\Roaming\npm'
       $env:Path = @(
+        'C:\Evidence1Toolchain\claude-code\2.1.238',
+        'C:\Evidence1Toolchain\node\24.19.0',
+        'C:\Evidence1Toolchain\git\2.55.0.windows.5\cmd',
+        'C:\Evidence1Toolchain\git\2.55.0.windows.5\bin',
         $npmPrefix,
         'C:\Program Files\nodejs',
         'C:\Program Files\Git\cmd',

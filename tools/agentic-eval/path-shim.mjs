@@ -16,9 +16,9 @@
 // Verified empirically during Step 1: the POSIX form correctly resolves to the pinned
 // worktree's version (not a stray global install) and correctly redirects what
 // `os.homedir()` returns for the grandchild process.
-import { mkdtempSync, writeFileSync, chmodSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
+import { mkdtempLongPathSafe } from './materialize.mjs';
 
 const shQuote = (arg) => `'${String(arg).replace(/'/g, `'\\''`)}'`;
 
@@ -31,7 +31,7 @@ const shQuote = (arg) => `'${String(arg).replace(/'/g, `'\\''`)}'`;
  *   works for every condition in a run-pair.
  */
 export function buildPathShim({ worktreeRoot }) {
-  const shimDir = mkdtempSync(join(tmpdir(), 'kmp-agentic-eval-shim-'));
+  const shimDir = mkdtempLongPathSafe('kmp-agentic-eval-shim-');
   const kmpTestJsPath = join(worktreeRoot, 'bin', 'kmp-test.js');
   const posixKmpTestJsPath = kmpTestJsPath.replace(/\\/g, '/');
 

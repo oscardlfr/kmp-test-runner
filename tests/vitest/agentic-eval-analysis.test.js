@@ -2074,7 +2074,7 @@ describe('buildSummary -- task_outcome_available_ms_distribution (analysis schem
     ];
     const { groups } = buildSummary(pairs);
     expect(groups[0].task_outcome_mismatch_field_counts).toEqual({
-      module: 1, outcome_kind: 0, total: 0, passed: 0, failed: 0,
+      module: 1, outcome_kind: 0, test_count: 0, passed: 0, failed: 0,
       missed_lines: 2, threshold: 1, modules_contributing: 0,
     });
     expect(groups[0].task_outcome_unexpected_key_count_distribution).toEqual({ '0': 1, '1': 1, null: 1 });
@@ -2358,7 +2358,7 @@ describe('analysis schema 9 -- privacy-safe metric completion', () => {
     provider_evidence_kind: 'claim-only',
     provider_evidence_status: 'unavailable',
     product_e2e_success: null,
-    task_outcome_mismatch_fields: ['total', 'passed'],
+    task_outcome_mismatch_fields: ['test_count', 'passed'],
     task_outcome_unexpected_key_count: 0,
   });
 
@@ -2463,7 +2463,7 @@ describe('analysis schema 9 -- privacy-safe metric completion', () => {
       task_outcome_available_ms: null, final_claim_available_ms: 12345,
     });
     expect(entry.task_field_correctness).toEqual({
-      module: 'matched', outcome_kind: 'matched', total: 'mismatched', passed: 'mismatched',
+      module: 'matched', outcome_kind: 'matched', test_count: 'mismatched', passed: 'mismatched',
       failed: 'matched', missed_lines: 'matched', threshold: 'matched', modules_contributing: 'matched',
     });
     expect(Object.values(entry.task_field_correctness).every((status) => FIELD_CORRECTNESS_VALUES.includes(status))).toBe(true);
@@ -2471,7 +2471,7 @@ describe('analysis schema 9 -- privacy-safe metric completion', () => {
       parsed: true,
       declared_outcome_kind: 'coverage_threshold_exceeded',
       task_outcome_matched: false,
-      mismatch_fields: ['total', 'passed'],
+      mismatch_fields: ['test_count', 'passed'],
       unexpected_key_count: 0,
       field_correctness: entry.task_field_correctness,
     });
@@ -2493,7 +2493,7 @@ describe('analysis schema 9 -- privacy-safe metric completion', () => {
       },
     });
     const { entry } = analyzeRunRecord(record, sidecar);
-    expect(entry.task_field_correctness.total).toBe('not-applicable');
+    expect(entry.task_field_correctness.test_count).toBe('not-applicable');
     expect(entry.task_field_correctness.threshold).toBe('not-applicable');
 
     const historical = scenarioRecord({ condition: 'no-skill', skill_invoked: { value: false, reason: null }, skill_invocation_event: null });

@@ -551,7 +551,7 @@ describe('requireDispatchAccounting is mandatory, never defaulted', () => {
   const BASE = {
     condition: 'no-skill',
     observation: {
-      session: { initPresent: true, toolProfileMatchesExpected: true },
+      session: { initPresent: true, toolProfileMatchesExpected: true, modelSnapshot: null },
       transcript: { malformedLineCount: 0, effectiveStructuralIssues: [], effectiveIncompleteToolResults: [] },
       terminal: { present: true, isError: false, turnCount: 1, usage: { input: 0, output: 0, cached_input: 0, cache_write: 0 } },
       toolAttempts: [],

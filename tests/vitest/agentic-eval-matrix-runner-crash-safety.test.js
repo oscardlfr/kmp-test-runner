@@ -42,6 +42,7 @@ import { runValidator as runPluginValidator } from '../../tools/validate-plugin.
 // registry default. The two malformed-adapter negative tests further down already inject their
 // OWN synthetic adapters and are unaffected.
 import { claudeCodeRuntimeAdapter } from '../../tools/agentic-eval/runtimes/claude-code.mjs';
+import { createFakeClaudeCommandPath } from './_fake-claude-command.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -65,7 +66,7 @@ function validSyntheticObservation(runtimeId = 'fake-env-capture-adapter') {
     schema: 1,
     runtime: { id: runtimeId, protocolVersion: 1 },
     process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 10n },
-    session: { initPresent: true, modelResolved: null, sessionIdObserved: null, runtimeVersion: null, toolProfileMatchesExpected: true },
+    session: { initPresent: true, modelResolved: null, sessionIdObserved: null, runtimeVersion: null, toolProfileMatchesExpected: true, modelSnapshot: null },
     transcript: { malformedLineCount: 0, strictStructuralIssues: [{ type: 'result_count', count: 0 }], effectiveStructuralIssues: [{ type: 'result_count', count: 0 }], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
     terminal: { present: false, isError: null, turnCount: null, finalText: null, resultSubtype: null, usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
     toolAttempts: [],
@@ -106,13 +107,14 @@ function makeEnvCaptureAdapter({ runtimeId = 'fake-env-capture-adapter', onColle
  * comment for why this is a safe, PATH-only override that can never reach the real claude binary. */
 async function withFakeClaudePath(scenario, fn) {
   const fakeDir = path.join(FIXTURES_DIR, `fake-claude-${scenario}`);
-  const delimiter = process.platform === 'win32' ? ';' : ':';
   const savedPath = process.env.PATH;
-  process.env.PATH = `${fakeDir}${delimiter}${savedPath ?? ''}`;
+  const command = createFakeClaudeCommandPath({ fixtureDir: fakeDir, basePath: savedPath ?? '' });
+  process.env.PATH = command.path;
   try {
     return await fn();
   } finally {
     restoreEnvVar('PATH', savedPath);
+    command.cleanup();
   }
 }
 
@@ -190,6 +192,10 @@ describe('runSingleCondition -- free-baseline-no-product strips product surface 
       expect(capturedEnv.PATH.split(path.delimiter)).toContain(cleanPathDir);
       expect(capturedEnv.Path.split(path.delimiter)).not.toContain(shimDir);
       expect(capturedEnv.Path.split(path.delimiter)).toContain(cleanPathDir);
+      expect(capturedEnv.AGENTIC_EVAL_JUNIT_EVIDENCE_DIR).toBe(result.evidenceDir);
+      expect(capturedEnv.AGENTIC_EVAL_EXPECTED_FIXTURE_ROOT).toBeTruthy();
+      expect(capturedEnv.AGENTIC_EVAL_JUNIT_EVIDENCE_TASK).toBe(':app:test');
+      expect(JSON.parse(capturedEnv.AGENTIC_EVAL_JUNIT_ALLOWED_INVOCATIONS)).toEqual([':app:test']);
       expect(result.didSpawn).toBe(true);
     } finally {
       for (const dir of cleanupDirs) rmSync(dir, { recursive: true, force: true });
@@ -723,7 +729,7 @@ describe('runSingleCondition -- the observation\'s self-reported runtime identit
           // exactly the mismatch this hardening closes.
           runtime: { id: 'a-completely-different-runtime-id', protocolVersion: 1 },
           process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 10n },
-          session: { initPresent: true, modelResolved: null, sessionIdObserved: null, runtimeVersion: null, toolProfileMatchesExpected: true },
+          session: { initPresent: true, modelResolved: null, sessionIdObserved: null, runtimeVersion: null, toolProfileMatchesExpected: true, modelSnapshot: null },
           // A genuine result_count:0 issue is what makes terminal.present:false valid at all
           // (round-4 terminal.present<->strictStructuralIssues relation) -- not a legitimate
           // timeout here (terminated:false), so effective mirrors strict exactly.

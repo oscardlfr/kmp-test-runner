@@ -19,11 +19,11 @@ import { dirname } from 'node:path';
 
 import { defineRuntimeAdapter } from './contract.mjs';
 import {
-  buildBaseInvocation, buildConditionArgv, buildSharedEnv, buildPolicySettingsFile, spawnCondition,
+  buildBaseInvocation, buildConditionArgv, buildSharedEnv, buildPolicySettingsFile, resolveClaudeCommand, spawnCondition,
 } from '../condition-launcher.mjs';
 import { runAuthPreflight, authPreflightReasonCode } from '../auth-preflight.mjs';
 import {
-  parseStreamJsonl, findInitEvent, findResultEvent, findSkillInvocation, countHookEvents,
+  parseStreamJsonl, findInitEvent, findResultEvent, findLastAssistantModel, findSkillInvocation, countHookEvents,
   computeByteMetrics, findAllToolUsesWithResults, isTargetSkillReference, classifyForeignSkillUses,
   hasExpectedToolProfile, hasExpectedPluginProfile, isSkillAvailable, computeAmbientSkillProfile,
   extractTokenUsage, findTranscriptStructuralIssues, findTranscriptStructuralIssuesToleratingTimeout,
@@ -78,7 +78,7 @@ export async function probeInstallation({ spawnFn, timeoutMs = 10000 } = {}) {
   if (typeof spawnFn !== 'function') {
     throw new Error('probeInstallation requires an injected spawnFn in this PR -- it is not wired to a real subprocess by default');
   }
-  const result = await spawnFn(['claude', '--version'], { timeoutMs });
+  const result = await spawnFn([resolveClaudeCommand(), '--version'], { timeoutMs });
   if (result.terminated === true || result.exitCode !== 0) {
     return { installed: false, version: null };
   }
@@ -145,7 +145,21 @@ export async function prepareIsolatedHome({
     sharedEnv = buildSharedEnv({
       shimDir, gradleUserHome, kmpEvalTempHome, expectedFixtureRoot, allowedGradleTasks, allowedKmpTestSubcommands,
       includePolicyEnv: policyApplies,
+      extraAllowedEnvNames: [
+        'CLAUDE_CODE_GIT_BASH_PATH',
+        'CLAUDE_CODE_USE_POWERSHELL_TOOL',
+        ...(policyApplies ? [] : ['CLAUDE_CONFIG_DIR', 'KMP_AGENTIC_EVAL_LIVE_SPAWN_PREFLIGHT']),
+      ],
     });
+    // Past the 120s ambient default, Claude Code moves a still-running Bash command to
+    // background instead of killing it, which the grader reads as a malformed terminal attempt.
+    // buildEvalEnv's allowlist drops any ambient BASH_*_TIMEOUT_MS, so it must be set explicitly
+    // here rather than inherited. Both Claude
+    // conditions (current-skill/no-skill) go through this one function -- neither branches on
+    // `condition` -- so setting it here applies to both arms by construction. Codex's own
+    // prepareIsolatedHome (runtimes/codex-cli.mjs) is untouched; these vars are Claude Code-only
+    // (docs.claude.com/en/docs/claude-code/env-vars).
+    sharedEnv = { ...sharedEnv, BASH_DEFAULT_TIMEOUT_MS: '600000', BASH_MAX_TIMEOUT_MS: '600000' };
   } catch (err) {
     rmSync(settingsDir, { recursive: true, force: true });
     throw err;
@@ -306,6 +320,10 @@ export function normalizeObservations(sources, context) {
     sessionIdObserved: typeof init?.session_id === 'string' ? init.session_id : null,
     runtimeVersion: init?.claude_code_version ?? null,
     toolProfileMatchesExpected: hasExpectedToolProfile(init, expectedToolNames, expectedPermissionMode),
+    // modelSnapshot (eval-v2 recording fields): the LAST assistant turn's own reported model,
+    // distinct from modelResolved's session-init value -- see findLastAssistantModel's own doc
+    // comment for why this can reveal serving drift a session-level field alone cannot.
+    modelSnapshot: findLastAssistantModel(events),
   };
 
   const usageRaw = extractTokenUsage(result);

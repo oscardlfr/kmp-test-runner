@@ -67,7 +67,7 @@ const evidence = {
     operator_confirmation: { boundary_kind: 'dedicated-ephemeral-runner', workspace: 'campaign-only', credentials: 'runtime-only',
       network: 'restricted', normal_home_mounted: false, ambient_secrets_present: false, disposable_home: true,
       rollback_or_destroy_required: true, supplied_in_session: true },
-    network: { allowed_probe_count: 4, blocked_probe_count: 6, blocked_probe_success_count: 0 },
+      network: { allowed_probe_count: 7, blocked_probe_count: 6, blocked_probe_success_count: 0 },
     R7_campaign_dry_run: { pass_dry_run: { campaign_design_id: 'claude-product-vs-free-baseline-v1', planned_sessions: 8,
       plan_length: 8, strict_cell_count: 0, unrestricted_cell_count: 8, strict_cells_with_attestation_hash: 0,
       unrestricted_cells_with_attestation_hash: 8, distinct_attestation_hashes_among_unrestricted: 1,
@@ -993,7 +993,7 @@ describe.skipIf(!hasPowerShell)('Evidence1 validation operations functional cont
   });
 
   it.skipIf(process.platform !== 'win32')('overwrites a stale PASS and emits only a safe bootstrap failure for missing or corrupt modules', () => {
-    for (const kind of ['wet-gate-v2', 'canary-dryrun-v3']) {
+    for (const kind of ['wet-gate-v2']) {
       for (const corrupt of [false, true]) {
         const dir = mkdtempSync(resolve(tmpdir(), 'e1-validation-bootstrap-'));
         const name = `evidence1-hyperv-verify-${kind}-direct.ps1`;

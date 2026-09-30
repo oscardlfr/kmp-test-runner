@@ -40,7 +40,7 @@ function fakeObservation(overrides = {}) {
     schema: 1,
     runtime: { id: 'claude-code', protocolVersion: 1 },
     process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1000n },
-    session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true },
+    session: { initPresent: true, modelResolved: 'claude-sonnet-5-fake', sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true, modelSnapshot: null },
     transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
     terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
     toolAttempts: [],
@@ -60,6 +60,14 @@ function fakeConditionResult(overrides = {}) {
     observation: fakeObservation(),
     startedAt: new Date('2026-01-01T00:00:00.000Z'),
     endedAt: new Date('2026-01-01T00:00:01.000Z'),
+    argvSha256: 'a'.repeat(64),
+    deliveredPromptSha256: 'b'.repeat(64),
+    envKeys: ['PATH'],
+    reasoningEffortRequested: 'high',
+    reasoningEffortSource: 'harness-pinned-cli-flag',
+    treatmentDeliverySha256: null,
+    maxBudgetUsd: 0.6,
+    timeoutMs: 300000,
     ...overrides,
   };
 }

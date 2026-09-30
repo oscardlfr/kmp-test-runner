@@ -341,6 +341,77 @@ describe('attributeCondition -- missing decision for ANY relevant attempt sets c
   });
 });
 
+// The Codex PostToolUse hook payload (tool_use_id, tool_input.command) has never been validated
+// against a real Codex transcript -- no fixture exists, and prior to this fix Codex commands were
+// never even classified as Gradle-relevant, so this requirement was never actually exercised for
+// Codex. Making the classifier recognize Codex's PowerShell-wrapped `./gradlew` commands (H16) made
+// them relevant for the first time, which would otherwise newly REQUIRE a JUnit evidence sidecar
+// that Codex's own hook mechanism has no verified way to produce -- silently rejecting Codex
+// free-baseline cells that were never rejected before. codex-cli is exempted from this specific
+// requirement; Claude's requirement (and everything else about evidence attribution, including
+// perAttemptJunit staying empty so outcomeMatches/junitOk still correctly reads "unverified" rather
+// than fabricating a pass) is unchanged.
+describe('attributeCondition -- runtimeId:"codex-cli" is exempt from the JUnit evidence-capture-completeness requirement', () => {
+  it('codex-cli, a relevant Gradle attempt with no evidence sidecar at all -- captureIncomplete:false, but perAttemptJunit still has nothing for it (no fabricated evidence)', () => {
+    const dir = makeEvidenceDir();
+    try {
+      // policyMode:"not_applicable" (Codex is always this profile): resolveDecisions derives
+      // 'allow' from resultFound alone -- no decisions/ sidecar involved at all.
+      const bashResults = [{ index: 1, id: 't1', command: GRADLE_CMD, resultFound: true, preDispatchBlock: { recognized: false, signature: null } }];
+      const result = attributeCondition(dir, SCENARIO, bashResults, {}, true, 'not_applicable', 'codex-cli');
+      expect(result.decisionByAttempt.get('t1')).toBe('allow');
+      expect(result.captureIncomplete).toBe(false);
+      expect(result.perAttemptJunit.has('t1')).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('claude-code (default runtimeId), the IDENTICAL shape (not_applicable policy, no evidence sidecar) -- captureIncomplete stays true, unchanged', () => {
+    const dir = makeEvidenceDir();
+    try {
+      const bashResults = [{ index: 1, id: 't1', command: GRADLE_CMD, resultFound: true, preDispatchBlock: { recognized: false, signature: null } }];
+      const result = attributeCondition(dir, SCENARIO, bashResults, {}, true, 'not_applicable');
+      expect(result.decisionByAttempt.get('t1')).toBe('allow');
+      expect(result.captureIncomplete).toBe(true);
+      expect(result.perAttemptJunit.has('t1')).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('codex-cli, an evidence sidecar that DOES exist but has a mismatched command -- also exempted (still no fabricated evidence, still not rejected)', () => {
+    const dir = makeEvidenceDir();
+    try {
+      writeEvidence(dir, 't1', './gradlew.bat :shared:testAndroidHostTest --console=plain --rerun-tasks', { status: 'ok', junit: { total: 1, passed: 1, failed: 0 } });
+      const bashResults = [{ index: 1, id: 't1', command: GRADLE_CMD, resultFound: true, preDispatchBlock: { recognized: false, signature: null } }];
+      const result = attributeCondition(dir, SCENARIO, bashResults, {}, true, 'not_applicable', 'codex-cli');
+      expect(result.captureIncomplete).toBe(false);
+      expect(result.perAttemptJunit.has('t1')).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // The exemption only widens the two specific branches this fix touches (missing/mismatched
+  // evidence record) -- it does not touch this unconditional anomaly-tombstone check, so the
+  // signal itself is preserved for codex-cli exactly as before. (captureIncomplete itself does NOT
+  // flip true here for codex-cli -- a separate, PRE-EXISTING gap: resolveDecisions'
+  // policyMode:"not_applicable" branch never reads the anomalies/ sidecar directory at all,
+  // regardless of runtime, unrelated to and out of scope for this fix.)
+  it('codex-cli does not swallow a genuine anomaly tombstone -- perAttemptJunit still reports the real integrity_error', () => {
+    const dir = makeEvidenceDir();
+    try {
+      writeAnomaly(dir, 't1', 'duplicate_decision_write');
+      const bashResults = [{ index: 1, id: 't1', command: GRADLE_CMD, resultFound: true, preDispatchBlock: { recognized: false, signature: null } }];
+      const result = attributeCondition(dir, SCENARIO, bashResults, {}, true, 'not_applicable', 'codex-cli');
+      expect(result.perAttemptJunit.get('t1')).toEqual({ status: 'integrity_error', reason: 'duplicate_write' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('attributeCondition -- anomaly tombstone always forces captureIncomplete, regardless of what decisions/evidence independently contain', () => {
   it('a fully well-formed decision AND evidence record for an id that ALSO has an anomalies/ tombstone -- captureIncomplete:true, the tombstone wins', () => {
     const dir = makeEvidenceDir();

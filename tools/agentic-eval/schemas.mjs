@@ -11,7 +11,7 @@
 // legitimately unavailable is {value: T|null, reason: string|null} -- the validator rejects
 // value:null paired with reason:null.
 import { GRADLE_TASK_ENTRY_RE, KMPTEST_SUBCOMMAND_ENTRY_RE } from './policy-hook.mjs';
-import { GRADING_CHECK_NAMES } from './graders.mjs';
+import { GRADING_CHECK_NAMES } from './grading-contract.mjs';
 import { normalizeModuleName } from './command-classify.mjs';
 import {
   ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1,
@@ -58,8 +58,8 @@ export {
 // alike) stamps on NEW records going forward; `SUPPORTED_RUN_SCHEMAS` is what validateRun()
 // still accepts, so the 8 historical files keep validating under their original v1 rules
 // unchanged (see the RUN_CANONICAL_FIELDS_V1/_V2/_V3 split and validateRun's dispatch, below).
-export const SUPPORTED_RUN_SCHEMAS = [1, 2, 3, 4, 5, 6, 7, 8];
-export const LATEST_RUN_SCHEMA = 8;
+export const SUPPORTED_RUN_SCHEMAS = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+export const LATEST_RUN_SCHEMA = 9;
 export const CURRENT_SCENARIO_SCHEMA = 1;
 // v1 -> v2 (review-round-2 fix): group_key's own SHAPE changed -- it gained the
 // `ambient_skill_profile` partition field -- so this is bumped exactly like LATEST_RUN_SCHEMA is
@@ -177,6 +177,24 @@ const RUN_CANONICAL_FIELDS_V8 = [
   ...V8_FIELDS,
 ];
 
+// Schema v9 (eval-v2 recording fields, design.md (d)) = v8 + 13 harness-computed provenance/
+// integrity fields. Additive over v8 exactly like every prior bump -- nothing v1-v8 established
+// changes meaning. Always present for every run_kind (unlike grading_checks/repetition_index,
+// these come from runSingleCondition's own execution path, which calibrate/smoke share with
+// scenario runs) -- closes Evidence1's own disclosed gaps: Claude's reasoning effort was neither
+// set nor recorded at all, and no per-cell hash existed proving record.json reflects the argv/
+// prompt/env/treatment bytes a session actually ran with.
+const V9_FIELDS = [
+  'reasoning_effort_requested', 'reasoning_effort_source', 'served_model_snapshot',
+  'argv_sha256', 'delivered_prompt_sha256', 'treatment_delivery_sha256', 'env_keys',
+  'executed_commands', 'max_budget_usd', 'timeout_ms', 'result_subtype', 'num_turns',
+  'total_cost_usd',
+];
+const RUN_CANONICAL_FIELDS_V9 = [
+  ...RUN_CANONICAL_FIELDS_V8,
+  ...V9_FIELDS,
+];
+
 // Section 9.5's exact closed vocabularies -- exported so graders.mjs (the sole producer) and this
 // file's own validator can never independently drift on what values are legal.
 // IDs throughout schema v6 use one closed lowercase charset.
@@ -288,8 +306,8 @@ function checkRequiredCapabilitiesV6(value, field, errors) {
 
 /** agent_runtime -- invariants 1-3 (Section D). Cross-field checks against the record's own
  * legacy model_requested/model_resolved/claude_code_version are scoped to `runtime_id ===
- * 'claude-code'` -- the only runtime this PR ever actually produces; a future non-Claude runtime
- * is exempted from the byte-identical-legacy-mirror requirement (its own claude_code_version must
+ * 'claude-code'`; Codex and future non-Claude runtimes keep their own version projection and are
+ * exempted from the byte-identical-legacy-mirror requirement (their claude_code_version must
  * instead be null, checked separately below).
  */
 function validateAgentRuntime(ar, run, errors) {
@@ -615,6 +633,7 @@ const ACCEPTED_AUDIT_RELATIVE_PATH_RE = /^audit\/[A-Za-z0-9._-]+\.json$/;
 // schema number to V1 instead of the LATEST fields, which would make a schema:5 record validate
 // against the wrong (v1) field list entirely. schema===5 must resolve to V5, never V1.
 function runCanonicalFieldsFor(schema) {
+  if (schema === 9) return RUN_CANONICAL_FIELDS_V9;
   if (schema === 8) return RUN_CANONICAL_FIELDS_V8;
   if (schema === 7) return RUN_CANONICAL_FIELDS_V7;
   if (schema === 6) return RUN_CANONICAL_FIELDS_V6;
@@ -634,6 +653,11 @@ const NULLABLE_METRIC_FIELDS = [
   'first_useful_signal_ms', 'tool_calls_total', 'shell_commands_total', 'test_invocations_total',
   'retries', 'output_bytes', 'stream_json_bytes', 'human_interventions', 'grading_checks',
   'post_signal_ms', 'post_signal_tool_calls', 'policy_denials_before_first_signal', 'policy_denials_after_first_signal',
+  // Schema v9 (eval-v2 recording fields) -- null is legitimate but never self-explanatory for any
+  // of these six (e.g. a Codex record's max_budget_usd:null means "no cap mechanism exists", not
+  // "not measured"), so all six use the same {value,reason} discipline as every field above.
+  'served_model_snapshot', 'treatment_delivery_sha256', 'max_budget_usd', 'result_subtype',
+  'num_turns', 'total_cost_usd',
 ];
 
 // Per-field value domain: 'boolean' for status metrics, 'count' for non-negative integer
@@ -652,6 +676,13 @@ const NULLABLE_METRIC_KIND = {
   grading_checks: 'checks-array',
   post_signal_ms: 'timing', post_signal_tool_calls: 'count',
   policy_denials_before_first_signal: 'count', policy_denials_after_first_signal: 'count',
+  // Schema v9: 'text' is a new kind (non-empty string) -- served_model_snapshot/result_subtype/
+  // treatment_delivery_sha256 are the first nullable-metric fields whose non-null value is a
+  // string rather than a boolean/count/timing. 'amount' reuses timing's identical non-negative-
+  // finite-number check under an honest name for a dollar figure (num_turns stays 'count': turns
+  // are a plain non-negative integer, no different from tool_calls_total).
+  served_model_snapshot: 'text', treatment_delivery_sha256: 'text', result_subtype: 'text',
+  num_turns: 'count', max_budget_usd: 'amount', total_cost_usd: 'amount',
 };
 
 function isNullableMetric(m) {
@@ -699,8 +730,10 @@ function validateMetricValueDomain(value, kind, field, errors) {
     errors.push({ field, message: `value must be a boolean, got ${typeof value}` });
   } else if (kind === 'count' && !(Number.isInteger(value) && value >= 0)) {
     errors.push({ field, message: `value must be a non-negative integer` });
-  } else if (kind === 'timing' && !(typeof value === 'number' && Number.isFinite(value) && value >= 0)) {
+  } else if ((kind === 'timing' || kind === 'amount') && !(typeof value === 'number' && Number.isFinite(value) && value >= 0)) {
     errors.push({ field, message: `value must be a non-negative finite number` });
+  } else if (kind === 'text' && (typeof value !== 'string' || value.length === 0)) {
+    errors.push({ field, message: `value must be a non-empty string` });
   } else if (kind === 'checks-array') {
     validateGradingChecksArray(value, field, errors);
   }
@@ -804,10 +837,22 @@ function validateOutcomeAssessment(obj, errors) {
           errors.push({ field: 'outcome_assessment.task_outcome_mismatch_fields', message: 'must be a canonical unique field list, empty only for a matched outcome' });
         }
       }
+      // task_outcome_matched now means content correctness
+      // only (missing/mismatch fields), decoupled from unexpected keys -- see graders.mjs's own
+      // compareKmpEvalResultBlockToObserved/computeTaskOutcome comments. A content-correct answer
+      // that also hedges with an extra field is matched:true with unexpectedKeyCount>0 by design
+      // (computeProductE2eSuccess is what rejects the hedge, for the metric that actually decides
+      // the study's outcome) -- no relationship to task_outcome_matched to enforce here anymore.
       if (!Number.isInteger(unexpectedKeyCount) || unexpectedKeyCount < 0) {
         errors.push({ field: 'outcome_assessment.task_outcome_unexpected_key_count', message: 'must be a non-negative integer when task_outcome_matched is boolean' });
-      } else if (obj.task_outcome_matched === true && unexpectedKeyCount !== 0) {
-        errors.push({ field: 'outcome_assessment.task_outcome_unexpected_key_count', message: 'must be 0 when task_outcome_matched is true' });
+      } else if (obj.product_e2e_success === true && unexpectedKeyCount > 0) {
+        // Defense in depth: computeProductE2eSuccess already
+        // rejects a hedged current-skill answer for this exact reason (see its own comment), but
+        // that is grader-level enforcement, not schema-level -- a differently-written future caller
+        // of this shared schema could reintroduce the hedge-is-still-credited bug without this
+        // validator ever noticing. Enforced here too so the hedge rule holds at the record's own
+        // written-shape level, independent of which code path produced it.
+        errors.push({ field: 'outcome_assessment.product_e2e_success', message: 'must not be true when task_outcome_unexpected_key_count > 0' });
       }
     }
   }
@@ -1017,14 +1062,20 @@ export function validateRun(run) {
         // which run schema produced it -- the whole point of requiredRunSchemaFor's own dedicated
         // check on the sidecar side. Deliberately never a single LATEST_ACCEPTED_AUDIT_SIDECAR_SCHEMA
         // selector here (that would exclude v3/v4 the moment LATEST advances past them).
-        // Evidence1 success-recovery PR B: schema 8 is its OWN, exact branch -- [V10] only, never
+        // Evidence1 success-recovery PR B: schema 8+ is its OWN, exact branch -- [V10] only, never
         // folded into the wide v6/v7 range above. Unlike v6/v7 (which had to stay compatible with
         // whichever sidecar version a given record's schema had already been paired with over
         // time), schema 8 and sidecar v10 are introduced together, so there is no historical range
-        // to preserve -- an exact 1:1 pairing is both simpler and correct.
+        // to preserve -- an exact 1:1 pairing is both simpler and correct. `>= 8`, never `=== 8`:
+        // must mirror accepted-run-audit.mjs's own expectedAcceptedAuditSchemaFor exactly, whose
+        // doc comment states plainly "a schema:8+ record always produces sidecar v10" -- that
+        // function was already written forward-compatible with any future schema beyond 8 (eval-v2
+        // recording fields' schema 9 is the first one to actually exercise it); a bare `=== 8` here
+        // was the one piece of this pairing NOT forward-compatible, confirmed by every real fake-
+        // runtime E2E test failing the moment LATEST_RUN_SCHEMA advanced past 8.
         const compatibleSidecarSchemas = run.schema === 5
           ? [ACCEPTED_AUDIT_SIDECAR_SCHEMA_V1, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V2]
-          : run.schema === 8
+          : run.schema >= 8
             ? [ACCEPTED_AUDIT_SIDECAR_SCHEMA_V10]
             : [ACCEPTED_AUDIT_SIDECAR_SCHEMA_V3, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V4, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V5, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V6, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V7, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8, ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9];
         if (!compatibleSidecarSchemas.includes(audit.schema)) {
@@ -1127,6 +1178,43 @@ export function validateRun(run) {
     }
   } else if ('outcome_assessment' in run && run.outcome_assessment != null) {
     errors.push({ field: 'outcome_assessment', message: `must be absent or null for schema ${run.schema} -- outcome_assessment was introduced in schema v8` });
+  }
+
+  // Schema v9 (eval-v2 recording fields, design.md (d)): 13 harness-computed provenance fields,
+  // required (present, and for the 7 plain fields below, correctly typed) on schema:9+, forbidden
+  // (non-null) below v9 -- same schema-introduction discipline as v6/v7/v8 above, folded into one
+  // loop (like V6_GROUP_FIELDS) since none of the 13 need cross-field coherence checks against each
+  // other. The six {value,reason} fields (served_model_snapshot/treatment_delivery_sha256/
+  // max_budget_usd/result_subtype/num_turns/total_cost_usd) get their shape/domain validation from
+  // the existing NULLABLE_METRIC_FIELDS loop below, not here.
+  if (run.schema >= 9) {
+    if (typeof run.reasoning_effort_requested !== 'string' || run.reasoning_effort_requested.length === 0) {
+      errors.push({ field: 'reasoning_effort_requested', message: 'must be a non-empty string' });
+    }
+    if (typeof run.reasoning_effort_source !== 'string' || run.reasoning_effort_source.length === 0) {
+      errors.push({ field: 'reasoning_effort_source', message: 'must be a non-empty string' });
+    }
+    if (!isHex64(run.argv_sha256)) {
+      errors.push({ field: 'argv_sha256', message: 'must be a 64-hex-char SHA-256 string' });
+    }
+    if (!isHex64(run.delivered_prompt_sha256)) {
+      errors.push({ field: 'delivered_prompt_sha256', message: 'must be a 64-hex-char SHA-256 string' });
+    }
+    if (!Array.isArray(run.env_keys) || run.env_keys.some((k) => typeof k !== 'string' || k.length === 0)) {
+      errors.push({ field: 'env_keys', message: 'must be an array of non-empty strings' });
+    }
+    if (!Array.isArray(run.executed_commands) || run.executed_commands.some((c) => typeof c !== 'string')) {
+      errors.push({ field: 'executed_commands', message: 'must be an array of strings' });
+    }
+    if (!(Number.isInteger(run.timeout_ms) && run.timeout_ms > 0)) {
+      errors.push({ field: 'timeout_ms', message: 'must be a positive integer' });
+    }
+  } else {
+    for (const f of V9_FIELDS) {
+      if (f in run && run[f] != null) {
+        errors.push({ field: f, message: `must be absent or null for schema ${run.schema} -- ${f} was introduced in schema v9` });
+      }
+    }
   }
 
   for (const f of NULLABLE_METRIC_FIELDS) if (f in run) validateNullableMetric(run[f], f, errors);

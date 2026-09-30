@@ -32,6 +32,7 @@ import { readFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createFakeClaudeCommandPath } from './_fake-claude-command.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -70,13 +71,14 @@ function restoreEnvVar(key, value) {
 
 async function withFakeClaudePath(scenario, fn) {
   const fakeDir = path.join(FIXTURES_DIR, `fake-claude-${scenario}`);
-  const delimiter = process.platform === 'win32' ? ';' : ':';
   const savedPath = process.env.PATH;
-  process.env.PATH = `${fakeDir}${delimiter}${savedPath ?? ''}`;
+  const command = createFakeClaudeCommandPath({ fixtureDir: fakeDir, basePath: savedPath ?? '' });
+  process.env.PATH = command.path;
   try {
     return await fn();
   } finally {
     restoreEnvVar('PATH', savedPath);
+    command.cleanup();
   }
 }
 

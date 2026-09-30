@@ -192,3 +192,35 @@ docs/audits/evidence1-validation-forensics.psm1 text eol=lf
 docs/audits/evidence1-gradle-offline-probe.psm1 text eol=lf
 docs/audits/evidence1-cache-provision-host.psm1 text eol=lf
 docs/audits/evidence1-gradle-cache-provision.psm1 text eol=lf
+
+# v0.16.0 shebang/LF audit — these 18 tracked files' real FIRST LINE is a `#!` shebang but had no
+# eol=lf pin at all (surfaced by #533's hosted-CI failure: vitest couldn't import a CRLF shebang
+# module after a Windows checkout). tests/vitest/shebang-lf-guard.test.js enforces this pin stays
+# complete going forward — it does its own first-line-only detection, independent of this list.
+bin/kmp-test.js text eol=lf
+gradle-plugin/gradlew text eol=lf
+scripts/ps1/run-parallel-coverage-suite.ps1 text eol=lf
+tests/fixtures/build-logic-convention-jacoco/gradlew text eol=lf
+tests/fixtures/build-logic-noise-jacoco/gradlew text eol=lf
+tests/fixtures/build-logic-selective-jacoco/gradlew text eol=lf
+tests/fixtures/build-logic-self-jacoco/gradlew text eol=lf
+tests/fixtures/kmp-with-js/gradlew text eol=lf
+tests/fixtures/root-convention-jacoco/gradlew text eol=lf
+tests/fixtures/version-catalog-alias-plugins/gradlew text eol=lf
+tools/check-bundle-size.mjs text eol=lf
+tools/runs/agentic-usage-benchmark-v2-2026-07-17/harness.mjs text eol=lf
+tools/wet-audit-v0.9.mjs text eol=lf
+tools/wide-smoke-pass-10.mjs text eol=lf
+tools/wide-smoke-pass-7.mjs text eol=lf
+tools/wide-smoke-pass-8.mjs text eol=lf
+tools/wide-smoke-pass-9-mac.mjs text eol=lf
+tools/wide-smoke-pass-9.mjs text eol=lf
+
+# Harness-publication shebang audit: these 4 tracked files' real FIRST LINE is a `#!` shebang
+# but were not covered by the v0.16.0 shebang/LF audit above (introduced afterward, as part of
+# the Evidence1 dual-condition canary harness). Same CRLF-import failure class;
+# tests/vitest/shebang-lf-guard.test.js enforces this pin stays complete going forward.
+docs/audits/evidence1-codex-pilot-describe.mjs text eol=lf
+docs/audits/evidence1-codex-publication-scan.mjs text eol=lf
+tests/fixtures/fake-codex-campaign-success/codex text eol=lf
+tests/pester/fixtures/Evidence1DualConditionRealEvidence.mjs text eol=lf

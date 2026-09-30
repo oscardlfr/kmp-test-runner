@@ -205,19 +205,22 @@ describe('finalizeIncident -- committed + local diagnostic tiers', () => {
         runsRootOverride,
       });
       const committed = JSON.parse(readFileSync(join(runsRootOverride, result.committedRelativePath), 'utf8'));
-      expect(committed.schema).toBe(2);
+      // Schema 4 (2026-09-29, WO-A2): 2 (this test's own correlation axis) + 2
+      // (path_diagnostics, now always computed -- see the dedicated path_diagnostics describe
+      // block below for its own direct coverage).
+      expect(committed.schema).toBe(4);
       expect(committed.failed_cell_correlation).toEqual(correlationSummary());
       expect(Object.keys(committed).sort()).toEqual([
         'counts', 'created_at', 'emergency_raw_persisted', 'emergency_raw_write_error',
-        'failed_cell_correlation', 'incident_id', 'phase', 'planned_cell_count', 'provenance',
-        'reason', 'run_kind', 'schema',
+        'failed_cell_correlation', 'incident_id', 'path_diagnostics', 'phase', 'planned_cell_count',
+        'provenance', 'reason', 'run_kind', 'schema',
       ].sort());
     } finally {
       rmSync(runsRootOverride, { recursive: true, force: true });
     }
   });
 
-  it('fails closed to legacy schema 1 when a correlation summary is malformed', async () => {
+  it('fails closed to schema 3 (no failed_cell_correlation) when a correlation summary is malformed', async () => {
     const { finalizeIncident } = await import('../../tools/agentic-eval/incident-diagnostics.mjs');
     const runsRootOverride = freshRunsRoot();
     try {
@@ -233,8 +236,12 @@ describe('finalizeIncident -- committed + local diagnostic tiers', () => {
         runsRootOverride,
       });
       const committed = JSON.parse(readFileSync(join(runsRootOverride, result.committedRelativePath), 'utf8'));
-      expect(committed.schema).toBe(1);
+      // Schema 3 (2026-09-29, WO-A2): 1 (correlation still absent -- unchanged behavior) + 2
+      // (path_diagnostics, now always computed, independent of the correlation axis this test
+      // exercises).
+      expect(committed.schema).toBe(3);
       expect(committed).not.toHaveProperty('failed_cell_correlation');
+      expect(committed).toHaveProperty('path_diagnostics');
       expect(JSON.stringify(committed)).not.toContain('must-not-persist');
     } finally {
       rmSync(runsRootOverride, { recursive: true, force: true });
@@ -740,6 +747,78 @@ describe('finalizeIncident -- the fallback never denies a real emergency-raw pre
       // never falsely reset to false just because a DIFFERENT field needed to fall back.
       expect(committed.emergency_raw_persisted).toBe(true);
       expect(committed.emergency_raw_write_error).toBeNull();
+    } finally {
+      rmSync(runsRootOverride, { recursive: true, force: true });
+    }
+  });
+});
+
+// 2026-09-29 (WO-A2 auditor finding): settles a Windows long-path hypothesis (claude-code-0's
+// pre-spawn ENOENT during acquireSharedEvalResources) from an incident diagnostic alone, without a
+// live guest shell. finalizeIncident now always computes path_diagnostics itself, from this
+// process's own ambient state -- no call site passes it in, so every one of the existing tests
+// above already exercises it implicitly (see their own updated schema-number assertions); this
+// block is this feature's own direct, dedicated coverage.
+describe('finalizeIncident -- path_diagnostics (Windows long-path hypothesis instrumentation)', () => {
+  it('is present on every diagnostic, with real, non-fabricated lengths matching this actual process', async () => {
+    const { finalizeIncident } = await import('../../tools/agentic-eval/incident-diagnostics.mjs');
+    const { resolveBash } = await import('../../tools/agentic-eval/resolve-bash.mjs');
+    const runsRootOverride = freshRunsRoot();
+    try {
+      const result = finalizeIncident({
+        runKind: 'scenario', journal: fakeJournal(), phase: 'acquiring_shared_resources',
+        reasonText: 'clean reason', provenance: {}, runsRootOverride,
+      });
+      const committed = JSON.parse(readFileSync(join(runsRootOverride, result.committedRelativePath), 'utf8'));
+      const pd = committed.path_diagnostics;
+      expect(pd.schema).toBe(1);
+      expect(pd.temp_dir_length).toBe(tmpdir().length);
+      expect(pd.cwd_length).toBe(process.cwd().length);
+      expect(pd.runtime_command_length).toBe(resolveBash().length);
+      expect(Object.keys(pd).sort()).toEqual([
+        'cwd_length', 'cwd_relative', 'runtime_command_length', 'schema', 'temp_dir_length', 'temp_dir_relative',
+      ].sort());
+    } finally {
+      rmSync(runsRootOverride, { recursive: true, force: true });
+    }
+  });
+
+  it('strips the filesystem root from the relative fields -- never a bare drive letter or leading slash', async () => {
+    const { finalizeIncident } = await import('../../tools/agentic-eval/incident-diagnostics.mjs');
+    const runsRootOverride = freshRunsRoot();
+    try {
+      const result = finalizeIncident({
+        runKind: 'scenario', journal: fakeJournal(), phase: 'acquiring_shared_resources',
+        reasonText: 'clean reason', provenance: {}, runsRootOverride,
+      });
+      const committed = JSON.parse(readFileSync(join(runsRootOverride, result.committedRelativePath), 'utf8'));
+      const pd = committed.path_diagnostics;
+      expect(pd.temp_dir_relative).not.toMatch(/^[A-Za-z]:[\\/]/);
+      expect(pd.temp_dir_relative).not.toMatch(/^[\\/]/);
+      expect(pd.cwd_relative).not.toMatch(/^[A-Za-z]:[\\/]/);
+      expect(pd.cwd_relative).not.toMatch(/^[\\/]/);
+      // Length still describes the FULL original path (the diagnostically important number for a
+      // MAX_PATH-class failure), never the stripped/shortened one.
+      expect(pd.temp_dir_relative.length).toBeLessThan(pd.temp_dir_length);
+    } finally {
+      rmSync(runsRootOverride, { recursive: true, force: true });
+    }
+  });
+
+  it('is orthogonal to the failed_cell_correlation axis -- present regardless of cellOrdinal/correlation availability', async () => {
+    const { finalizeIncident } = await import('../../tools/agentic-eval/incident-diagnostics.mjs');
+    const runsRootOverride = freshRunsRoot();
+    try {
+      // No cellOrdinal at all -- the correlation axis stays fully absent (schema would have been 1
+      // before this feature existed), but path_diagnostics is still computed unconditionally.
+      const result = finalizeIncident({
+        runKind: 'scenario', journal: fakeJournal(), phase: 'acquiring_shared_resources',
+        reasonText: 'clean reason', provenance: {}, runsRootOverride,
+      });
+      const committed = JSON.parse(readFileSync(join(runsRootOverride, result.committedRelativePath), 'utf8'));
+      expect(committed.schema).toBe(3);
+      expect(committed).not.toHaveProperty('failed_cell_correlation');
+      expect(committed).toHaveProperty('path_diagnostics');
     } finally {
       rmSync(runsRootOverride, { recursive: true, force: true });
     }

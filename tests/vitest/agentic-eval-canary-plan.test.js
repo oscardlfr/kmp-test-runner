@@ -151,7 +151,7 @@ describe('one-cell CLI contract with real scenario and isolation validation', ()
   function argsFor(designId, overrides = {}) {
     return {
       _: ['run'], errors: [], scenario: SCENARIO, 'source-repo-dir': join(root, 'nonexistent-source'),
-      seed: '7', 'campaign-design': designId, 'isolation-attestation-file': attestationFile,
+      seed: '7', 'campaign-design': designId, 'isolation-attestation-file': attestationFile, 'timeout-ms': '900000',
       'dry-run': true, ...overrides,
     };
   }

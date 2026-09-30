@@ -12,8 +12,19 @@ import {
   buildConditionArgv,
   buildSharedEnv,
   buildPolicySettingsFile,
+  resolveClaudeCommand,
   spawnCondition,
 } from '../../tools/agentic-eval/condition-launcher.mjs';
+
+const CLAUDE_COMMAND = process.platform === 'win32' ? 'claude.cmd' : 'claude';
+
+describe('resolveClaudeCommand -- Git Bash compatible Windows launcher', () => {
+  it('names the .cmd launcher explicitly on Windows and preserves the POSIX command elsewhere', () => {
+    expect(resolveClaudeCommand('win32')).toBe('claude.cmd');
+    expect(resolveClaudeCommand('linux')).toBe('claude');
+    expect(resolveClaudeCommand('darwin')).toBe('claude');
+  });
+});
 
 describe('buildBaseArgv / buildConditionArgv -- mechanical A/B equivalence', () => {
   const settingsPath = 'C:\\fake\\settings.json';
@@ -28,7 +39,7 @@ describe('buildBaseArgv / buildConditionArgv -- mechanical A/B equivalence', () 
   // clone would silently inherit any drift the first assertion was supposed to catch.
   it('freezes the exact full argv: defaults, and the same array with model/maxBudgetUsd supplied', () => {
     expect(buildBaseArgv({ prompt: 'PROMPT', settingsPath: 'SETTINGS' })).toEqual([
-      'claude', '-p', 'PROMPT',
+      CLAUDE_COMMAND, '-p', 'PROMPT',
       '--output-format', 'stream-json', '--verbose', '--include-hook-events',
       '--model', 'claude-sonnet-5',
       '--setting-sources', '', '--strict-mcp-config', '--no-chrome',
@@ -39,7 +50,7 @@ describe('buildBaseArgv / buildConditionArgv -- mechanical A/B equivalence', () 
     ]);
 
     expect(buildBaseArgv({ prompt: 'PROMPT', settingsPath: 'SETTINGS', model: 'MODEL', maxBudgetUsd: 1.25 })).toEqual([
-      'claude', '-p', 'PROMPT',
+      CLAUDE_COMMAND, '-p', 'PROMPT',
       '--output-format', 'stream-json', '--verbose', '--include-hook-events',
       '--model', 'MODEL',
       '--setting-sources', '', '--strict-mcp-config', '--no-chrome',
@@ -142,9 +153,10 @@ describe('buildBaseInvocation -- prompt-safe stdin transport', () => {
     const invocation = buildBaseInvocation({ prompt, settingsPath: 'SETTINGS' });
     expect(invocation.stdinText).toBe(prompt);
     expect(invocation.argv).toEqual([
-      'claude', '-p',
+      CLAUDE_COMMAND, '-p',
       '--output-format', 'stream-json', '--verbose', '--include-hook-events',
       '--model', 'claude-sonnet-5',
+      '--effort', 'high',
       '--setting-sources', '', '--strict-mcp-config', '--no-chrome',
       '--no-session-persistence', '--settings', 'SETTINGS',
       '--tools', 'Bash,Skill',
@@ -225,6 +237,19 @@ describe('buildSharedEnv -- byte-identical policy config between conditions', ()
     expect(env.KMP_EVAL_EXPECTED_FIXTURE_ROOT).toBe('C:\\fixture');
     expect(JSON.parse(env.KMP_EVAL_ALLOWED_GRADLE_TASKS)).toEqual(['build']);
     expect(JSON.parse(env.KMP_EVAL_ALLOWED_KMPTEST_SUBCOMMANDS)).toEqual(['doctor']);
+  });
+
+  it('carries an explicitly allowed runtime config path without widening the default environment', () => {
+    const original = process.env.CLAUDE_CONFIG_DIR;
+    try {
+      process.env.CLAUDE_CONFIG_DIR = 'C:\\Evidence1RuntimeState\\claude';
+      expect(buildSharedEnv(opts)).not.toHaveProperty('CLAUDE_CONFIG_DIR');
+      expect(buildSharedEnv({ ...opts, extraAllowedEnvNames: ['CLAUDE_CONFIG_DIR'] }).CLAUDE_CONFIG_DIR)
+        .toBe('C:\\Evidence1RuntimeState\\claude');
+    } finally {
+      if (original === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = original;
+    }
   });
 
   it('prepends the shim dir to PATH', () => {

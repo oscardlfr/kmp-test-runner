@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "id": "coverage-threshold-failure-v2",
+  "expected_outcome": "The agent discovers NowInAndroid's business-logic-use-cases module (:core:domain), confirms its unit tests pass cleanly across both build flavors, discovers its own source code leaves too many lines uncovered against a modest budget, and reports outcome_kind coverage_threshold_exceeded with the accurate missed_lines/threshold/modules_contributing.",
+  "expected": {
+    "module": ":core:domain",
+    "outcome_kind": "coverage_threshold_exceeded",
+    "kmp_test": {
+      "tests": {
+        "total": 1,
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "individual_total": 4
+      },
+      "exit_code": 1,
+      "coverage": {
+        "tool": "auto",
+        "min_missed_lines": 15,
+        "missed_lines": 23,
+        "with_data": [
+          ":core:domain"
+        ]
+      }
+    },
+    "gradle": {
+      "allowed_invocations": [
+        ":core:domain:test"
+      ],
+      "evidence_task": ":core:domain:test",
+      "tests": {
+        "total": 4,
+        "passed": 4,
+        "failed": 0
+      },
+      "exit_code": 0
+    }
+  },
+  "first_useful_signal_predicate": {
+    "description": "first well-formed terminal evidence (from whichever provider produced it) confirming :core:domain's coverage gate fired above its budget"
+  }
+}

@@ -1,0 +1,195 @@
+{
+  "schema": 2,
+  "runtimes": {
+    "claude-code": {
+      "model": "claude-sonnet-5",
+      "per_million_tokens": {
+        "input": 2,
+        "cache_write_5m": 2.5,
+        "cache_write_1h": 4,
+        "cache_read": 0.2,
+        "output": 10
+      },
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "retrieved": "2026-09-29",
+      "cells": [
+        {
+          "arm": "product",
+          "order_index": 0,
+          "tokens": {
+            "input": 14,
+            "output": 2077,
+            "cache_read": 150102,
+            "cache_creation": 20487
+          }
+        },
+        {
+          "arm": "free",
+          "order_index": 1,
+          "tokens": {
+            "input": 24,
+            "output": 2848,
+            "cache_read": 247484,
+            "cache_creation": 26063
+          }
+        },
+        {
+          "arm": "free",
+          "order_index": 2,
+          "tokens": {
+            "input": 30,
+            "output": 4638,
+            "cache_read": 385398,
+            "cache_creation": 28350
+          }
+        },
+        {
+          "arm": "product",
+          "order_index": 3,
+          "tokens": {
+            "input": 8,
+            "output": 1191,
+            "cache_read": 76828,
+            "cache_creation": 23048
+          }
+        },
+        {
+          "arm": "free",
+          "order_index": 4,
+          "tokens": {
+            "input": 24,
+            "output": 3067,
+            "cache_read": 256773,
+            "cache_creation": 25730
+          }
+        },
+        {
+          "arm": "product",
+          "order_index": 5,
+          "tokens": {
+            "input": 8,
+            "output": 1459,
+            "cache_read": 76860,
+            "cache_creation": 23292
+          }
+        },
+        {
+          "arm": "product",
+          "order_index": 6,
+          "tokens": {
+            "input": 32,
+            "output": 3664,
+            "cache_read": 376942,
+            "cache_creation": 22083
+          }
+        },
+        {
+          "arm": "free",
+          "order_index": 7,
+          "tokens": {
+            "input": 32,
+            "output": 4280,
+            "cache_read": 345019,
+            "cache_creation": 27463
+          }
+        }
+      ]
+    },
+    "codex-cli": {
+      "model": "gpt-5.6-terra",
+      "per_million_tokens": {
+        "input": 2,
+        "cache_write_5m": 2.5,
+        "cache_write_1h": 2.5,
+        "cache_read": 0.2,
+        "output": 12
+      },
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "retrieved": "2026-09-29",
+      "uncached_input_may_be_cache_writes": true,
+      "pricing_note": "OpenAI Input pricing tooltip (developers.openai.com/api/docs/pricing, retrieved 2026-09-29): \"Input tokens are either Input, Cached Input, or Cache Write and writes are not an additive fee.\"",
+      "cells": [
+        {
+          "arm": "product",
+          "order_index": 0,
+          "tokens": {
+            "input": 21763,
+            "output": 2598,
+            "cache_read": 179712,
+            "cache_creation": 0
+          }
+        },
+        {
+          "arm": "free",
+          "order_index": 1,
+          "tokens": {
+            "input": 32987,
+            "output": 2871,
+            "cache_read": 264960,
+            "cache_creation": 0
+          }
+        },
+        {
+          "arm": "free",
+          "order_index": 2,
+          "tokens": {
+            "input": 41918,
+            "output": 5513,
+            "cache_read": 504320,
+            "cache_creation": 0
+          }
+        },
+        {
+          "arm": "product",
+          "order_index": 3,
+          "tokens": {
+            "input": 30337,
+            "output": 5561,
+            "cache_read": 364288,
+            "cache_creation": 0
+          }
+        },
+        {
+          "arm": "free",
+          "order_index": 4,
+          "tokens": {
+            "input": 48694,
+            "output": 5460,
+            "cache_read": 599040,
+            "cache_creation": 0
+          }
+        },
+        {
+          "arm": "product",
+          "order_index": 5,
+          "tokens": {
+            "input": 20671,
+            "output": 1409,
+            "cache_read": 152576,
+            "cache_creation": 0
+          }
+        },
+        {
+          "arm": "product",
+          "order_index": 6,
+          "tokens": {
+            "input": 20147,
+            "output": 2156,
+            "cache_read": 147456,
+            "cache_creation": 0
+          }
+        },
+        {
+          "arm": "free",
+          "order_index": 7,
+          "tokens": {
+            "input": 28410,
+            "output": 2549,
+            "cache_read": 194048,
+            "cache_creation": 0
+          }
+        }
+      ]
+    }
+  }
+}

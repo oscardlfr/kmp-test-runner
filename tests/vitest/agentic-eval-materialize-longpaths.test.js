@@ -115,3 +115,72 @@ describe.skipIf(!isWindows)('materialize.mjs -- Windows long-path handling for t
     expect(gitConfigKeys).toEqual([]);
   });
 });
+
+// 2026-09-29 (WO-A2 auditor finding): a SEPARATE Windows long-path gap from the git-config one
+// above -- mkdtempSync's own libuv binding (uv_fs_mkdtemp) fails past ~260 resolved characters on
+// this harness's hosts even with HKLM FileSystem\LongPathsEnabled=1 set (confirmed empirically on
+// the SAME host the tests above call "Inconclusive" for the .NET Remove-Item case -- that registry
+// flag does not help every Node fs API uniformly). This produced a real incident: claude-code-0's
+// acquireSharedEvalResources call failed with an untagged, opaque ENOENT before any cell spawned.
+// baseDir is injected (never process.env.TEMP/TMP mutation) so this reproduces deterministically
+// without depending on this host's own real tmpdir() depth.
+describe.skipIf(!isWindows)('materialize.mjs -- mkdtempLongPathSafe (mkdtempSync itself fails past MAX_PATH)', () => {
+  function makeDeepBaseDir() {
+    const component = 'b'.repeat(40);
+    let dir = mkdtempSync(join(tmpdir(), 'aelp-mkdtemp-base-'));
+    for (let i = 0; i < 6; i++) dir = join(dir, `${component}${i}`);
+    mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+
+  it('RED: plain mkdtempSync fails past 260 resolved chars on this host', () => {
+    const deepBase = makeDeepBaseDir();
+    try {
+      expect(deepBase.length).toBeGreaterThan(200);
+      expect(() => mkdtempSync(join(deepBase, 'plain-mkdtemp-'))).toThrow(/ENOENT/);
+    } finally {
+      rmSync(deepBase, { recursive: true, force: true });
+    }
+  });
+
+  it('GREEN: mkdtempLongPathSafe succeeds at the identical depth where mkdtempSync just failed', async () => {
+    const { mkdtempLongPathSafe } = await import('../../tools/agentic-eval/materialize.mjs');
+    const deepBase = makeDeepBaseDir();
+    try {
+      const created = mkdtempLongPathSafe('kmp-agentic-eval-skill-', { baseDir: deepBase });
+      expect(created.length).toBeGreaterThan(260);
+      expect(existsSync(created)).toBe(true);
+      rmSync(created, { recursive: true, force: true });
+    } finally {
+      rmSync(deepBase, { recursive: true, force: true });
+    }
+  });
+
+  it('regression: mkdtempLongPathSafe still works correctly at normal, short lengths', async () => {
+    const { mkdtempLongPathSafe } = await import('../../tools/agentic-eval/materialize.mjs');
+    const created = mkdtempLongPathSafe('kmp-agentic-eval-skill-');
+    try {
+      expect(existsSync(created)).toBe(true);
+      expect(created).toContain('kmp-agentic-eval-skill-');
+    } finally {
+      rmSync(created, { recursive: true, force: true });
+    }
+  });
+
+  it('a failure carries code/syscall/target/length into the message, never a raw absolute path', async () => {
+    const { mkdtempLongPathSafe } = await import('../../tools/agentic-eval/materialize.mjs');
+    // A baseDir that doesn't exist fails mkdirSync deterministically regardless of length --
+    // proves the message shape without depending on this host's own long-path threshold.
+    const missingBase = join(tmpdir(), `aelp-definitely-missing-${Date.now()}`);
+    let thrown = null;
+    try {
+      mkdtempLongPathSafe('kmp-agentic-eval-skill-', { baseDir: missingBase });
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).not.toBeNull();
+    expect(thrown.message).toMatch(/^mkdtemp_long_path_failed: code=ENOENT syscall=mkdir target=kmp-agentic-eval-skill-[0-9a-f]{6} target_length=\d+$/);
+    expect(thrown.message).not.toContain(missingBase);
+    expect(thrown.message).not.toContain(tmpdir());
+  });
+});

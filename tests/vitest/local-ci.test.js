@@ -63,6 +63,33 @@ describe('local CI cost gate', () => {
     expect(gate).toContain('$_.Version.Major -eq 5');
   });
 
+  it('runs the vitest lane inside a fresh core.autocrlf=true clone of committed HEAD, not the worktree in place', () => {
+    const gate = read('tools/local-ci/windows-gate.ps1');
+    // core.autocrlf conversion only happens AT CHECKOUT -- an already-checked-out worktree's bytes
+    // don't change just because autocrlf is set afterward, so only a real clone can reproduce the
+    // gap #533's hosted-CI failure exposed (a CRLF-converted shebang module broke vitest's import).
+    expect(gate).toContain("@('clone', '--no-hardlinks', '--config', 'core.autocrlf=true', $RepoRoot, $vitestCloneDir)");
+    // Both Node versions' vitest runs happen after the clone exists, inside it (Push-Location), not
+    // against $RepoRoot.
+    const cloneIndex = gate.indexOf("Invoke-NativeChecked 'git' @('clone'");
+    const node24VitestIndex = gate.indexOf("'Vitest coverage (Node 24, autocrlf clone)'");
+    const node18VitestIndex = gate.indexOf("'Vitest (Node 18, autocrlf clone)'");
+    expect(cloneIndex).toBeGreaterThan(-1);
+    expect(node24VitestIndex).toBeGreaterThan(cloneIndex);
+    expect(node18VitestIndex).toBeGreaterThan(cloneIndex);
+    expect(gate).toContain('Push-Location $vitestCloneDir');
+    // The clone is always removed, even when the body throws partway through -- guarded so a clone
+    // that never got created (an earlier throw, before the git clone line runs) doesn't hit
+    // Remove-Item on a still-null/nonexistent path.
+    const finallyBlock = gate.slice(gate.indexOf('$cleanupErrors = @()'));
+    expect(finallyBlock).toContain('if ($vitestCloneDir -and (Test-Path $vitestCloneDir))');
+    expect(finallyBlock).toContain('Remove-Item -Recurse -Force $vitestCloneDir');
+    // A dirty worktree gets a clear warning that this lane validates committed HEAD only, the same
+    // way the Linux lanes bundle a HEAD snapshot for their own container run.
+    expect(gate).toContain('git -C $RepoRoot status --porcelain');
+    expect(gate).toContain('the Windows vitest lane clones and tests committed HEAD only');
+  });
+
   it('resolves npm lifecycle scripts and node.exe discovery hermetically (no cmd.exe empty-PATH hop)', () => {
     const gate = read('tools/local-ci/windows-gate.ps1');
     // npm's OWN lifecycle-script execution (e.g. esbuild's postinstall) is routed through
@@ -77,7 +104,7 @@ describe('local CI cost gate', () => {
     expect(gate).toContain('Restore-ScopedEnvVar -Saved $nodeExeScope');
   });
 
-  it('passes --script-shell explicitly to both npm ci invocations -- the env var alone is not a guaranteed way to reach a dependency postinstall during npm ci', () => {
+  it('passes --script-shell explicitly to every npm ci invocation -- the env var alone is not a guaranteed way to reach a dependency postinstall during npm ci', () => {
     const gate = read('tools/local-ci/windows-gate.ps1');
     // The env var alone is a defense for any OTHER npm process this gate spawns indirectly, not the
     // guarantee: npm's own script-shell config is an install-time preference, not a contract every
@@ -86,11 +113,16 @@ describe('local CI cost gate', () => {
     // own argv instead. A single resolved path feeds both the env var and the explicit flag, so the
     // two can never independently drift.
     expect(gate).toContain('$npmScriptShell = (Get-Command powershell.exe -ErrorAction Stop).Source');
-    // Exactly 2: one per npm ci call (Node 24, Node 18) -- not just "at least one".
+    // Exactly 3: the original in-place Node 24 npm ci (feeds check-line-endings/npm audit, which run
+    // against $RepoRoot, not the vitest clone), plus one per Node version inside the vitest clone
+    // (Node 24, Node 18) -- not just "at least one". The in-place Node 18 npm ci was removed
+    // entirely once its only consumer (vitest) moved into the clone; it would otherwise install
+    // node_modules nothing in this script reads.
     const explicitFlag = gate.match(/"--script-shell=\$npmScriptShell"/g);
-    expect(explicitFlag?.length).toBe(2);
+    expect(explicitFlag?.length).toBe(3);
     expect(gate).toContain(`@('ci', "--script-shell=$npmScriptShell") 'npm ci (Node 24)'`);
-    expect(gate).toContain(`@('ci', "--script-shell=$npmScriptShell") 'npm ci (Node 18)'`);
+    expect(gate).toContain(`@('ci', "--script-shell=$npmScriptShell") 'npm ci (Node 24, vitest clone)'`);
+    expect(gate).toContain(`@('ci', "--script-shell=$npmScriptShell") 'npm ci (Node 18, vitest clone)'`);
   });
 
   it('mounts source read-only and forwards no host environment wholesale', () => {

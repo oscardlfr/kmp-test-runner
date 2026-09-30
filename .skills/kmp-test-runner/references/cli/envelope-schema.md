@@ -1,4 +1,4 @@
-# Envelope schema reference (`schema_version: 2`)
+# Envelope schema reference (`schema_version: 3`)
 
 The `kmp-test` CLI emits a JSON envelope to stdout when invoked with `--json`. The shape is stable within a major schema version; breaking changes bump `schema_version`. **This file is a curated agent-facing extract.** The canonical source of truth lives at [`docs/envelope-contract.md`](https://github.com/oscardlfr/kmp-test-runner/blob/main/docs/envelope-contract.md) in the source repo.
 
@@ -7,7 +7,8 @@ The `kmp-test` CLI emits a JSON envelope to stdout when invoked with `--json`. T
 | Field | Type | Notes |
 |-------|------|-------|
 | `tool` | string | Always `"kmp-test"`. Discriminator for nested-tool scenarios. |
-| `schema_version` | number | Currently `2`. Bumped only on breaking shape changes (additive fields don't bump). |
+| `schema_version` | number | Currently `3`. Bumped on breaking shape or exit/error semantic changes. |
+| `contracts` | object | Named runtime capabilities. Require integer `coverage_evidence >= 1` before trusting explicit coverage requests. Probe cheaply with `kmp-test --version --json`; old binaries return non-JSON semver text. |
 | `subcommand` | string | One of: `parallel`, `changed`, `android`, `benchmark`, `coverage`, `doctor`, `info`, `describe`, `clean`, `update`. |
 | `version` | string | kmp-test CLI version (matches `package.json`). |
 | `project_root` | string | Absolute path to the gradle project root. |
@@ -115,9 +116,11 @@ Branch on `errors[].code` before reading `message` (the message is human-readabl
 | `flavor_unused` | parallel (`androidUnit`/`androidInstrumented`/`all`) | 2 | `--flavor <name>` passed but no module on the leg is flavored (static `productFlavors {}` or probe-recovered). | — |
 | `isolated_runtime_race` | parallel | 2 | `--isolated` combined with a test-type that hits a shared runtime resource (iOS sim, ADB without `--device`, `--test-type all`). | — |
 | `coverage_threshold_exceeded` | parallel (`--min-missed-lines`), coverage | 1 | Aggregated (unfiltered) `coverage.missed_lines` exceeds the threshold. `--min-missed-lines` never removes coverage data — it only decides this gate and narrows the *markdown report's* per-class detail section; `coverage.missed_lines` / `modules_contributing` / `module_buckets` always reflect the complete project even when this error fires. | `threshold:int`, `missed_lines:int` |
+| `coverage_data_unavailable` | parallel, changed, coverage | 3 | Requested coverage evidence is unavailable. Explicit `--coverage-tool auto\|kover\|jacoco` requests fail when zero selected modules contribute, even without a numeric budget; mixed real/no-XML inputs retain real totals and expose the missing module in `module_buckets.no_xml`. | `reason:string`; `threshold:int` for a budget, otherwise `required_by:"explicit-coverage-tool"` |
+| `coverage_budget_without_coverage` | parallel, changed, coverage | 2 | A positive `--min-missed-lines` budget was combined with `--coverage-tool none` / `--no-coverage`. | — |
 | `git_error` | changed | 3 | A git command failed — repo unreadable, corrupted, or access denied. **Hard code** — `exit_code` is always 3. Only emitted when git probing fails; `no_changed_modules` is emitted instead when git succeeds but the diff is empty. | `git_command:string` (subcommand invoked), `exit_status:number` (git exit code), `stderr_summary?:string` (first 300 chars of stderr, CR/LF collapsed, omitted when empty) |
 | `gradle_timeout` | parallel, benchmark | 3 | The gradle spawn process was killed by the `--timeout` deadline (SIGTERM on POSIX; ETIMEDOUT on Windows). Never retried — spawn timeouts are infra failures, not flaky tests. | **parallel**: `module:string`, `task:string`, `timeout_ms:number`. **benchmark**: additionally `platform:string`, `log_path:string` |
-| `task_not_found` | any | 3 | Gradle task class missing — typically a plugin not applied to the requested module. | — |
+| `task_not_found` | any | 3 | Gradle task class missing — typically a plugin not applied to the requested module. | `probe_failed:true` when the gradle-tasks probe never recovered real task-graph data this run (see `gradle_probe_failed` below) — the task name was guessed statically and may simply be wrong, not genuinely missing. Absent (not `false`) on a normal probe |
 | `unsupported_class_version` | any | 3 | JDK toolchain mismatch — gradle daemon ran on an older JVM than the test classes target. | — |
 | `invalid_*` | any | 2 | CLI validation failure (e.g. `invalid_flag_value`, `invalid_regex`). | `flag?`, `value?` |
 | `unknown_flag` | any | 2 | A `--flag` token was not recognized by any subcommand. Two-layer gate: Layer 1 (cli.js) catches flags unknown to all subcommands before the PS wrapper spawns; Layer 2 (each orchestrator's `default:` case) catches flags valid for other subcommands but not this one. | `flag:string` |
@@ -163,6 +166,9 @@ Branch on `errors[].code` before reading `message` (the message is human-readabl
 | `gradle_deprecation` | any | gradle exited 1 solely because of Gradle 9+ deprecation warnings while every task passed; the `BUILD FAILED` line is not duplicated to `errors[]`. | — |
 | `no_test_modules_for_leg` | parallel (`all`) | a leg matched no modules, but at least one sibling leg passed — demoted from the `no_test_modules` error to a per-leg warning. | `test_type:string` |
 | `no_adb_implies_list_only` | android, info | `--no-adb` / `KMP_TEST_SKIP_ADB` was set on the instrumented path; dispatch was skipped and the module set emitted as list-only. | — |
+| `gradle_probe_failed` | parallel, coverage, android, benchmark, describe | The `gradlew tasks --all --quiet` probe that resolves real per-module task names didn't succeed cleanly on the first try. Retried exactly once on `exit_nonzero`/`empty_output` (never on `timeout`/`spawn_error`); fires whenever attempt 1 failed, including when the retry then succeeded. | `reason:"timeout"\|"exit_nonzero"\|"empty_output"\|"spawn_error"`, `exit_code:number\|null`, `attempts:int`, `recovered:bool`, `message` (bounded ≤2 KB stderr excerpt) |
+
+**Agent guidance for `gradle_probe_failed`:** if `recovered:true`, the run already used real probe data — no action needed. If `recovered:false`, dispatch fell back to guessing task names statically, so a sibling `task_not_found` may be a false alarm; rerun the command once (the underlying failure is often transient). If it persists, run `gradlew tasks --all` directly in the project to see the actual build error behind the probe failure.
 
 > Like errors, future warning codes can land additively without bumping `schema_version`. Treat unrecognized codes as opaque.
 
@@ -285,7 +291,7 @@ The shapes are **deliberately independent** — the tools target different consu
 | Output channel | JSON document on stdout | Plain-text status lines on stdout + JSON files written to disk; stdout prints their paths |
 | Consumption model | inline (parse one JSON, get everything) | pointer (parse path lines, open each per-target file) |
 | Tool identifier | `tool: "kmp-test"` | (none) |
-| Schema version | `schema_version: 2` (versioned breaking-change policy) | (none in output) |
+| Schema version | `schema_version: 3` (versioned breaking-change policy) | (none in output) |
 | Project root | `project_root` (string) | `Target project directory: <abs path>` (text) |
 | Modules / targets (dry-run preview) | `plan.modules[]` with `{name, type, coverage_plugin, test_build_type, has_flavor, flavors, android_dsl, android_dsl_variant}` per entry | per-target JSON files documenting build outputs (e.g. APK paths) |
 | Errors | `errors[]` with discriminated `code` (17+ codes) + WS-5 invariant | Plain-text `Error: …` lines + non-zero exit |

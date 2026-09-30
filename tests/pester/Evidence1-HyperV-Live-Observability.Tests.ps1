@@ -407,9 +407,12 @@ Describe 'Evidence1 canary launcher runtime failures' {
     BeforeEach {
         $RunId = 'b48bfb0c-a9ae-4e0e-8d89-56eb1e278090'
         $CanaryArm = 'product'; $CanaryBindingSha256 = 'a' * 64
+        $RemoteAuthCanaryOperationId = '11111111-1111-4111-8111-111111111111'
         $script:FixtureOps = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $script:FixtureOps | Out-Null
         $GradleUserHomeSeedDir = $script:FixtureOps; $TerminalRecordPath = Join-Path $script:FixtureOps 'terminal.json'
+        $ReadinessLedgerPath = Join-Path $script:FixtureOps 'READINESS.json'
+        [IO.File]::WriteAllText($ReadinessLedgerPath, '{"generated_at_utc":"2026-09-11T10:00:00.000Z"}')
         $script:FixtureWrites = @{}; $script:FixtureCalls = [Collections.Generic.List[string]]::new()
         $script:JournalCalls = 0; $script:InventoryCalls = 0
         $script:FixtureOp = [pscustomobject]@{ Task = [pscustomobject]@{ IsCompleted = $false } }
@@ -429,7 +432,7 @@ Describe 'Evidence1 canary launcher runtime failures' {
         Mock Assert-ClaudeAuthReady { }
         Mock Assert-RestrictedNetwork { }
         Mock Assert-RemoteAuthCanary { }
-        Mock Read-ReadinessLedger { }
+        Mock Read-ReadinessLedger { [pscustomobject]@{ generated_at_utc = '2026-09-11T10:00:00.000Z' } }
         Mock Read-Evidence1CanaryJson { @{ value = @{ run_id = 'b48bfb0c-a9ae-4e0e-8d89-56eb1e278090'; binding_sha256 = 'a'*64; journal_ids = @() } } }
         Mock Get-Evidence1CanaryJournalProgress {
             $script:JournalCalls++
@@ -676,6 +679,7 @@ Describe 'Evidence1 canary wrapper claimed preflight lifecycle' {
         function Invoke-ClaimedWrapperFixture {
             try {
                 $code = & $script:WholeCanaryWrapper -RunId $script:LifecycleId -CanaryArm product -CanaryBindingSha256 ('a'*64) `
+                    -RemoteAuthCanaryOperationId '11111111-1111-4111-8111-111111111111' `
                     -OpsDir $script:LifecycleOps -HarnessDir $script:LifecycleHarness -LauncherPath $script:LifecycleLauncher -ShutdownOnExit
                 return @{ exit_code = $code; error = $null }
             } catch { return @{ exit_code = $null; error = $_.Exception.Message } }
@@ -1011,7 +1015,7 @@ Describe 'Evidence1 live wrapper process lifecycle' {
         $runId = [guid]::NewGuid().ToString('D')
         $launcher = Join-Path $script:OpsDir 'fake-launcher.ps1'
         Set-Content -LiteralPath $launcher -Encoding UTF8 -Value @'
-param([string]$RunId, [string]$TerminalRecordPath)
+param([string]$RunId, [string]$TerminalRecordPath, [string]$RemoteAuthCanaryOperationId)
 $record = [ordered]@{
     schema = 1
     run_id = $RunId
@@ -1027,9 +1031,11 @@ Start-Sleep -Seconds 300
         $watch = [Diagnostics.Stopwatch]::StartNew()
         $process = Start-Process -FilePath powershell.exe -ArgumentList @(
             '-NoProfile',
+            '-NonInteractive',
             '-ExecutionPolicy', 'Bypass',
             '-File', $script:WrapperPath,
             '-RunId', $runId,
+            '-RemoteAuthCanaryOperationId', '11111111-1111-4111-8111-111111111111',
             '-LauncherPath', $launcher,
             '-OpsDir', $script:OpsDir,
             '-HarnessDir', $script:OpsDir,
@@ -1052,7 +1058,7 @@ Start-Sleep -Seconds 300
         $runId = [guid]::NewGuid().ToString('D')
         $launcher = Join-Path $script:OpsDir 'fake-stale-launcher.ps1'
         Set-Content -LiteralPath $launcher -Encoding UTF8 -Value @'
-param([string]$RunId, [string]$TerminalRecordPath)
+param([string]$RunId, [string]$TerminalRecordPath, [string]$RemoteAuthCanaryOperationId)
 $record = [ordered]@{
     schema = 1
     run_id = [guid]::NewGuid().ToString('D')
@@ -1067,9 +1073,11 @@ exit 9
 
         $process = Start-Process -FilePath powershell.exe -ArgumentList @(
             '-NoProfile',
+            '-NonInteractive',
             '-ExecutionPolicy', 'Bypass',
             '-File', $script:WrapperPath,
             '-RunId', $runId,
+            '-RemoteAuthCanaryOperationId', '11111111-1111-4111-8111-111111111111',
             '-LauncherPath', $launcher,
             '-OpsDir', $script:OpsDir,
             '-HarnessDir', $script:OpsDir,

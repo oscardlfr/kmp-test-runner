@@ -39,6 +39,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { resolveBash } from '../../tools/agentic-eval/resolve-bash.mjs';
+import { createFakeClaudeCommandPath } from './_fake-claude-command.js';
 import { LATEST_RUN_SCHEMA } from '../../tools/agentic-eval/schemas.mjs';
 import { gradeScenarioCondition } from '../../tools/agentic-eval/graders.mjs';
 import {
@@ -59,6 +60,7 @@ const FIXTURES_DIR = path.join(__dirname, '..', 'fixtures');
 // assertions stay exact under vitest's concurrent test-file execution.
 let runsRoot;
 let isolatedTmp;
+let commandShimRoot;
 let sourceRepoDir;
 let scenariosDir;
 let pinnedCommit;
@@ -77,6 +79,7 @@ function gitViaBash(argv, cwd) {
 beforeEach(() => {
   runsRoot = mkdtempSync(path.join(os.tmpdir(), 'aerc-runs-root-'));
   isolatedTmp = mkdtempSync(path.join(os.tmpdir(), 'aerc-isolated-tmp-'));
+  commandShimRoot = mkdtempSync(path.join(os.tmpdir(), 'aerc-claude-cmd-shim-'));
 
   // A tiny, real, local git repo stands in for a real scenario source (KaMPKit) -- exercises the
   // REAL materializeScenarioProject/removeScenarioWorktree git-worktree machinery, exactly
@@ -124,16 +127,21 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(runsRoot, { recursive: true, force: true });
   rmSync(isolatedTmp, { recursive: true, force: true });
+  rmSync(commandShimRoot, { recursive: true, force: true });
   rmSync(sourceRepoDir, { recursive: true, force: true });
   rmSync(scenariosDir, { recursive: true, force: true });
 });
 
 function fakeClaudeEnv(scenario) {
   const fakeDir = path.join(FIXTURES_DIR, `fake-claude-${scenario}`);
-  const delimiter = process.platform === 'win32' ? ';' : ':';
+  const command = createFakeClaudeCommandPath({
+    fixtureDir: fakeDir,
+    basePath: process.env.PATH ?? process.env.Path ?? '',
+    shimRoot: commandShimRoot,
+  });
   return {
     ...process.env,
-    PATH: `${fakeDir}${delimiter}${process.env.PATH ?? process.env.Path ?? ''}`,
+    PATH: command.path,
     KMP_EVAL_RUNS_ROOT: runsRoot,
     KMP_EVAL_SCENARIOS_DIR: scenariosDir,
     TEMP: isolatedTmp,

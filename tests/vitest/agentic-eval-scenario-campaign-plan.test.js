@@ -17,6 +17,9 @@ import { PRODUCT_ACCESS_MODE_VALUES } from '../../tools/agentic-eval/product-acc
 
 const DESIGN_ID = 'claude-2x2-williams-v1';
 const FREE_BASELINE_DESIGN_ID = 'claude-product-vs-free-baseline-v1';
+const CLAUDE_THREE_PAIR_DESIGN_ID = 'claude-product-vs-free-baseline-v2';
+const CODEX_DESIGN_ID = 'codex-product-vs-free-baseline-v1';
+const CODEX_BALANCED_DESIGN_ID = 'codex-product-vs-free-baseline-v2';
 const STRICT = 'strict-policy-v1';
 const UNRESTRICTED = 'sandboxed-unrestricted-v1';
 const KNOWN_PROFILES = [STRICT, UNRESTRICTED];
@@ -68,6 +71,24 @@ describe('resolveScenarioCampaignDesign', () => {
     expect(result.design.repeats).toBe(4);
   });
 
+  it('resolves the Codex three-round paired design', () => {
+    const result = resolveScenarioCampaignDesign(CODEX_DESIGN_ID);
+    expect(result.ok).toBe(true);
+    expect(result.design.repeats).toBe(3);
+  });
+
+  it('resolves the additive Claude three-round paired design', () => {
+    const result = resolveScenarioCampaignDesign(CLAUDE_THREE_PAIR_DESIGN_ID);
+    expect(result.ok).toBe(true);
+    expect(result.design.repeats).toBe(3);
+  });
+
+  it('resolves the additive Codex balanced four-round design', () => {
+    const result = resolveScenarioCampaignDesign(CODEX_BALANCED_DESIGN_ID);
+    expect(result.ok).toBe(true);
+    expect(result.design.repeats).toBe(4);
+  });
+
   it('rejects an unknown design id', () => {
     const result = resolveScenarioCampaignDesign('not-a-real-design-v99');
     expect(result.ok).toBe(false);
@@ -79,6 +100,58 @@ describe('resolveScenarioCampaignDesign', () => {
     expect(resolveScenarioCampaignDesign(null).ok).toBe(false);
     expect(resolveScenarioCampaignDesign(undefined).ok).toBe(false);
     expect(resolveScenarioCampaignDesign('').ok).toBe(false);
+  });
+});
+
+describe('buildScenarioCampaignPlan -- codex-product-vs-free-baseline-v1 shape', () => {
+  it('expands to the exact six-session A/B, B/A, A/B paired order', () => {
+    const result = buildScenarioCampaignPlan({
+      designId: CODEX_DESIGN_ID, repeats: 3, executionProfiles: KNOWN_PROFILES, skillConditions: KNOWN_CONDITIONS,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.plan.planned_sessions).toBe(6);
+    expect(result.plan.cells.map((cell) => cell.campaign_cell_label)).toEqual(['A', 'B', 'B', 'A', 'A', 'B']);
+    expect(result.plan.cells.filter((cell) => cell.condition === 'current-skill')).toHaveLength(3);
+    expect(result.plan.cells.filter((cell) => cell.product_access_mode === 'free-baseline-no-product')).toHaveLength(3);
+    expect(() => assertValidScenarioCampaignPlan(result.plan)).not.toThrow();
+  });
+
+  it('rejects any repeat count other than three', () => {
+    const result = buildScenarioCampaignPlan({
+      designId: CODEX_DESIGN_ID, repeats: 4, executionProfiles: KNOWN_PROFILES, skillConditions: KNOWN_CONDITIONS,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/exactly 3 repeats/);
+  });
+});
+
+describe('buildScenarioCampaignPlan -- codex-product-vs-free-baseline-v2 shape', () => {
+  it('expands to the exact balanced eight-session A/B, B/A, B/A, A/B order', () => {
+    const result = buildScenarioCampaignPlan({
+      designId: CODEX_BALANCED_DESIGN_ID, repeats: 4,
+      executionProfiles: KNOWN_PROFILES, skillConditions: KNOWN_CONDITIONS,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.plan.planned_sessions).toBe(8);
+    expect(result.plan.cells.map((cell) => cell.campaign_cell_label)).toEqual(FREE_BASELINE_EXPECTED_LABEL_ORDER);
+    expect(result.plan.cells.filter((cell) => cell.condition === 'current-skill')).toHaveLength(4);
+    expect(result.plan.cells.filter((cell) => cell.product_access_mode === 'free-baseline-no-product')).toHaveLength(4);
+    expect(() => assertValidScenarioCampaignPlan(result.plan)).not.toThrow();
+  });
+});
+
+describe('buildScenarioCampaignPlan -- claude-product-vs-free-baseline-v2 shape', () => {
+  it('expands to the exact six-session A/B, B/A, A/B paired order', () => {
+    const result = buildScenarioCampaignPlan({
+      designId: CLAUDE_THREE_PAIR_DESIGN_ID, repeats: 3,
+      executionProfiles: KNOWN_PROFILES, skillConditions: KNOWN_CONDITIONS,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.plan.planned_sessions).toBe(6);
+    expect(result.plan.cells.map((cell) => cell.campaign_cell_label)).toEqual(['A', 'B', 'B', 'A', 'A', 'B']);
+    expect(result.plan.cells.filter((cell) => cell.condition === 'current-skill')).toHaveLength(3);
+    expect(result.plan.cells.filter((cell) => cell.product_access_mode === 'free-baseline-no-product')).toHaveLength(3);
+    expect(() => assertValidScenarioCampaignPlan(result.plan)).not.toThrow();
   });
 });
 

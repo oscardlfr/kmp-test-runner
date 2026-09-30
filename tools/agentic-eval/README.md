@@ -1,7 +1,8 @@
 # tools/agentic-eval — reproducible skill evaluation harness
 
-Reusable tooling that proves, technically, whether Claude Code's Skill-matching mechanism
-invokes the `kmp-test-runner` skill under controlled conditions. This is a **foundation**, not
+Reusable tooling that evaluates `kmp-test-runner` under controlled Claude Code and Codex CLI
+conditions. Runtime adapters keep provider protocols separate while sharing evidence, grading,
+accounting, privacy, and schema contracts. This is a **foundation**, not
 a benchmark: no results are published here, and the full corpus is not executed by this PR. See
 [`docs/agentic-usage-measurement.md`](../../docs/agentic-usage-measurement.md) for the broader
 methodology this implements a piece of.
@@ -34,10 +35,33 @@ presence (see "Attempted vs. confirmed invocation" below).
 - **`candidate-skill`** — accepted as a future path in the schema; `condition-launcher.mjs`
   throws a clear, typed error if selected. Not implemented here.
 
-Both conditions receive byte-identical argv, environment, and policy configuration — the *only*
-difference is the presence of `--plugin-dir`. `condition-launcher.mjs`'s `buildConditionArgv()`
-enforces this mechanically (condition A's argv is an exact prefix of condition B's; B's only
-suffix is `['--plugin-dir', <snapshot>]`).
+For Claude Code, both conditions receive byte-identical environment and policy configuration; the
+only argv difference is the product arm's `--plugin-dir` suffix. For Codex CLI, argv, environment,
+scenario, and external-isolation contract are identical. Its treatment is the presence or absence
+of the pinned project skill on the isolated fixture filesystem.
+
+### Codex CLI runtime
+
+- Authentication is checked with `codex login status`; the harness records only pass/fail and the
+  CLI version, never credential material or auth-cache metadata.
+- Non-interactive execution uses `codex exec --json --ephemeral` with the prompt on stdin. Codex
+  JSONL and project hooks remain inside the adapter; normalized records use the common contract.
+- The product is an official Codex project skill under `.agents/skills/kmp-test-runner/`, not a
+  Claude plugin. The free baseline has no target skill, and an offline catalog probe fails closed
+  unless the copied product tree matches the pinned snapshot and baseline absence is observed.
+- Codex does not report cache writes, target-skill activation, skill-attributable tokens, or a
+  per-session USD budget on the supported CLI surface. These dimensions remain `null` with explicit
+  reason codes rather than being inferred.
+- `codex-product-vs-free-baseline-v1` is a six-session, three-pair descriptive pilot ordered
+  `A/B`, `B/A`, `A/B`. Three pairs cannot equalize start positions, so its records are not benchmark
+  eligible.
+- `claude-product-vs-free-baseline-v2` is the matching additive six-session Claude design with the
+  same `A/B`, `B/A`, `A/B` order. The historical eight-session Claude v1 design is unchanged.
+- Live Evidence1 execution is gated by a dedicated launch script (not part of this published
+  harness), which requires external custody and has no retry, replacement, or respawn path.
+
+The Claude-specific condition and invocation details below remain the compatibility contract for
+the original runtime.
 
 ## Attempted vs. confirmed invocation
 
@@ -1143,6 +1167,16 @@ validated failed-cell summary. Schema 2 adds exactly one field, `failed_cell_cor
 by the failed cell ordinal from the journal and revalidated before and after redaction. A malformed
 or non-evaluated summary fails closed to schema 1; arbitrary metadata is never copied through.
 
+Schema 3/4 (WO-A2, 2026-09-29) independently add `path_diagnostics` on top of schema 1/2
+respectively (3 = 1 + path_diagnostics, 4 = 2 + path_diagnostics) -- `finalizeIncident` always
+computes it itself from this process's own ambient state (`tmpdir()`/`process.cwd()`/
+`resolveBash()`), so no call site changed. It carries `temp_dir_length`/`cwd_length`/
+`runtime_command_length` (plain integers -- never PII, the load-bearing signal for a Windows
+MAX_PATH-class failure) plus `temp_dir_relative`/`cwd_relative` (the filesystem root stripped;
+`assertCleanOrThrowObject`'s existing redaction pass is still the backstop for any residual
+identifying segment). Settles a long-path hypothesis from an incident diagnostic alone, without a
+live guest shell.
+
 **Discard policy**: the journal is deleted (`promoteAndDiscard()`) only once the command has
 proven the real evidence it was a safety net for is durably elsewhere — full acceptance, or a
 hard-gate rejection whose own two-transaction forensics (above) provably persisted the *exact*
@@ -1940,7 +1974,11 @@ planning/execution machinery `scenario-campaign-plan.mjs` (a pure, dependency-fr
 `--execution-profile` matrix (`run --execution-profile <id>` keeps working completely unchanged;
 see "Isolation" above for the profile registry itself).
 
-Two full campaign designs and two one-cell canary designs are currently supported.
+Three full campaign designs and four one-cell canary designs are currently supported. Every
+design is bound to one runtime in the closed registry: `claude-*` designs require `claude-code`
+and `codex-*` designs require `codex-cli`. A mismatch is rejected before any runtime subprocess
+or source materialization, and the binding is design metadata rather than a new historical cell
+field.
 `claude-2x2-williams-v1` is the original genuine
 2×2 (execution profile × skill condition) design, 4 repetitions, 16 sessions total, expanded via
 a literal, pre-registered 4×4 Williams-style counterbalanced order — never shuffled, never
@@ -2036,13 +2074,15 @@ knowledge of `kmp-test-runner`.
 
 Evidence 1 canaries use the same registered campaign builder and `run --campaign-design`
 route as the full product-versus-free-baseline campaign. Each design constructs exactly one
-cell; it does not construct eight sessions and trim the printed output. Both are restricted
+cell; it does not construct a full campaign and trim the printed output. All four are restricted
 to the existing `coverage-threshold-failure-v2` scenario, with no scenario or pin changes.
 
-| Arm | `--campaign-design` | Cell | Skill condition | Product access |
-| --- | --- | --- | --- | --- |
-| Product | `claude-product-canary-v1` | A | `current-skill` | `product-assisted` |
-| FreeBaseline | `claude-free-baseline-canary-v1` | B | `no-skill` | `free-baseline-no-product` |
+| Runtime | Arm | `--campaign-design` | Cell | Skill condition | Product access |
+| --- | --- | --- | --- | --- | --- |
+| `claude-code` | Product | `claude-product-canary-v1` | A | `current-skill` | `product-assisted` |
+| `claude-code` | FreeBaseline | `claude-free-baseline-canary-v1` | B | `no-skill` | `free-baseline-no-product` |
+| `codex-cli` | Product | `codex-product-canary-v1` | A | `current-skill` | `product-assisted` |
+| `codex-cli` | FreeBaseline | `codex-free-baseline-canary-v1` | B | `no-skill` | `free-baseline-no-product` |
 
 Run each preview separately:
 
@@ -2058,6 +2098,20 @@ node tools/agentic-eval/cli.mjs run \
   --scenario coverage-threshold-failure-v2 \
   --source-repo-dir <local-clone> --seed 7 \
   --isolation-attestation-file <path> --dry-run
+
+rtk node tools/agentic-eval/cli.mjs run \
+  --runtime codex-cli --model gpt-5.6-terra \
+  --campaign-design codex-product-canary-v1 \
+  --scenario coverage-threshold-failure-v2 \
+  --source-repo-dir <local-clone> --seed 7 \
+  --isolation-attestation-file <codex-bound-path> --dry-run
+
+rtk node tools/agentic-eval/cli.mjs run \
+  --runtime codex-cli --model gpt-5.6-terra \
+  --campaign-design codex-free-baseline-canary-v1 \
+  --scenario coverage-threshold-failure-v2 \
+  --source-repo-dir <local-clone> --seed 7 \
+  --isolation-attestation-file <codex-bound-path> --dry-run
 ```
 
 Each successful invocation exits 0 and prints the existing campaign JSON shape with
@@ -2071,7 +2125,9 @@ campaign-only workspace and no ambient secrets or normal maintainer home mounted
 
 `--seed`, `--source-repo-dir`, and `--isolation-attestation-file` remain required. Existing
 runtime/model, budget, private-pattern, and measurement-scope options retain their normal
-validation. `--repeats` (even `1`) and `--execution-profile` are rejected with campaign designs.
+validation. Codex dry-runs report `max_budget_usd:null` plus
+`max_budget_reason:"runtime_does_not_support_session_budget"`; they never invent a monetary cap.
+`--repeats` (even `1`) and `--execution-profile` are rejected with campaign designs.
 There is no `--arm` or `--canary-arm` alias: select exactly one registered design ID. Unknown
 designs, other scenarios, duplicate flags, missing values, and ambiguous boolean values fail
 closed before a plan is printed.
@@ -2086,9 +2142,9 @@ planned `free-baseline-no-product` mode is not an observed clean-workspace resul
 future execution can reuse the existing matrix runner, source checks, isolation validation,
 product-access preflight, integrity checks, and evidence handling. There is no alternate live
 entry point or bypass flag. Registration and a successful preview do not authorize a live session.
-The ops live wrapper still hardcodes the eight-cell `matrix8` campaign and needs a separate,
-reviewed adaptation before it can safely dispatch either canary. This patch does not claim live
-readiness or execute L1/L2. A single canary is not a balanced comparison: the unchanged benchmark
+Operational live-wrapper adaptation remains a separate, reviewed gate before any canary dispatch.
+This core registration does not claim live readiness or execute L1/L2. A single canary is not a
+balanced comparison: the unchanged benchmark
 eligibility rule excludes it, and its result must not be represented as a completed eight-cell
 campaign or pooled into that campaign.
 
@@ -2121,8 +2177,12 @@ runbooks.
 
 ## Explicit limitations
 
-- No full benchmark is executed by this PR; no performance claim is made — `run` itself is never
-  invoked against a live Claude session here, so this PR commits zero scenario-run evidence.
+- The harness itself makes no performance claim; each campaign's results and limitations live
+  with its evidence under `tools/runs/`.
+- Comments in this harness and in `docs/audits/` cite internal planning notes that are not part
+  of this repository (the eval-v2 `design.md`, the `evidence1-*-architecture-note.md` files, the
+  stabilization plan) and research hypothesis labels such as `H16`. The public design record is
+  each campaign's preregistration and evidence documents under `tools/runs/`.
 - Public-project scenarios only; no private project is referenced.
 - `candidate-skill` is schema-supported but not implemented.
 - All 6 originally-sketched scenarios now exist in `corpus/scenarios/`

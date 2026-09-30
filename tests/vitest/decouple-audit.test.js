@@ -74,6 +74,20 @@ describe('decouple-audit public rules', () => {
     expect(hits[0].class).toBe('device_serial');
   });
 
+  it('does not treat a public Microsoft KB identifier as a device serial', () => {
+    const dir = makeTmpDir();
+    const f = tmpFile(dir, 'servicing.json', '{"servicing_update":"KB5101684"}\n');
+    const hits = scanFile(f, 'servicing.json', AUDIT_PUBLIC_RULES);
+    expect(hits.filter(h => h.class === 'device_serial')).toHaveLength(0);
+  });
+
+  it('still catches a device serial beside a public Microsoft KB identifier', () => {
+    const dir = makeTmpDir();
+    const f = tmpFile(dir, 'mixed.txt', `KB5101684 device ${SERIAL_FIXTURE}\n`);
+    const hits = scanFile(f, 'mixed.txt', AUDIT_PUBLIC_RULES);
+    expect(hits.filter(h => h.class === 'device_serial')).toHaveLength(1);
+  });
+
   // ---------------------------------------------------------------------------
   // 2. Public rule catches real Windows and POSIX user paths
   // ---------------------------------------------------------------------------
@@ -194,6 +208,56 @@ describe('decouple-audit device_serial: EVIDENCE1 allowlist', () => {
     const deviceSerialRule = AUDIT_PUBLIC_RULES.find(r => r.class === 'device_serial');
     expect(lineHasUnallowedMatch('EVIDENCE1 only', deviceSerialRule)).toBe(false);
     expect(lineHasUnallowedMatch(`EVIDENCE1 and ${SYNTHETIC_SERIAL}`, deviceSerialRule)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// device_serial: excludeMatchRe (Microsoft KB identifiers) and allowTokens
+// (EVIDENCE1) live on the SAME rule object and must compose per match rather
+// than one clobbering the other. matchIsExempt (tools/decouple-audit.mjs)
+// exempts a matched token when it is EITHER an exact allowTokens member OR a
+// full excludeMatchRe match, decided independently for every token matchAll
+// finds on the line -- so a KB identifier and EVIDENCE1 can share a line with
+// each other (no real serial present) and still come back clean, while a
+// real serial-shaped token sharing a line with either exemption keeps
+// flagging (fail-closed, never widens into a line-level skip).
+// ---------------------------------------------------------------------------
+describe('decouple-audit device_serial: excludeMatchRe and allowTokens compose per match', () => {
+  const REAL_SERIAL = 'XZ9182' + '736K'; // device_serial shape, split at write time (see SERIAL_FIXTURE above)
+
+  it('(a) a line with only a KB identifier is clean', () => {
+    const dir = makeTmpDir();
+    const f = tmpFile(dir, 'a.md', 'Servicing update KB1234567 applied.\n');
+    const hits = scanFile(f, 'a.md', AUDIT_PUBLIC_RULES);
+    expect(hits.filter(h => h.class === 'device_serial')).toHaveLength(0);
+  });
+
+  it('(b) a KB identifier plus a real serial-shaped token on the same line still flags', () => {
+    const dir = makeTmpDir();
+    const f = tmpFile(dir, 'b.md', `KB1234567 applied, device ${REAL_SERIAL} attached\n`);
+    const hits = scanFile(f, 'b.md', AUDIT_PUBLIC_RULES);
+    expect(hits.filter(h => h.class === 'device_serial').length).toBeGreaterThan(0);
+  });
+
+  it('(c) a line with only EVIDENCE1 is clean', () => {
+    const dir = makeTmpDir();
+    const f = tmpFile(dir, 'c.md', 'See the EVIDENCE1 benchmark for details.\n');
+    const hits = scanFile(f, 'c.md', AUDIT_PUBLIC_RULES);
+    expect(hits.filter(h => h.class === 'device_serial')).toHaveLength(0);
+  });
+
+  it('(d) EVIDENCE1 plus a real serial-shaped token on the same line still flags', () => {
+    const dir = makeTmpDir();
+    const f = tmpFile(dir, 'd.md', `EVIDENCE1 benchmark, device ${REAL_SERIAL} attached\n`);
+    const hits = scanFile(f, 'd.md', AUDIT_PUBLIC_RULES);
+    expect(hits.filter(h => h.class === 'device_serial').length).toBeGreaterThan(0);
+  });
+
+  it('(e) a KB identifier plus EVIDENCE1 on the same line, with no real serial, is clean', () => {
+    const dir = makeTmpDir();
+    const f = tmpFile(dir, 'e.md', 'KB1234567 applied; see EVIDENCE1 benchmark for details.\n');
+    const hits = scanFile(f, 'e.md', AUDIT_PUBLIC_RULES);
+    expect(hits.filter(h => h.class === 'device_serial')).toHaveLength(0);
   });
 });
 
@@ -511,6 +575,56 @@ describe('lineHasUnallowedMatch: non-global regex + allowTokens safety', () => {
 // ---------------------------------------------------------------------------
 // 15. Importing the module does NOT execute main (entry-point guard)
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// user_path_win: excludeMatchRe exempts 3 specific, known-non-private path segments this rule's
+// shape otherwise catches (a guest-VM service account, the standard Windows shared profile, and a
+// deliberate redaction-machinery test fixture) -- anchored to the WHOLE matched token exactly like
+// device_serial's own excludeMatchRe, so a real-looking user path (or a username merely starting
+// with an exempt segment) still flags.
+// ---------------------------------------------------------------------------
+describe('decouple-audit user_path_win: excludeMatchRe exempts known-non-private segments', () => {
+  it('does not flag the guest-VM service account path (Evidence1E2E)', () => {
+    const dir = makeTmpDir();
+    const f = tmpFile(dir, 'a.ps1', String.raw`$startup = 'C:\Users\Evidence1E2E\AppData\Roaming\Startup\x.vbs'` + '\n');
+    const hits = scanFile(f, 'a.ps1', AUDIT_PUBLIC_RULES);
+    expect(hits.filter(h => h.class === 'user_path_win')).toHaveLength(0);
+  });
+
+  it('does not flag the standard Windows shared profile path (Public)', () => {
+    const dir = makeTmpDir();
+    const f = tmpFile(dir, 'b.ps1', String.raw`$manifest.output_roots.public = 'C:\Users\Public\evidence'` + '\n');
+    const hits = scanFile(f, 'b.ps1', AUDIT_PUBLIC_RULES);
+    expect(hits.filter(h => h.class === 'user_path_win')).toHaveLength(0);
+  });
+
+  it('does not flag the redaction-machinery test fixture path (SomeRealUser)', () => {
+    const dir = makeTmpDir();
+    const f = tmpFile(dir, 'c.ps1', String.raw`$leakyPath = 'C:\Users\SomeRealUser\AppData\Local\leaked-secret-looking-path\node.exe'` + '\n');
+    const hits = scanFile(f, 'c.ps1', AUDIT_PUBLIC_RULES);
+    expect(hits.filter(h => h.class === 'user_path_win')).toHaveLength(0);
+  });
+
+  it('still flags a real-looking user path that is not one of the 3 exempt segments', () => {
+    // Split at write time (see SERIAL_FIXTURE above) -- an unsplit literal here would itself be a
+    // real user_path_win-shaped match in THIS file's own committed source.
+    const notExemptUser = 'john' + 'doe';
+    const dir = makeTmpDir();
+    const f = tmpFile(dir, 'd.ps1', `$home = 'C:\\Users\\${notExemptUser}\\AppData\\Local\\secrets.json'` + '\n');
+    const hits = scanFile(f, 'd.ps1', AUDIT_PUBLIC_RULES);
+    expect(hits.filter(h => h.class === 'user_path_win')).toHaveLength(1);
+  });
+
+  it('still flags a username that only STARTS WITH an exempt segment (anchored, not a prefix match)', () => {
+    // Split at write time (see SERIAL_FIXTURE above) -- an unsplit literal here would itself be a
+    // real user_path_win-shaped match in THIS file's own committed source.
+    const imposterUser = 'Evidence1E2E' + 'Imposter';
+    const dir = makeTmpDir();
+    const f = tmpFile(dir, 'e.ps1', `$home = 'C:\\Users\\${imposterUser}\\AppData\\Local\\secrets.json'` + '\n');
+    const hits = scanFile(f, 'e.ps1', AUDIT_PUBLIC_RULES);
+    expect(hits.filter(h => h.class === 'user_path_win')).toHaveLength(1);
+  });
+});
+
 describe('module import guard', () => {
   it('importing decouple-audit.mjs exports functions without side effects', async () => {
     // The import at the top of this file already triggered the module load.

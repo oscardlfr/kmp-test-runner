@@ -111,32 +111,19 @@
   `missing` contexts are listed when `release-gate.mjs poll-checks` times out; a context stuck at
   verdict `wait` (a real check-run that exists but never concluded) isn't named either, only
   implied by the generic "Timed out..." line.
-- **Agentic eval v2 — design phase underway** (started 2026-09-29, directed by the auditor under a
-  direct, separate user authorization; successor to the closed Evidence1 benchmark). The published
-  Evidence1 result (`tools/runs/evidence1-agentic-benchmark-2026-09-28/`) is descriptive and
-  bounded by its own threats-to-validity list; v2's design targets exactly those gaps before any
-  live session: more scenarios including held-out ones (Evidence1 had one, tagged `train`);
-  reasoning effort pinned and recorded per runtime; per-cell records of argv, executed commands,
-  env key set and delivered-prompt hash; a hash of the treatment text (skill snapshot) each cell
-  actually received; isolation (no scenario answer, preregistration or harness checkout readable
-  from the guest, no skill snapshot or `kmp-test` shim on free-arm cells); command recording
-  complete enough to rule out answer-reading; a command classifier recognizing free-arm Gradle
-  invocations for every runtime (Codex's free arm recorded `gradle_count: 0` in Evidence1); an
-  unambiguous answer protocol for `total` (unique tests vs task executions); a powered n with full
-  within-round counterbalancing and recorded per-cell truncation caps.
-- **19 tracked files starting with `#!` have no `.gitattributes` LF pin** — surfaced by #533's
-  hosted-CI failure (vitest couldn't import a CRLF shebang module after a Windows checkout).
-  Unpinned: `bin/kmp-test.js` (the published npm CLI entry point itself), `gradle-plugin/gradlew`,
-  7 `tests/fixtures/*/gradlew` wrappers (`build-logic-convention-jacoco`, `build-logic-noise-jacoco`,
-  `build-logic-selective-jacoco`, `build-logic-self-jacoco`, `kmp-with-js`, `root-convention-jacoco`,
-  `version-catalog-alias-plugins`), 2 PowerShell scripts (`scripts/ps1/run-parallel-coverage-suite.ps1`,
-  `tests/installer/Install.Tests.ps1`), `tools/check-bundle-size.mjs`, `tools/wet-audit-v0.9.mjs`,
-  5 `tools/wide-smoke-pass-{7,8,9,9-mac,10}.mjs` scripts, and
-  `tools/runs/agentic-usage-benchmark-v2-2026-07-17/harness.mjs`. Every other shebang file already
-  carries an explicit `eol=lf` pin (or, for `.bat`-paired wrappers, a deliberate `eol=crlf`). Needs
-  both the `.gitattributes` pins and a run of the local-ci Windows lane on a fresh
-  `core.autocrlf=true` clone — the bug only manifests after a real checkout conversion, not in an
-  already-LF working tree.
+- **Agentic eval v2 — status: in progress** (started 2026-09-29; successor to the closed Evidence1
+  benchmark). Tonight's actual scope: re-measure the same anchor scenario
+  (`coverage-threshold-failure-v2`) under closed controls — isolation (no scenario answer,
+  preregistration or harness checkout readable from the guest; no skill snapshot or `kmp-test`
+  shim on free-arm cells), per-cell records of argv, executed commands, env key set and
+  delivered-prompt hash, a hash of the treatment text (skill snapshot) each cell actually
+  received, command recording complete enough to rule out answer-reading, a command classifier
+  recognizing free-arm Gradle invocations for every runtime (Codex's free arm recorded
+  `gradle_count: 0` in Evidence1), reasoning effort pinned and recorded per runtime, and an
+  unambiguous answer protocol for `total` (unique tests vs task executions). n=4 is descriptive,
+  not a powered sample. Held-out scenarios move to v2.1: the guest's offline Gradle seed lacks
+  `:core:common`'s test dependencies, so a held-out scenario needing that module can't run
+  isolated yet.
 - 🔍 **Machine-check the `squash_merge_commit_title=PR_TITLE` repository setting** — documented as
   an invariant in `CONTRIBUTING.md` and `.claude/rules/docs-ci-release.md`, but not verified by CI.
   A check in `tools/validate-required-checks.mjs --check-drift` was drafted and dropped before
@@ -3467,6 +3454,168 @@ All five gaps shipped in v0.5.2 (PRs #63 / #64 / #65 / #66 / #67). One scope red
 ---
 
 ## QUEUED — post-v0.3.4 ideas (newest first)
+
+### ✅ DONE 2026-09-30 (PR #537) — Evidence1 Pester files read sources through a hardcoded main-checkout path
+
+Surfaced and fixed in the same closing pass: the first hosted CI run on the published harness
+failed on exactly this, so the fix landed before merge. All 6 files under `tests/pester/`
+(`Evidence1-Guest-Disk-Cleanup-Bundle`, `Evidence1-Guest-Disk-Inventory-Bundle`,
+`Evidence1-Hyperv-Inspect-Vhd-Chain-Direct`, `Evidence1-Hyperv-Stat-Guest-File-Direct`,
+`Evidence1-Run-Disk-Space-Guards`, `Evidence1-Run-Full-Campaign-Integration`) now derive every
+source path from `$PSScriptRoot`, the idiom their sibling files already used, so the suite runs
+from any checkout location. The one literal left, `harness_dir` in the full-campaign integration
+test's synthetic manifest, is input data naming the harness's canonical path, not a source read.
+
+---
+
+### 💡 IDEA — Define count-field ground truth independently of the product's own counting convention
+
+**Status: IDEA, no CLI milestone.** Surfaced 2026-09-30 auditing Evidence2's campaign
+`48458826-2386-4e4d-a93f-01641f44253c`: the `coverage-threshold-failure-v2` scenario's target module
+(`:core:domain`) has exactly 2 `@Test` methods, which run in 2 Gradle build variants
+(`testDemoDebugUnitTest`, `testProdDebugUnitTest`), for 4 total test executions. D5's grading checks
+the agent-reported `test_count` field against kmp-test's own `individual_total` field (which counts
+executions, i.e. 4), while the scenario prompt asks for "the number of individual test methods that
+ran" -- wording a reader can equally reasonably parse as the count of distinct methods (2). All 8
+free-arm sessions in that campaign (both runtimes) reported `test_count`/`passed` as 2, a defensible
+reading of the prompt under that ambiguity, not a wrong answer -- see the evidence doc's own
+"Full-answer match: why the gap is definitional" section for the full per-field breakdown. The
+product arm never hits this ambiguity because a kmp-test invocation hands the agent `test_count`
+directly, already resolved to the product's own convention.
+
+**Proposal:** for any future scenario whose ground truth includes a count field, define that field's
+expected value independently of which counting convention (distinct test methods vs. total
+executions across build variants) the product under measurement happens to use -- either by making
+the prompt's wording unambiguous about which quantity is being asked for, or by grading against a
+field that cannot be read either way.
+
+**Why captured here:** the ambiguity is in the scenario/grading design, not any one campaign's data;
+worth fixing once for every future scenario that counts test methods, rather than re-discovering it
+per campaign.
+
+---
+
+### 💡 IDEA — Pin Codex CLI 0.154.0 in approved-inputs v3 and profile e2e-v2
+
+**Status: IDEA, no CLI milestone.** The live campaign launch path pins Codex CLI 0.154.0
+(`evidence1-dual-condition-canary-launch.ps1:330`), but the base provisioning profile's
+approved-inputs (v1/v2, both `codex-01534-e2e`) record the VM's original provisioning at 0.153.4.
+They are historical and must stay as they are. The current VM reached 0.154.0 through a one-off
+in-place upgrade (`evidence1-hyperv-upgrade-canonical-codex-cli-direct.ps1`), and no committed
+builder exists yet for that upgrade's required input. The gap is documented in
+`tools/evidence1/provisioning/README.md` under "Known base-vs-launch gap" and is drift-guarded by
+`tests/pester/Evidence1-Codex-Provisioning-Launch-Pin-Drift-Guard.Tests.ps1`.
+
+**Proposal — two gaps to close:**
+- **(a) A committed, deterministic builder for the upgrade script's layout artifact**, built from
+  the official npm package. It must produce these `$requiredRelativeFiles`: `codex-package.json`,
+  `bin\codex-code-mode-host.exe`, `bin\codex.exe`, `codex-path\rg.exe`,
+  `codex-resources\codex-command-runner.exe`, `codex-resources\codex-windows-sandbox-setup.exe`.
+  Codex has never gone through `evidence1-normalize-toolchain-archive.ps1`: its RuntimeId
+  ValidateSet excludes codex-cli. Extending that normalizer versus writing a dedicated script is
+  still an open choice.
+- **(b) approved-inputs v3 plus profile e2e-v2**, pinning codex-cli 0.154.0 as a base input, so a
+  fresh VM reaches the launch-pinned version directly.
+
+Verified facts to reuse (independently confirmed 2026-09-30): base identity is the raw signed
+single-exe (sha256 `be96b992178b1e467c225800da0d65f2c86d5eba1ef0b14632f65db381cbdfde`, 298169136
+bytes, Authenticode Valid, signer `CN="OpenAI OpCo, LLC"`, `--version` prints `codex-cli 0.154.0`);
+the `sources[]` entry is URI
+`https://registry.npmjs.org/@openai/codex/-/codex-0.154.0-win32-x64.tgz`, sha512-sri
+`sha512-Stg2KEJPIKVqPPR1wCverGOR4ey3RR3cvakR07w7FNKQUMzmHaOZomRsP2bR1qOT/67yHsks9rB+MCMfIWXcRA==`,
+142162836 bytes, from a fresh fetch whose sha512 matched the package-lock integrity; the
+upgrade-input artifact for gap (a) only, `codex-0.154.0-win32-x64-official-layout.zip` (hand-built),
+is sha256 `c19f977dcec5a9a85274a713a5fe9c49f6e8b6f49822f70ccabbbbb02745b4d7`, 143601799 bytes.
+
+**Why captured here:** verified facts collected 2026-09-30 while auditing the closing publication;
+captured so the two gaps can be implemented from these facts directly instead of re-deriving them.
+
+---
+
+### 💡 IDEA — Publication-hardening P1 follow-ups (parked as text, not implemented)
+
+**Status: IDEA, no CLI milestone.** Publication-hardening P0 items shipped 2026-09-30 (`137a05e`
+broker↔HEAD coherence guard, `d0b7d79`+`61b27a6` pre-registered `round_order` guard, `48bff5c`
+codex base-vs-launch provisioning-gap documentation, `bd2cbdb` principled VmReady disk guard
+replacing the flat 15GiB floor, `b93ce00` failure-safe-closure read-only evidence recovery). The
+follow-up items below were parked here as text, unimplemented, so this slot could move straight to
+the post-campaign `#537` publication work instead.
+
+**Proposal:**
+- `AutomaticStopAction=ShutDown` closed-VM script + provisioning parity + a drift check — today
+  nothing asserts the E2E VM's own `AutomaticStopAction` matches what provisioning intends to set
+  it to, so a manual VM edit or a provisioning-script change could silently drift from what
+  `Get-E1RunVmReadyRequiredDiskBytes` assumes when deciding whether a Save-state memory reservation
+  applies.
+- The guest disk cleanup bundle (`evidence1-guest-bundle-contract.psm1`) records success/failure
+  per cleanup entry but not a reason for a failed entry — worth adding for the same "evidence over
+  assumption" reason Amendment A6 already established for host disk accounting.
+- A guest directory-listing capability (GUID campaign-id param, returns per-entry mtimes; the
+  standalone `evidence1-hyperv-list-guest-directory-direct.ps1` script already exists at `1143968`
+  but is not wired into the broker-capability/queue-client dispatch path `evidence1-run.ps1`'s real
+  backend actually uses) plus a new `agentic-eval-incident-raw-transcript` copy spec keyed by a
+  discovered `JournalId` — the failure-safe closure's own tier-2 best-effort fallback explicitly
+  could not use this (no way to discover an in-flight cell's own JournalId without first listing
+  the guest directory; see `Invoke-E1RunFailureSafeEvidenceCopyAttempt`'s own header comment in
+  `evidence1-run.ps1`). Building this would let the failure-safe closure recover the still-failing
+  cell's own raw, not-yet-recorded journal too, not just already-completed sibling cells'
+  record/audit pairs.
+- Basename matching for `kmp-test` (absolute path, `.cmd` extension) in `classifyBashCommand`
+  (`tools/agentic-eval/command-classify.mjs`) — mirrors the same basename-not-token-set fix already
+  shipped for `gradlew` this round (`3a74db7`, `GRADLEW_TOKEN_RE`), not yet applied to the
+  `kmp-test` classifier.
+- AuthReady records a content-minimal `claude_oauth_expires_in_seconds` (computed in-guest; the
+  token itself never leaves the guest and is never recorded anywhere) — observability only, no
+  gate-behavior change.
+- Guest `C:` free space recorded in the LiveAuthorized and Closed receipts — extends the host-side
+  `C:` free-space accounting this round's own receipts already carry (the disk guard above,
+  EvidenceCopied's own accounting) to the guest side too.
+
+**Why captured here:** parked 2026-09-30 so this slot doesn't get silently dropped once the
+post-campaign publication work lands; each item cites its own concrete gap and fix shape so it
+stays independently actionable later.
+
+---
+
+### 💡 IDEA — Elevated runner's canonical self-install path is a code literal, not install-time config
+
+**Status: IDEA, no CLI milestone.** Surfaced during the harness publication dry run (2026-09-29): `evidence1-host-elevated-runner.ps1`'s `Assert-E1SelfInstallRunnerArguments` hardcodes its own trusted `-AllowedRoot`/`-RunnerPath` comparison value as a literal (`$canonicalAudits`, currently the checkout's absolute path). This is deliberate — it pins the ONE trusted self-install location so a copied/relocated runner can't self-validate against wherever it currently sits — but it also means any OTHER host that legitimately wants to deploy this broker (a different machine, a different checkout root) has to edit the script itself to change it, rather than setting an install-time value.
+
+**Proposal:** make the canonical path an admin-owned configuration value set at install time (e.g. written by `evidence1-install.ps1` into a protected config file or registry value the elevated runner reads at dispatch time), instead of a literal baked into the script. Document the new install-time step in the runner's own README/install docs.
+
+**Why captured here:** found in passing while validating a security-relevant `$PSScriptRoot`-vs-literal question for the harness publication; out of scope for that publication itself (no test currently exercises a second-host install), but worth a deliberate look.
+
+---
+
+### 💡 IDEA — Host/VM layout roots (`C:\kmp-eval`, `C:\Evidence1Toolchain`, `C:\Evidence1Private`) are hardcoded literals, not configurable
+
+**Status: IDEA, no CLI milestone.** Surfaced during the harness publication dry run (2026-09-29): the Evidence1 harness hardcodes 3 machine-root paths throughout `docs/audits/*.ps1` as literal `C:\...` constants. An earlier pass in this same publication attempted genericizing them to `$env:KMP_EVAL_ROOT`/`$env:EVIDENCE1_TOOLCHAIN_ROOT`/`$env:EVIDENCE1_PRIVATE_ROOT` — reverted, because a meaningful fraction of this code runs INSIDE the guest VM via PowerShell remoting, where an env-var substitution resolves in the guest session (which doesn't have these vars set) and silently breaks rather than failing loudly.
+
+**Proposal:** a real fix needs to distinguish HOST-side code (where env-var/config-file substitution is safe) from GUEST-side code (where the value must already be resolved before crossing the remoting boundary, e.g. baked into the remoting command's own arguments rather than read from env at the far end) — not a blanket find/replace. Worth a dedicated design pass rather than a mechanical genericization.
+
+**Why captured here:** any host other than the original development machine currently can't run this harness without hand-editing dozens of literal path occurrences.
+
+---
+
+### 💡 IDEA — Broader genericization sweep of legacy `docs/audits/` content
+
+**Status: IDEA, no CLI milestone.** The harness publication (2026-09-29) genericized the account identifier in exactly 5 files (the 4 originally-identified auth/account-mapping scripts, plus `evidence1-hyperv-verify-guest-dual-auth-direct.ps1`, found only because a newly-published test exercised it) — each found individually, via a specific failing test or an explicit account-identifier sweep of files entering PUBLISH, not via an exhaustive audit of the whole `docs/audits/` tree. The publication's own scope (which files are PUBLISH vs still-EXCLUDE) is now settled, but nothing has swept the full published tree end-to-end asking "does ANY file here still hardcode an identity, host-specific detail, or other value that should be a parameter/config instead" independent of whether a current test happens to exercise it.
+
+**Proposal:** a dedicated pass over the full published `docs/audits/` tree (now stable post-publication) specifically hunting for this class of issue, rather than relying on test coverage to surface each instance one at a time.
+
+**Why captured here:** the pattern (a hardcoded value that "happens" to work because no test currently checks it) already produced one real gap this session (the `evidence1-hyperv-verify-guest-dual-auth-direct.ps1` account check) — worth checking there isn't a second one nothing has exercised yet.
+
+---
+
+### 💡 IDEA — Documentation restructure (re-derive closed draft #520 against current develop)
+
+**Status: IDEA, no CLI milestone.** The closed draft #520 (branch `codex/docs-evidence1-audit`, kept for reference) proposed splitting `docs/usage.md` / `docs/installation.md` / `docs/cli-reference.md` / `docs/gradle-plugin.md` out of the README, plus documentation guard tests (`documentation-links`, `documentation-help-contract`). It went stale against #533 and 0.15.x.
+
+**Proposal:** rebuild it on current develop, keeping `AGENTS.md`'s sources of truth intact (`package.json` owns version/scripts, `README.md` owns the current CLI/Gradle/installer surface, `PRODUCT.md` owns principles/architecture) — the restructure should relocate content, not create a second source of truth for anything `AGENTS.md` already assigns.
+
+**Why captured here:** surfaced during the harness publication dry run (2026-09-29).
+
+---
 
 ### ✅ DONE 2026-06-07 — `.gitattributes` LF-pin gap on `scripts/*.sh` + `scripts/sh/**/*.sh` (surfaced 2026-05-25 during cross-platform parity audit)
 

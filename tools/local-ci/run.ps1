@@ -36,7 +36,9 @@ if ($Lane -in @('All', 'Linux', 'LinuxNode24', 'LinuxNode18')) {
 }
 
 if ($Lane -in @('All', 'Windows')) {
-    & (Join-Path $PSScriptRoot 'windows-gate.ps1') -RepoRoot $RepoRoot
+    Invoke-Checked -Command {
+        & (Join-Path $PSScriptRoot 'windows-gate.ps1') -RepoRoot $RepoRoot
+    } -Description 'Windows gate'
 }
 
 Write-Host "[local-ci] requested lane '$Lane' passed" -ForegroundColor Green

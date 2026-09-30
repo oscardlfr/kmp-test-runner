@@ -65,6 +65,7 @@ const ALLOWED_IMPORTERS_OF_RUNTIME_ONLY_MODULES = new Set([
   'condition-launcher.mjs', // imports env-builder.mjs
   'auth-preflight.mjs', // imports condition-launcher.mjs
   'runtimes/claude-code.mjs', // the sole new consumer -- now walked at its real nested path
+  'runtimes/codex-cli.mjs', // shares only the neutral launcher/env primitives
 ]);
 
 // Post-review hardening (round 3): the prior version matched only 3 literal patterns (./x, ../x,
@@ -300,7 +301,7 @@ describe('boundary -- no direct provider-native key access in a core consumer', 
   }
 });
 
-describe('boundary -- no anticipated FUTURE-runtime scaffolding exists yet (Codex/Copilot/Antigravity adapters, --provider)', () => {
+describe('boundary -- no unimplemented FUTURE-runtime scaffolding exists yet (Copilot/Antigravity adapters, --provider)', () => {
   // Scoped to actual code constructs (import specifiers, id string literals, class/adapter
   // names), never a blanket word-boundary sweep -- this codebase's own comments legitimately
   // reference "Codex" as the code-review tool used on past PRs (see cli.mjs's "post-Codex-audit
@@ -317,7 +318,6 @@ describe('boundary -- no anticipated FUTURE-runtime scaffolding exists yet (Code
   const forbiddenAcrossAll = [
     { label: 'a runtime-selector switch/if', re: /runtime\s*===\s*['"]claude-code['"]/ },
     { label: 'a --provider CLI flag', re: /--provider\b/ },
-    { label: 'a Codex runtime adapter construct', re: /codex-code\.mjs|runtimes\/codex|CodexRuntimeAdapter|id:\s*['"]codex['"]/i },
     { label: 'a Copilot runtime adapter construct', re: /copilot-code\.mjs|runtimes\/copilot|CopilotRuntimeAdapter|id:\s*['"]copilot['"]/i },
     { label: 'an Antigravity runtime adapter construct', re: /antigravity-code\.mjs|runtimes\/antigravity|AntigravityRuntimeAdapter|id:\s*['"]antigravity['"]/i },
   ];
@@ -356,12 +356,12 @@ describe('boundary -- sandboxed-unrestricted-v1 is now a real, non-default execu
     expect(unrestricted.enabled).toBe(true);
     expect(unrestricted.default).toBe(false);
   });
-  it('sandboxed-unrestricted-v1 requires an isolation attestation and is claude-code only', () => {
+  it('sandboxed-unrestricted-v1 requires an isolation attestation and supports both real adapters', () => {
     const json = JSON.parse(read(join('execution-profiles', 'registry.json')));
     const unrestricted = json.execution_profiles.find((p) => p.id === 'sandboxed-unrestricted-v1');
     expect(unrestricted.isolation_attestation_required).toBe(true);
     expect(unrestricted.policy_mode).toBe('not_applicable');
-    expect(unrestricted.supported_runtime_ids).toEqual(['claude-code']);
+    expect(unrestricted.supported_runtime_ids).toEqual(['claude-code', 'codex-cli']);
   });
 });
 

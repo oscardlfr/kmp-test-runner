@@ -97,11 +97,24 @@ function Get-Evidence1PinnedClaudeVersion {
     return $match.Groups['version'].Value
 }
 
+function Get-Evidence1PinnedCodexVersion {
+    param(
+        [Parameter(Mandatory = $true)][string]$Value,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    $match = [regex]::Match($Value, '^\s*(?:codex-cli\s+)?(?<version>\d+\.\d+\.\d+)\s*$')
+    if (-not $match.Success) {
+        throw "$Label is not a recognized Codex CLI version"
+    }
+    return $match.Groups['version'].Value
+}
+
 function Assert-Evidence1FreshTimestamp {
     param(
         [Parameter(Mandatory = $true)][DateTime]$TimestampUtc,
         [Parameter(Mandatory = $true)][DateTime]$NowUtc,
-        [Parameter(Mandatory = $true)][int]$MaxAgeMinutes,
+        [Parameter(Mandatory = $true)][ValidateRange(1, 10080)][int]$MaxAgeMinutes,
         [Parameter(Mandatory = $true)][string]$Label
     )
 
@@ -115,6 +128,418 @@ function Assert-Evidence1FreshTimestamp {
     return [Math]::Max(0, [int][Math]::Floor($age.TotalSeconds))
 }
 
+function Assert-Evidence1DualRemoteAuthCanary {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]$Canary,
+        [Parameter(Mandatory = $true)][string]$ExpectedClaudeVersion,
+        [Parameter(Mandatory = $true)][string]$ExpectedCodexVersion,
+        [Parameter(Mandatory = $true)][string]$ExpectedVMName,
+        [Parameter(Mandatory = $true)][string]$ExpectedVMId,
+        [string]$ExpectedCodexModel = 'gpt-5.6-terra',
+        [string]$ExpectedClaudeModel = 'claude-sonnet-5',
+        [string]$ExpectedHostReadinessSha256 = '',
+        [string]$ExpectedGuestReadinessSha256 = '',
+        [DateTime]$NowUtc = [DateTime]::UtcNow,
+        [ValidateRange(1, 10080)][int]$MaxAgeMinutes = 30,
+        [DateTime]$NotBeforeUtc = [DateTime]::MinValue
+    )
+
+    Assert-Evidence1ExactKeys $Canary @(
+        'schema','state','operation_id','completed_at_utc','context','authorization_scope',
+        'providers','credential_override_names','privacy'
+    ) 'dual remote auth canary'
+    $operationId = [guid]::Empty
+    $operationText = [string](Get-Evidence1Property $Canary 'operation_id' 'dual remote auth canary')
+    if (-not [guid]::TryParseExact($operationText, 'D', [ref]$operationId) -or
+        $operationId -eq [guid]::Empty -or $operationText -cne $operationId.ToString('D')) {
+        throw 'dual remote auth canary operation id is invalid'
+    }
+    $schema = Get-Evidence1Property $Canary 'schema' 'dual remote auth canary'
+    if (($schema -isnot [int] -and $schema -isnot [long]) -or [long]$schema -notin @(2, 3)) {
+        throw 'dual remote auth canary.schema has an invalid integer'
+    }
+    $context = Get-Evidence1Property $Canary 'context' 'dual remote auth canary'
+    $contextKeys = @(
+        'vm_name','vm_id','codex_model','host_readiness_sha256','host_readiness_generated_at_utc',
+        'guest_readiness_sha256','guest_readiness_generated_at_utc'
+    )
+    if ([int]$schema -eq 3) { $contextKeys += @('claude_model','campaign_kind') }
+    Assert-Evidence1ExactKeys $context $contextKeys 'dual remote auth canary.context'
+    if ([string](Get-Evidence1Property $context 'vm_name' 'dual remote auth canary.context') -cne $ExpectedVMName -or
+        [string](Get-Evidence1Property $context 'vm_id' 'dual remote auth canary.context') -cne $ExpectedVMId) {
+        throw 'dual remote auth canary E2E VM binding mismatch'
+    }
+    if ([string](Get-Evidence1Property $context 'codex_model' 'dual remote auth canary.context') -cne $ExpectedCodexModel) {
+        throw 'dual remote auth canary Codex model mismatch'
+    }
+    if ([int]$schema -eq 3 -and
+        ([string](Get-Evidence1Property $context 'claude_model' 'dual remote auth canary.context') -cne $ExpectedClaudeModel -or
+         [string](Get-Evidence1Property $context 'campaign_kind' 'dual remote auth canary.context') -cne 'paired-model-availability-canary')) {
+        throw 'dual remote auth canary Claude model pair mismatch'
+    }
+    $hostReadinessSha = [string](Get-Evidence1Property $context 'host_readiness_sha256' 'dual remote auth canary.context')
+    $guestReadinessSha = [string](Get-Evidence1Property $context 'guest_readiness_sha256' 'dual remote auth canary.context')
+    foreach ($sha in @($hostReadinessSha, $guestReadinessSha)) {
+        if ($sha -cnotmatch '^[a-f0-9]{64}$') { throw 'dual remote auth canary readiness hash is invalid' }
+    }
+    if ($ExpectedHostReadinessSha256 -and $hostReadinessSha -cne $ExpectedHostReadinessSha256) {
+        throw 'dual remote auth canary host readiness hash mismatch'
+    }
+    if ($ExpectedGuestReadinessSha256 -and $guestReadinessSha -cne $ExpectedGuestReadinessSha256) {
+        throw 'dual remote auth canary guest readiness hash mismatch'
+    }
+    $hostReadinessAt = ConvertFrom-Evidence1UtcTimestamp `
+        ([string](Get-Evidence1Property $context 'host_readiness_generated_at_utc' 'dual remote auth canary.context')) `
+        'dual remote auth canary host readiness timestamp'
+    $guestReadinessAt = ConvertFrom-Evidence1UtcTimestamp `
+        ([string](Get-Evidence1Property $context 'guest_readiness_generated_at_utc' 'dual remote auth canary.context')) `
+        'dual remote auth canary guest readiness timestamp'
+    $effectiveNotBefore = $NotBeforeUtc.ToUniversalTime()
+    foreach ($timestamp in @($hostReadinessAt, $guestReadinessAt)) {
+        if ($timestamp -gt $effectiveNotBefore) { $effectiveNotBefore = $timestamp }
+    }
+
+    if ((Get-Evidence1Property $Canary 'state' 'dual remote auth canary') -ne 'passed') {
+        throw 'dual remote auth canary did not pass'
+    }
+    Assert-Evidence1NoValues `
+        (Get-Evidence1Property $Canary 'credential_override_names' 'dual remote auth canary') `
+        'dual remote auth canary credential overrides'
+
+    $scope = Get-Evidence1Property $Canary 'authorization_scope' 'dual remote auth canary'
+    Assert-Evidence1ExactKeys $scope @(
+        'authorized_sessions','claimed_sessions','dispatched_sessions','providers','retry_count','replacement_count','respawn_count'
+    ) 'dual remote auth canary.authorization_scope'
+    foreach ($field in @('authorized_sessions', 'claimed_sessions', 'dispatched_sessions')) {
+        Assert-Evidence1ExactInteger `
+            (Get-Evidence1Property $scope $field 'dual remote auth canary.authorization_scope') `
+            2 "dual remote auth canary.authorization_scope.$field"
+    }
+    foreach ($field in @('retry_count', 'replacement_count', 'respawn_count')) {
+        Assert-Evidence1ExactInteger `
+            (Get-Evidence1Property $scope $field 'dual remote auth canary.authorization_scope') `
+            0 "dual remote auth canary.authorization_scope.$field"
+    }
+    $authorizedProviders = @(Get-Evidence1Property $scope 'providers' 'dual remote auth canary.authorization_scope')
+    if ($authorizedProviders.Count -ne 2 -or $authorizedProviders[0] -cne 'claude-code' -or $authorizedProviders[1] -cne 'codex-cli') {
+        throw 'dual remote auth canary authorized provider order mismatch'
+    }
+
+    $providers = @(Get-Evidence1Property $Canary 'providers' 'dual remote auth canary')
+    if ($providers.Count -ne 2) { throw 'dual remote auth canary must contain exactly two provider records' }
+    if ([string](Get-Evidence1Property $providers[0] 'runtime_id' 'dual provider 0') -cne 'claude-code' -or
+        [string](Get-Evidence1Property $providers[1] 'runtime_id' 'dual provider 1') -cne 'codex-cli') {
+        throw 'dual remote auth canary provider dispatch order mismatch'
+    }
+    $claude = @($providers | Where-Object { [string](Get-Evidence1Property $_ 'runtime_id' 'dual provider') -ceq 'claude-code' })
+    $codex = @($providers | Where-Object { [string](Get-Evidence1Property $_ 'runtime_id' 'dual provider') -ceq 'codex-cli' })
+    if ($claude.Count -ne 1 -or $codex.Count -ne 1) {
+        throw 'dual remote auth canary provider set mismatch'
+    }
+    $claude = $claude[0]
+    $codex = $codex[0]
+
+    $commonProviderKeys = @(
+        'runtime_id','dispatch_ordinal','state','claimed_at_utc','completed_at_utc','elapsed_milliseconds','cli_version',
+        'local_auth_status_exit_code','process_started','process_exit_code','timed_out','process_tree_cleanup_confirmed','reason_code',
+        'event_type_counts','parse_error_count','agent_message_count','response_matched','tool_invocation_count',
+        'tools_disabled','tool_observation','http_statuses','http_status_reason','terminal','credential_override_names','privacy'
+    )
+    $claudeProviderKeys = $commonProviderKeys
+    if ([int]$schema -eq 3) { $claudeProviderKeys += @('model','model_resolved') }
+    Assert-Evidence1ExactKeys $claude $claudeProviderKeys 'dual provider claude-code'
+    Assert-Evidence1ExactKeys $codex ($commonProviderKeys + @('model')) 'dual provider codex-cli'
+    if ([string](Get-Evidence1Property $codex 'model' 'dual provider codex-cli') -cne $ExpectedCodexModel) {
+        throw 'dual provider Codex model mismatch'
+    }
+    if ([int]$schema -eq 3 -and
+        ([string](Get-Evidence1Property $claude 'model' 'dual provider claude-code') -cne $ExpectedClaudeModel -or
+         [string](Get-Evidence1Property $claude 'model_resolved' 'dual provider claude-code') -cne $ExpectedClaudeModel)) {
+        throw 'dual provider Claude model mismatch'
+    }
+
+    $expectedClaudeCanonical = Get-Evidence1PinnedClaudeVersion $ExpectedClaudeVersion 'expected Claude version'
+    $actualClaudeCanonical = Get-Evidence1PinnedClaudeVersion `
+        ([string](Get-Evidence1Property $claude 'cli_version' 'dual provider claude-code')) `
+        'dual provider Claude version'
+    if ($actualClaudeCanonical -ne $expectedClaudeCanonical) { throw 'dual provider Claude version mismatch' }
+    $expectedCodexCanonical = Get-Evidence1PinnedCodexVersion $ExpectedCodexVersion 'expected Codex version'
+    $actualCodexCanonical = Get-Evidence1PinnedCodexVersion `
+        ([string](Get-Evidence1Property $codex 'cli_version' 'dual provider codex-cli')) `
+        'dual provider Codex version'
+    if ($actualCodexCanonical -ne $expectedCodexCanonical) { throw 'dual provider Codex version mismatch' }
+
+    foreach ($provider in @($claude, $codex)) {
+        $runtimeId = [string](Get-Evidence1Property $provider 'runtime_id' 'dual provider')
+        if ((Get-Evidence1Property $provider 'state' "dual provider $runtimeId") -ne 'passed') {
+            throw "dual provider $runtimeId did not pass"
+        }
+        foreach ($field in @('local_auth_status_exit_code', 'process_exit_code', 'parse_error_count', 'tool_invocation_count')) {
+            Assert-Evidence1ExactInteger `
+                (Get-Evidence1Property $provider $field "dual provider $runtimeId") `
+                0 "dual provider $runtimeId.$field"
+        }
+        Assert-Evidence1ExactInteger `
+            (Get-Evidence1Property $provider 'agent_message_count' "dual provider $runtimeId") `
+            1 "dual provider $runtimeId.agent_message_count"
+        Assert-Evidence1ExactBoolean `
+            (Get-Evidence1Property $provider 'response_matched' "dual provider $runtimeId") `
+            $true "dual provider $runtimeId.response_matched"
+        Assert-Evidence1ExactBoolean `
+            (Get-Evidence1Property $provider 'process_started' "dual provider $runtimeId") `
+            $true "dual provider $runtimeId.process_started"
+        Assert-Evidence1ExactBoolean `
+            (Get-Evidence1Property $provider 'timed_out' "dual provider $runtimeId") `
+            $false "dual provider $runtimeId.timed_out"
+        Assert-Evidence1ExactBoolean `
+            (Get-Evidence1Property $provider 'process_tree_cleanup_confirmed' "dual provider $runtimeId") `
+            $true "dual provider $runtimeId.process_tree_cleanup_confirmed"
+        if ($null -ne (Get-Evidence1Property $provider 'reason_code' "dual provider $runtimeId")) {
+            throw "dual provider $runtimeId reason_code must be null after success"
+        }
+        $elapsed = Get-Evidence1Property $provider 'elapsed_milliseconds' "dual provider $runtimeId"
+        if (($elapsed -isnot [int] -and $elapsed -isnot [long]) -or [long]$elapsed -lt 0) {
+            throw "dual provider $runtimeId elapsed time is invalid"
+        }
+        Assert-Evidence1ExactInteger `
+            (Get-Evidence1Property $provider 'dispatch_ordinal' "dual provider $runtimeId") `
+            $(if ($runtimeId -ceq 'claude-code') { 1 } else { 2 }) `
+            "dual provider $runtimeId.dispatch_ordinal"
+        $eventTypeCounts = Get-Evidence1Property $provider 'event_type_counts' "dual provider $runtimeId"
+        $eventKeys = if ($runtimeId -ceq 'claude-code') {
+            @('system','assistant','user','result','rate_limit_event','unknown')
+        } else {
+            @('thread_started','turn_started','turn_completed','turn_failed','item_started','item_updated','item_completed','error','unknown')
+        }
+        Assert-Evidence1ExactKeys $eventTypeCounts $eventKeys "dual provider $runtimeId.event_type_counts"
+        foreach ($eventKey in $eventKeys) {
+            $count = Get-Evidence1Property $eventTypeCounts $eventKey "dual provider $runtimeId.event_type_counts"
+            if (($count -isnot [int] -and $count -isnot [long]) -or [long]$count -lt 0) {
+                throw "dual provider $runtimeId event count is invalid"
+            }
+        }
+        Assert-Evidence1NoValues `
+            (Get-Evidence1Property $provider 'credential_override_names' "dual provider $runtimeId") `
+            "dual provider $runtimeId credential overrides"
+        $providerPrivacy = Get-Evidence1Property $provider 'privacy' "dual provider $runtimeId"
+        Assert-Evidence1ExactKeys $providerPrivacy @(
+            'raw_content_persisted','raw_content_printed','raw_content_read_in_memory_for_sanitization','error_text_persisted'
+        ) "dual provider $runtimeId.privacy"
+        foreach ($field in @('raw_content_persisted', 'raw_content_printed', 'error_text_persisted')) {
+            Assert-Evidence1False `
+                (Get-Evidence1Property $providerPrivacy $field "dual provider $runtimeId.privacy") `
+                "dual provider $runtimeId.privacy.$field"
+        }
+        Assert-Evidence1ExactBoolean `
+            (Get-Evidence1Property $providerPrivacy 'raw_content_read_in_memory_for_sanitization' "dual provider $runtimeId.privacy") `
+            $true "dual provider $runtimeId.privacy.raw_content_read_in_memory_for_sanitization"
+        $completed = ConvertFrom-Evidence1UtcTimestamp `
+            ([string](Get-Evidence1Property $provider 'completed_at_utc' "dual provider $runtimeId")) `
+            "dual provider $runtimeId completed_at_utc"
+        $null = Assert-Evidence1FreshTimestamp $completed $NowUtc $MaxAgeMinutes "dual provider $runtimeId"
+        $claimed = ConvertFrom-Evidence1UtcTimestamp `
+            ([string](Get-Evidence1Property $provider 'claimed_at_utc' "dual provider $runtimeId")) `
+            "dual provider $runtimeId claimed_at_utc"
+        if ($claimed -lt $effectiveNotBefore -or $completed -lt $claimed) {
+            throw "dual provider $runtimeId predates readiness"
+        }
+    }
+
+    Assert-Evidence1ExactBoolean `
+        (Get-Evidence1Property $claude 'tools_disabled' 'dual provider claude-code') `
+        $true 'dual provider claude-code.tools_disabled'
+    if ((Get-Evidence1Property $claude 'tool_observation' 'dual provider claude-code') -cne 'tools_disabled_and_observed_zero_tool_use') {
+        throw 'dual provider Claude tool observation mismatch'
+    }
+    Assert-Evidence1ExactKeys (Get-Evidence1Property $claude 'event_type_counts' 'dual provider claude-code') `
+        @('system','assistant','user','result','rate_limit_event','unknown') 'dual provider claude-code.event_type_counts'
+    Assert-Evidence1ExactInteger `
+        (Get-Evidence1Property (Get-Evidence1Property $claude 'event_type_counts' 'dual provider claude-code') 'result' 'dual provider claude-code.event_type_counts') `
+        1 'dual provider claude-code.event_type_counts.result'
+    Assert-Evidence1ExactInteger `
+        (Get-Evidence1Property (Get-Evidence1Property $claude 'event_type_counts' 'dual provider claude-code') 'unknown' 'dual provider claude-code.event_type_counts') `
+        0 'dual provider claude-code.event_type_counts.unknown'
+    $claudeStatuses = @(Get-Evidence1Property $claude 'http_statuses' 'dual provider claude-code')
+    $allowedClaudeStatuses = @(400, 401, 403, 408, 409, 413, 429, 500, 502, 503, 504, 529)
+    $statusKeys = @{}
+    foreach ($status in $claudeStatuses) {
+        if (($status -isnot [int] -and $status -isnot [long]) -or [long]$status -lt 100 -or [long]$status -gt 599 -or
+            [int]$status -notin $allowedClaudeStatuses -or $statusKeys.ContainsKey([int]$status)) {
+            throw 'dual provider Claude HTTP statuses are not a unique allowed integer set'
+        }
+        $statusKeys[[int]$status] = $true
+    }
+    if (@($claudeStatuses | Where-Object { $_ -eq 401 -or $_ -eq 403 }).Count -ne 0) {
+        throw 'dual provider Claude contains an authentication HTTP failure'
+    }
+    if ($null -ne (Get-Evidence1Property $claude 'http_status_reason' 'dual provider claude-code')) {
+        throw 'dual provider Claude HTTP reason must be null when statuses are exposed'
+    }
+    $claudeTerminal = Get-Evidence1Property $claude 'terminal' 'dual provider claude-code'
+    Assert-Evidence1ExactKeys $claudeTerminal @('present','is_error') 'dual provider claude-code.terminal'
+    if ((Get-Evidence1Property $claudeTerminal 'present' 'dual provider claude-code.terminal') -ne $true -or
+        (Get-Evidence1Property $claudeTerminal 'is_error' 'dual provider claude-code.terminal') -ne $false) {
+        throw 'dual provider Claude terminal contract mismatch'
+    }
+
+    if ($null -ne (Get-Evidence1Property $codex 'tools_disabled' 'dual provider codex-cli')) {
+        throw 'dual provider Codex tools_disabled must remain null'
+    }
+    if ((Get-Evidence1Property $codex 'tool_observation' 'dual provider codex-cli') -cne 'observed_zero_tool_items') {
+        throw 'dual provider Codex tool observation mismatch'
+    }
+    if ($null -ne (Get-Evidence1Property $codex 'http_statuses' 'dual provider codex-cli') -or
+        (Get-Evidence1Property $codex 'http_status_reason' 'dual provider codex-cli') -cne 'runtime_does_not_expose_http_status') {
+        throw 'dual provider Codex HTTP telemetry contract mismatch'
+    }
+    $codexEvents = Get-Evidence1Property $codex 'event_type_counts' 'dual provider codex-cli'
+    foreach ($entry in @(
+        @('thread_started', 1), @('turn_completed', 1), @('turn_failed', 0), @('error', 0), @('unknown', 0)
+      )) {
+        Assert-Evidence1ExactInteger `
+            (Get-Evidence1Property $codexEvents $entry[0] 'dual provider codex-cli.event_type_counts') `
+            $entry[1] "dual provider codex-cli.event_type_counts.$($entry[0])"
+    }
+    $codexTerminal = Get-Evidence1Property $codex 'terminal' 'dual provider codex-cli'
+    Assert-Evidence1ExactKeys $codexTerminal @(
+        'thread_started_count','turn_completed_count','turn_failed_count','error_event_count'
+    ) 'dual provider codex-cli.terminal'
+    foreach ($field in @('thread_started_count', 'turn_completed_count')) {
+        Assert-Evidence1ExactInteger `
+            (Get-Evidence1Property $codexTerminal $field 'dual provider codex-cli.terminal') `
+            1 "dual provider codex-cli.terminal.$field"
+    }
+    foreach ($field in @('turn_failed_count', 'error_event_count')) {
+        Assert-Evidence1ExactInteger `
+            (Get-Evidence1Property $codexTerminal $field 'dual provider codex-cli.terminal') `
+            0 "dual provider codex-cli.terminal.$field"
+    }
+
+    $privacy = Get-Evidence1Property $Canary 'privacy' 'dual remote auth canary'
+    Assert-Evidence1ExactKeys $privacy @(
+        'raw_content_persisted','raw_content_printed','raw_content_read_in_memory_for_sanitization','error_text_persisted'
+    ) 'dual remote auth canary.privacy'
+    foreach ($field in @('raw_content_persisted', 'raw_content_printed', 'error_text_persisted')) {
+        Assert-Evidence1False `
+            (Get-Evidence1Property $privacy $field 'dual remote auth canary.privacy') `
+            "dual remote auth canary.privacy.$field"
+    }
+    Assert-Evidence1ExactBoolean `
+        (Get-Evidence1Property $privacy 'raw_content_read_in_memory_for_sanitization' 'dual remote auth canary.privacy') `
+        $true 'dual remote auth canary.privacy.raw_content_read_in_memory_for_sanitization'
+
+    $completedAt = ConvertFrom-Evidence1UtcTimestamp `
+        ([string](Get-Evidence1Property $Canary 'completed_at_utc' 'dual remote auth canary')) `
+        'dual remote auth canary completed_at_utc'
+    $ageSeconds = Assert-Evidence1FreshTimestamp $completedAt $NowUtc $MaxAgeMinutes 'dual remote auth canary'
+    if ($completedAt -lt $effectiveNotBefore) {
+        throw 'dual remote auth canary predates readiness'
+    }
+
+    return [ordered]@{
+        ok = $true
+        schema = [int]$schema
+        completed_at_utc = $completedAt.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+        age_seconds = $ageSeconds
+        authorized_sessions = 2
+        claimed_sessions = 2
+        dispatched_sessions = 2
+        providers = @('claude-code', 'codex-cli')
+        privacy_safe = $true
+    }
+}
+
+# Task 2 (centralize dual-auth report parsing): extracted from
+# Assert-Evidence1LiveHandoffEvidence's own dual-auth ($expectedCodexCanonical)
+# branch -- the self-contained slice that validates the dual-auth host
+# report's OWN 12-key schema=2 shape and its own fields (never the wrapping
+# readiness-report cross-check, never the nested remote_auth_canary's own
+# deep validation). Genuinely self-contained: it needs $AuthReport and four
+# expected-value scalars, never $ReadinessReport, target commit/tree/source,
+# ExpectedClaudeVersion, or ExpectedAttestationPath -- none of those are read
+# anywhere in this slice, confirmed by re-reading the original inline block
+# before extracting it.
+#
+# Two real callers reuse this, not one: Assert-Evidence1LiveHandoffEvidence
+# itself (below, behavior-for-behavior unchanged -- same checks, same order,
+# same thrown messages) AND the new centralized
+# Resolve-Evidence1DualAuthHostReportVerdict (below Assert-Evidence1LiveHandoffFailureReport),
+# which needs the report's own shape validated WITHOUT forcing every consumer
+# through a full readiness cross-check some of them were never designed to
+# perform (evidence1-run-model-pair-canary-matrix.ps1 has no parsed readiness
+# report of its own at all -- confirmed by reading it).
+#
+# Returns the STILL-UNVALIDATED nested remote_auth_canary object (its own
+# deep validation, Assert-Evidence1DualRemoteAuthCanary, stays a separate,
+# deliberate next step for the caller -- exactly as it always was) plus the
+# host report's own operation_id, so a caller can bind the two together
+# without re-reading $AuthReport a second time.
+function Assert-Evidence1DualAuthHostReportShape {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]$AuthReport,
+        [Parameter(Mandatory = $true)][string]$ExpectedVMName,
+        [Parameter(Mandatory = $true)][string]$ExpectedVMId,
+        [string]$ExpectedReadinessSha256 = '',
+        [string]$ExpectedCodexModel = 'gpt-5.6-terra',
+        # Same rationale as Assert-Evidence1LiveHandoffFailureReport's own
+        # -ExpectedClaudeModel addition (see that function's header): the
+        # model-availability canary matrix legitimately varies Claude model
+        # across its four frozen tiers, not just Codex.
+        [string]$ExpectedClaudeModel = 'claude-sonnet-5'
+    )
+
+    Assert-Evidence1ExactKeys $AuthReport @(
+        'schema','verdict','generated_at_utc','operation_id','vm_name','vm_id','vm_state',
+        'readiness_sha256','account_binding_sha256','remote_auth_canary','model_pair','privacy'
+    ) 'dual auth host report'
+    # Schema=2
+    # is now REQUIRED whenever an expected Codex version is supplied --
+    # previously required schema=1, which was simply wrong (this
+    # 12-key dual-auth shape, with account_binding_sha256 and
+    # model_pair, never had a schema=1 incarnation anywhere in this
+    # codebase's real producer; the requirement here was never
+    # satisfiable by the real evidence1-hyperv-verify-guest-dual-auth-direct.ps1
+    # output, which is exactly the bug this fixes). schema=1 remains
+    # valid ONLY for the structurally different legacy/single-runtime
+    # shape handled entirely separately, in Assert-Evidence1LiveHandoffEvidence
+    # (no top-level schema field on that shape at all -- this function is
+    # only ever reached from the $expectedCodexCanonical branch there, or
+    # directly by Resolve-Evidence1DualAuthHostReportVerdict).
+    Assert-Evidence1ExactInteger (Get-Evidence1Property $AuthReport 'schema' 'dual auth host report') 2 'dual auth host report.schema'
+    if ([string](Get-Evidence1Property $AuthReport 'verdict' 'dual auth host report') -cne 'PASS' -or
+        [string](Get-Evidence1Property $AuthReport 'vm_name' 'dual auth host report') -cne $ExpectedVMName -or
+        [string](Get-Evidence1Property $AuthReport 'vm_id' 'dual auth host report') -cne $ExpectedVMId -or
+        [string](Get-Evidence1Property $AuthReport 'vm_state' 'dual auth host report') -cne 'Running' -or
+        ($ExpectedReadinessSha256 -and
+          [string](Get-Evidence1Property $AuthReport 'readiness_sha256' 'dual auth host report') -cne $ExpectedReadinessSha256)) {
+        throw 'dual auth host report binding mismatch'
+    }
+    Assert-Evidence1Sha256 `
+        ([string](Get-Evidence1Property $AuthReport 'account_binding_sha256' 'dual auth host report')) `
+        'dual auth host report.account_binding_sha256'
+    $modelPair = Get-Evidence1Property $AuthReport 'model_pair' 'dual auth host report'
+    Assert-Evidence1ExactKeys $modelPair @('campaign_kind','claude_model','codex_model') 'dual auth host report.model_pair'
+    $modelPairCampaignKind = [string](Get-Evidence1Property $modelPair 'campaign_kind' 'dual auth host report.model_pair')
+    if ($modelPairCampaignKind -cnotin @('canonical-auth-canary','paired-model-availability-canary') -or
+        [string](Get-Evidence1Property $modelPair 'claude_model' 'dual auth host report.model_pair') -cne $ExpectedClaudeModel -or
+        [string](Get-Evidence1Property $modelPair 'codex_model' 'dual auth host report.model_pair') -cne $ExpectedCodexModel) {
+        throw 'dual auth host report model pair mismatch'
+    }
+    $hostPrivacy = Get-Evidence1Property $AuthReport 'privacy' 'dual auth host report'
+    Assert-Evidence1ExactKeys $hostPrivacy @('raw_content_persisted','raw_content_printed','error_text_persisted') 'dual auth host report.privacy'
+    foreach ($field in @('raw_content_persisted','raw_content_printed','error_text_persisted')) {
+        Assert-Evidence1ExactBoolean (Get-Evidence1Property $hostPrivacy $field 'dual auth host report.privacy') $false "dual auth host report.privacy.$field"
+    }
+    $hostOperationId = [string](Get-Evidence1Property $AuthReport 'operation_id' 'dual auth host report')
+    $dualCanaryRecord = Get-Evidence1Property $AuthReport 'remote_auth_canary' 'dual auth host report'
+    if ([string](Get-Evidence1Property $dualCanaryRecord 'operation_id' 'dual auth host report.remote_auth_canary') -cne $hostOperationId) {
+        throw 'dual auth host report operation binding mismatch'
+    }
+    return [ordered]@{ operation_id = $hostOperationId; remote_auth_canary = $dualCanaryRecord }
+}
+
 function Assert-Evidence1LiveHandoffEvidence {
     [CmdletBinding()]
     param(
@@ -125,11 +550,15 @@ function Assert-Evidence1LiveHandoffEvidence {
         [Parameter(Mandatory = $true)][string]$ExpectedTargetTree,
         [Parameter(Mandatory = $true)][string]$ExpectedSourceCommit,
         [Parameter(Mandatory = $true)][string]$ExpectedClaudeVersion,
+        [string]$ExpectedCodexVersion = '',
+        [string]$ExpectedVMId = '',
+        [string]$ExpectedCodexModel = 'gpt-5.6-terra',
+        [string]$ExpectedReadinessSha256 = '',
         [Parameter(Mandatory = $true)][string]$ExpectedAttestationPath,
         [ValidateRange(1, 64)][int]$ExpectedPlannedSessions = 8,
         [DateTime]$NowUtc = [DateTime]::UtcNow,
         [ValidateRange(1, 1440)][int]$ReadinessMaxAgeMinutes = 60,
-        [ValidateRange(1, 1440)][int]$RemoteAuthMaxAgeMinutes = 30
+        [ValidateRange(1, 10080)][int]$RemoteAuthMaxAgeMinutes = 30
     )
 
     Assert-Evidence1FullSha $ExpectedTargetCommit 'expected target commit'
@@ -143,6 +572,14 @@ function Assert-Evidence1LiveHandoffEvidence {
         throw 'expected Claude version is empty'
     }
     $expectedClaudeCanonical = Get-Evidence1PinnedClaudeVersion $ExpectedClaudeVersion 'expected Claude version'
+    $expectedCodexCanonical = if ($ExpectedCodexVersion) {
+        Get-Evidence1PinnedCodexVersion $ExpectedCodexVersion 'expected Codex version'
+    } else { $null }
+    if ($expectedCodexCanonical -and
+        ($ExpectedVMId -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' -or
+         $ExpectedCodexModel -cne 'gpt-5.6-terra' -or $ExpectedReadinessSha256 -cnotmatch '^[a-f0-9]{64}$')) {
+        throw 'dual-runtime handoff context is incomplete'
+    }
     $expectedAttestationFull = [System.IO.Path]::GetFullPath($ExpectedAttestationPath)
 
     if ((Get-Evidence1Property $ReadinessReport 'verdict' 'readiness') -ne 'PASS') {
@@ -150,6 +587,10 @@ function Assert-Evidence1LiveHandoffEvidence {
     }
     if ([string](Get-Evidence1Property $ReadinessReport 'vm_name' 'readiness') -ne $ExpectedVMName) {
         throw 'readiness VM mismatch'
+    }
+    if ($expectedCodexCanonical -and
+        [string](Get-Evidence1Property $ReadinessReport 'vm_id' 'readiness') -cne $ExpectedVMId) {
+        throw 'readiness VM id mismatch'
     }
     if ([string](Get-Evidence1Property $ReadinessReport 'vm_state' 'readiness') -ne 'Running') {
         throw 'readiness VM state is not Running'
@@ -192,6 +633,14 @@ function Assert-Evidence1LiveHandoffEvidence {
     if ($readinessClaudeCanonical -ne $expectedClaudeCanonical) {
         throw 'readiness guest Claude version mismatch'
     }
+    if ($expectedCodexCanonical) {
+        $readinessCodexCanonical = Get-Evidence1PinnedCodexVersion `
+            ([string](Get-Evidence1Property $guestTools 'codex' 'readiness.guest.tools')) `
+            'readiness guest Codex version'
+        if ($readinessCodexCanonical -ne $expectedCodexCanonical) {
+            throw 'readiness guest Codex version mismatch'
+        }
+    }
     $actualAttestationFull = [System.IO.Path]::GetFullPath(
         [string](Get-Evidence1Property $guest 'attestation_path' 'readiness.guest')
     )
@@ -210,6 +659,28 @@ function Assert-Evidence1LiveHandoffEvidence {
         'dry_run_stdout_printed'
     )) {
         Assert-Evidence1False (Get-Evidence1Property $readinessPrivacy $name 'readiness.privacy') "readiness.privacy.$name"
+    }
+
+    if ($expectedCodexCanonical) {
+        $shapeResult = Assert-Evidence1DualAuthHostReportShape -AuthReport $AuthReport `
+            -ExpectedVMName $ExpectedVMName -ExpectedVMId $ExpectedVMId `
+            -ExpectedReadinessSha256 $ExpectedReadinessSha256 -ExpectedCodexModel $ExpectedCodexModel
+        $dualCanary = Assert-Evidence1DualRemoteAuthCanary `
+            -Canary $shapeResult.remote_auth_canary `
+            -ExpectedClaudeVersion $ExpectedClaudeVersion `
+            -ExpectedCodexVersion $ExpectedCodexVersion `
+            -ExpectedVMName $ExpectedVMName `
+            -ExpectedVMId $ExpectedVMId `
+            -ExpectedCodexModel $ExpectedCodexModel `
+            -ExpectedHostReadinessSha256 $ExpectedReadinessSha256 `
+            -NowUtc $NowUtc `
+            -MaxAgeMinutes $RemoteAuthMaxAgeMinutes `
+            -NotBeforeUtc $readinessGenerated
+        return [ordered]@{
+            ok = $true; target_commit = $ExpectedTargetCommit; target_tree = $ExpectedTargetTree
+            readiness_age_seconds = $readinessAgeSeconds; remote_auth_age_seconds = $dualCanary.age_seconds
+            privacy_safe = $true
+        }
     }
 
     if ((Get-Evidence1Property $AuthReport 'verdict' 'auth') -ne 'PASS') {
@@ -244,8 +715,22 @@ function Assert-Evidence1LiveHandoffEvidence {
     }
 
     $canary = Get-Evidence1Property $authGuest 'remote_auth_canary' 'auth.guest_report'
-    if ((Get-Evidence1Property $canary 'schema' 'auth.remote_auth_canary') -ne 1) {
-        throw 'remote auth canary schema mismatch'
+    $canarySchema = Get-Evidence1Property $canary 'schema' 'auth.remote_auth_canary'
+    if ($canarySchema -eq 2) {
+        if (-not $expectedCodexCanonical) {
+            throw 'dual remote auth canary requires an expected Codex version'
+        }
+        $dualCanary = Assert-Evidence1DualRemoteAuthCanary `
+            -Canary $canary `
+            -ExpectedClaudeVersion $ExpectedClaudeVersion `
+            -ExpectedCodexVersion $ExpectedCodexVersion `
+            -NowUtc $NowUtc `
+            -MaxAgeMinutes $RemoteAuthMaxAgeMinutes `
+            -NotBeforeUtc $readinessGenerated
+        $authAgeSeconds = $dualCanary.age_seconds
+    } elseif ($canarySchema -eq 1) {
+    if ($expectedCodexCanonical) {
+        throw 'schema 1 remote auth canary cannot satisfy the dual-runtime gate'
     }
     if ((Get-Evidence1Property $canary 'state' 'auth.remote_auth_canary') -ne 'passed') {
         throw 'remote auth canary did not pass'
@@ -300,6 +785,9 @@ function Assert-Evidence1LiveHandoffEvidence {
     if ($canaryCompleted -lt $readinessGenerated) {
         throw 'remote auth canary predates readiness'
     }
+    } else {
+        throw 'remote auth canary schema mismatch'
+    }
 
     return [ordered]@{
         ok = $true
@@ -309,6 +797,338 @@ function Assert-Evidence1LiveHandoffEvidence {
         remote_auth_age_seconds = $authAgeSeconds
         privacy_safe = $true
     }
+}
+
+# The closed, stable set of reason codes
+# evidence1-hyperv-verify-guest-dual-auth-direct.ps1's catch block can emit
+# (Task 2, dual-auth FAIL-report schema) -- one per checkpoint the producer
+# tracks via its own $stage variable, in the order they can occur. Kept
+# here, alongside the assert that validates against it, rather than only in
+# the producer script, so a drift between the two (a new stage added to one
+# but not the other) is a real, testable contract violation, not merely a
+# convention.
+$script:Evidence1DualAuthFailureReasonCodes = @(
+    'dual_auth_failed_before_account_binding_loaded',
+    'dual_auth_failed_after_account_binding_before_readiness',
+    'dual_auth_failed_after_readiness_before_guest_operation',
+    'dual_auth_failed_during_guest_execution',
+    'dual_auth_failed_reading_guest_result',
+    'dual_auth_failed_writing_completed_report'
+)
+
+# Validates evidence1-hyperv-verify-guest-dual-auth-direct.ps1's CATCH-path
+# FAIL report (Task 2) -- a deliberately separate function from
+# Assert-Evidence1LiveHandoffEvidence above, not a branch inside it.
+# Assert-Evidence1LiveHandoffEvidence's whole purpose is "assert this
+# represents PASSING handoff evidence" and every one of its three real
+# callers (evidence1-hyperv-start-final-codex.ps1,
+# evidence1-hyperv-start-authorized-live.ps1,
+# evidence1-hyperv-capture-final-codex-auth-blob.ps1) is a privileged,
+# live-execution entrypoint that only ever wants to proceed on a genuine
+# PASS -- changing that function to also gracefully accept a FAIL shape
+# would risk weakening the one gate all three depend on. This function is
+# purely additive: a new, standalone contract for the FAIL shape,
+# available to any FUTURE caller that wants to branch on verdict before
+# reaching the PASS-only gate (none of the three current callers do this
+# today -- confirmed by reading all three directly, not assumed; flagged
+# as a separate, pre-existing finding, not fixed here since it is a
+# consumer-side control-flow change, not a producer schema question).
+#
+# The FAIL shape is intentionally NOT the PASS shape: 11 keys, not 12 --
+# drops vm_state and remote_auth_canary (both assume data that may not
+# exist yet when a failure happens) and adds reason_code (PASS has nothing
+# to explain). readiness_sha256/account_binding_sha256 are validated as
+# EITHER $null OR a real SHA-256 -- never any other shape -- matching the
+# producer's own "real value once computed, explicit null otherwise, never
+# a fabricated placeholder" design.
+function Assert-Evidence1LiveHandoffFailureReport {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]$FailureReport,
+        [Parameter(Mandatory = $true)][string]$ExpectedVMName,
+        [Parameter(Mandatory = $true)][string]$ExpectedVMId,
+        [string]$ExpectedCodexModel = 'gpt-5.6-terra',
+        # Task 2 (centralized dual-auth report parsing): added so this
+        # function serves every real reason_code-producing tier, not just
+        # the canonical balanced one -- evidence1-run-model-pair-canary-matrix.ps1
+        # genuinely dispatches all four frozen model-availability pairs
+        # (plan section 6.1), so a FAIL report from a non-balanced tier
+        # legitimately carries a different claude_model. Defaults to
+        # 'claude-sonnet-5', the exact literal this check used unconditionally
+        # before -- every existing caller and test that never passes this
+        # parameter keeps its exact prior behavior, unchanged.
+        [string]$ExpectedClaudeModel = 'claude-sonnet-5'
+    )
+
+    Assert-Evidence1ExactKeys $FailureReport @(
+        'schema', 'verdict', 'reason_code', 'generated_at_utc', 'operation_id', 'vm_name', 'vm_id',
+        'readiness_sha256', 'account_binding_sha256', 'model_pair', 'privacy'
+    ) 'dual auth failure report'
+    Assert-Evidence1ExactInteger (Get-Evidence1Property $FailureReport 'schema' 'dual auth failure report') 2 'dual auth failure report.schema'
+    if ([string](Get-Evidence1Property $FailureReport 'verdict' 'dual auth failure report') -cne 'FAIL') {
+        throw 'dual auth failure report verdict is not FAIL'
+    }
+    $reasonCode = [string](Get-Evidence1Property $FailureReport 'reason_code' 'dual auth failure report')
+    if ($reasonCode -cnotin $script:Evidence1DualAuthFailureReasonCodes) {
+        throw 'dual auth failure report reason_code is not a recognized enumerated value'
+    }
+    if ([string](Get-Evidence1Property $FailureReport 'vm_name' 'dual auth failure report') -cne $ExpectedVMName -or
+        [string](Get-Evidence1Property $FailureReport 'vm_id' 'dual auth failure report') -cne $ExpectedVMId) {
+        throw 'dual auth failure report VM identity mismatch'
+    }
+    $operationText = [string](Get-Evidence1Property $FailureReport 'operation_id' 'dual auth failure report')
+    $operationId = [guid]::Empty
+    if (-not [guid]::TryParseExact($operationText, 'D', [ref]$operationId) -or $operationId -eq [guid]::Empty -or
+        $operationText -cne $operationId.ToString('D')) {
+        throw 'dual auth failure report operation id is invalid'
+    }
+    $null = ConvertFrom-Evidence1UtcTimestamp `
+        ([string](Get-Evidence1Property $FailureReport 'generated_at_utc' 'dual auth failure report')) `
+        'dual auth failure report generated_at_utc'
+    foreach ($shaField in @('readiness_sha256', 'account_binding_sha256')) {
+        $value = Get-Evidence1Property $FailureReport $shaField 'dual auth failure report'
+        if ($null -ne $value) { Assert-Evidence1Sha256 ([string]$value) "dual auth failure report.$shaField" }
+    }
+    $modelPair = Get-Evidence1Property $FailureReport 'model_pair' 'dual auth failure report'
+    Assert-Evidence1ExactKeys $modelPair @('campaign_kind', 'claude_model', 'codex_model') 'dual auth failure report.model_pair'
+    if ([string](Get-Evidence1Property $modelPair 'campaign_kind' 'dual auth failure report.model_pair') -cnotin @('canonical-auth-canary', 'paired-model-availability-canary') -or
+        [string](Get-Evidence1Property $modelPair 'claude_model' 'dual auth failure report.model_pair') -cne $ExpectedClaudeModel -or
+        [string](Get-Evidence1Property $modelPair 'codex_model' 'dual auth failure report.model_pair') -cne $ExpectedCodexModel) {
+        throw 'dual auth failure report model pair mismatch'
+    }
+    $privacy = Get-Evidence1Property $FailureReport 'privacy' 'dual auth failure report'
+    Assert-Evidence1ExactKeys $privacy @('raw_content_persisted', 'raw_content_printed', 'error_text_persisted') 'dual auth failure report.privacy'
+    foreach ($field in @('raw_content_persisted', 'raw_content_printed', 'error_text_persisted')) {
+        Assert-Evidence1ExactBoolean (Get-Evidence1Property $privacy $field 'dual auth failure report.privacy') $false "dual auth failure report.privacy.$field"
+    }
+
+    return [ordered]@{ ok = $true; verdict = 'FAIL'; reason_code = $reasonCode }
+}
+
+# Rejects a value that is itself an exception or error record -- a real,
+# structural check performed on the RAW argument before any type coercion,
+# not a documentation convention. This is why every "data" parameter on
+# New-Evidence1DualAuthFailureReport below is deliberately left untyped in
+# its param block: a [string]-typed parameter would let PowerShell's own
+# type converter silently call .ToString() on an ErrorRecord/Exception
+# (producing exactly the caught exception's message text) and bind the
+# result as an ordinary, innocent-looking string, with nothing left to
+# reject by the time any [ValidateScript()] or in-body check could run.
+# Left untyped, the parameter receives the original object unchanged, so
+# this check can catch it before it is ever coerced into anything.
+function Assert-Evidence1NotExceptionShaped($Value, [string]$Label) {
+    if ($Value -is [System.Management.Automation.ErrorRecord] -or $Value -is [System.Exception]) {
+        throw "dual auth failure report builder refuses an exception or error-record value for $Label"
+    }
+}
+
+# PUBLIC. Pure builder for evidence1-hyperv-verify-guest-dual-auth-direct.ps1's
+# CATCH-path FAIL report (Task 3) -- the ONLY place that report shape is
+# constructed, replacing the hand-built inline [ordered]@{} literal the
+# producer's catch block used to write directly. This is what makes the
+# producer's failure path genuinely testable as real, executed code: a
+# Pester test can call this function directly with the same explicit values
+# the producer's catch block has on hand (OperationId/VMName/VMId, the two
+# nullable computed hashes, the static model-pair/reason-code identity) and
+# assert on its real output, rather than only reading the producer's source
+# text or hand-replicating its literal.
+#
+# Deliberately narrow, matching this codebase's other "New-E1*Result"
+# builders (New-E1BrokerStatusResult, New-E1NetworkModeResult,
+# New-E1VmStateResult): it accepts only explicit data plus the reason_code
+# (from the closed enum below, the same $script:Evidence1DualAuthFailureReasonCodes
+# array Assert-Evidence1LiveHandoffFailureReport already validates against --
+# reused here, not reimplemented), and it does not itself call
+# Assert-Evidence1LiveHandoffFailureReport on its own output (matching how
+# New-E1BrokerStatusResult's own callers, not the builder itself, perform the
+# separate Assert-E1BrokerStatusResult step) -- test coverage proves the two
+# compose correctly (build, then assert) rather than the builder silently
+# asserting itself.
+function New-Evidence1DualAuthFailureReport {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]$ReasonCode,
+        [Parameter(Mandatory = $true)]$OperationId,
+        [Parameter(Mandatory = $true)]$VMName,
+        [Parameter(Mandatory = $true)]$VMId,
+        # Nullable by design -- the producer's own $readinessSha/$accountBindingSha
+        # stay explicit $null until actually computed at their own checkpoint,
+        # never a fabricated or placeholder-shaped hash. $null itself is not
+        # exception-shaped, so it is exempt from the reject-loop below.
+        $ReadinessSha256 = $null,
+        $AccountBindingSha256 = $null,
+        [bool]$ModelPairCanary = $false,
+        [Parameter(Mandatory = $true)]$ClaudeModel,
+        [Parameter(Mandatory = $true)]$CodexModel,
+        [DateTime]$NowUtc = [DateTime]::UtcNow
+    )
+
+    foreach ($entry in @(
+        @{ Name = 'ReasonCode'; Value = $ReasonCode }
+        @{ Name = 'OperationId'; Value = $OperationId }
+        @{ Name = 'VMName'; Value = $VMName }
+        @{ Name = 'VMId'; Value = $VMId }
+        @{ Name = 'ReadinessSha256'; Value = $ReadinessSha256 }
+        @{ Name = 'AccountBindingSha256'; Value = $AccountBindingSha256 }
+        @{ Name = 'ClaudeModel'; Value = $ClaudeModel }
+        @{ Name = 'CodexModel'; Value = $CodexModel }
+    )) {
+        Assert-Evidence1NotExceptionShaped $entry.Value $entry.Name
+    }
+
+    $reasonCodeText = [string]$ReasonCode
+    if ($reasonCodeText -cnotin $script:Evidence1DualAuthFailureReasonCodes) {
+        throw 'dual auth failure report builder reason_code is not a recognized enumerated value'
+    }
+
+    $operationIdText = [string]$OperationId
+    $parsedOperationId = [guid]::Empty
+    if (-not [guid]::TryParseExact($operationIdText, 'D', [ref]$parsedOperationId) -or $parsedOperationId -eq [guid]::Empty -or
+        $operationIdText -cne $parsedOperationId.ToString('D')) {
+        throw 'dual auth failure report builder operation id is invalid'
+    }
+
+    $vmNameText = [string]$VMName
+    $vmIdText = [string]$VMId
+    if ([string]::IsNullOrWhiteSpace($vmNameText)) { throw 'dual auth failure report builder vm_name is empty' }
+    if ([string]::IsNullOrWhiteSpace($vmIdText)) { throw 'dual auth failure report builder vm_id is empty' }
+
+    $readinessShaText = if ($null -eq $ReadinessSha256) { $null } else { [string]$ReadinessSha256 }
+    if ($null -ne $readinessShaText) { Assert-Evidence1Sha256 $readinessShaText 'dual auth failure report builder.readiness_sha256' }
+    $accountBindingShaText = if ($null -eq $AccountBindingSha256) { $null } else { [string]$AccountBindingSha256 }
+    if ($null -ne $accountBindingShaText) { Assert-Evidence1Sha256 $accountBindingShaText 'dual auth failure report builder.account_binding_sha256' }
+
+    $claudeModelText = [string]$ClaudeModel
+    $codexModelText = [string]$CodexModel
+    if ([string]::IsNullOrWhiteSpace($claudeModelText)) { throw 'dual auth failure report builder claude_model is empty' }
+    if ([string]::IsNullOrWhiteSpace($codexModelText)) { throw 'dual auth failure report builder codex_model is empty' }
+
+    return [ordered]@{
+        schema = 2
+        verdict = 'FAIL'
+        reason_code = $reasonCodeText
+        generated_at_utc = $NowUtc.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+        operation_id = $operationIdText
+        vm_name = $vmNameText
+        vm_id = $vmIdText
+        readiness_sha256 = $readinessShaText
+        account_binding_sha256 = $accountBindingShaText
+        model_pair = [ordered]@{
+            campaign_kind = $(if ($ModelPairCanary) { 'paired-model-availability-canary' } else { 'canonical-auth-canary' })
+            claude_model = $claudeModelText
+            codex_model = $codexModelText
+        }
+        privacy = [ordered]@{ raw_content_persisted = $false; raw_content_printed = $false; error_text_persisted = $false }
+    }
+}
+
+# PUBLIC. Task 2: the ONE centralized parser/validator for
+# evidence1-hyperv-verify-guest-dual-auth-direct.ps1's dual-auth host report
+# (the "host-final.json" shape), replacing 5 real consumers' own ad hoc or
+# duplicated logic, NONE of which checked verdict before applying a
+# PASS-only precondition -- a real, exploitable-by-bad-data gap (a FAIL
+# report, or plain corrupt data, previously reached PASS-only assumptions
+# with no discrimination at all).
+#
+# Reads ONLY 'schema' and 'verdict' before doing anything else, then
+# dispatches to the two ALREADY-EXISTING, already-reviewed validators --
+# Assert-Evidence1LiveHandoffFailureReport for FAIL,
+# Assert-Evidence1DualAuthHostReportShape (itself already shared with
+# Assert-Evidence1LiveHandoffEvidence, see that function's header) for PASS
+# -- rather than reimplementing either. Envelope/schema/verdict values this
+# codebase's real producer never emits are rejected OUTRIGHT: this function
+# throws (this codebase's own established Assert-* idiom -- every other
+# function in this file throws rather than returning a boolean, and an
+# uncaught exception is the loudest, most fail-closed signal a caller
+# cannot accidentally ignore) for anything that is not even recognizably a
+# schema=2 dual-auth report with a readable verdict of PASS or FAIL. Once a
+# report IS recognizably FAIL or PASS, this function returns ONE
+# discriminated result object -- never throws for a well-formed report of
+# either verdict, so a caller can branch on $result.verdict without a
+# try/catch.
+#
+# The FAIL branch's returned object contains ONLY ok/verdict/reason_code/
+# operation_id/vm_name/vm_id -- never vm_state, remote_auth_canary,
+# readiness_sha256, account_binding_sha256, or model_pair, even though the
+# real FAIL JSON does carry (nullable) readiness_sha256/account_binding_sha256.
+# This is deliberately stricter than the underlying schema requires: the
+# assignment's own words ask that those fields become reachable "only after
+# confirming verdict=PASS", so this function enforces that by never placing
+# them in the FAIL branch's return value at all, not merely by caller
+# discipline. None of the 6 real consumers need a hash out of a FAIL report
+# to report a clear error -- they only need the reason_code.
+#
+# -ExpectedReadinessSha256 remains available to legacy callers that need an
+# exact historical comparison. Current campaign launchers intentionally omit
+# it and validate the current PASS report by VM identity, model and freshness.
+function Resolve-Evidence1DualAuthHostReportVerdict {
+    [CmdletBinding()]
+    param(
+        # AllowNull: a bare Mandatory parameter already rejects $null by
+        # default, via a generic PowerShell parameter-binding exception --
+        # that would pre-empt this function's own envelope check from ever
+        # running, replacing a stable, documented reason_code with an
+        # unrelated, locale-dependent binding-error message. AllowNull lets
+        # $null actually reach the body so the real, intended
+        # dual_auth_host_report_envelope_unrecognized rejection fires
+        # instead.
+        [Parameter(Mandatory = $true)][AllowNull()]$Report,
+        [Parameter(Mandatory = $true)][string]$ExpectedVMName,
+        [Parameter(Mandatory = $true)][string]$ExpectedVMId,
+        [string]$ExpectedCodexModel = 'gpt-5.6-terra',
+        [string]$ExpectedClaudeModel = 'claude-sonnet-5',
+        [string]$ExpectedReadinessSha256 = ''
+    )
+
+    if ($null -eq $Report -or ($Report -isnot [Collections.IDictionary] -and $Report -isnot [pscustomobject])) {
+        throw 'dual_auth_host_report_envelope_unrecognized'
+    }
+    $envelopeKeys = @(Get-Evidence1ObjectKeys $Report)
+    if ($envelopeKeys -cnotcontains 'schema' -or $envelopeKeys -cnotcontains 'verdict') {
+        throw 'dual_auth_host_report_envelope_unrecognized'
+    }
+
+    $schemaValue = Get-Evidence1Property $Report 'schema' 'dual auth host report'
+    if (($schemaValue -isnot [int] -and $schemaValue -isnot [long]) -or [long]$schemaValue -ne 2) {
+        throw 'dual_auth_host_report_schema_unsupported'
+    }
+    $verdictValue = [string](Get-Evidence1Property $Report 'verdict' 'dual auth host report')
+
+    if ($verdictValue -ceq 'FAIL') {
+        $failure = Assert-Evidence1LiveHandoffFailureReport -FailureReport $Report `
+            -ExpectedVMName $ExpectedVMName -ExpectedVMId $ExpectedVMId `
+            -ExpectedCodexModel $ExpectedCodexModel -ExpectedClaudeModel $ExpectedClaudeModel
+        return [ordered]@{
+            ok = $true
+            verdict = 'FAIL'
+            reason_code = $failure.reason_code
+            operation_id = [string](Get-Evidence1Property $Report 'operation_id' 'dual auth host report')
+            vm_name = [string](Get-Evidence1Property $Report 'vm_name' 'dual auth host report')
+            vm_id = [string](Get-Evidence1Property $Report 'vm_id' 'dual auth host report')
+        }
+    }
+
+    if ($verdictValue -ceq 'PASS') {
+        $shapeResult = Assert-Evidence1DualAuthHostReportShape -AuthReport $Report `
+            -ExpectedVMName $ExpectedVMName -ExpectedVMId $ExpectedVMId `
+            -ExpectedReadinessSha256 $ExpectedReadinessSha256 `
+            -ExpectedCodexModel $ExpectedCodexModel -ExpectedClaudeModel $ExpectedClaudeModel
+        return [ordered]@{
+            ok = $true
+            verdict = 'PASS'
+            reason_code = $null
+            operation_id = $shapeResult.operation_id
+            vm_name = [string](Get-Evidence1Property $Report 'vm_name' 'dual auth host report')
+            vm_id = [string](Get-Evidence1Property $Report 'vm_id' 'dual auth host report')
+            vm_state = [string](Get-Evidence1Property $Report 'vm_state' 'dual auth host report')
+            readiness_sha256 = [string](Get-Evidence1Property $Report 'readiness_sha256' 'dual auth host report')
+            account_binding_sha256 = [string](Get-Evidence1Property $Report 'account_binding_sha256' 'dual auth host report')
+            remote_auth_canary = $shapeResult.remote_auth_canary
+            model_pair = Get-Evidence1Property $Report 'model_pair' 'dual auth host report'
+        }
+    }
+
+    throw 'dual_auth_host_report_verdict_unrecognized'
 }
 
 function Get-Evidence1ObjectKeys {
@@ -931,6 +1751,11 @@ function Assert-Evidence1CanaryAuthorization($Binding, [string]$Phrase) {
 
 Export-ModuleMember -Function @(
     'Assert-Evidence1LiveHandoffEvidence',
+    'Assert-Evidence1LiveHandoffFailureReport',
+    'Assert-Evidence1DualAuthHostReportShape',
+    'New-Evidence1DualAuthFailureReport',
+    'Resolve-Evidence1DualAuthHostReportVerdict',
+    'Assert-Evidence1DualRemoteAuthCanary',
     'Assert-Evidence1PreviousRunCustody',
     'Assert-Evidence1PriorHandoffCustody',
     'New-Evidence1CanaryBinding',
