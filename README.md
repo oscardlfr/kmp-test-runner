@@ -13,11 +13,11 @@ kmp-test hands an agent the test and coverage verdict as one JSON envelope inste
 
 ![Claude Code · claude-sonnet-5 — key facts 4/4 with kmp-test, 4/4 without; tool calls per session (median): 4.5 with kmp-test, 13 without; wall-clock per session (median): 3.5 min with kmp-test, 3.8 min without; estimated API cost per session: $0.08–$0.20 with kmp-test, $0.14–$0.24 without. Codex CLI · gpt-5.6-terra — key facts 4/4 with kmp-test, 4/4 without; tool calls per session (median): 3 with kmp-test, 13 without; wall-clock per session (median): 4.5 min with kmp-test, 4.7 min without; estimated API cost per session: $0.09–$0.22 with kmp-test, $0.13–$0.31 without.](tools/runs/evidence2-agentic-benchmark-2026-09-30/scorecard.svg)
 
-![Per-session detail (descriptive, not part of the pre-registered design): tool calls, tokens, wall-clock, cost, turns and tool-output bytes for both agents, with vs without kmp-test.](tools/runs/evidence2-agentic-benchmark-2026-09-30/metrics-grid.svg)
+![Per-session detail (descriptive, not part of the pre-registered design): shell commands by kind, tokens per session by type, wall-clock, API cost, turns and tool output returned to the model for both agents, with vs without kmp-test. Codex CLI tool output was not measured in this campaign.](tools/runs/evidence2-agentic-benchmark-2026-09-30/metrics-grid.svg)
 
 - Both agents reported the key facts correctly in every session, with and without kmp-test (16/16).
-- Claude Code (claude-sonnet-5) with kmp-test: median 4.5 tool calls vs 13 without, median wall-clock 3.5 vs 3.8 min (per-session range 3.2–4.1 vs 3.7–4.0 min; [breakdown](tools/runs/evidence2-agentic-benchmark-2026-09-30/README.md#results--campaign-16-sessions)), estimated API cost $0.08–$0.20 vs $0.14–$0.24 per session.
-- Codex CLI (gpt-5.6-terra) with kmp-test: median 3 tool calls vs 13 without, median wall-clock 4.5 vs 4.7 min (per-session range 3.5–6.9 vs 3.6–5.9 min; [breakdown](tools/runs/evidence2-agentic-benchmark-2026-09-30/README.md#results--campaign-16-sessions)), estimated API cost $0.09–$0.22 vs $0.13–$0.31 per session.
+- Claude Code (claude-sonnet-5) with kmp-test: median 4.5 tool calls vs 13 without, median wall-clock 3.5 vs 3.8 min (per-session range 3.2–4.1 vs 3.7–4.0 min; [breakdown](tools/runs/evidence2-agentic-benchmark-2026-09-30/README.md#results)), estimated API cost $0.08–$0.20 vs $0.14–$0.24 per session.
+- Codex CLI (gpt-5.6-terra) with kmp-test: median 3 tool calls vs 13 without, median wall-clock 4.5 vs 4.7 min (per-session range 3.5–6.9 vs 3.6–5.9 min; [breakdown](tools/runs/evidence2-agentic-benchmark-2026-09-30/README.md#results)), estimated API cost $0.09–$0.22 vs $0.13–$0.31 per session.
 - With kmp-test (descriptive): Codex 3 tool calls vs Claude 4.5, median, n=4 per cell.
 - Without kmp-test (descriptive): Codex 13 tool calls vs Claude 13, median, n=4 per cell.
 

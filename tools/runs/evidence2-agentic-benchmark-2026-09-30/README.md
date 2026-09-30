@@ -88,6 +88,62 @@ Known in advance (D1-D13 plus Amendments A7 and A9, not placeholders):
   schema 3, `contracts.coverage_evidence`), baseline PR #537 merged into the eval branch. Re-merge
   only if PR #537's product code changes before canary or campaign actually run (D11).
 
+## Errata
+
+Added after an audit of the 16 raw session transcripts. Apart from E6's display correction, no number
+published in this record changes.
+
+- **E1: Claude Code does report a cost, as an estimate at outdated prices.**
+  - Amendment A9 says `total_cost_usd` came back null because Claude Code's result event under OAuth
+    does not carry it. That is wrong: every Claude Code result event carried `total_cost_usd`
+    (USD 0.18-0.36 per session). The record shows null because the harness's stream parser does not
+    read that field.
+  - Claude Code computes the figure on the client from a price table bundled with the CLI, and its
+    documentation calls it an estimate, not billing data.
+  - The CLI used here (2.1.238) priced `claude-sonnet-5` at Sonnet 4.6 list rates (USD 3 input and 15
+    output per million tokens), 1.5x the published Sonnet 5 rates.
+  - The cost estimate in this record uses the published rates and stands. A9 is correct for Codex CLI,
+    which reports no cost.
+- **E2: The isolation probe did not run, and the ground-truth file was on the guest.**
+  - This record and its preregistration say a per-cell isolation probe blocks dispatch and that ground
+    truth stays off the guest.
+  - In the harness this campaign ran, `tools/agentic-eval/isolation-probe.mjs` had no caller.
+  - The harness checkout deployed to the guest was a full checkout of the campaign's harness commit,
+    which includes `corpus/expected/coverage-threshold-failure-v2.json`. The guest-side CLI loads that
+    file for grading.
+  - None of the 16 transcripts references the harness checkout, the ground-truth file, the
+    preregistration or the private evidence directory, in any tool call or tool output.
+- **E3: Claude Code auto memory was on and shared.**
+  - Every Claude Code session had auto memory enabled, pointing at one directory shared by all eight
+    Claude sessions. The directory is keyed by the source repository.
+  - No tool call or command in the eight transcripts wrote to or referenced that directory; the
+    sessions had only the Bash and Skill tools.
+  - Not verified here: whether the directory held notes from earlier runs, which every Claude session
+    in both arms would then have loaded.
+- **E4: Session claude-code-6.**
+  - Its first `kmp-test parallel` call sent the JSON envelope to a file and read it back later
+    (`kmp-test parallel ... > parallel_result.json 2>&1; echo "EXIT:$?"; ...`).
+  - The command classifier cannot split a quoted word followed directly by `;`, so it counted that call
+    as `other`.
+  - With the envelope reaching the model only through the later file read, the grader found no terminal
+    kmp-test attempt (`success` false, evidence `claim-only`).
+  - The session's key facts matched.
+- **E5: What the free arm's `test_count` of 2 counted.**
+  - The eight free-arm sessions ran only the demoDebug unit-test task, which executes each of the
+    module's 2 test methods once.
+  - The eight product-arm sessions' `kmp-test parallel` calls ran both debug variants (4 executions).
+  - So 2 is also the execution count of the single variant the free arm ran. See "Full-answer match:
+    why the gap is definitional".
+- **E6: For Codex CLI, the tool-output figures measured the agent's own messages.**
+  - The harness computed Codex CLI's `output_bytes` from the agent's message items, not from the output
+    of the commands it ran. Claude Code's value sums the tool results returned to the model and is
+    correct.
+  - The recorded Codex values were 0.9-1.6 KB per session. The output of the commands Codex ran, as
+    logged, was about 31-222 KB; Codex may shorten what it keeps for the model.
+  - The metrics grid now shows Codex CLI's tool-output lanes as not measured.
+  - The recorded `output_bytes` values in `campaign-summary.json` are unchanged. For Codex CLI they are
+    the size of its own replies.
+
 ## Scope
 
 This document covers the Evidence2 canary and campaign results for the single anchor scenario

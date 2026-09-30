@@ -14,6 +14,7 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..');
 const RUNS_DIR = join(REPO_ROOT, 'tools', 'runs', 'evidence1-agentic-benchmark-2026-09-28');
+const RUNS_DIR_V2 = join(REPO_ROOT, 'tools', 'runs', 'evidence2-agentic-benchmark-2026-09-30');
 
 // Scorecard's own with/without colors, duplicated here (not imported -- the module doesn't export
 // them) specifically so test (h) can assert equality against a value that isn't just "whatever the
@@ -839,5 +840,72 @@ describe('metrics-grid.svg (WO-C17, Amendment A9): Turns is never drawn on a sca
     const wallStart = svg.indexOf('Wall-clock (min)');
     const costStart = svg.indexOf('API cost (USD)', wallStart);
     expect(svg.slice(wallStart, costStart)).not.toContain('Not comparable across agents');
+  });
+});
+
+// Evidence2 erratum E6: Codex CLI's `output_bytes` in the Evidence2 summary
+// measured the agent's own messages, not the output of the commands it ran, so the tool-output row
+// draws no Codex lanes for it. A Codex cell says its bytes are command output with
+// `output_bytes_kind: 'command_output'`; only then is the row drawn for Codex. Claude's bytes were
+// always the tool results returned to the model, so its lanes stay as they were.
+
+// One column's "Tool output returned to the model" row: its header up to the next row header or
+// panel title. Column 0 is Claude, column 1 is Codex.
+function toolOutputBand(layout, columnIndex) {
+  const items = layout.items;
+  const starts = items.reduce((acc, it, idx) => (it.role === 'gridRowHeader' && it.text.startsWith('Tool output returned to the model') ? [...acc, idx] : acc), []);
+  expect(starts.length).toBe(2);
+  const start = starts[columnIndex];
+  const next = items.findIndex((it, idx) => idx > start && (it.role === 'gridRowHeader' || it.role === 'gridPanelTitle'));
+  return items.slice(start, next === -1 ? undefined : next);
+}
+
+describe('metrics-grid.svg (Evidence2 erratum E6): Codex tool-output lanes', () => {
+  const evidence2 = () => ({
+    summary: loadSummary(join(RUNS_DIR_V2, 'campaign-summary.json')),
+    costEstimate: loadCostEstimate(join(RUNS_DIR_V2, 'cost-estimate.json')),
+  });
+
+  it('the Evidence2 Codex tool-output lanes render as unavailable, never as a bar or a number', () => {
+    const { summary, costEstimate } = evidence2();
+    const band = toolOutputBand(computeMetricsGridLayout(summary, costEstimate), 1);
+    expect(band.filter((i) => i.kind === 'bar')).toEqual([]);
+    expect(band.filter((i) => i.role === 'gridValueLabel')).toEqual([]);
+    expect(band.map((i) => i.text)).toContain('not recorded for Codex CLI');
+  });
+
+  it('the Evidence2 Claude tool-output lanes are still drawn: one bar and one printed value per lane', () => {
+    const { summary, costEstimate } = evidence2();
+    const band = toolOutputBand(computeMetricsGridLayout(summary, costEstimate), 0);
+    expect(band.filter((i) => i.kind === 'bar').length).toBe(2);
+    const values = band.filter((i) => i.role === 'gridValueLabel').map((i) => i.text);
+    expect(values.length).toBe(2);
+    for (const value of values) expect(value).toMatch(/^\d+(\.\d)? (B|KB|MB)$/);
+    expect(band.map((i) => i.text)).not.toContain('not recorded for Claude Code');
+  });
+
+  it('the Codex lanes are drawn once every Codex cell carries output_bytes_kind "command_output"', () => {
+    const { summary, costEstimate } = evidence2();
+    for (const cell of summary.cells) if (cell.runtime_id === 'codex-cli') cell.output_bytes_kind = 'command_output';
+    const band = toolOutputBand(computeMetricsGridLayout(summary, costEstimate), 1);
+    expect(band.filter((i) => i.kind === 'bar').length).toBe(2);
+    expect(band.filter((i) => i.role === 'gridValueLabel').length).toBe(2);
+    expect(band.map((i) => i.text)).not.toContain('not recorded for Codex CLI');
+  });
+
+  it('one Codex cell without the kind keeps both lanes unavailable, never a partial mix', () => {
+    const { summary, costEstimate } = evidence2();
+    const codexCells = summary.cells.filter((c) => c.runtime_id === 'codex-cli');
+    for (const cell of codexCells.slice(1)) cell.output_bytes_kind = 'command_output';
+    const band = toolOutputBand(computeMetricsGridLayout(summary, costEstimate), 1);
+    expect(band.filter((i) => i.kind === 'bar')).toEqual([]);
+    expect(band.map((i) => i.text)).toContain('not recorded for Codex CLI');
+  });
+
+  it('a Claude cell carrying a different output_bytes_kind never hides Claude\'s lanes', () => {
+    const { summary, costEstimate } = evidence2();
+    for (const cell of summary.cells) if (cell.runtime_id === 'claude-code') cell.output_bytes_kind = 'tool_result';
+    const band = toolOutputBand(computeMetricsGridLayout(summary, costEstimate), 0);
+    expect(band.filter((i) => i.kind === 'bar').length).toBe(2);
   });
 });

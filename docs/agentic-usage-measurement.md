@@ -851,6 +851,12 @@ and the raw evidence has been checked for privacy.
   the committed campaign summary under `tools/runs/`. This is the harness
   described above, not a third measurement round layered on the pilot/v2
   history — the acceptance criteria section below is what gated it.
+- **Evidence2 (2026-09-30) ran 16 sessions under that harness.** Claude Code
+  and Codex CLI each ran 4 sessions with and 4 without the kmp-test skill and
+  CLI on the `:core:domain` module of
+  [`android/nowinandroid`](https://github.com/android/nowinandroid), a task
+  with a coverage threshold. Its record, limitations and dated errata are in
+  [`tools/runs/evidence2-agentic-benchmark-2026-09-30/README.md`](../tools/runs/evidence2-agentic-benchmark-2026-09-30/README.md).
 - Future docs-alignment or measurement work should reference this document
   rather than re-deriving the methodology inline. If the methodology
   changes, update it here first, then update whatever links to it.

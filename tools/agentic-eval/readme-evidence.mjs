@@ -14,6 +14,9 @@
 //                      (default: 1, i.e. evidence1-agentic-benchmark-<date> -- back-compat)
 //   --date=<yyyy-mm-dd>  campaign date for that run dir (default: 2026-09-28, back-compat)
 //
+// The root README shows ONE campaign, README_EVIDENCE. Only a run for that evidence checks or writes
+// the README block; any other --evidence=<n> checks or writes just its own two SVGs.
+//
 // Never edit scorecard.svg or the README block between the markers by hand --
 // edit this generator (or the campaign-summary.json / cost-estimate.json it
 // reads) and regenerate. Fails closed unless the summary is summary_status:"ok",
@@ -28,6 +31,15 @@ import { dirname, join } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..');
+
+// The one evidence the root README block shows. A run for any other evidence never compares or
+// writes that block.
+export const README_EVIDENCE = 2;
+
+// `evidenceN` is the raw --evidence= value, a string.
+export function ownsReadmeBlock(evidenceN) {
+  return Number(evidenceN) === README_EVIDENCE;
+}
 
 // GitHub-palette colors, chosen to render identically on GitHub's and npm's
 // markdown sanitizers (presentation attributes only, no <style>/CSS).
@@ -574,8 +586,9 @@ export function buildScorecardAlt(summary, costEstimate) {
 // with no per-session data renders ONE range mark (min-median-max) visually
 // distinct from a dot cluster, clearly labeled "campaign aggregate, not
 // per-session"; a metric with no data at all renders "not available for this
-// campaign" text, and tool-result volume (the one metric explicitly gated on
-// availability) is omitted from the grid entirely rather than showing either.
+// campaign" text, and tool-output volume (the one metric gated on how it was
+// measured) is drawn as the grid's last row, with "not recorded" in place of an
+// agent's lanes when its bytes do not measure command output (toolOutputMeasured).
 
 const GRID_W = SCORECARD_W;
 // Numbers-first, in the scorecard's own visual language, with one color rule for the whole image:
@@ -1073,6 +1086,21 @@ function stripHeaderLines(label, unit, diffPct, sourceNote) {
   return { mainText: mainParts.join(' — '), diffText };
 }
 
+// Codex CLI's `output_bytes` counted the agent's own messages, not the output of the commands it
+// ran (Evidence2 erratum E6), until a cell says otherwise with `output_bytes_kind:
+// 'command_output'`. Its tool-output lanes are drawn only when every counted cell says so, never a
+// partial mix. Claude's bytes were always the tool results returned to the model.
+function toolOutputMeasured(summary, runtimeId) {
+  if (runtimeId !== 'codex-cli') return true;
+  const cells = ARM_ORDER.flatMap((arm) => countedCells(summary, runtimeId, arm));
+  return cells.length > 0 && cells.every((c) => c.output_bytes_kind === 'command_output');
+}
+
+function toolOutputMetric(summary, group, runtimeId, arm) {
+  if (!toolOutputMeasured(summary, runtimeId)) return { kind: 'unavailable' };
+  return scalarMetric(summary, group, runtimeId, arm, 'output_bytes', () => null);
+}
+
 // One runtime's full, FIXED row set and order -- always all 6 rows; an agent
 // with nothing for a given row renders as a single "not recorded for <agent>" line there
 // instead of the row being omitted campaign-wide.
@@ -1126,8 +1154,8 @@ function buildGridRowData(runtimeId, summary, costEstimate) {
     },
     {
       kind: 'strip', label: 'Tool output returned to the model', unit: 'bytes', fmtValue: fmtBytesCompact, sourceNote: null,
-      with: scalarMetric(summary, gp, runtimeId, 'product', 'output_bytes', () => null),
-      without: scalarMetric(summary, gf, runtimeId, 'free', 'output_bytes', () => null),
+      with: toolOutputMetric(summary, gp, runtimeId, 'product'),
+      without: toolOutputMetric(summary, gf, runtimeId, 'free'),
     },
   ];
 }
@@ -1214,12 +1242,29 @@ export function renderMetricsGridSvg(summary, costEstimate) {
 // ---------------------------------------------------------------------------
 // README bullets -- three data-driven sentences, no hard-coded numbers.
 
-// The evidence doc's own "## Results — campaign (16 sessions)" heading, hand-authored (not
-// generated) at tools/runs/evidence1-agentic-benchmark-<date>/README.md. Anchor slug per GitHub's
-// own algorithm: lowercase, strip characters outside [\w\- ], turn each remaining space into a
-// hyphen -- the em-dash is stripped (not converted), so "Results — campaign" leaves two adjacent
-// spaces and therefore a DOUBLE hyphen: "results--campaign-16-sessions".
+// Evidence1's own "## Results — campaign (16 sessions)" heading, hand-authored (not generated) at
+// tools/runs/evidence1-agentic-benchmark-<date>/README.md. The slug drops the em-dash (it is stripped,
+// not converted), so "Results — campaign" leaves two adjacent spaces and therefore a DOUBLE hyphen:
+// "results--campaign-16-sessions". It is the default anchor for a caller that passes none; main()
+// computes the real one from the record README it is generating for (resultsHeadingAnchor).
 const RESULTS_HEADING_ANCHOR = 'results--campaign-16-sessions';
+
+// The anchor of a record README's results heading: its LAST level-2 heading that starts with
+// "Results" (Evidence1 has a canary one and a campaign one, Evidence2 has one), slugified the way
+// GitHub does -- lowercase, keep only letters, digits, spaces and hyphens, turn each space into a
+// hyphen. Headings inside a fenced code block do not count. Throws when there is none, so a
+// generated link can never point at a heading that is not there.
+export function resultsHeadingAnchor(markdown) {
+  let heading = null;
+  let fenced = false;
+  for (const line of markdown.split(/\r?\n/)) {
+    if (/^\s*(```|~~~)/.test(line)) { fenced = !fenced; continue; }
+    const match = !fenced && line.match(/^## (Results.*?)\s*$/);
+    if (match) heading = match[1];
+  }
+  if (heading === null) throw new Error('the evidence README has no level-2 "Results" heading to link to');
+  return heading.toLowerCase().replace(/[^\p{L}\p{N} -]/gu, '').replace(/ /g, '-');
+}
 
 // Reads min/max from the SAME counted-cells aggregate the median itself comes from
 // (by_runtime_arm[].duration_ms), not recomputed from cells[] independently -- a cell rejected
@@ -1233,13 +1278,13 @@ function durationRangeMinutes(group) {
 // when the actual driver was a couple of long-tail sessions, not every session. The per-session
 // range plus a link into the evidence doc's full breakdown gives that context without asserting a
 // cause the generator can't derive from its own inputs (that stays in the doc, out of the README).
-function wallClockPhrase(withMinutes, withoutMinutes, withGroup, withoutGroup, runsPath) {
+function wallClockPhrase(withMinutes, withoutMinutes, withGroup, withoutGroup, runsPath, anchor) {
   const w = withMinutes.toFixed(1);
   const wo = withoutMinutes.toFixed(1);
   if (w === wo) return `same median wall-clock (${w} min)`;
   const withRange = durationRangeMinutes(withGroup);
   const withoutRange = durationRangeMinutes(withoutGroup);
-  const breakdownLink = `${runsPath}/README.md#${RESULTS_HEADING_ANCHOR}`;
+  const breakdownLink = `${runsPath}/README.md#${anchor}`;
   return `median wall-clock ${w} vs ${wo} min (per-session range ${withRange} vs ${withoutRange} min; [breakdown](${breakdownLink}))`;
 }
 
@@ -1270,7 +1315,7 @@ function buildKeyFactsBullet(summary) {
   return bits.join('; ') + '.';
 }
 
-function buildClaudeBullet(summary, costEstimate, runsPath) {
+function buildClaudeBullet(summary, costEstimate, runsPath, anchor) {
   const gp = findGroup(summary, 'claude-code', 'product');
   const gf = findGroup(summary, 'claude-code', 'free');
   const toolsWith = fmtToolCallsMedian(gp.tool_calls_total.median);
@@ -1279,32 +1324,32 @@ function buildClaudeBullet(summary, costEstimate, runsPath) {
   const wallWithout = gf.duration_ms.median / 60000;
   const costWith = fmtCostRange(claudeCostRange(costEstimate, 'product'));
   const costWithout = fmtCostRange(claudeCostRange(costEstimate, 'free'));
-  const wallPhrase = wallClockPhrase(wallWith, wallWithout, gp.duration_ms, gf.duration_ms, runsPath);
+  const wallPhrase = wallClockPhrase(wallWith, wallWithout, gp.duration_ms, gf.duration_ms, runsPath, anchor);
   return `Claude Code (Sonnet 5) with kmp-test: median ${toolsWith} tool calls vs ${toolsWithout} without, ${wallPhrase}, estimated API cost ${costWith} vs ${costWithout} per session.`;
 }
 
-function buildCodexBullet(summary, runsPath) {
+function buildCodexBullet(summary, runsPath, anchor) {
   const gp = findGroup(summary, 'codex-cli', 'product');
   const gf = findGroup(summary, 'codex-cli', 'free');
   const toolsWith = fmtToolCallsMedian(gp.tool_calls_total.median);
   const toolsWithout = fmtToolCallsMedian(gf.tool_calls_total.median);
   const wallWith = gp.duration_ms.median / 60000;
   const wallWithout = gf.duration_ms.median / 60000;
-  const wallPhrase = wallClockPhrase(wallWith, wallWithout, gp.duration_ms, gf.duration_ms, runsPath);
+  const wallPhrase = wallClockPhrase(wallWith, wallWithout, gp.duration_ms, gf.duration_ms, runsPath, anchor);
   return `Codex CLI (gpt-5.6-terra, low reasoning effort): median ${toolsWith} tool calls with kmp-test vs ${toolsWithout} without; ${wallPhrase}.`;
 }
 
 // Schema 2 only: one shape for either runtime, cost included whenever cost-estimate.runtimes
 // covers it -- this is what lets Codex's bullet gain the same cost clause Claude's already has,
 // without a second hardcoded, cost-shaped template to keep in sync by hand.
-function buildRuntimeBullet(runtimeId, summary, costEstimate, runsPath) {
+function buildRuntimeBullet(runtimeId, summary, costEstimate, runsPath, anchor) {
   const gp = findGroup(summary, runtimeId, 'product');
   const gf = findGroup(summary, runtimeId, 'free');
   const toolsWith = fmtToolCallsMedian(gp.tool_calls_total.median);
   const toolsWithout = fmtToolCallsMedian(gf.tool_calls_total.median);
   const wallWith = gp.duration_ms.median / 60000;
   const wallWithout = gf.duration_ms.median / 60000;
-  const wallPhrase = wallClockPhrase(wallWith, wallWithout, gp.duration_ms, gf.duration_ms, runsPath);
+  const wallPhrase = wallClockPhrase(wallWith, wallWithout, gp.duration_ms, gf.duration_ms, runsPath, anchor);
   const displayName = RUNTIME_DISPLAY_NAME[runtimeId];
   const model = provenanceValue(summary, 'model_resolved', runtimeId);
   if (hasV2Cost(costEstimate, runtimeId)) {
@@ -1335,13 +1380,15 @@ function buildCrossAgentBullet(summary, arm, armLabel) {
   return `${armLabel} (descriptive): Codex ${fmtToolCallsMedian(codexMedian)} tool calls vs Claude ${fmtToolCallsMedian(claudeMedian)}, median, ${nLabel}.`;
 }
 
-export function buildBullets(summary, costEstimate, runsPath) {
+// anchor (optional): the heading anchor the wall-clock breakdown links point at -- main() passes the
+// one it reads from the record README; a caller that passes none keeps the legacy Evidence1 anchor.
+export function buildBullets(summary, costEstimate, runsPath, anchor = RESULTS_HEADING_ANCHOR) {
   const keyFactsBullet = buildKeyFactsBullet(summary);
   if (summary.schema === 2) {
     const bullets = [
       keyFactsBullet,
-      buildRuntimeBullet('claude-code', summary, costEstimate, runsPath),
-      buildRuntimeBullet('codex-cli', summary, costEstimate, runsPath),
+      buildRuntimeBullet('claude-code', summary, costEstimate, runsPath, anchor),
+      buildRuntimeBullet('codex-cli', summary, costEstimate, runsPath, anchor),
     ];
     const withBullet = buildCrossAgentBullet(summary, 'product', 'With kmp-test');
     const withoutBullet = buildCrossAgentBullet(summary, 'free', 'Without kmp-test');
@@ -1349,7 +1396,7 @@ export function buildBullets(summary, costEstimate, runsPath) {
     if (withoutBullet) bullets.push(withoutBullet);
     return bullets;
   }
-  return [keyFactsBullet, buildClaudeBullet(summary, costEstimate, runsPath), buildCodexBullet(summary, runsPath)];
+  return [keyFactsBullet, buildClaudeBullet(summary, costEstimate, runsPath, anchor), buildCodexBullet(summary, runsPath, anchor)];
 }
 
 // ---------------------------------------------------------------------------
@@ -1366,14 +1413,23 @@ function runtimeScopeClause(summary, runtimeId) {
   return `${displayName} ${version} · ${model} · reasoning effort ${effort}`;
 }
 
+// The grid image's alt text names the six rows as drawn, in order. The Codex note appears exactly
+// when the tool-output row is not drawn for Codex CLI (toolOutputMeasured).
+function buildGridAlt(summary) {
+  const alt = 'Per-session detail (descriptive, not part of the pre-registered design): shell commands by kind, tokens per session by type, wall-clock, API cost, turns and tool output returned to the model for both agents, with vs without kmp-test.';
+  return toolOutputMeasured(summary, 'codex-cli') ? alt : `${alt} Codex CLI tool output was not measured in this campaign.`;
+}
+
 // runsDirName (optional): the exact tools/runs/<...> directory to link/read from, e.g.
 // "evidence2-agentic-benchmark-2026-09-30". Falls back to the historical
 // evidence1-agentic-benchmark-<campaignDate> shape when omitted, so every existing caller that only
 // ever passed a bare date keeps rendering byte-identical output (back-compat default -- see main()'s
 // own --evidence=/--date= flags, which are the only caller expected to pass this explicitly).
-export function renderReadmeBlock(summary, campaignDate, costEstimate, runsDirName) {
+// anchor (optional): the heading anchor of the record README's results section, which the
+// wall-clock breakdown links point at -- see buildBullets.
+export function renderReadmeBlock(summary, campaignDate, costEstimate, runsDirName, anchor) {
   const runsPath = `tools/runs/${runsDirName || `evidence1-agentic-benchmark-${campaignDate}`}`;
-  const bulletsText = buildBullets(summary, costEstimate, runsPath).map((b) => `- ${b}`).join('\n');
+  const bulletsText = buildBullets(summary, costEstimate, runsPath, anchor).map((b) => `- ${b}`).join('\n');
   const kmpTestVersion = kmpTestVersionOf(summary);
   const runtimeScopeText = summary.schema === 2
     ? `${runtimeScopeClause(summary, 'claude-code')}. ${runtimeScopeClause(summary, 'codex-cli')}.`
@@ -1389,7 +1445,7 @@ kmp-test hands an agent the test and coverage verdict as one JSON envelope inste
 
 ![${buildScorecardAlt(summary, costEstimate)}](${runsPath}/scorecard.svg)
 
-![Per-session detail (descriptive, not part of the pre-registered design): tool calls, tokens, wall-clock, cost, turns and tool-output bytes for both agents, with vs without kmp-test.](${runsPath}/metrics-grid.svg)
+![${buildGridAlt(summary)}](${runsPath}/metrics-grid.svg)
 
 ${bulletsText}
 
@@ -1438,7 +1494,21 @@ function main(argv) {
 
   const scorecardSvg = renderScorecardSvg(summary, costEstimate);
   const metricsGridSvg = renderMetricsGridSvg(summary, costEstimate);
-  const block = renderReadmeBlock(summary, campaignDate, costEstimate, runsDirName);
+
+  // Only the evidence the root README shows builds (and so checks or writes) its README block.
+  const ownsReadme = ownsReadmeBlock(evidenceN);
+  let block = null;
+  if (ownsReadme) {
+    const recordReadmePath = join(runsDir, 'README.md');
+    let anchor;
+    try {
+      anchor = resultsHeadingAnchor(readFileSync(recordReadmePath, 'utf8'));
+    } catch (err) {
+      console.error(`::error::${recordReadmePath}: ${err.message}`);
+      process.exit(1);
+    }
+    block = renderReadmeBlock(summary, campaignDate, costEstimate, runsDirName, anchor);
+  }
 
   const scorecardPath = join(runsDir, 'scorecard.svg');
   const metricsGridPath = join(runsDir, 'metrics-grid.svg');
@@ -1447,6 +1517,10 @@ function main(argv) {
   if (mode === 'write') {
     writeFileSync(scorecardPath, scorecardSvg);
     writeFileSync(metricsGridPath, metricsGridSvg);
+    if (!ownsReadme) {
+      console.log(`Wrote ${scorecardPath}\nWrote ${metricsGridPath}`);
+      return;
+    }
     const readme = readFileSync(readmePath, 'utf8');
     const startMarker = '<!-- agentic-benchmark:start';
     const endMarker = '<!-- agentic-benchmark:end -->';
@@ -1467,19 +1541,21 @@ function main(argv) {
   let mismatches = [];
   if (!existsSync(scorecardPath) || readFileSync(scorecardPath, 'utf8') !== scorecardSvg) mismatches.push(scorecardPath);
   if (!existsSync(metricsGridPath) || readFileSync(metricsGridPath, 'utf8') !== metricsGridSvg) mismatches.push(metricsGridPath);
-  const readme = existsSync(readmePath) ? readFileSync(readmePath, 'utf8') : '';
-  const startMarker = '<!-- agentic-benchmark:start';
-  const endMarker = '<!-- agentic-benchmark:end -->';
-  const startIdx = readme.indexOf(startMarker);
-  const endIdx = readme.indexOf(endMarker);
-  if (startIdx === -1 || endIdx === -1 || readme.slice(startIdx, endIdx + endMarker.length) !== block) {
-    mismatches.push(readmePath);
+  if (ownsReadme) {
+    const readme = existsSync(readmePath) ? readFileSync(readmePath, 'utf8') : '';
+    const startMarker = '<!-- agentic-benchmark:start';
+    const endMarker = '<!-- agentic-benchmark:end -->';
+    const startIdx = readme.indexOf(startMarker);
+    const endIdx = readme.indexOf(endMarker);
+    if (startIdx === -1 || endIdx === -1 || readme.slice(startIdx, endIdx + endMarker.length) !== block) {
+      mismatches.push(readmePath);
+    }
   }
   if (mismatches.length > 0) {
     console.error(`::error::out of date, run with --write: ${mismatches.join(', ')}`);
     process.exit(1);
   }
-  console.log('README evidence block and chart are up to date.');
+  console.log(ownsReadme ? 'README evidence block and chart are up to date.' : `Evidence ${evidenceN} charts are up to date (the README block shows evidence ${README_EVIDENCE}).`);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
