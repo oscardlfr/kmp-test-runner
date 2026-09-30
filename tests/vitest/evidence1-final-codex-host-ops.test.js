@@ -581,7 +581,10 @@ describe('final Codex host/guest operational chain', () => {
   });
 
   it.skipIf(process.platform !== 'win32').each(['powershell.exe', 'pwsh.exe'])('rejects a dirty canonical worktree under %s', (shell) => {
-    const root = mkdtempSync(join(tmpdir(), 'e1-final-canonical-repo-'));
+    // Canonical scratch root, not tmpdir(): hosted Windows runners expose TEMP through a
+    // short-name alias (RUNNER~1) that these scripts' canonical-path checks reject.
+    mkdirSync('C:\\kmp-eval\\scratch', { recursive: true });
+    const root = mkdtempSync('C:\\kmp-eval\\scratch\\e1-final-canonical-repo-');
     try {
       const repo = join(root, 'repo'); const audits = join(repo, 'docs', 'audits'); mkdirSync(audits, { recursive: true });
       const source = read('evidence1-final-codex-host-contract.psm1').replace('C:\\kmp-eval\\agentic-eval-codex-runtime', repo);
@@ -837,7 +840,10 @@ describe('final Codex host/guest operational chain', () => {
   }, 40_000);
 
   it.skipIf(process.platform !== 'win32').each(['private', 'public'])('the real copy entrypoint recovers after a kill following the %s rename', async (rename) => {
-    const root = mkdtempSync(join(tmpdir(), `e1-final-copy-entry-${rename}-`));
+    // Canonical scratch root, not tmpdir(): hosted Windows runners expose TEMP through a
+    // short-name alias (RUNNER~1) that these scripts' canonical-path checks reject.
+    mkdirSync('C:\\kmp-eval\\scratch', { recursive: true });
+    const root = mkdtempSync(join('C:\\kmp-eval\\scratch', `e1-final-copy-entry-${rename}-`));
     try {
       const fixture = writeCopyRecoveryEntrypointFixture(root); const campaignId = randomUUID();
       const privateOut = join(fixture.privateRoot, campaignId); const publicOut = join(fixture.publicRoot, `evidence1-codex-pilot-${campaignId}`);
@@ -870,7 +876,10 @@ describe('final Codex host/guest operational chain', () => {
   }, 40_000);
 
   it.skipIf(process.platform !== 'win32')('cryptographically binds recovery to its reservation and rejects an invalid existing completion', () => {
-    const root = mkdtempSync(join(tmpdir(), 'e1-final-copy-reservation-'));
+    // Canonical scratch root, not tmpdir(): hosted Windows runners expose TEMP through a
+    // short-name alias (RUNNER~1) that these scripts' canonical-path checks reject.
+    mkdirSync('C:\\kmp-eval\\scratch', { recursive: true });
+    const root = mkdtempSync('C:\\kmp-eval\\scratch\\e1-final-copy-reservation-');
     try {
       const report = join(root, 'reserved.json'); const completion = join(root, 'terminal.json'); const journal = join(root, 'txn'); const privateOut = join(root, 'private.out'); const publicOut = join(root, 'public.out'); const campaignId = randomUUID();
       const pathHash = (value) => hash(Buffer.from(resolve(value), 'utf8'));
