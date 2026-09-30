@@ -107,9 +107,9 @@ used.
 
 ## Design (D1-D13, Amendment A7)
 
-Full text: `docs/audits/evidence2-preregistration.md` §1 (Design), §4 (Models), and its own
-Amendments section (A1-A8 as of this campaign; A7 is the substantive design change, A1-A6 and A8
-are corrections/operational notes made before or during the canary sequence, none changing what is
+Full text: [`preregistration.md`](preregistration.md) §1 (Design), §4 (Models), and its own
+Amendments section (A1-A9, all made before the campaign; A7 is the substantive design change,
+the others are corrections, operational notes and analysis clarifications, none changing what is
 measured). Locked before any live session; any change after the GREEN gate is a documented,
 committed amendment, never a silent edit.
 

@@ -2177,8 +2177,12 @@ runbooks.
 
 ## Explicit limitations
 
-- No full benchmark is executed by this PR; no performance claim is made — `run` itself is never
-  invoked against a live Claude session here, so this PR commits zero scenario-run evidence.
+- The harness itself makes no performance claim; each campaign's results and limitations live
+  with its evidence under `tools/runs/`.
+- Comments in this harness and in `docs/audits/` cite internal planning notes that are not part
+  of this repository (the eval-v2 `design.md`, the `evidence1-*-architecture-note.md` files, the
+  stabilization plan) and research hypothesis labels such as `H16`. The public design record is
+  each campaign's preregistration and evidence documents under `tools/runs/`.
 - Public-project scenarios only; no private project is referenced.
 - `candidate-skill` is schema-supported but not implemented.
 - All 6 originally-sketched scenarios now exist in `corpus/scenarios/`
