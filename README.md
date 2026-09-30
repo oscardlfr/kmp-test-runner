@@ -21,6 +21,8 @@ kmp-test hands an agent the test and coverage verdict as one JSON envelope inste
 - With kmp-test (descriptive): Codex 3 tool calls vs Claude 4.5, median, n=4 per cell.
 - Without kmp-test (descriptive): Codex 13 tool calls vs Claude 13, median, n=4 per cell.
 
+Why the difference is modest here: the task is deliberately small (one module, two test methods), and most of a session's tokens are the agent's own context going through the prompt cache, in both arms. The saving comes mostly from fewer cache re-reads and fewer output tokens, and kmp-test's advantage in output volume grows with project size. [Full breakdown](docs/agentic-benchmark.md).
+
 **Scope:** one scenario, tagged `train` (the skill was tuned on this task family); n=4 sessions per arm per agent in counterbalanced order; Windows 11 in an isolated VM with a restricted network (provider APIs only); design and metrics fixed before any live session. kmp-test 0.16.0. Claude Code 2.1.238 · claude-sonnet-5 · reasoning effort high. Codex CLI 0.154.0 · gpt-5.6-terra · reasoning effort high. Key facts = module, outcome, coverage numbers. [Evidence, per-session detail and limitations](tools/runs/evidence2-agentic-benchmark-2026-09-30/README.md) · [controls audit](tools/runs/evidence2-agentic-benchmark-2026-09-30/controls-audit.md) · [pre-registration](tools/runs/evidence2-agentic-benchmark-2026-09-30/preregistration.md)
 <!-- agentic-benchmark:end -->
 

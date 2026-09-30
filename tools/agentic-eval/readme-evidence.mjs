@@ -43,17 +43,17 @@ export function ownsReadmeBlock(evidenceN) {
 
 // GitHub-palette colors, chosen to render identically on GitHub's and npm's
 // markdown sanitizers (presentation attributes only, no <style>/CSS).
-const COLOR_TEXT = '#1f2328';
-const COLOR_SECONDARY = '#59636e';
+export const COLOR_TEXT = '#1f2328';
+export const COLOR_SECONDARY = '#59636e';
 const COLOR_GRID = '#d8dee4';
-const COLOR_WITH = '#0969da';
+export const COLOR_WITH = '#0969da';
 // #d4a72c (GitHub's own "attention" yellow) fails the 3:1 contrast-on-white
 // floor for non-text UI elements (~2.24:1, WCAG relative-luminance formula);
 // #bc4c00 passes (~5.03:1). See the contrast-ratio test in the test suite.
-const COLOR_WITHOUT = '#bc4c00';
-const COLOR_CARD_FILL = '#ffffff';
-const COLOR_CARD_STROKE = '#d0d7de';
-const FONT_STACK = "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif";
+export const COLOR_WITHOUT = '#bc4c00';
+export const COLOR_CARD_FILL = '#ffffff';
+export const COLOR_CARD_STROKE = '#d0d7de';
+export const FONT_STACK = "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif";
 
 const RUNTIME_LABELS = {
   'claude-code': 'Claude Code · claude-sonnet-5',
@@ -61,8 +61,8 @@ const RUNTIME_LABELS = {
 };
 const RUNTIME_KEY = { 'claude-code': 'CLAUDE', 'codex-cli': 'CODEX' };
 const RUNTIME_DISPLAY_NAME = { 'claude-code': 'Claude Code', 'codex-cli': 'Codex CLI' };
-const RUNTIME_ORDER = ['claude-code', 'codex-cli'];
-const ARM_ORDER = ['product', 'free']; // "with kmp-test" before "without kmp-test"
+export const RUNTIME_ORDER = ['claude-code', 'codex-cli'];
+export const ARM_ORDER = ['product', 'free']; // "with kmp-test" before "without kmp-test"
 const ARM_LABEL = { product: 'with kmp-test', free: 'without kmp-test' };
 
 // ---------------------------------------------------------------------------
@@ -411,10 +411,10 @@ function attachSharedBarFracs(metricsA, metricsB) {
 // list, so a layout bug shows up as a failing test, not just a bad render.
 
 const SCORECARD_W = 880;
-const PAD = 28;
-const ROW_GAP = 14; // minimum vertical gap between two text rows' allocated space
-const COLUMN_GAP = 32;
-const COLUMN_W = (SCORECARD_W - 2 * PAD - COLUMN_GAP) / 2;
+export const PAD = 28;
+export const ROW_GAP = 14; // minimum vertical gap between two text rows' allocated space
+export const COLUMN_GAP = 32;
+export const COLUMN_W = (SCORECARD_W - 2 * PAD - COLUMN_GAP) / 2;
 const BAR_AREA_W = 300; // gutter + bar, unchanged total footprint from before the gutter existed
 const GUTTER_W = 60; // fixed left gutter for each bar row's own "with"/"without" arm label
 const BAR_MAX_W = BAR_AREA_W - GUTTER_W;
@@ -424,7 +424,7 @@ const BLOCK_GAP = 24;
 const VALUE_LABEL_X_OFFSET = 12;
 const ARM_LABEL_FS = 11;
 
-function textItem(role, column, x, y, fontSize, fontWeight, fill, text, anchor) {
+export function textItem(role, column, x, y, fontSize, fontWeight, fill, text, anchor) {
   return { kind: 'text', role, column, x, y, fontSize, fontWeight, fill, text, anchor: anchor || 'start' };
 }
 
@@ -528,7 +528,7 @@ export function computeScorecardLayout(summary, costEstimate) {
   return { width: SCORECARD_W, height, items };
 }
 
-function escapeXml(s) {
+export function escapeXml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
@@ -590,7 +590,7 @@ export function buildScorecardAlt(summary, costEstimate) {
 // measured) is drawn as the grid's last row, with "not recorded" in place of an
 // agent's lanes when its bytes do not measure command output (toolOutputMeasured).
 
-const GRID_W = SCORECARD_W;
+export const GRID_W = SCORECARD_W;
 // Numbers-first, in the scorecard's own visual language, with one color rule for the whole image:
 // an arm is always blue (with kmp-test) or orange (without), the scorecard's own COLOR_WITH /
 // COLOR_WITHOUT, carried by every lane label; a component type always has its own palette color.
@@ -629,7 +629,7 @@ const GRID_LEGEND_SWATCH = 8;
 // their own part boundaries elsewhere in this file) -- same chars x fontSize x 0.6 estimator used
 // throughout. Shared by the composition-row partial-total note and the strip-row caption below;
 // extracted once a third caller needed the identical loop rather than a third copy of it.
-function wrapWords(text, fontSize, maxWidth) {
+export function wrapWords(text, fontSize, maxWidth) {
   const lines = [];
   let line = '';
   for (const word of text.split(' ')) {
@@ -645,7 +645,7 @@ function wrapWords(text, fontSize, maxWidth) {
   return lines;
 }
 
-function medianOf(values) {
+export function medianOf(values) {
   if (!values || values.length === 0) return null;
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
@@ -732,7 +732,7 @@ export const TOKEN_COMPONENT_TYPES = {
 };
 // cache_read and output used to reuse COLOR_WITH/COLOR_WITHOUT exactly (#0969da/#bc4c00) --
 // same collision as COMMAND_KIND_COLORS above, fixed the same way.
-const TOKEN_COMPONENT_COLORS = { uncached_input: '#8250df', cache_read: '#1b7c83', cache_write: '#1a7f37', output: '#bf3989', reasoning: '#cf222e' };
+export const TOKEN_COMPONENT_COLORS = { uncached_input: '#8250df', cache_read: '#1b7c83', cache_write: '#1a7f37', output: '#bf3989', reasoning: '#cf222e' };
 export const TOKEN_COMPONENT_LABEL = { uncached_input: 'uncached input', cache_read: 'cache read', cache_write: 'cache write', output: 'output', reasoning: 'reasoning' };
 
 // A `reasoning_output` that is null/undefined means "not tracked" (schema-1's own by_runtime_arm
@@ -927,7 +927,7 @@ function renderStripRow(colX, rowY, mainHeaderText, diffText, agentLabel, withMe
 // One COMPOSITION row (tool calls by kind / tokens by type) for one runtime column: header ->
 // two lanes, each ONE horizontal stacked bar of per-component MEDIANS with the total printed at
 // the end -> one shared legend line giving each present component's with-vs-without value -> gap.
-function renderCompositionRow(colX, rowY, headerText, agentLabel, withComp, withoutComp, compMax, types, typeColors, typeLabels, fmtValue, partialTotalNote) {
+export function renderCompositionRow(colX, rowY, headerText, agentLabel, withComp, withoutComp, compMax, types, typeColors, typeLabels, fmtValue, partialTotalNote) {
   const items = [];
   let cursor = rowY;
   items.push(textItem('gridRowHeader', null, colX, cursor + GRID_HEADER_FS, GRID_HEADER_FS, 500, COLOR_TEXT, headerText));
@@ -1090,7 +1090,7 @@ function stripHeaderLines(label, unit, diffPct, sourceNote) {
 // ran (Evidence2 erratum E6), until a cell says otherwise with `output_bytes_kind:
 // 'command_output'`. Its tool-output lanes are drawn only when every counted cell says so, never a
 // partial mix. Claude's bytes were always the tool results returned to the model.
-function toolOutputMeasured(summary, runtimeId) {
+export function toolOutputMeasured(summary, runtimeId) {
   if (runtimeId !== 'codex-cli') return true;
   const cells = ARM_ORDER.flatMap((arm) => countedCells(summary, runtimeId, arm));
   return cells.length > 0 && cells.every((c) => c.output_bytes_kind === 'command_output');
@@ -1290,7 +1290,7 @@ function wallClockPhrase(withMinutes, withoutMinutes, withGroup, withoutGroup, r
 
 // "<DisplayName> · <model>". Schema 2 reads the model from provenance.model_resolved, the model the
 // campaign actually recorded; schema 1 keeps its fixed labels.
-function runtimeModelLabel(summary, runtimeId) {
+export function runtimeModelLabel(summary, runtimeId) {
   return summary.schema === 2
     ? `${RUNTIME_DISPLAY_NAME[runtimeId]} · ${provenanceValue(summary, 'model_resolved', runtimeId)}`
     : RUNTIME_LABELS[runtimeId];
@@ -1420,6 +1420,12 @@ function buildGridAlt(summary) {
   return toolOutputMeasured(summary, 'codex-cli') ? alt : `${alt} Codex CLI tool output was not measured in this campaign.`;
 }
 
+// A short paragraph the README block shows between its bullets and its Scope line, keyed by evidence
+// number. An evidence without an entry gets no note.
+export const README_NOTES = {
+  2: `Why the difference is modest here: the task is deliberately small (one module, two test methods), and most of a session's tokens are the agent's own context going through the prompt cache, in both arms. The saving comes mostly from fewer cache re-reads and fewer output tokens, and kmp-test's advantage in output volume grows with project size. [Full breakdown](docs/agentic-benchmark.md).`,
+};
+
 // runsDirName (optional): the exact tools/runs/<...> directory to link/read from, e.g.
 // "evidence2-agentic-benchmark-2026-09-30". Falls back to the historical
 // evidence1-agentic-benchmark-<campaignDate> shape when omitted, so every existing caller that only
@@ -1427,9 +1433,11 @@ function buildGridAlt(summary) {
 // own --evidence=/--date= flags, which are the only caller expected to pass this explicitly).
 // anchor (optional): the heading anchor of the record README's results section, which the
 // wall-clock breakdown links point at -- see buildBullets.
-export function renderReadmeBlock(summary, campaignDate, costEstimate, runsDirName, anchor) {
+// note (optional): a paragraph shown between the bullets and the Scope line (README_NOTES).
+export function renderReadmeBlock(summary, campaignDate, costEstimate, runsDirName, anchor, note) {
   const runsPath = `tools/runs/${runsDirName || `evidence1-agentic-benchmark-${campaignDate}`}`;
   const bulletsText = buildBullets(summary, costEstimate, runsPath, anchor).map((b) => `- ${b}`).join('\n');
+  const noteText = note ? `${note}\n\n` : '';
   const kmpTestVersion = kmpTestVersionOf(summary);
   const runtimeScopeText = summary.schema === 2
     ? `${runtimeScopeClause(summary, 'claude-code')}. ${runtimeScopeClause(summary, 'codex-cli')}.`
@@ -1449,7 +1457,7 @@ kmp-test hands an agent the test and coverage verdict as one JSON envelope inste
 
 ${bulletsText}
 
-**Scope:** one scenario, tagged \`train\` (the skill was tuned on this task family); n=4 sessions per arm per agent in counterbalanced order; Windows 11 in an isolated VM with a restricted network (provider APIs only); design and metrics fixed before any live session. kmp-test ${kmpTestVersion}. ${runtimeScopeText} Key facts = module, outcome, coverage numbers. ${evidenceLinks}
+${noteText}**Scope:** one scenario, tagged \`train\` (the skill was tuned on this task family); n=4 sessions per arm per agent in counterbalanced order; Windows 11 in an isolated VM with a restricted network (provider APIs only); design and metrics fixed before any live session. kmp-test ${kmpTestVersion}. ${runtimeScopeText} Key facts = module, outcome, coverage numbers. ${evidenceLinks}
 <!-- agentic-benchmark:end -->`;
 }
 
@@ -1507,7 +1515,7 @@ function main(argv) {
       console.error(`::error::${recordReadmePath}: ${err.message}`);
       process.exit(1);
     }
-    block = renderReadmeBlock(summary, campaignDate, costEstimate, runsDirName, anchor);
+    block = renderReadmeBlock(summary, campaignDate, costEstimate, runsDirName, anchor, README_NOTES[evidenceN]);
   }
 
   const scorecardPath = join(runsDir, 'scorecard.svg');

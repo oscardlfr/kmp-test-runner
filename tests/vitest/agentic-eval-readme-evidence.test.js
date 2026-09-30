@@ -24,6 +24,7 @@ import {
   fmtToolCallsMedian,
   computeMetricsGridLayout,
   README_EVIDENCE,
+  README_NOTES,
   ownsReadmeBlock,
   resultsHeadingAnchor,
 } from '../../tools/agentic-eval/readme-evidence.mjs';
@@ -537,21 +538,21 @@ describe('the committed evidence2-agentic-benchmark-2026-09-30 campaign (publish
     const end = readme.indexOf('<!-- agentic-benchmark:end -->') + '<!-- agentic-benchmark:end -->'.length;
     expect(start).toBeGreaterThan(-1);
     const committedBlock = readme.slice(start, end);
-    // 'results' is the anchor main() computes from the Evidence2 record README's own heading.
-    const regenerated = crlfNormalize(renderReadmeBlock(summary, CAMPAIGN_DATE_V2, costEstimate, RUNS_DIR_NAME_V2, 'results'));
+    // 'results' is the anchor main() computes from the Evidence2 record README's own heading, and
+    // README_NOTES[2] the note main() passes for Evidence2.
+    const regenerated = crlfNormalize(renderReadmeBlock(summary, CAMPAIGN_DATE_V2, costEstimate, RUNS_DIR_NAME_V2, 'results', README_NOTES[2]));
     expect(regenerated).toBe(committedBlock);
   });
 
-  it('every relative link/image path in the README block resolves inside this one (Evidence2) campaign directory', () => {
+  it('every relative link/image path in the README block resolves inside this one (Evidence2) campaign directory, except the one link to docs/agentic-benchmark.md', () => {
     const readme = readFileSync(README_PATH, 'utf8');
     const start = readme.indexOf('<!-- agentic-benchmark:start');
     const end = readme.indexOf('<!-- agentic-benchmark:end -->') + '<!-- agentic-benchmark:end -->'.length;
     const block = readme.slice(start, end);
     const paths = [...block.matchAll(/\]\(([^)]+)\)/g)].map(m => m[1]);
     expect(paths.length).toBeGreaterThan(0);
-    for (const p of paths) {
-      expect(p.startsWith(`tools/runs/${RUNS_DIR_NAME_V2}`)).toBe(true);
-    }
+    const outside = paths.filter(p => !p.startsWith(`tools/runs/${RUNS_DIR_NAME_V2}`));
+    expect(outside).toEqual(['docs/agentic-benchmark.md']);
   });
 
   it('the README block links to the evidence doc, controls audit, and pre-registration inside the Evidence2 directory', () => {
