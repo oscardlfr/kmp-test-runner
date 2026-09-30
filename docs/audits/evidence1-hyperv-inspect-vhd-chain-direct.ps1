@@ -12,6 +12,17 @@
 # VirtualSize - avhdx FileSize, not a base+diff sum against one virtual size). Never mutates
 # anything -- same closed-VMName, confined-create-new-ReportPath shape as
 # evidence1-hyperv-set-vm-memory-direct.ps1, minus any write action at all.
+#
+# 2026-09-30 (auditor-directed revert): P0 #4 briefly made this script Import-Module
+# evidence1-vm-state-hyperv.psm1 to reuse the walk via Get-E1VmVhdChain. Reverted -- the repo's own
+# architectural invariant (Evidence1-Run-Broker-Capability-Wiring.Tests.ps1's "Global sweep: a
+# *-hyperv.psm1 is importable only from evidence1-host-broker-capability-dispatch.ps1") reserves
+# direct *-hyperv.psm1 imports for the one elevated dispatch entry point; every standalone
+# "-direct.ps1" forensic script (this one, evidence1-hyperv-set-vm-memory-direct.ps1, etc.) stays
+# fully self-contained instead, dispatched via the simpler host-elevated-runner-client, never the
+# broker-capability queue. Get-E1VmVhdChain remains in evidence1-vm-state-hyperv.psm1, unchanged,
+# for the vhd.inspect_chain capability the VmReady disk guard actually uses -- this script's own
+# walk below is independently maintained, by design, not a shared implementation.
 param(
   [string]$VMName = 'Evidence1-Runner-E2E',
   [string]$ExpectedVMId = 'fd7c0298-186f-4a8e-9ae8-0a8af6969d14',

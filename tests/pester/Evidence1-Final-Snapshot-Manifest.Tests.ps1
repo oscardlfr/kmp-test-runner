@@ -79,11 +79,12 @@ Describe 'New-E1FinalSnapshotManifest: overall shape and freshness' {
         @(Compare-Object $independentNode $manifestNode).Count | Should -Be 0
     }
 
-    It 'the 7-capability broker_capability_names list matches a fresh, direct call to Get-E1BrokerCapabilityNames' {
+    It 'the 8-capability broker_capability_names list matches a fresh, direct call to Get-E1BrokerCapabilityNames' {
+        # P0 #4 (publication hardening): vhd.inspect_chain added, 7 -> 8.
         $manifest = New-E1FinalSnapshotManifest
         $fresh = @(Get-E1BrokerCapabilityNames)
         @(Compare-Object $fresh $manifest.broker_capability_names).Count | Should -Be 0
-        $manifest.broker_capability_names.Count | Should -Be 7
+        $manifest.broker_capability_names.Count | Should -Be 8
     }
 
     It 'would reflect an ADDED entry automatically -- proven by injecting a temporary extra allowlisted-script-shaped file and a scratch copy of the runner naming it, not merely asserted' {

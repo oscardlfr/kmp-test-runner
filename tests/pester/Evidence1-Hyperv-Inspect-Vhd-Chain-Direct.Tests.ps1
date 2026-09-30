@@ -6,6 +6,9 @@
 # tests/pester/Evidence1-Hyperv-Set-Vm-Memory-Direct.Tests.ps1. The extraction
 # starts after the param block (never executed here -- $VMName/$ExpectedVMId/
 # $ReportPath are set directly as script-scoped variables per test instead).
+#
+# 2026-09-30 (auditor-directed revert): reverted alongside the script itself -- see that file's own
+# header. This is the pre-P0#4 version, testing the script's own independent inline walk directly.
 BeforeAll {
     $script:AuditsRoot = 'C:\kmp-eval\agentic-eval-codex-runtime\docs\audits'
     $scriptSource = Get-Content -LiteralPath (Join-Path $script:AuditsRoot 'evidence1-hyperv-inspect-vhd-chain-direct.ps1') -Raw

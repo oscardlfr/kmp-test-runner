@@ -12,7 +12,11 @@ BeforeAll {
     # byte-identical -- the file:line citations in the architecture note are
     # how that correspondence is checked instead, since the file cannot be
     # run to compare directly.
-    $script:AuditsRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\docs\audits')).Path
+    # $PSScriptRoot-relative rather than a hardcoded main-checkout path -- see
+    # Evidence1-Run-Disk-Space-Guards.Tests.ps1's own header for why: this whole file (including
+    # every "read evidence1-run.ps1's own source and Invoke-Expression a function out of it" Describe
+    # block below) silently verified nothing about a work-order worktree's own copy until merge.
+    $script:AuditsRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\docs\audits'))
     Import-Module (Join-Path $script:AuditsRoot 'evidence1-run-manifest-contract.psm1') -Force
     # Newly needed this round (overnight work order item 6, Phase 4
     # rehearsals 2/3): New-E1RunStateReceipt/Read-E1RunStateReceipt/
@@ -527,6 +531,34 @@ Describe 'Evidence1 failure-safe closure attempt on a mid-campaign crash (2026-0
         $end = $runScriptSource.IndexOf("`n}`n", $start)
         if ($end -lt 0) { throw 'could not isolate the end of Invoke-E1RunFailureSafeClosureAttempt' }
         Invoke-Expression ($runScriptSource.Substring($start, $end - $start + 2))
+
+        # P0 #5: Invoke-E1RunFailureSafeClosureAttempt now calls this sibling function directly
+        # (a real, non-Import-Module call, resolved from the current scope at call time) --
+        # extracted separately here for the exact same reason as every other function this file
+        # pulls out of evidence1-run.ps1's own source: it is script-level code, not a module
+        # function, and this file may never dot-source the script itself.
+        $evidenceCopyStart = $runScriptSource.IndexOf('function Invoke-E1RunFailureSafeEvidenceCopyAttempt')
+        if ($evidenceCopyStart -lt 0) { throw 'Invoke-E1RunFailureSafeEvidenceCopyAttempt not found in evidence1-run.ps1 -- fix not applied' }
+        $evidenceCopyEnd = $runScriptSource.IndexOf("`n}`n", $evidenceCopyStart)
+        if ($evidenceCopyEnd -lt 0) { throw 'could not isolate the end of Invoke-E1RunFailureSafeEvidenceCopyAttempt' }
+        Invoke-Expression ($runScriptSource.Substring($evidenceCopyStart, $evidenceCopyEnd - $evidenceCopyStart + 2))
+
+        # Invoke-E1RunFailureSafeEvidenceCopyAttempt's tier-1 path calls this too (same
+        # already-established extraction technique; see the "benchmark_status" Describe elsewhere
+        # in this file for its own independent use of the identical citation).
+        $benchmarkStatusStart = $runScriptSource.IndexOf('function Get-E1SafeBenchmarkStatus')
+        if ($benchmarkStatusStart -lt 0) { throw 'Get-E1SafeBenchmarkStatus not found in evidence1-run.ps1 -- fix not applied' }
+        $benchmarkStatusEnd = $runScriptSource.IndexOf("`n}`n", $benchmarkStatusStart)
+        if ($benchmarkStatusEnd -lt 0) { throw 'could not isolate the end of Get-E1SafeBenchmarkStatus' }
+        Invoke-Expression ($runScriptSource.Substring($benchmarkStatusStart, $benchmarkStatusEnd - $benchmarkStatusStart + 2))
+
+        # Explicit rather than relying on evidence1-artifact-copy-fake.psm1's own transitive import
+        # of this module (already imported at this file's top level) to also make
+        # Assert-E1ArtifactCopyResultShape callable from here -- not empirically confirmed either
+        # way, and this Describe block never uses the fake backend directly (it shadows
+        # Copy-E1ArtifactsReadOnly itself, same style as its network/VM shadows above), so nothing
+        # else in this file guarantees this import already happened.
+        Import-Module (Join-Path $script:AuditsRoot 'evidence1-artifact-copy-contract.psm1') -Force -DisableNameChecking
     }
 
     It '(M1 RED/GREEN) both calls pass a bounded -TimeoutMinutes instead of falling through to each function''s own 120-minute default' {
@@ -618,6 +650,158 @@ Describe 'Evidence1 failure-safe closure attempt on a mid-campaign crash (2026-0
         $funcBody = $script:FailureSafeClosureFixSource.Substring($funcStart, $funcEnd - $funcStart)
         $funcBody | Should -Not -Match 'New-E1RunStateReceipt'
         $funcBody | Should -Not -Match 'Write-E1RunStateReceiptAtomically'
+    }
+
+    # P0 #5 (publication hardening, auditor-directed): "evidence from a failed LiveRunning reaches
+    # the host automatically" -- see Invoke-E1RunFailureSafeEvidenceCopyAttempt's own header
+    # (evidence1-run.ps1) for the two-tier design these tests exercise.
+    Context 'evidence_copy (P0 #5)' {
+        BeforeAll {
+            function New-TestFailureSafeContext([switch]$WithManifest) {
+                $campaignRoot = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+                New-Item -ItemType Directory -Force -Path $campaignRoot | Out-Null
+                $manifest = if ($WithManifest) { New-TestManifestObject } else { $null }
+                return [ordered]@{
+                    UseRealBackends        = $true
+                    VMName                 = 'Evidence1-Runner-E2E'
+                    VMId                   = [guid]::NewGuid().ToString()
+                    GuestCredentialPath    = 'C:\fake\cred.clixml'
+                    Manifest               = $manifest
+                    CampaignRoot           = $campaignRoot
+                    OutputRootsTrustedRoot = 'C:\kmp-eval\scratch\'
+                }
+            }
+            # The 4 expected cells New-TestManifestObject's own default manifest resolves to
+            # (2 runtimes x 2 rounds, round 1 reversed per Get-E1RunManifestExpectedCells' own D7
+            # alternation): codex-cli-0, claude-code-0, claude-code-1, codex-cli-1.
+            $script:ExpectedCellKeys = @('codex-cli-0', 'claude-code-0', 'claude-code-1', 'codex-cli-1')
+        }
+
+        It 'skips with no_manifest and never calls the copy capability when the context has no manifest at all' {
+            function Get-E1RunRealTransportArguments { @{} }
+            function Invoke-E1NetworkEnsureMode { param($VMName, $GuestCredentialPath, $TargetMode) [ordered]@{ verdict = 'PASS' } }
+            function Invoke-E1VmEnsureState { param($VMName, $ExpectedVMId, $TargetState) [ordered]@{ verdict = 'PASS' } }
+            function Copy-E1ArtifactsReadOnly { throw 'must not be called when there is no manifest' }
+            $context = New-TestFailureSafeContext
+            $result = Invoke-E1RunFailureSafeClosureAttempt $context
+            $result.evidence_copy.attempted | Should -BeFalse
+            $result.evidence_copy.skipped_reason | Should -BeExactly 'no_manifest'
+        }
+
+        It 'skips with vm_not_confirmed_off and never calls the copy capability when the VM could not be confirmed Off' {
+            function Get-E1RunRealTransportArguments { @{} }
+            function Invoke-E1NetworkEnsureMode { param($VMName, $GuestCredentialPath, $TargetMode) [ordered]@{ verdict = 'PASS' } }
+            function Invoke-E1VmEnsureState { param($VMName, $ExpectedVMId, $TargetState) [ordered]@{ verdict = 'FAIL'; reason_code = 'vm_state_stop_timeout' } }
+            function Copy-E1ArtifactsReadOnly { throw 'must not be called when the VM is not confirmed Off' }
+            $context = New-TestFailureSafeContext -WithManifest
+            $result = Invoke-E1RunFailureSafeClosureAttempt $context
+            $result.evidence_copy.attempted | Should -BeFalse
+            $result.evidence_copy.skipped_reason | Should -BeExactly 'vm_not_confirmed_off'
+        }
+
+        It '(tier 2: no LiveRunning receipt) attempts agentic-eval-session-record per cell, best-effort -- a cell already recorded PASSes, a cell never recorded is a recorded miss, not a fatal error' {
+            function Get-E1RunRealTransportArguments { @{} }
+            function Invoke-E1NetworkEnsureMode { param($VMName, $GuestCredentialPath, $TargetMode) [ordered]@{ verdict = 'PASS' } }
+            function Invoke-E1VmEnsureState { param($VMName, $ExpectedVMId, $TargetState) [ordered]@{ verdict = 'PASS' } }
+            $script:E1TestCapturedCopyTimeoutMinutes = @()
+            # Only 2 of the 4 expected cells had actually been recorded before the failure --
+            # matches the real fake backend's own artifact_copy_required_source_missing throw
+            # shape (evidence1-artifact-copy-fake.psm1) for the other 2.
+            function Copy-E1ArtifactsReadOnly {
+                param($VMName, $ExpectedVMId, $SpecName, $Arguments, $DestinationDir, $TrustedRoot, [int]$TimeoutMinutes = -1)
+                $script:E1TestCapturedCopyTimeoutMinutes += $TimeoutMinutes
+                if ($Arguments.CellKey -cin @('codex-cli-0', 'claude-code-1')) {
+                    return [ordered]@{ files_copied = @('audit.json', 'record.json') }
+                }
+                throw "artifact_copy_required_source_missing: record.json"
+            }
+            $context = New-TestFailureSafeContext -WithManifest
+            $result = Invoke-E1RunFailureSafeClosureAttempt $context
+            $copy = $result.evidence_copy
+            $copy.attempted | Should -BeTrue
+            $copy.tier | Should -BeExactly 'best_effort_session_record_only'
+            $copy.live_running_available | Should -BeFalse
+            $copy.results.Count | Should -Be 4
+            ($copy.results | ForEach-Object { $_.cell_key } | Sort-Object) | Should -Be ($script:ExpectedCellKeys | Sort-Object)
+            foreach ($entry in ($copy.results | Where-Object { $_.cell_key -cin @('codex-cli-0', 'claude-code-1') })) {
+                $entry.verdict | Should -BeExactly 'PASS'
+                $entry.spec_name | Should -BeExactly 'agentic-eval-session-record'
+                $entry.files_copied | Should -Be @('audit.json', 'record.json')
+            }
+            foreach ($entry in ($copy.results | Where-Object { $_.cell_key -cin @('claude-code-0', 'codex-cli-1') })) {
+                $entry.verdict | Should -BeExactly 'FAIL'
+                $entry.error | Should -Match 'artifact_copy_required_source_missing'
+            }
+            # Bounded, same discipline as the network/VM calls above (M1 RED/GREEN) -- a best-effort
+            # attempt must never risk each cell's own full 120-minute default.
+            foreach ($captured in $script:E1TestCapturedCopyTimeoutMinutes) { ($captured -ge 0 -and $captured -le 10) | Should -BeTrue }
+            # The outer closure attempt's own error/network/vm fields are unaffected by per-cell
+            # copy misses -- a partial evidence recovery must never look like a whole-function error.
+            $result.error | Should -BeNullOrEmpty
+            $result.network_result.verdict | Should -BeExactly 'PASS'
+            $result.vm_result.verdict | Should -BeExactly 'PASS'
+        }
+
+        It '(tier 1: complete LiveRunning receipt) copies the accepted-vs-rejected spec per cell exactly like EvidenceCopied itself would have' {
+            function Get-E1RunRealTransportArguments { @{} }
+            function Invoke-E1NetworkEnsureMode { param($VMName, $GuestCredentialPath, $TargetMode) [ordered]@{ verdict = 'PASS' } }
+            function Invoke-E1VmEnsureState { param($VMName, $ExpectedVMId, $TargetState) [ordered]@{ verdict = 'PASS' } }
+            $script:E1TestCapturedCopySpecCalls = @()
+            function Copy-E1ArtifactsReadOnly {
+                param($VMName, $ExpectedVMId, $SpecName, $Arguments, $DestinationDir, $TrustedRoot, [int]$TimeoutMinutes = -1)
+                $script:E1TestCapturedCopySpecCalls += [ordered]@{ cell_key = $Arguments.CellKey; spec_name = $SpecName; rejection_id = $Arguments.RejectionId }
+                [ordered]@{ files_copied = @('audit.json', 'record.json') }
+            }
+            $context = New-TestFailureSafeContext -WithManifest
+            $rejectionId = [guid]::NewGuid().ToString()
+            $sessions = @(
+                [ordered]@{ runtime_id = 'codex-cli'; round_index = 0; output_summary = [ordered]@{ benchmark_status = 'accepted' } }
+                [ordered]@{ runtime_id = 'claude-code'; round_index = 0; output_summary = [ordered]@{ benchmark_status = 'accepted' } }
+                [ordered]@{ runtime_id = 'claude-code'; round_index = 1; output_summary = [ordered]@{ benchmark_status = 'rejected'; rejection_id = $rejectionId } }
+                [ordered]@{ runtime_id = 'codex-cli'; round_index = 1; output_summary = [ordered]@{ benchmark_status = 'accepted' } }
+            )
+            $liveReceipt = New-E1RunStateReceipt -CampaignId ([string]$context.Manifest.campaign_id) -StateName 'LiveRunning' `
+              -Verdict 'FAIL' -ReasonCode 'one_or_more_provider_sessions_failed' -Detail ([ordered]@{ sessions = $sessions })
+            Write-E1RunStateReceiptAtomically $context.CampaignRoot $liveReceipt
+
+            $result = Invoke-E1RunFailureSafeClosureAttempt $context
+            $copy = $result.evidence_copy
+            $copy.tier | Should -BeExactly 'live_running_session_status'
+            $copy.live_running_available | Should -BeTrue
+            $copy.results.Count | Should -Be 4
+
+            $rejectedCall = $script:E1TestCapturedCopySpecCalls | Where-Object { $_.cell_key -ceq 'claude-code-1' }
+            $rejectedCall.spec_name | Should -BeExactly 'agentic-eval-rejection-diagnostic'
+            $rejectedCall.rejection_id | Should -BeExactly $rejectionId
+            $rejectedResult = $copy.results | Where-Object { $_.cell_key -ceq 'claude-code-1' }
+            $rejectedResult.benchmark_status | Should -BeExactly 'rejected'
+            $rejectedResult.verdict | Should -BeExactly 'PASS'
+
+            foreach ($cellKey in @('codex-cli-0', 'claude-code-0', 'codex-cli-1')) {
+                $call = $script:E1TestCapturedCopySpecCalls | Where-Object { $_.cell_key -ceq $cellKey }
+                $call.spec_name | Should -BeExactly 'agentic-eval-session-record'
+                $entry = $copy.results | Where-Object { $_.cell_key -ceq $cellKey }
+                $entry.benchmark_status | Should -BeExactly 'accepted'
+                $entry.verdict | Should -BeExactly 'PASS'
+            }
+        }
+
+        It 'never lets a copy capability that always throws propagate past the closure attempt -- every cell is recorded FAIL, nothing rethrows' {
+            function Get-E1RunRealTransportArguments { @{} }
+            function Invoke-E1NetworkEnsureMode { param($VMName, $GuestCredentialPath, $TargetMode) [ordered]@{ verdict = 'PASS' } }
+            function Invoke-E1VmEnsureState { param($VMName, $ExpectedVMId, $TargetState) [ordered]@{ verdict = 'PASS' } }
+            function Copy-E1ArtifactsReadOnly { throw 'broker_deployment_root_unavailable' }
+            $context = New-TestFailureSafeContext -WithManifest
+            $result = Invoke-E1RunFailureSafeClosureAttempt $context
+            $copy = $result.evidence_copy
+            $copy.results.Count | Should -Be 4
+            foreach ($entry in $copy.results) {
+                $entry.verdict | Should -BeExactly 'FAIL'
+                $entry.error | Should -Match 'broker_deployment_root_unavailable'
+            }
+            $copy.error | Should -BeNullOrEmpty
+            $result.error | Should -BeNullOrEmpty
+        }
     }
 }
 

@@ -94,15 +94,31 @@ function expectedCellsFromManifest(manifest) {
  * mode (absent directory, unrecognized shape, malformed JSON, a failed cross-validator, a
  * digest mismatch) returns `{status:'missing', reason}` instead, matching this whole module's
  * fail-closed, honest-about-gaps discipline. */
+// 2026-09-30 (auditor-directed fix): the campaign's own private evidence directory can carry
+// well-known evidence files this summarizer does not itself read -- transcript.jsonl
+// (agentic-eval-accepted-raw-transcript / agentic-eval-rejected-raw-transcript, added post-hoc for
+// infra-flake classification, which DOES require it directly at this same path) and incident.json
+// (an incident diagnostic, when relevant). Both are tolerated alongside the required set below; any
+// OTHER, unrecognized file still fails closed, with the exact offending name(s) in the reason, same
+// discipline as every other shape check in this function.
+const REQUIRED_CELL_FILES = new Set(['rejection.json', 'audit.json', 'record.json']);
+const KNOWN_EXTRA_CELL_FILES = new Set(['transcript.jsonl', 'incident.json']);
+
 function loadCell(privateRoot, cellKey) {
   const cellDir = join(privateRoot, cellKey);
   if (!existsSync(cellDir)) return { status: 'missing', reason: 'cell_directory_absent' };
-  let entries;
+  let allEntries;
   try {
-    entries = readdirSync(cellDir).sort();
+    allEntries = readdirSync(cellDir).sort();
   } catch {
     return { status: 'missing', reason: 'cell_directory_unreadable' };
   }
+
+  const unknownEntries = allEntries.filter((e) => !REQUIRED_CELL_FILES.has(e) && !KNOWN_EXTRA_CELL_FILES.has(e));
+  if (unknownEntries.length > 0) {
+    return { status: 'missing', reason: `cell_directory_unknown_file:${unknownEntries.join(',')}` };
+  }
+  const entries = allEntries.filter((e) => REQUIRED_CELL_FILES.has(e));
 
   if (entries.length === 1 && entries[0] === 'rejection.json') {
     let rejection;

@@ -1,13 +1,20 @@
 BeforeAll {
-    $script:AuditsRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\docs\audits')).Path
+    # $PSScriptRoot-relative rather than a hardcoded main-checkout path -- see
+    # Evidence1-Run-Disk-Space-Guards.Tests.ps1's own header for why: a hardcoded path silently
+    # verifies nothing about a work-order worktree's own copy of this module until merge.
+    $script:AuditsRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\docs\audits'))
     Import-Module (Join-Path $script:AuditsRoot 'evidence1-broker-capability-contract.psm1') -Force
 }
 
 Describe 'Evidence1 broker capability registry' {
-    It 'contains exactly the 7 registered capabilities, and excludes broker.update' {
+    It 'contains exactly the 8 registered capabilities, and excludes broker.update' {
+        # P0 #4 (publication hardening): vhd.inspect_chain added alongside the VmReady disk guard's
+        # own move off host-elevated-script dispatch onto a registered capability (real subprocess
+        # confirms Get-E1BrokerCapabilityNames sorts its Keys, so this expected list is alphabetical
+        # regardless of the registry literal's own declaration order).
         (Get-E1BrokerCapabilityNames) | Should -Be @(
             'artifacts.copy_read_only', 'broker.status', 'guest.invoke_bundle',
-            'network.ensure_mode', 'network.inspect', 'vm.ensure_state', 'vm.inspect'
+            'network.ensure_mode', 'network.inspect', 'vhd.inspect_chain', 'vm.ensure_state', 'vm.inspect'
         )
         (Get-E1BrokerCapabilityNames) | Should -Not -Contain 'broker.update'
     }
@@ -19,6 +26,7 @@ Describe 'Evidence1 broker capability registry' {
         $registry.'vm.inspect'.function_name | Should -BeExactly 'Get-E1VmState'
         $registry.'vm.ensure_state'.function_name | Should -BeExactly 'Invoke-E1VmEnsureState'
         $registry.'network.inspect'.function_name | Should -BeExactly 'Get-E1NetworkState'
+        $registry.'vhd.inspect_chain'.function_name | Should -BeExactly 'Get-E1VmVhdChain'
         $registry.'network.ensure_mode'.function_name | Should -BeExactly 'Invoke-E1NetworkEnsureMode'
         $registry.'guest.invoke_bundle'.function_name | Should -BeExactly 'Invoke-E1GuestBundle'
         $registry.'artifacts.copy_read_only'.function_name | Should -BeExactly 'Copy-E1ArtifactsReadOnly'

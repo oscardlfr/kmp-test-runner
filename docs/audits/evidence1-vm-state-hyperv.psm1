@@ -159,4 +159,58 @@ function Invoke-E1VmEnsureState {
   return $result
 }
 
-Export-ModuleMember -Function Get-E1VmState, Invoke-E1VmEnsureState
+# READ-ONLY. P0 #4 (publication hardening): the VmReady disk guard's own single source of truth,
+# shared with the standalone evidence1-hyperv-inspect-vhd-chain-direct.ps1 forensic script (that
+# script now calls this same function rather than duplicating the walk -- see its own header).
+# Depth-guarded, not recursive: a chain is normally 1-3 links (base + one or two checkpoints) -- 20
+# is generous headroom against ever spinning on a malformed/circular ParentPath, not an expected
+# real depth. No caller-supplied VHD path anywhere: the attached disk comes from
+# Get-VMHardDiskDrive, and every later link comes from the previous link's own ParentPath.
+function Get-E1VmVhdChain {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory)][string]$VMName,
+    [string]$ExpectedVMId = $null
+  )
+  $vm = Get-VM -Name $VMName -ErrorAction Stop
+  $vmId = ([string]$vm.Id).ToLowerInvariant()
+  if ($ExpectedVMId -and $vmId -cne $ExpectedVMId.ToLowerInvariant()) { throw 'vm_vhd_chain_identity_mismatch' }
+
+  $hardDiskDrives = @(Get-VMHardDiskDrive -VMName $VMName -ErrorAction Stop)
+  if (@($hardDiskDrives).Count -eq 0) { throw 'vm_vhd_chain_disk_path_missing' }
+  $diskPath = $hardDiskDrives[0].Path
+  if ([string]::IsNullOrWhiteSpace($diskPath)) { throw 'vm_vhd_chain_disk_path_missing' }
+
+  $chain = @()
+  $currentPath = $diskPath
+  $depthGuard = 0
+  while (-not [string]::IsNullOrWhiteSpace($currentPath)) {
+    $depthGuard++
+    if ($depthGuard -gt 20) { throw 'vm_vhd_chain_depth_exceeded' }
+    $vhd = Get-VHD -Path $currentPath -ErrorAction Stop
+    $isDifferencing = [string]$vhd.VhdType -ceq 'Differencing'
+    $chain += [ordered]@{
+      path                = [string]$vhd.Path
+      vhd_type            = [string]$vhd.VhdType
+      virtual_size        = [int64]$vhd.Size
+      file_size           = [int64]$vhd.FileSize
+      parent_path         = if ($isDifferencing) { [string]$vhd.ParentPath } else { $null }
+      block_size          = [int64]$vhd.BlockSize
+      logical_sector_size = [int64]$vhd.LogicalSectorSize
+    }
+    $currentPath = if ($isDifferencing) { [string]$vhd.ParentPath } else { $null }
+  }
+
+  return [ordered]@{
+    vm_name               = [string]$vm.Name
+    vm_id                 = $vmId
+    vm_state              = [string]$vm.State
+    automatic_stop_action = [string]$vm.AutomaticStopAction
+    memory_startup_bytes  = [int64]$vm.MemoryStartup
+    hard_disk_drive_paths = @($hardDiskDrives | ForEach-Object { [string]$_.Path })
+    attached_path         = [string]$diskPath
+    chain                 = $chain
+  }
+}
+
+Export-ModuleMember -Function Get-E1VmState, Invoke-E1VmEnsureState, Get-E1VmVhdChain

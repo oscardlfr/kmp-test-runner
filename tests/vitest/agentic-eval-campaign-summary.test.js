@@ -407,6 +407,54 @@ describe('summarizeCampaign -- a genuinely live example campaign', () => {
   });
 });
 
+// 2026-09-30 (auditor-directed fix): loadCell required an EXACT {audit.json, record.json} or
+// {rejection.json} directory listing -- a real campaign's own private evidence directory can
+// legitimately carry more than that (transcript.jsonl, copied post-hoc by
+// agentic-eval-accepted-raw-transcript/agentic-eval-rejected-raw-transcript for infra-flake
+// classification, which reads it from this exact path). RED against the pre-fix code: all three
+// cases below failed -- the two "still works" cases came back status:'missing' with
+// reason:'cell_directory_shape_unrecognized' (a real cell misread as absent evidence), and the
+// unknown-file case had no distinct reason of its own to assert on at all.
+describe('summarizeCampaign -- tolerates known extra evidence files in a cell directory (loadCell allowlist)', () => {
+  it('an accepted cell also carrying transcript.jsonl is still accepted, not misread as missing', () => {
+    withTempDir((dir) => {
+      writeManifest(dir, { runtimes: [{ runtime_id: 'claude-code', model_id: 'claude-sonnet-5', campaign_design_id: 'claude-product-vs-free-baseline-v1', campaign_cell_indices: [0] }] });
+      writeAcceptedCell(dir, 'claude-code-0', { runtimeId: 'claude-code', condition: 'current-skill', roundIndex: 0, matched: true, success: true });
+      writeFileSync(path.join(dir, 'private', 'claude-code-0', 'transcript.jsonl'), '{"type":"fake"}\n');
+      const result = summarizeCampaign(dir);
+      const row = result.cells.find((c) => c.cell_key === 'claude-code-0');
+      expect(row.status).toBe('accepted');
+      const group = result.by_runtime_arm.find((g) => g.runtime_id === 'claude-code' && g.arm === 'product');
+      expect(group.accepted).toBe(1);
+      expect(group.missing).toBe(0);
+    });
+  });
+
+  it('a rejected cell also carrying transcript.jsonl still counts correctly (missing or negative-d3, never a shape-unrecognized false miss)', () => {
+    withTempDir((dir) => {
+      writeManifest(dir, { runtimes: [{ runtime_id: 'codex-cli', model_id: 'gpt-5.6-terra', campaign_design_id: 'codex-product-vs-free-baseline-v2', campaign_cell_indices: [0] }] });
+      writeRejectedCell(dir, 'codex-cli-0', { runtimeId: 'codex-cli', condition: 'current-skill', roundIndex: 0, d3Qualifying: true });
+      writeFileSync(path.join(dir, 'private', 'codex-cli-0', 'transcript.jsonl'), '{"type":"fake"}\n');
+      const result = summarizeCampaign(dir);
+      const row = result.cells.find((c) => c.cell_key === 'codex-cli-0');
+      expect(row.status).toBe('negative-d3');
+      expect(row.status).not.toBe('missing');
+    });
+  });
+
+  it('an unrecognized extra file still fails closed, with the offending filename in the reason', () => {
+    withTempDir((dir) => {
+      writeManifest(dir, { runtimes: [{ runtime_id: 'claude-code', model_id: 'claude-sonnet-5', campaign_design_id: 'claude-product-vs-free-baseline-v1', campaign_cell_indices: [0] }] });
+      writeAcceptedCell(dir, 'claude-code-0', { runtimeId: 'claude-code', condition: 'current-skill', roundIndex: 0, matched: true, success: true });
+      writeFileSync(path.join(dir, 'private', 'claude-code-0', 'unexpected-file.txt'), 'not a recognized evidence file');
+      const result = summarizeCampaign(dir);
+      const row = result.cells.find((c) => c.cell_key === 'claude-code-0');
+      expect(row.status).toBe('missing');
+      expect(row.reason).toBe('cell_directory_unknown_file:unexpected-file.txt');
+    });
+  });
+});
+
 describe('summarizeCampaign -- rejected cells', () => {
   it('a rejected cell NOT matching the D3 criteria is counted as missing, with its reason', () => {
     withTempDir((dir) => {

@@ -338,6 +338,129 @@ function Get-E1RunHostDiskFreeBytes {
   return [int64]$drive.AvailableFreeSpace
 }
 
+# BrokerReady's own baseline read of "what commit are we running against" -- the first live state
+# in the whole pipeline, so there is no earlier-verified receipt to pin against yet (contrast
+# DryRunPassed's own expected-commit read above, which deliberately uses ToolchainReady's already-
+# verified target_commit rather than a fresh git call, precisely because HEAD could move between
+# BrokerReady and DryRunPassed; BrokerReady itself has no such earlier point to prefer).
+function Get-E1RunLocalGitCommit([string]$SourceRepoDir) {
+  $commit = ([string](& git.exe -C $SourceRepoDir rev-parse HEAD)).Trim()
+  if ($LASTEXITCODE -ne 0 -or $commit -notmatch '^[0-9a-f]{40}$') { throw 'broker_harness_local_commit_unavailable' }
+  return $commit
+}
+
+# Single-key dual-shape-safe read -- same idiom Invoke-E1RunVmReadyState's own result-copy loop
+# already inlines for its whole object (real Invoke-E1VmEnsureState/broker-capability results cross
+# the queue's own JSON round trip and come back as PSCustomObject, never a Hashtable/IDictionary --
+# confirmed live, the .Keys regression the auditor flagged from tonight's own VmReady fix). Pulled
+# out as its own one-key helper here because P0 #4's formula reads several keys off two different
+# object shapes (the chain inspection result itself, and each entry inside its own chain[] array),
+# not one flat copy loop.
+# 2026-09-30 (auditor-directed fix, found live during the first fake-mode GREEN run against the
+# formula this feeds): PowerShell unrolls a ONE-element array to its bare element whenever it
+# crosses a function `return` or an if/else EXPRESSION capture -- confirmed directly, the hard way
+# (a 2-element chain, used by every existing test fixture, survives that round trip unchanged,
+# which is exactly why this went undetected; the fake mode's own single-link chain literal is what
+# first exercised the 1-element case for real). Reading into a plain if/else STATEMENT (assigning
+# inside each branch, never capturing the if/else as a value-producing expression) avoids the
+# collapse on the way IN; comma-wrapping the return, but only once $value is confirmed to already
+# be an array, avoids it on the way OUT without disturbing a genuine scalar (which the same
+# unconditional comma-wrap would otherwise incorrectly box into a 1-element array of its own).
+function Get-E1RunPropertyValue($Object, [string]$Key) {
+  if ($Object -is [Collections.IDictionary]) {
+    $value = $Object[$Key]
+  } else {
+    $value = $Object.$Key
+  }
+  if ($value -is [array]) { return ,$value }
+  return $value
+}
+
+# P0 #4 (publication hardening): the principled VmReady disk guard, replacing the flat 15 GiB floor
+# with the real worst-case growth bound -- Amendment A6's own auditor-confirmed formula (this
+# closure's own host-disk-exhaustion canary-1 root cause), drafted mid-session as WO-A7 then
+# descoped once the user freed host space directly (see the A6 addendum: "the guard... deferred to
+# a future WO, to be validated by a fresh GREEN gate run... not by this campaign's own gate" -- this
+# is that WO). $ChainInspection is evidence1-hyperv-inspect-vhd-chain-direct.ps1's own report shape:
+# chain[0] is the attached/leaf disk (the walk starts at the attached path and appends outward
+# toward the base, never sorted), leaf virtual_size/file_size are the worst-case growth bound
+# (VirtualSize - avhdx FileSize is how far the leaf CAN still grow on the host before hitting its
+# own ceiling, not a base+diff sum against one virtual size -- the auditor's own A6 correction).
+# MemoryStartup only adds to the requirement when the VM's own AutomaticStopAction is Save AND it
+# isn't already Running (a Running VM's save-state reservation, if any, already exists and is
+# already counted in the host's OWN currently-reported free bytes -- adding it again would double
+# count exactly the case VmReady itself is about to hit, starting the VM).
+# Auditor fail-open fix (2026-09-30): [int64]$null is 0 and [string]$null is '' -- both cast
+# silently instead of failing, so a missing virtual_size made the leaf slack negative (the floor
+# always "won", the check PASSED with no real chain data behind it) and a missing/garbled
+# automatic_stop_action silently skipped the Save reservation instead of surfacing that the field
+# was never read. Rejects a non-numeric-typed value outright (a numeric-looking STRING is a
+# malformed request, not an equivalent one -- same discipline
+# Assert-E1BrokerCapabilityArguments already applies elsewhere in this codebase).
+function Get-E1RunRequiredPositiveInt64($Object, [string]$Key) {
+  $raw = Get-E1RunPropertyValue $Object $Key
+  if ($raw -isnot [int] -and $raw -isnot [int64] -and $raw -isnot [long] -and $raw -isnot [double]) {
+    throw "vhd_chain_inspection_unavailable: $Key missing or not numeric"
+  }
+  $value = [int64]$raw
+  if ($value -le 0) { throw "vhd_chain_inspection_unavailable: $Key not a positive integer" }
+  return $value
+}
+
+function Get-E1RunVmReadyRequiredDiskBytes($ChainInspection) {
+  # @($x) on a genuinely-$null $x is a ONE-element array containing $null, never @() -- the same
+  # PowerShell array-wrapping trap this closure has already hit with @(ConvertFrom-Json '[]').
+  # $chain missing entirely (Get-E1RunPropertyValue returns $null) must fail closed exactly like an
+  # explicit empty array does; checking for $null before the @() wrap is what makes both cases throw
+  # the same way instead of only the explicit-empty-array one.
+  #
+  # 2026-09-30 (auditor-directed fix): the ORIGINAL `$chain = if ($null -eq $chainRaw) { @() } else
+  # { @($chainRaw) }` had the exact same if/else-expression-capture array collapse
+  # Get-E1RunPropertyValue's own header now documents -- a genuinely single-link chain (this
+  # formula's single most common real shape: no checkpoint) collapsed right back down to $chain
+  # being the LEAF'S OWN FIRST KEY-VALUE (a bare Int64), not a 1-element array containing the leaf,
+  # even with Get-E1RunPropertyValue's own return already fixed. Assigning inside a plain
+  # if-STATEMENT, never through an if/else used as a value, avoids it here too.
+  $chainRaw = Get-E1RunPropertyValue $ChainInspection 'chain'
+  if ($null -eq $chainRaw) {
+    $chain = @()
+  } else {
+    $chain = @($chainRaw)
+  }
+  if ($chain.Count -lt 1) { throw 'vhd_chain_inspection_unavailable' }
+  $leaf = $chain[0]
+
+  $virtualSize = Get-E1RunRequiredPositiveInt64 $leaf 'virtual_size'
+  $fileSize = Get-E1RunRequiredPositiveInt64 $leaf 'file_size'
+  # A real differencing disk's own allocated file size can exceed its virtual size only by its own
+  # small metadata overhead -- anything past a generous 1 GiB allowance means the chain-inspection
+  # data itself is inconsistent (a bug, a corrupted read, or fields from two different disks), not a
+  # real disk this formula can safely reason about.
+  if ($fileSize -gt ($virtualSize + [int64]1073741824)) {
+    throw "vhd_chain_inspection_unavailable: file_size ($fileSize) exceeds virtual_size ($virtualSize) plus the metadata allowance"
+  }
+
+  $automaticStopAction = [string](Get-E1RunPropertyValue $ChainInspection 'automatic_stop_action')
+  if ($automaticStopAction -cnotin @('Save', 'ShutDown', 'TurnOff')) {
+    throw "vhd_chain_inspection_unavailable: automatic_stop_action missing or not a recognized value ('$automaticStopAction')"
+  }
+  $vmState = [string](Get-E1RunPropertyValue $ChainInspection 'vm_state')
+  if ([string]::IsNullOrWhiteSpace($vmState)) {
+    throw 'vhd_chain_inspection_unavailable: vm_state missing'
+  }
+
+  $floor = [int64]16106127360
+  $leafSlack = ($virtualSize - $fileSize) + [int64]3221225472
+  $required = [Math]::Max($floor, $leafSlack)
+  if ($automaticStopAction -ceq 'Save' -and $vmState -cne 'Running') {
+    # Only validated here, not unconditionally above: an absent/garbled memory_startup_bytes on a
+    # ShutDown/TurnOff VM (the common case) must never fail a guard that never needed the field.
+    $memoryStartupBytes = Get-E1RunRequiredPositiveInt64 $ChainInspection 'memory_startup_bytes'
+    $required += $memoryStartupBytes
+  }
+  return [int64]$required
+}
+
 function Get-E1RunRealTransportArguments {
   $status = Get-E1BrokerStatus
   if (-not $status.readable -or [string]::IsNullOrWhiteSpace([string]$status.deployment_root)) {
@@ -420,22 +543,41 @@ function New-E1CurrentCampaignInputs($Manifest, [string]$VMId) {
 # no branching needed in this function body, since both siblings export the
 # exact same parameterless signature (Phase 3c second fix-forward round; see
 # the module header for why broker.status did not have this split originally).
-function Invoke-E1RunBrokerReadyState($Context, [scriptblock]$GetHostDiskFreeBytes = ${function:Get-E1RunHostDiskFreeBytes}) {
+function Invoke-E1RunBrokerReadyState(
+  $Context,
+  [scriptblock]$GetHostDiskFreeBytes = ${function:Get-E1RunHostDiskFreeBytes},
+  [scriptblock]$GetLocalGitCommit = ${function:Get-E1RunLocalGitCommit}
+) {
   $status = Get-E1BrokerStatus
   $hostFreeBytes = [int64](& $GetHostDiskFreeBytes)
   $hostDiskOk = $hostFreeBytes -ge 16106127360
-  $ok = $status.task_exists -and $status.readable -and $status.self_update_capable -and $hostDiskOk
+  # P0 #1 (publication hardening): the deployed broker's own manifest source_git_commit must equal
+  # this repo's local HEAD, or every later state's "verified against HEAD" claim is unearned --
+  # -UpdateBroker not having been re-run after the last commit is exactly the gap this closes.
+  # Real-backend only: evidence1-broker-status-fake.psm1's own default result hardcodes
+  # SourceGitCommit as ('0' * 40), by explicit, documented design ("BrokerReady must not depend on
+  # this host's real, already-installed broker for a fully-fake rehearsal to reach DryRunPassed") --
+  # gating fake-mode coherence against a real local HEAD would make every fake-mode run fail this
+  # check unconditionally, forever, which is exactly the real-dependency the fake module exists to
+  # avoid. 2026-09-30 (auditor-directed fix): found live, the first time a fake-mode GREEN run was
+  # attempted against this coherence check.
+  $localCommit = & $GetLocalGitCommit $PSScriptRoot
+  $deployedCommit = [string]$status.source_git_commit
+  $coherent = (-not $Context.UseRealBackends) -or ($deployedCommit -ceq $localCommit)
+  $ok = $status.task_exists -and $status.readable -and $status.self_update_capable -and $hostDiskOk -and $coherent
   $verdict = if ($ok) { 'PASS' } else { 'FAIL' }
   $reasonCode = $null
   if (-not $ok) {
     if (-not $status.task_exists) { $reasonCode = 'broker_task_not_installed' }
     elseif (-not $status.readable) { $reasonCode = 'broker_deployment_unreadable' }
     elseif (-not $status.self_update_capable) { $reasonCode = 'broker_not_self_update_capable' }
-    else { $reasonCode = "host_disk_space_insufficient:$hostFreeBytes" }
+    elseif (-not $hostDiskOk) { $reasonCode = "host_disk_space_insufficient:$hostFreeBytes" }
+    else { $reasonCode = 'broker_harness_incoherent' }
   }
   $detail = [ordered]@{}
   foreach ($key in $status.Keys) { $detail[$key] = $status[$key] }
   $detail['host_free_bytes'] = $hostFreeBytes
+  $detail['local_git_commit'] = $localCommit
   return New-E1RunStateReceipt -CampaignId $Context.CampaignId -StateName 'BrokerReady' -Verdict $verdict -ReasonCode $reasonCode -Detail $detail
 }
 
@@ -444,14 +586,49 @@ function Invoke-E1RunBrokerReadyState($Context, [scriptblock]$GetHostDiskFreeByt
 # so a pre-seeded 'Running' would make this state a no-op rather than exercise
 # anything. Real mode never seeds; Invoke-E1VmEnsureState inspects the VM's
 # actual current state itself.
-function Invoke-E1RunVmReadyState($Context, [scriptblock]$GetHostDiskFreeBytes = ${function:Get-E1RunHostDiskFreeBytes}) {
+# P0 #4 (publication hardening): the principled disk guard's own inspection dispatch, isolated
+# behind an injectable scriptblock the same way every other real-vs-fake VmReady dependency already
+# is. Fake-backend runs (gate/dry testing, never real disk pressure) get a fixed, always-sufficient
+# fake inspection -- there is no real VHD to inspect and no real host disk-space scenario being
+# exercised, so a fake numeric answer here would test nothing the real formula's own dedicated
+# RED/GREEN coverage (Evidence1-Run-Vhd-Chain-Disk-Guard.Tests.ps1) doesn't already cover directly.
+function Get-E1RunVhdChainInspectionForContext($Context) {
+  if (-not $Context.UseRealBackends) {
+    return [ordered]@{
+      chain = @([ordered]@{ virtual_size = 137438953472; file_size = 1073741824 })
+      automatic_stop_action = 'ShutDown'
+      vm_state = 'Off'
+      memory_startup_bytes = 0
+    }
+  }
+  $transportArgs = Get-E1RunRealTransportArguments
+  return Get-E1VmVhdChainInspection -VMName $Context.VMName -ExpectedVMId $Context.VMId @transportArgs
+}
+
+function Invoke-E1RunVmReadyState(
+  $Context,
+  [scriptblock]$GetHostDiskFreeBytes = ${function:Get-E1RunHostDiskFreeBytes},
+  [scriptblock]$GetVhdChainInspection = ${function:Get-E1RunVhdChainInspectionForContext}
+) {
   # Checked before starting the VM at all -- fail fast rather than spend a Start-VM round trip
   # only to hit the same wall the guest-side guards (run-agentic-eval-product-smoke,
-  # evidence1-dual-condition-canary-launch.ps1) would have caught moments later anyway.
+  # evidence1-dual-condition-canary-launch.ps1) would have caught moments later anyway. The
+  # principled formula (Get-E1RunVmReadyRequiredDiskBytes) REPLACES the old flat 16106127360-byte
+  # floor -- it already includes that same floor as its own Math.Max baseline, so this is strictly
+  # at least as strict, never looser, while also catching the leaf-slack and Save-reservation cases
+  # the flat floor never could (Amendment A6's own canary-1 root cause: guest disk exhaustion a flat
+  # floor alone did not predict).
   $hostFreeBytes = [int64](& $GetHostDiskFreeBytes)
-  if ($hostFreeBytes -lt 16106127360) {
+  try {
+    $inspection = & $GetVhdChainInspection $Context
+    $requiredBytes = Get-E1RunVmReadyRequiredDiskBytes $inspection
+  } catch {
     return New-E1RunStateReceipt -CampaignId $Context.CampaignId -StateName 'VmReady' -Verdict 'FAIL' `
-      -ReasonCode "host_disk_space_insufficient:$hostFreeBytes" -Detail ([ordered]@{ host_free_bytes = $hostFreeBytes })
+      -ReasonCode 'vhd_chain_inspection_unavailable' -Detail ([ordered]@{ host_free_bytes = $hostFreeBytes; error = [string]$_.Exception.Message })
+  }
+  if ($hostFreeBytes -lt $requiredBytes) {
+    return New-E1RunStateReceipt -CampaignId $Context.CampaignId -StateName 'VmReady' -Verdict 'FAIL' `
+      -ReasonCode "host_disk_space_insufficient:$hostFreeBytes" -Detail ([ordered]@{ host_free_bytes = $hostFreeBytes; required_bytes = $requiredBytes })
   }
   $transportArgs = @{}
   if (-not $Context.UseRealBackends) {
@@ -472,6 +649,7 @@ function Invoke-E1RunVmReadyState($Context, [scriptblock]$GetHostDiskFreeBytes =
     $detail[$key] = if ($result -is [Collections.IDictionary]) { $result[$key] } else { $result.$key }
   }
   $detail['host_free_bytes'] = $hostFreeBytes
+  $detail['required_bytes'] = $requiredBytes
   return New-E1RunStateReceipt -CampaignId $Context.CampaignId -StateName 'VmReady' -Verdict ([string]$result.verdict) -ReasonCode ([string]$result.reason_code) -Detail $detail
 }
 
@@ -712,18 +890,78 @@ function Invoke-E1RunDryRunPassedState($Context) {
 # A manifest becomes required starting here. Authentication was already
 # confirmed by AuthReady; this gate only confirms the exact, no-retry budget
 # declared by the same manifest that enumerates LiveRunning's cells.
-function Invoke-E1RunLiveAuthorizedState($Context) {
+# P0 #2 (publication hardening): the ONE place that shells out to
+# tools/agentic-eval/derive-round-order-cli.mjs (Node -- buildScenarioCampaignPlan has no
+# PowerShell equivalent, and re-implementing the counterbalancing logic here would be exactly the
+# kind of second, independently-maintained copy this project's own single-source-of-truth
+# discipline exists to prevent). Indexes by the runtime's own campaign_cell_indices into the
+# design's full pre-registered plan (auditor review: exactly the property the guest side already
+# asserts per cell, order_index == CampaignCellIndex, so any valid index subset works the same way
+# a canary's [0,1] does, not just "1 rep or the full count"). Throws on any failure, including an
+# index the plan doesn't contain -- the caller decides the reason code.
+#
+# The JSON argument crosses via stdin, never a positional CLI argument -- confirmed live: PowerShell
+# mangles a JSON string's embedded double quotes on the way to a native executable's command line
+# (ConvertTo-Json -Compress output passed positionally to node.exe arrived at process.argv[2] as
+# undefined). Piping has no such quoting layer to cross.
+function Get-E1RunPreregisteredRoundOrder([string]$DesignId, [int[]]$CampaignCellIndices, [string]$ExecutionProfileId, [string]$SourceRepoDir) {
+  $cliPath = Join-Path $SourceRepoDir 'tools\agentic-eval\derive-round-order-cli.mjs'
+  $argsJson = ([ordered]@{ designId = $DesignId; campaignCellIndices = @($CampaignCellIndices); executionProfiles = @($ExecutionProfileId) } | ConvertTo-Json -Compress)
+  $output = ([string]($argsJson | & node.exe $cliPath 2>$null)).Trim()
+  $parsed = $null
+  try { $parsed = $output | ConvertFrom-Json -ErrorAction Stop } catch { throw 'run_manifest_round_order_derivation_unavailable' }
+  if (-not [bool]$parsed.ok) { throw "run_manifest_round_order_derivation_failed: $([string]$parsed.reason)" }
+  return @($parsed.round_order)
+}
+
+function Invoke-E1RunLiveAuthorizedState($Context, [scriptblock]$GetPreregisteredRoundOrder = ${function:Get-E1RunPreregisteredRoundOrder}) {
   if (-not $Context.Manifest) {
     return New-E1RunStateReceipt -CampaignId $Context.CampaignId -StateName 'LiveAuthorized' -Verdict 'FAIL' -ReasonCode 'live_authorized_requires_manifest'
   }
   $expectedCells = @(Get-E1RunManifestExpectedCells $Context.Manifest)
-  $ok = [bool]$Context.Manifest.no_automatic_provider_retry -and ([int]$Context.Manifest.max_session_count -eq $expectedCells.Count)
+  $budgetOk = [bool]$Context.Manifest.no_automatic_provider_retry -and ([int]$Context.Manifest.max_session_count -eq $expectedCells.Count)
+
+  # Derived independently per runtime (never assumed shared just because every manifest observed
+  # so far happens to declare one shared round_order) -- a manifest whose runtimes disagree with
+  # each other, or with their own pre-registered design, fails exactly as loudly as one that
+  # disagrees with a hand-invented sequence would.
+  $declaredRoundOrder = @($Context.Manifest.round_order)
+  $roundOrderOk = $true
+  $roundOrderDetail = @()
+  foreach ($runtime in @($Context.Manifest.runtimes)) {
+    $cellIndices = @($runtime.campaign_cell_indices)
+    $entry = [ordered]@{ runtime_id = [string]$runtime.runtime_id; campaign_design_id = [string]$runtime.campaign_design_id; campaign_cell_indices = $cellIndices }
+    try {
+      $preregistered = @(& $GetPreregisteredRoundOrder ([string]$runtime.campaign_design_id) $cellIndices ([string]$Context.Manifest.execution_profile_id) $PSScriptRoot)
+    } catch {
+      $roundOrderOk = $false
+      $entry['matched'] = $false
+      $entry['error'] = [string]$_.Exception.Message
+      $roundOrderDetail += $entry
+      continue
+    }
+    $matches = ($preregistered.Count -eq $declaredRoundOrder.Count)
+    if ($matches) {
+      for ($i = 0; $i -lt $preregistered.Count; $i++) {
+        if ([string]$preregistered[$i] -cne [string]$declaredRoundOrder[$i]) { $matches = $false; break }
+      }
+    }
+    if (-not $matches) { $roundOrderOk = $false }
+    $entry['matched'] = $matches
+    $entry['preregistered_round_order'] = $preregistered
+    $roundOrderDetail += $entry
+  }
+
+  $ok = $budgetOk -and $roundOrderOk
   $verdict = if ($ok) { 'PASS' } else { 'FAIL' }
-  $reasonCode = if ($ok) { $null } else { 'live_authorized_budget_or_retry_statement_invalid' }
+  $reasonCode = if ($ok) { $null }
+    elseif (-not $budgetOk) { 'live_authorized_budget_or_retry_statement_invalid' }
+    else { 'run_manifest_round_order_not_preregistered' }
   $detail = [ordered]@{
     max_session_count   = [int]$Context.Manifest.max_session_count
     expected_cell_count = $expectedCells.Count
     no_automatic_provider_retry = [bool]$Context.Manifest.no_automatic_provider_retry
+    round_order_verification = $roundOrderDetail
   }
   return New-E1RunStateReceipt -CampaignId $Context.CampaignId -StateName 'LiveAuthorized' -Verdict $verdict -ReasonCode $reasonCode -Detail $detail
 }
@@ -1004,6 +1242,7 @@ function Invoke-E1RunFailureSafeClosureAttempt($Context) {
     attempted_at_utc = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
     network_result   = $null
     vm_result        = $null
+    evidence_copy    = $null
     error            = $null
   }
   if (-not $Context.UseRealBackends) { $attempt.error = 'skipped_fake_backend'; return $attempt }
@@ -1019,10 +1258,127 @@ function Invoke-E1RunFailureSafeClosureAttempt($Context) {
     } catch {
       $attempt.vm_result = [ordered]@{ verdict = 'FAIL'; reason_code = 'failure_safe_vm_attempt_threw'; error = [string]$_.Exception.Message }
     }
+    # P0 #5 (publication hardening): best-effort read-only evidence recovery, now that the VM's
+    # power state is settled -- see Invoke-E1RunFailureSafeEvidenceCopyAttempt's own header for why
+    # this needs two tiers and what it deliberately does NOT attempt to recover.
+    try {
+      $attempt.evidence_copy = Invoke-E1RunFailureSafeEvidenceCopyAttempt $Context $attempt.vm_result $transportArguments
+    } catch {
+      $attempt.evidence_copy = [ordered]@{ attempted = $false; error = [string]$_.Exception.Message }
+    }
   } catch {
     $attempt.error = [string]$_.Exception.Message
   }
   return $attempt
+}
+
+# P0 #5 (publication hardening, auditor-directed): "evidence from a failed LiveRunning reaches the
+# host automatically." Before this, a campaign that failed anywhere from VmReady onward powered
+# the VM off (the closure attempt above) and stopped there -- whatever the guest had already
+# written for any cell that DID finish was simply stranded, since this campaign_id must never be
+# resumed afterward (Get-E1RunResumeIndex/EvidenceCopied both assume a monotonic, never-replayed
+# walk) and EvidenceCopied itself refuses to run at all against an incomplete LiveRunning session
+# set (evidence_copied_live_session_set_mismatch, by design -- it must never silently promote a
+# partial campaign as though it were whole).
+#
+# Two tiers, in order of how much can honestly be recovered without a new capability:
+#  1. LiveRunning itself actually completed (wrote a receipt with exactly one session per expected
+#     cell -- its OWN verdict may still be FAIL, e.g. one_or_more_provider_sessions_failed, if some
+#     individual session was rejected; that is in fact the single most common real trigger for this
+#     whole function, since the main loop throws on ANY non-PASS receipt, including LiveRunning's
+#     own). When this holds, every cell's accepted/rejected status is already knowable exactly like
+#     Invoke-E1RunEvidenceCopiedState itself determines it, so this copies the SAME spec per cell
+#     EvidenceCopied would have -- full parity, nothing lost.
+#  2. LiveRunning did not complete (missing receipt, or a session count that does not match the
+#     manifest's expected cells -- LiveRunning crashed/hung partway through its own per-cell loop
+#     rather than returning a FAIL receipt for a completed set). There is no way to know which
+#     cells finished without asking the guest, so this falls back to one best-effort
+#     agentic-eval-session-record attempt per expected cell: a cell already recorded before the
+#     failure comes back with its record/audit pair (record.json/audit.json are both a required
+#     source for this spec -- confirmed against evidence1-artifact-copy-fake.psm1's own
+#     artifact_copy_required_source_missing throw); a cell that had not yet been recorded throws
+#     the same way and is captured per-cell below as a legitimate miss, never as a fatal error.
+#     Recovering the specific in-flight cell's own raw, not-yet-recorded journal needs a capability
+#     this closure does not have (a guest directory listing to discover its JournalId) --
+#     intentionally left for its own work order rather than folded in here.
+#
+# Never throws (same discipline as its caller): every per-cell attempt is its own try/catch, and
+# the whole function is wrapped again by its one caller besides -- one cell's copy failure must
+# never stop the rest, and this function's own failure must never mask $Report.reason.
+function Invoke-E1RunFailureSafeEvidenceCopyAttempt($Context, $VmResult, $TransportArguments) {
+  $copy = [ordered]@{
+    attempted               = $false
+    skipped_reason          = $null
+    tier                    = $null
+    live_running_available  = $false
+    results                 = @()
+    error                   = $null
+  }
+  if (-not $Context.Manifest) { $copy.skipped_reason = 'no_manifest'; return $copy }
+  if ([string]$VmResult.verdict -cne 'PASS') { $copy.skipped_reason = 'vm_not_confirmed_off'; return $copy }
+  try {
+    $expectedCells = @(Get-E1RunManifestExpectedCells $Context.Manifest)
+    if ($expectedCells.Count -eq 0) { $copy.skipped_reason = 'no_expected_cells'; return $copy }
+    $guestCampaignRoot = Join-Path ([string]$Context.Manifest.private_root) ([string]$Context.Manifest.campaign_id)
+    $privateRootRelative = ConvertTo-E1RunGuestRelativePath $guestCampaignRoot
+    $destinationRoot = Join-Path $Context.CampaignRoot 'failure-safe-evidence'
+    New-Item -ItemType Directory -Force -Path $destinationRoot | Out-Null
+
+    # 2026-09-30 (auditor-directed fix): if/else used as a value-producing expression collapses a
+    # ONE-element array to its bare element on capture, same as a function return -- see
+    # Get-E1RunPropertyValue's own header for the full finding. A campaign with exactly one
+    # expected cell would otherwise turn $liveSessions into a bare session object instead of a
+    # 1-element array, breaking the Count comparison just below. Plain if-statement instead.
+    $liveReceipt = Read-E1RunStateReceipt $Context.CampaignRoot 'LiveRunning'
+    if ($liveReceipt) {
+      $liveSessions = @($liveReceipt.detail.sessions)
+    } else {
+      $liveSessions = @()
+    }
+    $copy.live_running_available = ($liveSessions.Count -eq $expectedCells.Count)
+    $copy.tier = if ($copy.live_running_available) { 'live_running_session_status' } else { 'best_effort_session_record_only' }
+    $copy.attempted = $true
+
+    foreach ($cell in $expectedCells) {
+      $cellKey = "$([string]$cell.runtime_id)-$([int]$cell.round_index)"
+      $destination = Join-Path $destinationRoot $cellKey
+      try {
+        if ($copy.live_running_available) {
+          $matchingSessions = @($liveSessions | Where-Object { [string]$_.runtime_id -ceq [string]$cell.runtime_id -and [int]$_.round_index -eq [int]$cell.round_index })
+          if ($matchingSessions.Count -ne 1) { throw 'failure_safe_evidence_copy_session_identity_mismatch' }
+          $benchmarkStatus = Get-E1SafeBenchmarkStatus $matchingSessions[0].output_summary
+          if ($benchmarkStatus -ceq 'rejected') {
+            $rejectionId = [string]$matchingSessions[0].output_summary.rejection_id
+            if ($rejectionId -cnotmatch '^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$') { throw 'failure_safe_evidence_copy_rejection_identity_invalid' }
+            $result = Copy-E1ArtifactsReadOnly -VMName $Context.VMName -ExpectedVMId $Context.VMId -SpecName 'agentic-eval-rejection-diagnostic' `
+              -Arguments @{ PrivateRootRelative = $privateRootRelative; CellKey = $cellKey; RejectionId = $rejectionId } -DestinationDir $destination `
+              -TrustedRoot $Context.OutputRootsTrustedRoot -TimeoutMinutes 10 @TransportArguments
+            Assert-E1ArtifactCopyResultShape 'agentic-eval-rejection-diagnostic' $result
+            $copy.results += [ordered]@{ cell_key = $cellKey; spec_name = 'agentic-eval-rejection-diagnostic'; benchmark_status = $benchmarkStatus; verdict = 'PASS'; files_copied = @($result.files_copied) }
+          } elseif ($benchmarkStatus -ceq 'accepted') {
+            $result = Copy-E1ArtifactsReadOnly -VMName $Context.VMName -ExpectedVMId $Context.VMId -SpecName 'agentic-eval-session-record' `
+              -Arguments @{ PrivateRootRelative = $privateRootRelative; CellKey = $cellKey } -DestinationDir $destination `
+              -TrustedRoot $Context.OutputRootsTrustedRoot -TimeoutMinutes 10 @TransportArguments
+            Assert-E1ArtifactCopyResultShape 'agentic-eval-session-record' $result
+            $copy.results += [ordered]@{ cell_key = $cellKey; spec_name = 'agentic-eval-session-record'; benchmark_status = $benchmarkStatus; verdict = 'PASS'; files_copied = @($result.files_copied) }
+          } else {
+            throw 'failure_safe_evidence_copy_benchmark_status_invalid'
+          }
+        } else {
+          $result = Copy-E1ArtifactsReadOnly -VMName $Context.VMName -ExpectedVMId $Context.VMId -SpecName 'agentic-eval-session-record' `
+            -Arguments @{ PrivateRootRelative = $privateRootRelative; CellKey = $cellKey } -DestinationDir $destination `
+            -TrustedRoot $Context.OutputRootsTrustedRoot -TimeoutMinutes 10 @TransportArguments
+          Assert-E1ArtifactCopyResultShape 'agentic-eval-session-record' $result
+          $copy.results += [ordered]@{ cell_key = $cellKey; spec_name = 'agentic-eval-session-record'; benchmark_status = $null; verdict = 'PASS'; files_copied = @($result.files_copied) }
+        }
+      } catch {
+        $copy.results += [ordered]@{ cell_key = $cellKey; verdict = 'FAIL'; error = [string]$_.Exception.Message }
+      }
+    }
+  } catch {
+    $copy.error = [string]$_.Exception.Message
+  }
+  return $copy
 }
 
 # Run-level recovery, attempted from the main loop's catch block (below) BEFORE the failure-safe
@@ -1192,6 +1548,14 @@ $AuditsRoot = Resolve-FullPath (Join-Path $RepoRoot 'docs\audits')
 Import-Module (Join-Path $AuditsRoot 'evidence1-run-manifest-contract.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $AuditsRoot 'evidence1-run-state-contract.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $AuditsRoot 'evidence1-campaign-eligibility.psm1') -Force -DisableNameChecking
+# 2026-09-30 (auditor-directed fix, found live during the first-ever full fake-mode run reaching
+# ToolchainReady): Ensure-E1RunDeployedSessionBundle calls Ensure-E1BrokerSessionBundle
+# unconditionally, in both modes -- that function's own body immediately no-ops for fake mode
+# (`if (-not $UseRealBackends) { return ... }`, evidence1-broker-capability-client.psm1:231), so it
+# has always been safe to call here regardless of mode. Only its MODULE was real-backend-only
+# (transitively pulled in by the *-queue-client.psm1 imports below); unconditional here instead, so
+# a fake-mode run can reach it at all.
+Import-Module (Join-Path $AuditsRoot 'evidence1-broker-capability-client.psm1') -Force -DisableNameChecking
 
 $AllStates = Get-E1RunStateNames
 $LiveAdjacentStates = Get-E1RunLiveAdjacentStateNames

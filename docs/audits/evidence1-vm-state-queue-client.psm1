@@ -112,4 +112,33 @@ function Invoke-E1VmEnsureState {
   return $response.result
 }
 
-Export-ModuleMember -Function Get-E1VmState, Invoke-E1VmEnsureState
+# P0 #4 (publication hardening): same shape as Get-E1VmState above, dispatching the new
+# vhd.inspect_chain capability instead of vm.inspect. No Assert-*Result call -- this capability's
+# result shape (leaf virtual_size/file_size inside chain[], plus automatic_stop_action/
+# memory_startup_bytes/vm_state) has no separate contract-assertion module of its own; VmReady
+# reads it through the same dual-shape-safe Get-E1RunPropertyValue helper every other real
+# broker-capability result already needs (PSCustomObject after the queue's own JSON round trip).
+function Get-E1VmVhdChainInspection {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory)][string]$VMName,
+    [string]$ExpectedVMId = $null,
+    [string]$QueueRoot = '',
+    [string]$AllowedRoot = '',
+    [string]$TaskName = (Get-E1BrokerCapabilityDefaultTaskName),
+    [int]$TimeoutMinutes = 120,
+    [int]$PollIntervalSeconds = 2,
+    [scriptblock]$TriggerTask = $null,
+    [scriptblock]$GetUtcNow = { [DateTime]::UtcNow }
+  )
+  if ([string]::IsNullOrWhiteSpace($QueueRoot)) { throw 'vm_vhd_chain_queue_client_queue_root_required' }
+  if ($null -eq $TriggerTask) { throw 'vm_vhd_chain_queue_client_trigger_task_required' }
+  $arguments = [ordered]@{ VMName = $VMName; ExpectedVMId = [string]$ExpectedVMId }
+  $response = Submit-E1BrokerCapabilityOperation -Capability 'vhd.inspect_chain' -Arguments $arguments `
+    -QueueRoot $QueueRoot -AllowedRoot $AllowedRoot -TaskName $TaskName -TimeoutMinutes $TimeoutMinutes `
+    -PollIntervalSeconds $PollIntervalSeconds -TriggerTask $TriggerTask -GetUtcNow $GetUtcNow
+  if ($null -eq $response.result) { throw ([string]$response.reason_code) }
+  return $response.result
+}
+
+Export-ModuleMember -Function Get-E1VmState, Invoke-E1VmEnsureState, Get-E1VmVhdChainInspection

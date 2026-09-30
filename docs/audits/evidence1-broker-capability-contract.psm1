@@ -222,6 +222,24 @@ function Get-E1BrokerCapabilityRegistry {
       requires_broker_trusted_root      = $false
     }
 
+    # P0 #4 (publication hardening): closed, read-only VHD/AVHDX chain inspection -- the VmReady
+    # disk guard's own single source of truth for leaf virtual_size/file_size, automatic_stop_action,
+    # memory_startup_bytes and vm_state. No caller-supplied path of any kind: VMName/ExpectedVMId are
+    # the same closed E2E identity every other VM capability already takes, and the function itself
+    # (Get-E1VmVhdChain, evidence1-vm-state-hyperv.psm1) resolves the attached disk from
+    # Get-VMHardDiskDrive and walks its own parent chain -- never a caller-chosen VHD path.
+    'vhd.inspect_chain' = [ordered]@{
+      description                  = 'Read-only VHD/AVHDX parent-chain inspection: leaf virtual/file size, VM power-state fields.'
+      module_file                  = 'evidence1-vm-state-hyperv.psm1'
+      function_name                = 'Get-E1VmVhdChain'
+      argument_schema               = [ordered]@{
+        VMName       = { param($v) $v -is [string] -and -not [string]::IsNullOrWhiteSpace($v) }
+        ExpectedVMId = { param($v) $v -is [string] -and -not [string]::IsNullOrWhiteSpace($v) }
+      }
+      path_arguments                 = @()
+      requires_broker_trusted_root      = $false
+    }
+
     'network.inspect' = [ordered]@{
       description                  = 'Read-only network mode inspection (adapter + guest firewall).'
       module_file                  = 'evidence1-network-backend-hyperv.psm1'
