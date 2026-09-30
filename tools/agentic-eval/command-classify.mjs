@@ -13,8 +13,9 @@ import { matchModuleFilter } from '../../lib/orchestrators/module-filter.js';
 
 // Codex CLI on Windows reports the shell launcher as the command_execution.command,
 // e.g. `".../powershell.exe" -Command 'kmp-test parallel ...'`. Classify the
-// single inner command, not the launcher. Keep compound PowerShell programs out
-// of the evidence path: their output cannot be attributed to one invocation.
+// single inner command, not the launcher. This whole-command path still refuses a
+// compound program; classifyBashCommand's segment pre-pass classifies such a program
+// by the kmp-test or Gradle segment it contains.
 function commandTokens(command) {
   const outer = tokenize(command);
   if (outer == null || outer.length !== 3
@@ -70,16 +71,16 @@ function stripKnownSuffix(tokens) {
 // gradlew-wrapper.sh or a run-together gradlewbat still correctly falls through to {kind:'other'}.
 const GRADLEW_TOKEN_RE = /(^|[\\/])gradlew(\.bat)?$/i;
 
-/** Classifies one tool's raw command string. The direct-command grammar remains shared by
- * graders.mjs, junit-evidence.mjs, and junit-evidence-hook.mjs; a single Windows PowerShell
- * launcher around that command is unwrapped before classification. Returns
- * `{kind:'kmp-test', subcommand, moduleFilter, testType, minMissedLines, coverageDisabled, isPlanOnly}` |
- * `{kind:'gradle', taskTokens, isPlanOnly}` | `{kind:'other'}`. */
-export function classifyBashCommand(command) {
-  if (typeof command !== 'string') return { kind: 'other' };
+// The classification of ONE command: the launcher unwrap, prefix and suffix stripping and the token
+// grammar below, exactly as they were before the segment pre-pass (classifyBashCommand) existed. The
+// pre-pass reuses it on every cleaned segment, and falls back to it for the whole command.
+function classifyWholeCommand(command) {
   const rawTokens = commandTokens(command);
   if (rawTokens == null || rawTokens.length === 0) return { kind: 'other' };
-  const tokens = stripKnownSuffix(stripKnownPrefix(rawTokens));
+  return classifyTokens(stripKnownSuffix(stripKnownPrefix(rawTokens)));
+}
+
+function classifyTokens(tokens) {
   if (tokens.length === 0) return { kind: 'other' };
   if (tokens[0] === 'kmp-test') {
     let moduleFilter = null;
@@ -120,6 +121,335 @@ export function classifyBashCommand(command) {
     return { kind: 'gradle', taskTokens, isPlanOnly };
   }
   return { kind: 'other' };
+}
+
+// ---------------------------------------------------------------------------
+// Segment pre-pass. A command that chains commands (`a; b`, `a && b`), redirects its output
+// (`> log 2>&1`), pipes into a filter (`| grep FAILED`) or is wrapped in a PowerShell launcher is
+// classified by the kmp-test or Gradle command it contains, not by its first word. The helpers are
+// quote-aware but small on purpose: they never guess, and on anything they cannot read (a quote left
+// open) the whole-command result stands.
+
+const POWERSHELL_LAUNCHER_RE = /^(?:.*[\\/])?(?:powershell|pwsh)(?:\.exe)?$/i;
+const POWERSHELL_COMMAND_FLAG_RE = /^-(?:command|c)$/i;
+const KMP_TEST_FILE_RE = /(^|[\\/])kmp-test(\.cmd|\.ps1)?$/i;
+const START_PROCESS_RE = /^(?:\$[\w:]+\s*=\s*)?Start-Process\b/i;
+
+// Redirections and filters that only shape what a command prints. A filter is matched by name, in any
+// case (PowerShell cmdlets are case-insensitive).
+const FD_DUP_RE = /^(?:\d|\*)?>&\d$/; // 2>&1, 1>&2, >&2, *>&1
+const REDIRECT_OPERATOR_RE = /^(?:\d|&|\*)?>>?$/; // >, >>, 2>, 2>>, &>, *> (the file is the next word)
+const GLUED_REDIRECT_RE = /^(?:\d|&|\*)?>>?[^>&\s]\S*$/; // >out.log, 2>err.log, >>out.log
+const OUTPUT_FILTERS = new Set(['tee', 'tail', 'head', 'grep', 'findstr', 'select-string', 'select-object', 'wc', 'sort', 'cat', 'out-string']);
+
+/** The words of a command line. Adjacent quoted and unquoted pieces join into one word, which is how
+ * Codex records a program that holds single quotes (`'a '"'b'"' c'` is the word `a 'b' c`). Single
+ * quotes are literal. A backslash escapes the next character outside quotes, and inside double quotes
+ * only before a backslash, a double quote, `$` or a backtick, so a doubled backslash is one backslash,
+ * as Codex writes Windows paths. Returns null when a quote is left open. */
+function shellWords(text) {
+  const words = [];
+  let word = null;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (/\s/.test(c)) {
+      if (word !== null) words.push(word);
+      word = null;
+      continue;
+    }
+    word ??= '';
+    if (c === "'") {
+      const end = text.indexOf("'", i + 1);
+      if (end === -1) return null;
+      word += text.slice(i + 1, end);
+      i = end;
+    } else if (c === '"') {
+      for (i++; ; i++) {
+        if (i >= text.length) return null;
+        if (text[i] === '"') break;
+        if (text[i] === '\\' && i + 1 < text.length && '\\"$`'.includes(text[i + 1])) i++;
+        word += text[i];
+      }
+    } else if (c === '\\' && i + 1 < text.length) {
+      word += text[++i];
+    } else {
+      word += c;
+    }
+  }
+  if (word !== null) words.push(word);
+  return words;
+}
+
+/** The program of a command that is exactly `<powershell|pwsh> -Command|-c <one argument>`, the
+ * launcher with or without a path and extension; null for any other command. */
+function powershellProgram(command) {
+  const words = shellWords(command);
+  if (words == null || words.length !== 3) return null;
+  if (!POWERSHELL_LAUNCHER_RE.test(words[0]) || !POWERSHELL_COMMAND_FLAG_RE.test(words[1])) return null;
+  return words[2];
+}
+
+/** Splits at top-level `;`, `&&`, `||` and newlines, never inside single or double quotes and never
+ * after a backslash. Returns the non-empty segments, or null when a quote is left open. */
+function splitSegments(text) {
+  const segments = [];
+  let start = 0;
+  let quote = null;
+  const cut = (end, next) => {
+    const segment = text.slice(start, end).trim();
+    if (segment !== '') segments.push(segment);
+    start = next;
+  };
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quote === "'") {
+      if (c === "'") quote = null;
+    } else if (c === '\\') {
+      i++;
+    } else if (quote === '"') {
+      if (c === '"') quote = null;
+    } else if (c === "'" || c === '"') {
+      quote = c;
+    } else if (c === ';' || c === '\n' || c === '\r') {
+      cut(i, i + 1);
+    } else if ((c === '&' || c === '|') && text[i + 1] === c) {
+      cut(i, i + 2);
+      i++;
+    }
+  }
+  if (quote !== null) return null;
+  cut(text.length, text.length);
+  return segments;
+}
+
+/** The words of a segment, split at whitespace outside quotes (the quote rules of splitSegments), each
+ * with the offset where it ends. */
+function wordSpans(segment) {
+  const words = [];
+  let start = -1;
+  let quote = null;
+  for (let i = 0; i < segment.length; i++) {
+    const c = segment[i];
+    if (quote === "'") {
+      if (c === "'") quote = null;
+    } else if (c === '\\') {
+      if (start === -1) start = i;
+      i++;
+    } else if (quote === '"') {
+      if (c === '"') quote = null;
+    } else if (c === "'" || c === '"') {
+      if (start === -1) start = i;
+      quote = c;
+    } else if (/\s/.test(c)) {
+      if (start !== -1) words.push({ text: segment.slice(start, i), end: i });
+      start = -1;
+    } else if (start === -1) {
+      start = i;
+    }
+  }
+  if (start !== -1) words.push({ text: segment.slice(start), end: segment.length });
+  return words;
+}
+
+// `tail -f` follows a file for as long as it grows: it does not bound what the command printed, and
+// a command that ends in it keeps the result it had before this pre-pass.
+function isOutputFilter(words) {
+  const name = words[0].text.toLowerCase();
+  if (!OUTPUT_FILTERS.has(name)) return false;
+  return !(name === 'tail' && words.slice(1).some((w) => w.text === '-f' || w.text === '--follow'));
+}
+
+/** The segment without the output redirections and the `| <filter> [args]` pipes at its end, removed
+ * repeatedly, so `cmd > log 2>&1 | tail -n 5` is `cmd`. */
+function stripOutputShaping(segment) {
+  const words = wordSpans(segment);
+  let n = words.length;
+  while (n > 0) {
+    const last = words[n - 1].text;
+    if (FD_DUP_RE.test(last) || GLUED_REDIRECT_RE.test(last)) {
+      n--;
+    } else if (n >= 2 && REDIRECT_OPERATOR_RE.test(words[n - 2].text)) {
+      n -= 2;
+    } else {
+      let pipe = n - 1;
+      while (pipe >= 0 && words[pipe].text !== '|') pipe--;
+      if (pipe < 0 || pipe + 1 >= n || !isOutputFilter(words.slice(pipe + 1, n))) break;
+      n = pipe;
+    }
+  }
+  return n === 0 ? '' : segment.slice(0, words[n - 1].end);
+}
+
+// --- Start-Process ---------------------------------------------------------------------------
+// Codex launches long runs as `[$var =] Start-Process ... -FilePath <path> ... -ArgumentList <items>`.
+// A value is a comma list of string literals ('a','b'), a bare word, an @(...) list, or something
+// that is not a literal (a $variable, a parenthesized expression), which reads as null.
+
+const isParameterStart = (text, i) => text[i] === '-' && /[A-Za-z]/.test(text[i + 1] ?? '');
+
+function skipBlanks(text, i) {
+  while (i < text.length && /\s/.test(text[i])) i++;
+  return i;
+}
+
+/** A PowerShell string literal: '...' (a doubled quote is one quote) or "..." (a backtick or a doubled
+ * quote escapes). Returns {value, end} or null when it is not closed. */
+function readPsString(text, start) {
+  const quote = text[start];
+  let value = '';
+  for (let i = start + 1; i < text.length; i++) {
+    const c = text[i];
+    if (c === quote) {
+      if (text[i + 1] !== quote) return { value, end: i + 1 };
+      value += quote;
+      i++;
+    } else if (c === '`' && quote === '"' && i + 1 < text.length) {
+      value += text[++i];
+    } else {
+      value += c;
+    }
+  }
+  return null;
+}
+
+function matchingParen(text, open) {
+  let depth = 0;
+  for (let i = open; i < text.length; i++) {
+    if (text[i] === "'" || text[i] === '"') {
+      const str = readPsString(text, i);
+      if (str === null) return -1;
+      i = str.end - 1;
+    } else if (text[i] === '(') {
+      depth++;
+    } else if (text[i] === ')' && --depth === 0) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+function readPsItem(text, i) {
+  const c = text[i];
+  if (c === "'" || c === '"') {
+    const str = readPsString(text, i);
+    return str && { values: [str.value], end: str.end };
+  }
+  if (c === '(' || (c === '@' && text[i + 1] === '(')) {
+    const open = c === '(' ? i : i + 1;
+    const close = matchingParen(text, open);
+    if (close === -1) return null;
+    const values = c === '(' ? [null] : (readPsList(text.slice(open + 1, close)) ?? [null]);
+    return { values, end: close + 1 };
+  }
+  let j = i;
+  while (j < text.length && !/[\s,)]/.test(text[j])) j++;
+  if (j === i) return null;
+  const word = text.slice(i, j);
+  return { values: [word.startsWith('$') ? null : word], end: j };
+}
+
+/** The items of the inside of an @(...) list: comma-separated literals only, else null. */
+function readPsList(inner) {
+  const values = [];
+  let i = skipBlanks(inner, 0);
+  while (i < inner.length) {
+    const item = readPsItem(inner, i);
+    if (item === null) return null;
+    values.push(...item.values);
+    i = skipBlanks(inner, item.end);
+    if (i >= inner.length) break;
+    if (inner[i] !== ',') return null;
+    i = skipBlanks(inner, i + 1);
+  }
+  return values;
+}
+
+function readPsValue(text, start) {
+  const values = [];
+  let i = start;
+  for (;;) {
+    const item = readPsItem(text, skipBlanks(text, i));
+    if (item === null) return null;
+    values.push(...item.values);
+    i = skipBlanks(text, item.end);
+    if (text[i] !== ',') return { values, end: item.end };
+    i++;
+  }
+}
+
+/** The parameters of a Start-Process segment as {lower-cased name: values}, or null when the segment
+ * is not a Start-Process call or cannot be read. A parameter followed by another parameter, or by
+ * nothing, is a switch and has no values. */
+function startProcessParams(segment) {
+  const head = START_PROCESS_RE.exec(segment);
+  if (head === null) return null;
+  const params = {};
+  let i = head[0].length;
+  while ((i = skipBlanks(segment, i)) < segment.length) {
+    let name = null;
+    if (isParameterStart(segment, i)) {
+      let j = i + 1;
+      while (j < segment.length && /[A-Za-z]/.test(segment[j])) j++;
+      name = segment.slice(i + 1, j).toLowerCase();
+      i = skipBlanks(segment, segment[j] === ':' ? j + 1 : j);
+      if (i >= segment.length || isParameterStart(segment, i)) {
+        params[name] ??= [];
+        continue;
+      }
+    }
+    const value = readPsValue(segment, i);
+    if (value === null) return null;
+    if (name !== null) params[name] ??= value.values;
+    i = value.end;
+  }
+  return params;
+}
+
+/** The classification of a Start-Process call, by its -FilePath: gradlew[.bat] is gradle, with the
+ * -ArgumentList items as its tokens; kmp-test[.cmd|.ps1] is kmp-test, with the first item as its
+ * subcommand. An argument list that is not a list of literals (a variable) contributes no items.
+ * Null for any other program. */
+function classifyStartProcess(params) {
+  const filePath = params.filepath?.[0];
+  if (typeof filePath !== 'string') return null;
+  const args = (params.argumentlist ?? []).filter((item) => typeof item === 'string');
+  if (GRADLEW_TOKEN_RE.test(filePath)) return classifyTokens([filePath, ...args]);
+  if (KMP_TEST_FILE_RE.test(filePath)) return classifyTokens(['kmp-test', ...args]);
+  return null;
+}
+
+function classifySegment(segment) {
+  const cleaned = stripOutputShaping(segment);
+  if (cleaned === '') return { kind: 'other' };
+  const params = startProcessParams(cleaned);
+  if (params !== null) return classifyStartProcess(params) ?? { kind: 'other' };
+  return classifyWholeCommand(cleaned);
+}
+
+/** Classifies one tool's raw command string. The direct-command grammar remains shared by
+ * graders.mjs, junit-evidence.mjs, and junit-evidence-hook.mjs. The command is classified by the
+ * kmp-test or Gradle command it contains:
+ *  1. a command that is exactly a PowerShell launcher (`powershell`, `powershell.exe` or `pwsh`, with
+ *     or without a path, then `-Command` or `-c` and one argument) is replaced by that argument;
+ *  2. the text is split at top-level `;`, `&&`, `||` and newlines, never inside quotes or after a
+ *     backslash; a quote left open skips this and returns the whole-command result;
+ *  3. each segment loses the output redirections and `| <filter>` pipes at its end;
+ *  4. each cleaned segment is classified by the direct-command grammar, or, for a Start-Process call,
+ *     by its -FilePath and -ArgumentList;
+ *  5. the result is the first segment whose kind is kmp-test or gradle, else the whole-command result.
+ * Returns
+ * `{kind:'kmp-test', subcommand, moduleFilter, testType, minMissedLines, coverageDisabled, isPlanOnly}` |
+ * `{kind:'gradle', taskTokens, isPlanOnly}` | `{kind:'other'}`. */
+export function classifyBashCommand(command) {
+  if (typeof command !== 'string') return { kind: 'other' };
+  const whole = classifyWholeCommand(command);
+  const segments = splitSegments(powershellProgram(command) ?? command);
+  if (segments === null) return whole;
+  for (const segment of segments) {
+    const result = classifySegment(segment);
+    if (result.kind !== 'other') return result;
+  }
+  return whole;
 }
 
 /** A Gradle-project-path-shaped module identifier, normalized to bare-no-leading-colon form for
