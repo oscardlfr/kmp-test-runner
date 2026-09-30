@@ -116,7 +116,7 @@ const REQUIRED_DOCUMENT_CONTRACTS = Object.freeze({
     { label: 'release App anti-recursion', pattern: /RELEASE_APP_ID[\s\S]{0,100}RELEASE_APP_PRIVATE_KEY[\s\S]{0,160}GITHUB_TOKEN[\s\S]{0,120}anti-recursion/i },
     { label: 'gh token environment convention', pattern: /`GH_TOKEN`\s+environment variable[\s\S]{0,100}not the `GITHUB_TOKEN`\s+environment variable/i },
     { label: 'Trusted Publishing runtime floors', pattern: /npm 11\.5\.1[\s\S]{0,80}Node 22\.14\.0[\s\S]{0,160}Node 24\.18\.0/i },
-    { label: 'post-fast-forward CI timeout', pattern: /45-minute timeout[\s\S]{0,160}second CI run/i },
+    { label: 'post-fast-forward CI timeout', pattern: /60-minute timeout[\s\S]{0,160}second CI run/i },
   ],
 });
 

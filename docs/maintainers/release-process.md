@@ -62,8 +62,9 @@ fast-forward uses the App token instead.
 npm Trusted Publishing requires npm 11.5.1 or newer and Node 22.14.0 or newer.
 The publish workflow deliberately pins Node 24.18.0, whose bundled npm clears
 both floors. Re-verify the bundled npm before changing that exact pin. All
-`release-gate.mjs poll-checks` callers retain a 45-minute timeout because the
-fast-forward to `main` starts a second CI run on the same SHA.
+`release-gate.mjs poll-checks` callers retain a 60-minute timeout because the
+fast-forward to `main` starts a second CI run on the same SHA, and the Windows
+build job alone may take up to its 45-minute cap.
 
 When the cascade finishes, `main` and `develop` point at the same commit. No
 sync-back merge is required.
