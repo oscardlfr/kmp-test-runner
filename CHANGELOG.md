@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-09-30
+
 ### Upgrade notes
 
 Read this section before upgrading if you have any automation parsing `kmp-test`'s `--json`
