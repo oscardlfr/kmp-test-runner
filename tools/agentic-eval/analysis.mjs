@@ -158,7 +158,7 @@ const DISCOVERY_KMP_OPERATIONS = new Set(['describe', 'doctor', 'info']);
 const EXECUTION_KMP_OPERATIONS = new Set(['android', 'benchmark', 'changed', 'coverage', 'parallel']);
 const SUPPORT_KMP_OPERATIONS = new Set(['clean', 'update']);
 const COVERAGE_OUTCOME_FIELDS = new Set(['missed_lines', 'threshold', 'modules_contributing']);
-// 2026-09-29 (WO-A11): 'test_count', matching TASK_OUTCOME_MISMATCH_FIELD_VALUES's own emitted
+// 'test_count', matching TASK_OUTCOME_MISMATCH_FIELD_VALUES's own emitted
 // name (D5 renamed the agent-facing field total -> test_count; this set names fields as they
 // appear in that constant, which buildTaskFieldCorrectness below iterates directly).
 const TEST_COUNT_FIELDS = new Set(['test_count', 'passed', 'failed']);

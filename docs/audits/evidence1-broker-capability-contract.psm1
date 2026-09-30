@@ -222,7 +222,7 @@ function Get-E1BrokerCapabilityRegistry {
       requires_broker_trusted_root      = $false
     }
 
-    # P0 #4 (publication hardening): closed, read-only VHD/AVHDX chain inspection -- the VmReady
+    # Closed, read-only VHD/AVHDX chain inspection -- the VmReady
     # disk guard's own single source of truth for leaf virtual_size/file_size, automatic_stop_action,
     # memory_startup_bytes and vm_state. No caller-supplied path of any kind: VMName/ExpectedVMId are
     # the same closed E2E identity every other VM capability already takes, and the function itself

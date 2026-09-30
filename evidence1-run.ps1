@@ -108,7 +108,7 @@
 # SAME resolved value for all three call sites -- resolved exactly once,
 # below -- never three independent resolutions that could drift apart.
 #
-# Fourth addendum (second overnight work order round: schema-2 fix +
+# Fourth addendum (schema-2 fix +
 # trust-root portability): (A) evidence1-live-handoff-contract.psm1's dual
 # auth host report now requires schema=2 (not 1) whenever an expected Codex
 # version is supplied -- unrelated to this file directly (no call site here
@@ -121,7 +121,7 @@
 # always explicitly passed to Read-E1RunManifest rather than left to that
 # function's own default.
 #
-# Third addendum (overnight work order, root-cause fixes): three items, each
+# Third addendum (root-cause fixes): three items, each
 # implemented RED-tests-first against real Pester execution (see
 # docs/audits/evidence1-phase3c-architecture-note.md's own addendum for full
 # citations). (1) EvidenceCopied/Closed previously hardcoded
@@ -205,7 +205,7 @@ param(
   [string]$GuestCredentialPath = '',
   [string]$StateRoot = 'C:\kmp-eval\scratch\evidence1-run',
   [string]$ReportPath = '',
-  # Overnight work order item B: explicitly injected into
+  # Explicitly injected into
   # Read-E1RunManifest/Assert-E1RunManifestShape below -- this script is the
   # "orchestrator injects a parameter" half of the portability fix (the
   # other half being evidence1-run-manifest-contract.psm1's own
@@ -352,11 +352,11 @@ function Get-E1RunLocalGitCommit([string]$SourceRepoDir) {
 # Single-key dual-shape-safe read -- same idiom Invoke-E1RunVmReadyState's own result-copy loop
 # already inlines for its whole object (real Invoke-E1VmEnsureState/broker-capability results cross
 # the queue's own JSON round trip and come back as PSCustomObject, never a Hashtable/IDictionary --
-# confirmed live, the .Keys regression the auditor flagged from tonight's own VmReady fix). Pulled
-# out as its own one-key helper here because P0 #4's formula reads several keys off two different
+# confirmed live: the .Keys regression an earlier VmReady fix introduced). Pulled
+# out as its own one-key helper here because the disk guard's formula reads several keys off two different
 # object shapes (the chain inspection result itself, and each entry inside its own chain[] array),
 # not one flat copy loop.
-# 2026-09-30 (auditor-directed fix, found live during the first fake-mode GREEN run against the
+# (Found live during the first fake-mode GREEN run against the
 # formula this feeds): PowerShell unrolls a ONE-element array to its bare element whenever it
 # crosses a function `return` or an if/else EXPRESSION capture -- confirmed directly, the hard way
 # (a 2-element chain, used by every existing test fixture, survives that round trip unchanged,
@@ -376,21 +376,21 @@ function Get-E1RunPropertyValue($Object, [string]$Key) {
   return $value
 }
 
-# P0 #4 (publication hardening): the principled VmReady disk guard, replacing the flat 15 GiB floor
-# with the real worst-case growth bound -- Amendment A6's own auditor-confirmed formula (this
-# closure's own host-disk-exhaustion canary-1 root cause), drafted mid-session as WO-A7 then
+# The principled VmReady disk guard, replacing the flat 15 GiB floor
+# with the real worst-case growth bound -- Amendment A6's own confirmed formula (this
+# closure's own host-disk-exhaustion canary-1 root cause), drafted mid-session then
 # descoped once the user freed host space directly (see the A6 addendum: "the guard... deferred to
 # a future WO, to be validated by a fresh GREEN gate run... not by this campaign's own gate" -- this
 # is that WO). $ChainInspection is evidence1-hyperv-inspect-vhd-chain-direct.ps1's own report shape:
 # chain[0] is the attached/leaf disk (the walk starts at the attached path and appends outward
 # toward the base, never sorted), leaf virtual_size/file_size are the worst-case growth bound
 # (VirtualSize - avhdx FileSize is how far the leaf CAN still grow on the host before hitting its
-# own ceiling, not a base+diff sum against one virtual size -- the auditor's own A6 correction).
+# own ceiling, not a base+diff sum against one virtual size -- Amendment A6's correction).
 # MemoryStartup only adds to the requirement when the VM's own AutomaticStopAction is Save AND it
 # isn't already Running (a Running VM's save-state reservation, if any, already exists and is
 # already counted in the host's OWN currently-reported free bytes -- adding it again would double
 # count exactly the case VmReady itself is about to hit, starting the VM).
-# Auditor fail-open fix (2026-09-30): [int64]$null is 0 and [string]$null is '' -- both cast
+# Fail-open fix: [int64]$null is 0 and [string]$null is '' -- both cast
 # silently instead of failing, so a missing virtual_size made the leaf slack negative (the floor
 # always "won", the check PASSED with no real chain data behind it) and a missing/garbled
 # automatic_stop_action silently skipped the Save reservation instead of surfacing that the field
@@ -414,7 +414,7 @@ function Get-E1RunVmReadyRequiredDiskBytes($ChainInspection) {
   # explicit empty array does; checking for $null before the @() wrap is what makes both cases throw
   # the same way instead of only the explicit-empty-array one.
   #
-  # 2026-09-30 (auditor-directed fix): the ORIGINAL `$chain = if ($null -eq $chainRaw) { @() } else
+  # The ORIGINAL `$chain = if ($null -eq $chainRaw) { @() } else
   # { @($chainRaw) }` had the exact same if/else-expression-capture array collapse
   # Get-E1RunPropertyValue's own header now documents -- a genuinely single-link chain (this
   # formula's single most common real shape: no checkpoint) collapsed right back down to $chain
@@ -551,7 +551,7 @@ function Invoke-E1RunBrokerReadyState(
   $status = Get-E1BrokerStatus
   $hostFreeBytes = [int64](& $GetHostDiskFreeBytes)
   $hostDiskOk = $hostFreeBytes -ge 16106127360
-  # P0 #1 (publication hardening): the deployed broker's own manifest source_git_commit must equal
+  # The deployed broker's own manifest source_git_commit must equal
   # this repo's local HEAD, or every later state's "verified against HEAD" claim is unearned --
   # -UpdateBroker not having been re-run after the last commit is exactly the gap this closes.
   # Real-backend only: evidence1-broker-status-fake.psm1's own default result hardcodes
@@ -559,7 +559,7 @@ function Invoke-E1RunBrokerReadyState(
   # this host's real, already-installed broker for a fully-fake rehearsal to reach DryRunPassed") --
   # gating fake-mode coherence against a real local HEAD would make every fake-mode run fail this
   # check unconditionally, forever, which is exactly the real-dependency the fake module exists to
-  # avoid. 2026-09-30 (auditor-directed fix): found live, the first time a fake-mode GREEN run was
+  # avoid. Found live, the first time a fake-mode GREEN run was
   # attempted against this coherence check.
   $localCommit = & $GetLocalGitCommit $PSScriptRoot
   $deployedCommit = [string]$status.source_git_commit
@@ -586,7 +586,7 @@ function Invoke-E1RunBrokerReadyState(
 # so a pre-seeded 'Running' would make this state a no-op rather than exercise
 # anything. Real mode never seeds; Invoke-E1VmEnsureState inspects the VM's
 # actual current state itself.
-# P0 #4 (publication hardening): the principled disk guard's own inspection dispatch, isolated
+# The principled disk guard's own inspection dispatch, isolated
 # behind an injectable scriptblock the same way every other real-vs-fake VmReady dependency already
 # is. Fake-backend runs (gate/dry testing, never real disk pressure) get a fixed, always-sufficient
 # fake inspection -- there is no real VHD to inspect and no real host disk-space scenario being
@@ -820,7 +820,7 @@ function Invoke-E1RunDryRunPassedState($Context) {
   }
   if ($Context.UseRealBackends) {
     if (-not $Context.Manifest) { throw 'dry_run_passed_manifest_required' }
-    # 2026-09-29 (WO-A2 auditor finding): the guest's harness checkout was seen live
+    # The guest's harness checkout was seen live
     # reporting a stale product version despite ToolchainReady's own git-level sync
     # check already passing -- see evidence1-guest-bundle-contract.psm1's
     # run-agentic-eval-product-smoke bundle header for the full incident. These
@@ -844,7 +844,7 @@ function Invoke-E1RunDryRunPassedState($Context) {
         $expectedBinTreeHash -notmatch '^[0-9a-f]{40}$' -or $expectedSkillsTreeHash -notmatch '^[0-9a-f]{40}$') {
       throw 'dry_run_passed_expected_tree_hash_resolution_failed'
     }
-    # 2026-09-29 (WO-A2 auditor finding): the anchor scenario's own JSON is the single source of
+    # The anchor scenario's own JSON is the single source of
     # truth for which NowInAndroid commit source_template_dir must be checked out to -- read here,
     # host-side, the same way the product identity's expected values are derived above, never a
     # second hardcoded copy of the commit drifting out of sync with the scenario file.
@@ -890,12 +890,12 @@ function Invoke-E1RunDryRunPassedState($Context) {
 # A manifest becomes required starting here. Authentication was already
 # confirmed by AuthReady; this gate only confirms the exact, no-retry budget
 # declared by the same manifest that enumerates LiveRunning's cells.
-# P0 #2 (publication hardening): the ONE place that shells out to
+# The ONE place that shells out to
 # tools/agentic-eval/derive-round-order-cli.mjs (Node -- buildScenarioCampaignPlan has no
 # PowerShell equivalent, and re-implementing the counterbalancing logic here would be exactly the
 # kind of second, independently-maintained copy this project's own single-source-of-truth
 # discipline exists to prevent). Indexes by the runtime's own campaign_cell_indices into the
-# design's full pre-registered plan (auditor review: exactly the property the guest side already
+# design's full pre-registered plan (exactly the property the guest side already
 # asserts per cell, order_index == CampaignCellIndex, so any valid index subset works the same way
 # a canary's [0,1] does, not just "1 rep or the full count"). Throws on any failure, including an
 # index the plan doesn't contain -- the caller decides the reason code.
@@ -969,7 +969,7 @@ function Invoke-E1RunLiveAuthorizedState($Context, [scriptblock]$GetPreregistere
 # Dispatches one fake ProviderRuntime session per cell in
 # Get-E1RunManifestExpectedCells (evidence1-run-manifest-contract.psm1) --
 # round_order.Count * runtimes.Count sessions total, one per (round, runtime)
-# pair. Overnight work order item 2, resolved (previously an open question):
+# pair. Resolved (previously an open question):
 # re-read ADR-S6 and plan section 6.2's own product/free diagram -- 3 rounds
 # of two condition-slots each is 6 round_order entries, times 2 runtimes, is
 # 12, matching the plan's own "12 sessions for the Claude/Codex product-vs-free
@@ -1258,7 +1258,7 @@ function Invoke-E1RunFailureSafeClosureAttempt($Context) {
     } catch {
       $attempt.vm_result = [ordered]@{ verdict = 'FAIL'; reason_code = 'failure_safe_vm_attempt_threw'; error = [string]$_.Exception.Message }
     }
-    # P0 #5 (publication hardening): best-effort read-only evidence recovery, now that the VM's
+    # Best-effort read-only evidence recovery, now that the VM's
     # power state is settled -- see Invoke-E1RunFailureSafeEvidenceCopyAttempt's own header for why
     # this needs two tiers and what it deliberately does NOT attempt to recover.
     try {
@@ -1272,7 +1272,7 @@ function Invoke-E1RunFailureSafeClosureAttempt($Context) {
   return $attempt
 }
 
-# P0 #5 (publication hardening, auditor-directed): "evidence from a failed LiveRunning reaches the
+# Publication hardening: "evidence from a failed LiveRunning reaches the
 # host automatically." Before this, a campaign that failed anywhere from VmReady onward powered
 # the VM off (the closure attempt above) and stopped there -- whatever the guest had already
 # written for any cell that DID finish was simply stranded, since this campaign_id must never be
@@ -1300,7 +1300,7 @@ function Invoke-E1RunFailureSafeClosureAttempt($Context) {
 #     the same way and is captured per-cell below as a legitimate miss, never as a fatal error.
 #     Recovering the specific in-flight cell's own raw, not-yet-recorded journal needs a capability
 #     this closure does not have (a guest directory listing to discover its JournalId) --
-#     intentionally left for its own work order rather than folded in here.
+#     intentionally left for separate work rather than folded in here.
 #
 # Never throws (same discipline as its caller): every per-cell attempt is its own try/catch, and
 # the whole function is wrapped again by its one caller besides -- one cell's copy failure must
@@ -1324,7 +1324,7 @@ function Invoke-E1RunFailureSafeEvidenceCopyAttempt($Context, $VmResult, $Transp
     $destinationRoot = Join-Path $Context.CampaignRoot 'failure-safe-evidence'
     New-Item -ItemType Directory -Force -Path $destinationRoot | Out-Null
 
-    # 2026-09-30 (auditor-directed fix): if/else used as a value-producing expression collapses a
+    # If/else used as a value-producing expression collapses a
     # ONE-element array to its bare element on capture, same as a function return -- see
     # Get-E1RunPropertyValue's own header for the full finding. A campaign with exactly one
     # expected cell would otherwise turn $liveSessions into a bare session object instead of a
@@ -1548,7 +1548,7 @@ $AuditsRoot = Resolve-FullPath (Join-Path $RepoRoot 'docs\audits')
 Import-Module (Join-Path $AuditsRoot 'evidence1-run-manifest-contract.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $AuditsRoot 'evidence1-run-state-contract.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $AuditsRoot 'evidence1-campaign-eligibility.psm1') -Force -DisableNameChecking
-# 2026-09-30 (auditor-directed fix, found live during the first-ever full fake-mode run reaching
+# (Found live during the first-ever full fake-mode run reaching
 # ToolchainReady): Ensure-E1RunDeployedSessionBundle calls Ensure-E1BrokerSessionBundle
 # unconditionally, in both modes -- that function's own body immediately no-ops for fake mode
 # (`if (-not $UseRealBackends) { return ... }`, evidence1-broker-capability-client.psm1:231), so it
@@ -1603,7 +1603,7 @@ if ($UseRealBackends) {
   # genuinely REACHABLE (module loads, exports the right function, routes
   # through the broker queue correctly -- see this round's Pester coverage).
   Import-Module (Join-Path $AuditsRoot 'evidence1-artifact-copy-queue-client.psm1') -Force -DisableNameChecking
-  # Clock's real half DOES get imported here (overnight work order item 3),
+  # Clock's real half DOES get imported here,
   # unlike ProviderRuntime/ArtifactStore just below: a real Clock is just
   # [DateTime]::UtcNow with nothing to build ahead of any gate, so importing
   # it costs nothing and is the semantically correct choice on the off
@@ -1641,7 +1641,7 @@ if ($UseRealBackends) {
 # function's own default -- so this script's own resolution is the one
 # actually in effect and auditable from this file alone, matching "a
 # parameter the orchestrator injects explicitly into the validation call"
-# (overnight work order item B).
+# (the requirement behind -OutputRootsTrustedRoot).
 $ResolvedOutputRootsTrustedRoot = if ([string]::IsNullOrWhiteSpace($OutputRootsTrustedRoot)) { Get-E1RunManifestDefaultTrustedRoot } else { $OutputRootsTrustedRoot }
 $LoadedManifest = $null
 if (-not [string]::IsNullOrWhiteSpace($Manifest)) {
@@ -1720,7 +1720,7 @@ New-Item -ItemType Directory -Force -Path $CampaignRoot | Out-Null
 # against a manifest with different output_roots than the first invocation
 # is caught loudly here, at descriptor-check time, rather than silently
 # publishing evidence to wherever the SECOND invocation's manifest happened
-# to say (overnight work order item 1: "resume must honor the SAME
+# to say (the requirement: "resume must honor the SAME
 # output_roots from the first invocation").
 $ResolvedOutputRootsPrivate = if ($LoadedManifest) { Resolve-FullPath ([string]$LoadedManifest.output_roots.private) } else { $null }
 $ResolvedOutputRootsPublic  = if ($LoadedManifest) { Resolve-FullPath ([string]$LoadedManifest.output_roots.public) } else { $null }

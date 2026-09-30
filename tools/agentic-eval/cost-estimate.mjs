@@ -6,7 +6,7 @@
 // single source of truth for "which cells count" -- see that function's own header), applies a
 // fixed, binding, runtime-specific token mapping to avoid double-counting, and prices every counted
 // cell against a real, sourced-and-dated per-runtime price table. readme-evidence.mjs's
-// validateCostEstimate (PR #537, 0d479c9) is the authoritative consumer-side contract this module
+// validateCostEstimate is the authoritative consumer-side contract this module
 // targets -- verified directly against that function's code before writing this, not from prose.
 //
 // BINDING token mapping (avoids double-counting a cached prefix):
@@ -20,7 +20,7 @@
 //   has no cache-write TOKEN COUNT dimension at all -- runtimes/codex-cli.mjs hardcodes
 //   usage.cache_write:null, never a real number).
 //
-//   Codex price-ambiguity correction (auditor finding, verified independently against the raw
+//   Codex price-ambiguity correction (verified independently against the raw
 //   fetched page before use -- see Pricing verification trail below): OpenAI's own Input pricing
 //   tooltip reads "Input tokens are either Input, Cached Input, or Cache Write and writes are not
 //   an additive fee." -- a token is billed at exactly ONE of the three rates, never input-plus-
@@ -31,7 +31,7 @@
 //   the real, published cache-write rate (not 0) so a downstream cost-range generator can price U
 //   at the input rate for a low bound and at the cache-write rate for a high bound -- this module
 //   itself does not compute that range (see readme-evidence.mjs's armCostRange/sessionCost, a
-//   sibling consumer, PR #537); it only emits the flag and the real prices needed to do so
+//   sibling consumer); it only emits the flag and the real prices needed to do so
 //   correctly. The runtime-level `uncached_input_may_be_cache_writes: true` field (codex-cli only)
 //   and `pricing_note` (the quoted tooltip) make this ambiguity explicit in the emitted document,
 //   not just in this comment.

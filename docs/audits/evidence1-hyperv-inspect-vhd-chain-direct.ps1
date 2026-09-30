@@ -1,6 +1,6 @@
 #Requires -RunAsAdministrator
 
-# 2026-09-29 (Amendment A6 follow-up, auditor-directed): read-only, host-only VHD/AVHDX chain
+# Amendment A6 follow-up: read-only, host-only VHD/AVHDX chain
 # inspection. Walks the E2E VM's currently-attached disk back through every parent to the root base
 # disk via Get-VHD (never Get-VHD without elevation -- confirmed live, throws a permission error
 # from this session's own non-elevated context), reporting each link's virtual size, allocated file
@@ -8,12 +8,12 @@
 # host C:/D: free/total bytes. Exists to answer one question with evidence instead of an assumed
 # number: how much further can the guest's own differencing disk grow on the HOST before more
 # disk-consuming guest activity (a fresh GREEN gate run) is safe, given the host's own free space is
-# critically low (12.42 GB at the time this was written, auditor-confirmed worst-case growth is
+# critically low (12.42 GB at the time this was written, the confirmed worst-case growth is
 # VirtualSize - avhdx FileSize, not a base+diff sum against one virtual size). Never mutates
 # anything -- same closed-VMName, confined-create-new-ReportPath shape as
 # evidence1-hyperv-set-vm-memory-direct.ps1, minus any write action at all.
 #
-# 2026-09-30 (auditor-directed revert): P0 #4 briefly made this script Import-Module
+# An earlier version briefly made this script Import-Module
 # evidence1-vm-state-hyperv.psm1 to reuse the walk via Get-E1VmVhdChain. Reverted -- the repo's own
 # architectural invariant (Evidence1-Run-Broker-Capability-Wiring.Tests.ps1's "Global sweep: a
 # *-hyperv.psm1 is importable only from evidence1-host-broker-capability-dispatch.ps1") reserves
@@ -75,7 +75,7 @@ while (-not [string]::IsNullOrWhiteSpace($currentPath)) {
 }
 
 # Host free space -- read-only WMI, needs no elevation on its own, but reported from here anyway
-# so the auditor's whole requested receipt comes from one coherent source rather than splitting
+# so the whole requested receipt comes from one coherent source rather than splitting
 # evidence across an elevated and a non-elevated call.
 $hostVolumes = @(Get-CimInstance -ClassName Win32_LogicalDisk -ErrorAction Stop |
   Where-Object { $_.DeviceID -cin @('C:', 'D:') } |

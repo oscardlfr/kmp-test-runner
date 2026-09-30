@@ -112,7 +112,7 @@ function Invoke-E1VmEnsureState {
   return $response.result
 }
 
-# P0 #4 (publication hardening): same shape as Get-E1VmState above, dispatching the new
+# Same shape as Get-E1VmState above, dispatching the new
 # vhd.inspect_chain capability instead of vm.inspect. No Assert-*Result call -- this capability's
 # result shape (leaf virtual_size/file_size inside chain[], plus automatic_stop_action/
 # memory_startup_bytes/vm_state) has no separate contract-assertion module of its own; VmReady

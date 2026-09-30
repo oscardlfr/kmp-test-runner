@@ -87,7 +87,7 @@ function Invoke-E1BrokerCapabilityTriggerTask([string]$TaskName) {
   if ($LASTEXITCODE -ne 0) { throw "broker_capability_trigger_failed: $($run -join ' ')" }
 }
 
-# REAL default task-state reader (2026-09-29 wedge fix, WO-A2 H-flake
+# REAL default task-state reader (wedge fix from a flake
 # investigation): schtasks.exe /Run can report success while silently
 # dropping the actual start when it races a still-tearing-down -Once
 # instance (MultipleInstances=IgnoreNew) -- confirmed live against the real
@@ -441,7 +441,7 @@ function Submit-E1BrokerCapabilityOperation {
         if (Test-Path -LiteralPath $outerRequestPath -PathType Leaf) { throw "broker_request_not_picked_up: $outerRequestPath" }
         throw "broker_request_stalled: $activeOuterRequestPath"
       }
-      # 2026-09-29 wedge fix (WO-A2 H-flake investigation): schtasks /Run can
+      # Wedge fix (flake investigation): schtasks /Run can
       # report success while silently dropping the actual start when it races
       # a still-tearing-down -Once instance (MultipleInstances=IgnoreNew) --
       # confirmed live, a single un-retried trigger orphaned a request and

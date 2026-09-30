@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: MIT
 //
-// tools/agentic-eval/evidence2-tables.mjs (WO-C16) -- mechanical Evidence2 results tables: no
+// tools/agentic-eval/evidence2-tables.mjs -- mechanical Evidence2 results tables: no
 // hand-transcribed numbers. Reuses campaign-summary.mjs's own summarizeCampaign/fmtRate/fmtStats/
 // fmtProvenanceLine and readme-evidence.mjs's own disjointTokens/sessionCost/armCostRange/
 // scalarMetric/compositionMedians/tokenCompositionMedians/commandKindAggregate -- never re-derives
@@ -16,7 +16,7 @@
 //   node tools/agentic-eval/evidence2-tables.mjs <campaign-dir> [target-doc] [options]
 //     [target-doc]              default: tools/runs/evidence2-agentic-benchmark-<date>/README.md
 //                                (REPO_ROOT-relative, mirroring Evidence1's own layout -- built from
-//                                the WO-C1 skeleton after the campaign runs, per the auditor); pass
+//                                the evidence doc's skeleton after the campaign runs); pass
 //                                explicitly to override.
 //     --date=<yyyy-mm-dd>       campaign date for the default target-doc path (default: 2026-09-30)
 //     --cost-estimate <path>   cost-estimate.json (schema 2); omit for "not recorded" cost columns
@@ -67,8 +67,8 @@ function fmtCommandKindCounts(counts) {
   return `${COMMAND_KIND_LABEL.kmp_test} ${counts.kmp_test}, ${COMMAND_KIND_LABEL.gradle} ${counts.gradle}, ${COMMAND_KIND_LABEL.other} ${counts.other}`;
 }
 
-// Same runtime-specific disjoint mapping the grid uses (WO-C13) -- a Codex cell only shows
-// "reasoning" when reasoning_output is genuinely tracked (WO-C13 residual), never a fabricated 0.
+// Same runtime-specific disjoint mapping the grid uses -- a Codex cell only shows
+// "reasoning" when reasoning_output is genuinely tracked, never a fabricated 0.
 function fmtDisjointTokens(tokens, runtimeId) {
   if (!tokens) return 'n/a';
   const d = disjointTokens(tokens, runtimeId);
@@ -143,7 +143,7 @@ export function buildPerCellTableLines(summary, costEstimate, infraFlakeResult) 
 
 // ---------------------------------------------------------------------------
 // (b)/(c) Runtime x arm aggregates -- reused verbatim for the primary and the sensitivity summary
-// (the auditor's own "the same aggregates" instruction), so the two can never silently diverge in
+// (the same aggregates, by design), so the two can never silently diverge in
 // shape.
 
 // Turns has no group-level aggregate in campaign-summary.mjs's own output (unlike duration_ms/
@@ -204,7 +204,7 @@ export function buildSensitivityLines(sensitivitySummary, excludedCellKeys) {
 // ---------------------------------------------------------------------------
 // (d) Provenance and controls -- every fmtProvenanceLine call mirrors campaign-summary.mjs's own
 // renderMarkdown Provenance section exactly (reuses the same helper), plus reasoning_effort_source
-// (WO-C16's own addition to buildProvenance) that renderMarkdown didn't carry before this file existed.
+// (this file's own addition to buildProvenance) that renderMarkdown didn't carry before this file existed.
 
 export function buildProvenanceLines(summary) {
   const p = summary.provenance;

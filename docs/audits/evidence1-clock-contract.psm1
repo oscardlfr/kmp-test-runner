@@ -1,7 +1,7 @@
 # evidence1-clock-contract.psm1
 #
 # ADR-S4's Clock interface (production: system UTC; test: fake clock),
-# formalized -- overnight work order item 3. Previously
+# formalized. Previously
 # evidence1-clock-fake.psm1 alone folded both the "production" and "test"
 # roles together (its own header explained why: a real Clock has no I/O and
 # nothing that could meaningfully disagree between a real and fake

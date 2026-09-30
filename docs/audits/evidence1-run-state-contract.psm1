@@ -147,7 +147,7 @@ function Read-E1RunStateReceipt([string]$CampaignRoot, [string]$StateName) {
 }
 
 # PUBLIC. Extracted out of evidence1-run.ps1's own top-level campaign.json
-# resume-identity check (overnight work order item 1) so it is independently
+# resume-identity check so it is independently
 # testable -- same extraction rationale as everything else in this file.
 # Pure comparison, no I/O. $ExistingDescriptor is whatever
 # campaign.json round-trips to (a PSCustomObject from ConvertFrom-Json);

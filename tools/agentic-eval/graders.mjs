@@ -1959,7 +1959,7 @@ const KMP_EVAL_RESULT_TESTS_EXECUTED_KEYS = new Set(['module', 'outcome_kind', '
 const KMP_EVAL_RESULT_COVERAGE_THRESHOLD_KEYS = new Set(['module', 'outcome_kind', 'test_count', 'passed', 'failed', 'missed_lines', 'threshold', 'modules_contributing']);
 const KMP_EVAL_RESULT_NO_APPLICABLE_KEYS = new Set(['module', 'outcome_kind']);
 const KMP_EVAL_RESULT_NO_APPLICABLE_OPTIONAL_COUNT_KEYS = ['test_count', 'passed', 'failed'];
-// 2026-09-29 (WO-A11, auditor-directed): single source of truth. This used to be a second,
+// Single source of truth. This used to be a second,
 // independently-maintained literal that drifted from TASK_OUTCOME_MISMATCH_FIELD_VALUES on one
 // name ('total' here vs 'test_count' there) -- a real live cell hit exactly that drift (the
 // schema rejected an otherwise-valid record because this array's order/membership no longer
@@ -2057,7 +2057,7 @@ function compareKmpEvalResultBlockToObserved(block, observedResult) {
     diagnostic.comparison_status = 'matched';
     diagnostic.matches_observed = true;
   }
-  // Deliberately UNCHANGED from here on (2026-09-29, WO-A2 auditor finding): this diagnostic
+  // Deliberately UNCHANGED from here on: this diagnostic
   // object is also serialized verbatim into terminal_evidence.final_answer_block, which
   // accepted-run-audit.mjs validates against its OWN closed field set -- adding a field here
   // would need a new sidecar schema version, not just a grader fix. computeTaskOutcome (the one
@@ -2473,7 +2473,7 @@ function computeTaskOutcome(finalText, scenario) {
     ...comparison.missing_fields,
     ...comparison.mismatch_fields,
   ]));
-  // 2026-09-29 (WO-A2 auditor finding, confirmed live): content correctness computed here,
+  // Confirmed live: content correctness computed here,
   // inline, from missing_fields/mismatch_fields directly -- never comparison.matches_observed,
   // which also folds in unexpected_key_count (deliberately unchanged; see
   // compareKmpEvalResultBlockToObserved's own comment). mismatchFields above already carries
@@ -2526,14 +2526,14 @@ function computeProviderEvidence(terminal, hasFinalBlock) {
 /** product_e2e_success (Section 9.5): Product-only -- `null` for any condition other than
  * 'current-skill' (FreeBaseline/candidate-skill never get E2E credit, regardless of how correct or
  * well-evidenced their own run was); for 'current-skill', a real boolean requiring task match,
- * Product evidence matched, protocol matched, AND (2026-09-29, WO-A2 auditor finding) no
+ * Product evidence matched, protocol matched, AND no
  * unexpected keys in the agent's own final answer block. `task_outcome_matched` alone no longer
  * carries this (it now means content correctness only -- see compareKmpEvalResultBlockToObserved's
  * own comment), so it's checked here explicitly: an agent that hedges with additional fields is
  * still rejected for the metric that actually decides the study's outcome, matching this file's
  * own "rejected, not silently ignored" design intent.
  *
- * EXPORTED (2026-09-29, WO-A2 auditor finding) for direct unit testing of the unexpectedKeyCount
+ * EXPORTED for direct unit testing of the unexpectedKeyCount
  * gate specifically: a real end-to-end well-formed-but-hedged answer is not reachable through
  * gradeScenarioCondition (isAnswerProtocolWellFormed's own closed key-set check for the agent's
  * DECLARED outcome_kind already rejects a block carrying an unrecognized key before

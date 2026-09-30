@@ -102,12 +102,12 @@ if ($LASTEXITCODE -ne 0) {
 
 # $deadline is computed here, BEFORE the retry loop below, specifically so
 # that loop can be bounded by the same -TimeoutMinutes contract as the
-# response wait -- see that loop's own comment for why (2026-09-29 auditor
-# review of the first draft: a task stuck Running forever must still fail at
+# response wait -- see that loop's own comment for why (a task stuck
+# Running forever must still fail at
 # TimeoutMinutes, the same as it always has, not spin unbounded).
 $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
 
-# 2026-09-29 wedge fix (WO-A2 H-flake investigation): schtasks /Run can report
+# Wedge fix (flake investigation): schtasks /Run can report
 # success while silently dropping the actual start when it races a
 # still-tearing-down -Once instance (MultipleInstances=IgnoreNew) -- confirmed
 # live against the real broker. A dropped trigger with no retry orphans

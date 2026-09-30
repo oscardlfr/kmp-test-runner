@@ -68,7 +68,7 @@ function bestEffortRemove(path) {
   } catch { /* best-effort: the original acquisition error is what matters, not this */ }
 }
 
-// 2026-09-29 (WO-A2 auditor finding, confirmed empirically): mkdtempSync's own libuv binding
+// Confirmed empirically: mkdtempSync's own libuv binding
 // (uv_fs_mkdtemp) does NOT reliably create a directory once the resolved path exceeds Windows'
 // classic MAX_PATH (260 chars) on this harness's hosts, even with HKLM
 // FileSystem\LongPathsEnabled=1 set system-wide -- confirmed by direct measurement: mkdirSync,
@@ -412,7 +412,7 @@ export function materializeScenarioProject({ sourceRepoDir, pinnedCommit, existi
  * (byte-identical reset between conditions) holds either way.
  * @param {{runPrewarm?: (gradleUserHome: string) => void, seedFromDir?: string | null}} [opts]
  */
-// 2026-09-29 (WO-A2 auditor decision, Amendment A5, round 2 -- round 1 found broken live): NiA's
+// Amendment A5: NiA's
 // own project-level gradle.properties commits -Xms4g for the Gradle daemon PLUS -Xms4g for the
 // Kotlin daemon -- 8GB up front against this harness's VM profile's fixed, non-dynamic 8GB RAM
 // allocation (two live "Gradle build daemon disappeared unexpectedly" deaths, campaign 99f67197).

@@ -163,7 +163,7 @@ export async function acquireSharedEvalResources({
       throw tagIncidentPhase(err, 'acquiring_shared_resources');
     }
     registerCleanup(() => rmSync(shimDir, { recursive: true, force: true }));
-    // Explicitly phase-tagged (2026-09-29, WO-A2 auditor finding): this call's own mkdtempSync
+    // Explicitly phase-tagged: this call's own mkdtempSync
     // predecessor is a confirmed real failure mode on this harness's hosts (see
     // mkdtempLongPathSafe's own comment in materialize.mjs) -- an untagged throw here would
     // default to incidentPhaseOf's own 'finalizing_matrix' fallback, exactly what made the first
@@ -378,7 +378,7 @@ export async function runSingleCondition({ condition, materializeFixture, previo
   // removed once the caller's own try/catch invokes runCleanup().
   let evidenceDir = null;
   if (decisionAttributionEnabled) {
-    // Explicitly phase-tagged as 'materializing_cell' (2026-09-29, WO-A2 auditor finding), the
+    // Explicitly phase-tagged as 'materializing_cell', the
     // same phase the fixture/Gradle materialization immediately above this point already uses --
     // this scratch dir is exactly the same kind of per-cell materialization step, and its own
     // mkdtempSync predecessor is a confirmed real failure mode on this harness's hosts (see

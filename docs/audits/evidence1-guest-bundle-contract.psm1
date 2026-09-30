@@ -442,7 +442,7 @@ function Get-E1GuestBundleRegistry {
     # delete (Remove-E1GuestBundleLongPathTree's own pattern, copied per this file's established
     # independently-self-contained-bundle discipline). A per-item failure is caught and reported, never
     # aborts the remaining items.
-    # 2026-09-29 (auditor review of the first draft, before any dispatch): the first draft's
+    # The first draft's
     # PrivateRootRelativePaths pattern allowed '.'/'..' inside the second segment (it was in the
     # allowed character class), so 'eval-v2-gate\..' validated and Join-Path/GetFullPath would
     # have resolved it to C:\Evidence1Private itself -- deleting every campaign root, including
@@ -455,7 +455,7 @@ function Get-E1GuestBundleRegistry {
     # is an ancestor/descendant of the canonical Gradle seed, the current harness checkout, the
     # source template, or C:\Evidence1Toolchain. A caller mistake in the request cannot reach
     # rmSync without passing both.
-    # 2026-09-29 (auditor review, after four straight per-shape transport patch rounds -- "the
+    # After four per-shape transport patch rounds (a sign that "the
     # abstraction is the defect"): list arguments are now JSON-encoded STRINGS, not arrays.
     # Strings survive the broker's own JSON round trip byte-for-byte (proven all session by
     # raw_envelope_json, this file's OWN pre-existing large-string-over-the-same-transport
@@ -555,7 +555,7 @@ function Get-E1GuestBundleRegistry {
           }
           return $resolvedCandidate
         }
-        # 2026-09-29 (auditor root cause of the round-3 100% delete failure, confirmed live):
+        # Root cause of a 100% delete failure, confirmed live:
         # the child node.exe process was launched with an EMPTY environment (@{}) -- no
         # SystemRoot/PATH/TEMP, which broke process startup itself, not the delete logic. Fixed
         # by inheriting this session's OWN already-correct basic environment instead of the
@@ -665,7 +665,7 @@ function Get-E1GuestBundleRegistry {
         HarnessDir = { param($v) $v -is [string] -and $v -cmatch '^[A-Za-z]:\\' }
         SourceTemplateDir = { param($v) $v -is [string] -and $v -cmatch '^[A-Za-z]:\\' }
         SmokeRoot = { param($v) $v -is [string] -and $v -cmatch '^C:\\Evidence1Private\\' }
-        # 2026-09-29 (WO-A2 auditor finding): a stale guest harness checkout can pass this
+        # A stale guest harness checkout can pass this
         # smoke's own semantic check while measuring the WRONG product tree entirely -- caught
         # live via a real envelope reporting version:"0.15.0" against an expected 0.16.0. These
         # five expected values all trace to ONE source of truth (the caller's own already-
@@ -682,14 +682,14 @@ function Get-E1GuestBundleRegistry {
       scriptblock = {
         param($HarnessDir, $SourceTemplateDir, $SmokeRoot, $ExpectedProductCommit, $ExpectedProductVersion, $ExpectedLibTreeHash, $ExpectedBinTreeHash, $ExpectedSkillsTreeHash, $ExpectedSourceCommit)
 
-        # Diagnosability (WO-A2 D3 follow-up): a semantic mismatch previously left only the six
+        # Diagnosability: a semantic mismatch previously left only the six
         # summary fields above -- no way to see WHAT kmp-test actually printed without a separate,
         # ad hoc guest probe. Bounded, not raw: last 200 lines each of stdout/stderr, matching this
         # module's own established length-cap discipline (Get-E1GuestBundleSanitizedErrorText,
         # evidence1-guest-bundle-hyperv.psm1) scaled to a line count generous enough to show a full
         # Gradle error block (e.g. "Cannot locate tasks that match...") rather than one collapsed line.
         #
-        # raw_envelope_json is the trimmed stdout TEXT, never a parsed object (auditor finding,
+        # raw_envelope_json is the trimmed stdout TEXT, never a parsed object (a finding
         # verified against Invoke-E1GuestBundle's own contract.psm1:767/845 ConvertTo-Json -Depth
         # 5): a parsed $report object crosses PS-remoting serialization and then this module's own
         # -Depth 5 re-encoding, and a real kmp-test envelope nests past that (e.g.
@@ -705,7 +705,7 @@ function Get-E1GuestBundleRegistry {
           return $lines[-$MaxLines..-1]
         }
 
-        # 2026-09-29 (WO-A2 auditor finding, proven live): PowerShell 5.1's own
+        # Proven live: PowerShell 5.1's own
         # Remove-Item -Recurse -Force hits .NET's classic MAX_PATH (260 chars) on a leftover
         # Gradle typesafe-project-accessor tree (deep under
         # gradle-home\caches\<ver>\dependencies-accessors\<hash>\classes\org\gradle\accessors\dm\...)
@@ -716,7 +716,7 @@ function Get-E1GuestBundleRegistry {
         # node binary every other file operation here already uses, not a second mechanism.
         # Reports the top-level entry count it removed, not a bare "it worked" -- NOT a deepest
         # path length: the first live attempt against this fix's own real leftover tree timed
-        # out the whole bundle (auditor review), because computing that figure needed a full
+        # out the whole bundle, because computing that figure needed a full
         # second recursive readdirSync traversal of the tree before the delete even started.
         # One readdirSync on the root is a cheap, still-useful signal in its place.
         function Remove-E1GuestBundleLongPathTree($BoundedProcess, [hashtable]$Environment, [string]$Path) {
@@ -755,7 +755,7 @@ function Get-E1GuestBundleRegistry {
         Set-StrictMode -Version Latest
         $ErrorActionPreference = 'Stop'
 
-        # 2026-09-29 (WO-A2 auditor review): an uncaught exception anywhere in the body below
+        # An uncaught exception anywhere in the body below
         # (e.g. the long-path delete itself failing for an unrelated reason) previously bubbled
         # all the way to the host's own Receive-Job catch, wrapped generically as
         # "guest_bundle_failed: <raw .NET message>" -- no exception type, no stack trace, no way
@@ -778,7 +778,7 @@ function Get-E1GuestBundleRegistry {
           $worker = Join-Path $HarnessDir 'docs\audits\evidence1-dual-condition-canary-launch.ps1'
           if (-not (Test-Path -LiteralPath $worker -PathType Leaf)) { throw 'product_smoke_worker_missing' }
           Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
-          # 2026-09-29 (WO-A2 auditor root cause, proven live): dot-sourcing binds the
+          # Root cause, proven live: dot-sourcing binds the
           # WORKER's own param() block in THIS caller's scope. The worker declares
           # $HarnessDir/$SourceTemplateDir with its OWN Evidence1 stage-B defaults,
           # so an unqualified ". $worker -InternalLibrary" silently resets both
@@ -797,7 +797,7 @@ function Get-E1GuestBundleRegistry {
           $node = 'C:\Evidence1Toolchain\node\24.19.0\node.exe'
           $cli = Join-Path $HarnessDir 'bin\kmp-test.js'
 
-          # 2026-09-29 (WO-A2 auditor finding): a checkout git-verified correct at sync
+          # A checkout git-verified correct at sync
           # time (evidence1-hyperv-update-harness-from-bundle.ps1's own HEAD/tree hard
           # check, guest-side) has already been observed, live, to still run a stale
           # kmp-test moments later (envelope version 0.15.0 against an expected/
@@ -863,9 +863,9 @@ function Get-E1GuestBundleRegistry {
           if ($guestFreeBytes -lt 32212254720) { throw "guest_disk_space_insufficient:$guestFreeBytes" }
           $null = New-Item -ItemType Directory -Path $SmokeRoot -Force
           $cloneRoot = Join-Path $SmokeRoot 'source'
-          # 2026-09-29 (WO-A2 auditor finding): a bare "product_smoke_input_missing" gave no
+          # A bare "product_smoke_input_missing" gave no
           # way to tell WHICH of five inputs was absent without a second diagnostic round --
-          # confirmed live, first run after bc7dd6a: SourceTemplateDir turned out to be the
+          # confirmed live, on the first run after the dot-source fix: SourceTemplateDir turned out to be the
           # Evidence2 anchor fixture, never before actually exercised because the dot-source
           # bug had always silently substituted Evidence1's own (already-provisioned) one.
           $requiredSmokeInputs = [ordered]@{
@@ -893,7 +893,7 @@ function Get-E1GuestBundleRegistry {
           $seedCopy = & $script:E1InternalBoundedProcess @seedCopyParameters
           if ($seedCopy.exit_code -ne 0 -or -not $seedCopy.cleanup_ok) { throw 'product_smoke_gradle_seed_copy_failed' }
           $environment.GRADLE_USER_HOME = $gradleHome
-          # 2026-09-29 (WO-A2 auditor decision, Amendment A5): NiA's own project-level
+          # Amendment A5: NiA's own project-level
           # gradle.properties commits -Xms4g for the Gradle daemon PLUS -Xms4g for the Kotlin
           # daemon -- 8GB up front against this VM's fixed, non-dynamic 8GB RAM allocation
           # (confirmed: two live "Gradle build daemon disappeared unexpectedly" deaths).
@@ -902,7 +902,7 @@ function Get-E1GuestBundleRegistry {
           # lower caps, no -Xms commitment. The certified seed itself is never written to; this
           # writes into the fresh per-run copy at $gradleHome only.
           $gradleMemoryOverridePath = Join-Path $gradleHome 'gradle.properties'
-          # 2026-09-29 (WO-A2 auditor finding, round 2 -- round 1 found broken live): the seed copy
+          # The seed copy
           # already carries its own gradle.properties (org.gradle.daemon=false +
           # org.gradle.java.installations.auto-download=false, written at warm time,
           # evidence1-hyperv-warm-canonical-gradle-cache-direct.ps1:41) -- a blind overwrite here
@@ -935,7 +935,7 @@ function Get-E1GuestBundleRegistry {
           $clone = & $script:E1InternalBoundedProcess @cloneParameters
           if ($clone.exit_code -ne 0 -or -not $clone.cleanup_ok) { throw 'product_smoke_clone_failed' }
 
-          # 2026-09-29 (WO-A2 auditor finding): the clone above preserves whatever commit
+          # The clone above preserves whatever commit
           # $SourceTemplateDir's own HEAD was checked out to on the guest -- correct only because
           # that checkout is independently verified elsewhere, never because a plain `git clone`
           # itself pins anything. Assert it here too, fail-closed, before paying for the actual
@@ -962,7 +962,7 @@ function Get-E1GuestBundleRegistry {
             TimeoutSeconds = [int]900
           }
           $process = & $script:E1InternalBoundedProcess @processParameters
-          # 2026-09-29 (WO-A2 auditor decision, Amendment A5): direct evidence that the
+          # Amendment A5: direct evidence that the
           # org.gradle.daemon=false override actually took effect -- `gradlew --status` against the
           # SAME GRADLE_USER_HOME the build just used, right after it, lists any daemon still alive
           # (a row starting "<PID> IDLE|BUSY ..."); a clean shutdown prints none. Best-effort: a
@@ -994,11 +994,11 @@ function Get-E1GuestBundleRegistry {
           if ($observedProductVersion -cne $ExpectedProductVersion) { $identityMismatches += "version: expected $ExpectedProductVersion, observed '$observedProductVersion'" }
           $productIdentityVerified = ($identityMismatches.Count -eq 0)
 
-          # 2026-09-29 (WO-A2 auditor follow-up): the check above only catches a version
-          # mismatch, it doesn't explain one -- tonight's own real anomaly was a checkout
+          # The check above only catches a version
+          # mismatch, it doesn't explain one -- the observed anomaly was a checkout
           # already git-verified correct at 0.16.0 (this bundle's own early check, above,
           # would have passed it) that still ran a kmp-test reporting 0.15.0. Capture the
-          # evidence the auditor's leading hypothesis needs -- Node's ESM loader resolves
+          # evidence the leading hypothesis needs -- Node's ESM loader resolves
           # import.meta.url through a reparse point, so a junctioned lib/bin would make
           # readVersion() read a DIFFERENT tree's package.json than the one checked out --
           # every run, not only on a mismatch, so a future occurrence has the answer on the
@@ -1176,7 +1176,7 @@ process.stdout.write(JSON.stringify(result));
       }
     }
 
-    # WO-A2 D3 feasibility probe (eval v2): a minimal, standalone sibling of
+    # Feasibility probe (eval v2): a minimal, standalone sibling of
     # run-agentic-eval-product-smoke above -- same disposable-clone/cold-seed
     # discipline, but runs one named Gradle task with --offline directly,
     # never kmp-test, never a provider. Answers whether a held-out scenario's
@@ -1196,7 +1196,7 @@ process.stdout.write(JSON.stringify(result));
       scriptblock = {
         param($HarnessDir, $SourceTemplateDir, $GradleTask, $ProbeRoot)
 
-        # 2026-09-29 (WO-A2 auditor finding, proven live) -- identical to
+        # Identical to
         # run-agentic-eval-product-smoke's own helper of the same name; duplicated, not shared,
         # since each bundle's scriptblock is self-contained (no cross-scriptblock imports once
         # shipped to the guest). See that bundle's own copy for the full rationale.
@@ -1232,7 +1232,7 @@ process.stdout.write(JSON.stringify(result));
         Set-StrictMode -Version Latest
         $ErrorActionPreference = 'Stop'
 
-        # 2026-09-29 (WO-A2 auditor review): see run-agentic-eval-product-smoke's own identical
+        # See run-agentic-eval-product-smoke's own identical
         # wrapping for the full rationale -- an uncaught exception here previously bubbled to the
         # host's generic "guest_bundle_failed: <raw message>" wrapper with no stack trace.
         try {
@@ -1246,7 +1246,7 @@ process.stdout.write(JSON.stringify(result));
           $worker = Join-Path $HarnessDir 'docs\audits\evidence1-dual-condition-canary-launch.ps1'
           if (-not (Test-Path -LiteralPath $worker -PathType Leaf)) { throw 'gradle_offline_probe_worker_missing' }
           Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
-          # 2026-09-29 (WO-A2 auditor root cause, proven live against the smoke bundle's
+          # (Root cause, proven live against the smoke bundle's
           # own identical dot-source): passing the current values back in makes the
           # worker's own param-rebind a no-op instead of a silent reset to its Evidence1
           # stage-B defaults -- see this bundle's own copy of the incident note above.
@@ -1260,7 +1260,7 @@ process.stdout.write(JSON.stringify(result));
           $cloneRoot = Join-Path $ProbeRoot 'source'
           $git = 'C:\Evidence1Toolchain\git\2.55.0.windows.5\cmd\git.exe'
           $node = 'C:\Evidence1Toolchain\node\24.19.0\node.exe'
-          # 2026-09-29 (WO-A2 auditor finding): named, same treatment as
+          # Named, same treatment as
           # run-agentic-eval-product-smoke's own identical guard -- see its comment.
           $requiredOfflineProbeInputs = [ordered]@{
             GitExecutable = $git
@@ -1286,11 +1286,11 @@ process.stdout.write(JSON.stringify(result));
           $seedCopy = & $script:E1InternalBoundedProcess @seedCopyParameters
           if ($seedCopy.exit_code -ne 0 -or -not $seedCopy.cleanup_ok) { throw 'gradle_offline_probe_seed_copy_failed' }
           $environment.GRADLE_USER_HOME = $gradleHome
-          # 2026-09-29 (WO-A2 auditor decision, Amendment A5): see run-agentic-eval-product-smoke's
+          # Amendment A5: see run-agentic-eval-product-smoke's
           # own identical write for the full rationale -- same symmetric, GRADLE_USER_HOME-level
           # override, the certified seed itself never written to.
           $gradleMemoryOverridePath = Join-Path $gradleHome 'gradle.properties'
-          # 2026-09-29 (WO-A2 auditor finding, round 2 -- round 1 found broken live): the seed copy
+          # The seed copy
           # already carries its own gradle.properties (org.gradle.daemon=false +
           # org.gradle.java.installations.auto-download=false, written at warm time,
           # evidence1-hyperv-warm-canonical-gradle-cache-direct.ps1:41) -- a blind overwrite here
@@ -1376,12 +1376,12 @@ process.stdout.write(JSON.stringify(result));
       }
     }
 
-    # WO-A2 D3 smoke-failure diagnosis: run-agentic-eval-product-smoke failed with
+    # Smoke-failure diagnosis: run-agentic-eval-product-smoke failed with
     # task_not_found/module_failed/coverage_data_unavailable on :core:domain, matching
     # cache.js's own silent-null-on-probe-failure path (its `gradlew tasks --all --quiet`
     # discovery probe, lib/project/cache.js:319). This bundle answers WHY that probe fails in the
-    # guest -- a closed set of the exact three diagnostic invocations named in the auditor's own
-    # work order, never a free-form command: ProbeMode is a fixed enum, not a caller-supplied
+    # guest -- a closed set of exactly three predefined diagnostic invocations, never a
+    # free-form command: ProbeMode is a fixed enum, not a caller-supplied
     # args array, so this stays "the broker's own reviewed code," not a new caller-code channel
     # (see this module's own header on that exact boundary). Every mode uses the smoke bundle's
     # own env construction (seed copy, New-E1DualConditionCanaryRuntimeEnvironment) so the probe
@@ -1407,8 +1407,8 @@ process.stdout.write(JSON.stringify(result));
         }
 
         # A tail-only capture silently drops a crash's own exception head once the stack
-        # trace and Gradle's own failure footer push it past the last 60 lines (WO-A2 D3
-        # auditor finding, H-flake work order item 2). Bounded to the same discipline as
+        # trace and Gradle's own failure footer push it past the last 60 lines.
+        # Bounded to the same discipline as
         # the tail helper: fixed line count, no unbounded text ever leaves the guest.
         function Get-E1GuestBundleDiagnosticHeadLines([string]$Text, [int]$MaxLines = 40) {
           if ([string]::IsNullOrEmpty($Text)) { return @() }
@@ -1422,7 +1422,7 @@ process.stdout.write(JSON.stringify(result));
           return $lines[$matchIndex..$endIndex]
         }
 
-        # 2026-09-29 (WO-A2 auditor finding, proven live) -- identical to
+        # Identical to
         # run-agentic-eval-product-smoke's own helper of the same name; duplicated, not shared,
         # since each bundle's scriptblock is self-contained (no cross-scriptblock imports once
         # shipped to the guest). See that bundle's own copy for the full rationale.
@@ -1458,7 +1458,7 @@ process.stdout.write(JSON.stringify(result));
         Set-StrictMode -Version Latest
         $ErrorActionPreference = 'Stop'
 
-        # 2026-09-29 (WO-A2 auditor review): see run-agentic-eval-product-smoke's own identical
+        # See run-agentic-eval-product-smoke's own identical
         # wrapping for the full rationale -- an uncaught exception here previously bubbled to the
         # host's generic "guest_bundle_failed: <raw message>" wrapper with no stack trace.
         try {
@@ -1466,7 +1466,7 @@ process.stdout.write(JSON.stringify(result));
           $worker = Join-Path $HarnessDir 'docs\audits\evidence1-dual-condition-canary-launch.ps1'
           if (-not (Test-Path -LiteralPath $worker -PathType Leaf)) { throw 'gradle_diagnostic_probe_worker_missing' }
           Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
-          # 2026-09-29 (WO-A2 auditor root cause, proven live against the smoke bundle's
+          # (Root cause, proven live against the smoke bundle's
           # own identical dot-source): passing the current values back in makes the
           # worker's own param-rebind a no-op instead of a silent reset to its Evidence1
           # stage-B defaults -- see run-agentic-eval-product-smoke's own incident note.
@@ -1478,7 +1478,7 @@ process.stdout.write(JSON.stringify(result));
           $cloneRoot = Join-Path $ProbeRoot 'source'
           $git = 'C:\Evidence1Toolchain\git\2.55.0.windows.5\cmd\git.exe'
           $node = 'C:\Evidence1Toolchain\node\24.19.0\node.exe'
-          # 2026-09-29 (WO-A2 auditor finding): named, same treatment as
+          # Named, same treatment as
           # run-agentic-eval-product-smoke's own identical guard -- see its comment.
           $requiredDiagnosticProbeInputs = [ordered]@{
             GitExecutable = $git
@@ -1501,11 +1501,11 @@ process.stdout.write(JSON.stringify(result));
           $seedCopy = & $script:E1InternalBoundedProcess @seedCopyParameters
           if ($seedCopy.exit_code -ne 0 -or -not $seedCopy.cleanup_ok) { throw 'gradle_diagnostic_probe_seed_copy_failed' }
           $environment.GRADLE_USER_HOME = $gradleHome
-          # 2026-09-29 (WO-A2 auditor decision, Amendment A5): see run-agentic-eval-product-smoke's
+          # Amendment A5: see run-agentic-eval-product-smoke's
           # own identical write for the full rationale -- same symmetric, GRADLE_USER_HOME-level
           # override, the certified seed itself never written to.
           $gradleMemoryOverridePath = Join-Path $gradleHome 'gradle.properties'
-          # 2026-09-29 (WO-A2 auditor finding, round 2 -- round 1 found broken live): the seed copy
+          # The seed copy
           # already carries its own gradle.properties (org.gradle.daemon=false +
           # org.gradle.java.installations.auto-download=false, written at warm time,
           # evidence1-hyperv-warm-canonical-gradle-cache-direct.ps1:41) -- a blind overwrite here
@@ -1542,7 +1542,7 @@ process.stdout.write(JSON.stringify(result));
           $gradlew = Join-Path $cloneRoot 'gradlew.bat'
           if (-not (Test-Path -LiteralPath $gradlew)) { throw 'gradle_diagnostic_probe_gradlew_missing' }
 
-          # The exact three invocations the auditor named -- P1/P3 deliberately omit --offline
+          # The exact three diagnostic invocations -- P1/P3 deliberately omit --offline
           # (that absence is the whole point of the diagnosis); P2 is P1 plus --offline.
           $gradleArgs = switch ($ProbeMode) {
             'tasks-probe'         { @('tasks', '--all', '--quiet') }
@@ -1564,8 +1564,8 @@ process.stdout.write(JSON.stringify(result));
             -WorkingDirectory $cloneRoot -EnvironmentVariables $environment -TimeoutSeconds 60
 
           # Gradle's own --version banner reports both the Gradle version and the Kotlin
-          # (embedded) version in one call -- exactly the pair the H-flake signature work
-          # order item asked for, without adding a caller-controlled argument to fetch it.
+          # (embedded) version in one call -- exactly the pair the daemon-failure diagnosis
+          # needed, without adding a caller-controlled argument to fetch it.
           $versionResult = & $script:E1InternalBoundedProcess -FileName $gradlew -Arguments @('--version') `
             -WorkingDirectory $cloneRoot -EnvironmentVariables $environment -TimeoutSeconds 60
 
@@ -1637,7 +1637,7 @@ process.stdout.write(JSON.stringify(result));
         # Limit the override to this ephemeral remoting process; no user or
         # machine policy is persisted or weakened.
         Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
-        # 2026-09-29 (WO-A2 auditor root cause): $harnessDir is the only worker-param
+        # Root cause: $harnessDir is the only worker-param
         # overlap this scriptblock holds before the dot-source (traced: every read
         # inside Invoke-E1DualConditionCanarySession and its callees below goes
         # through $CurrentCampaignInputs.harness_dir/.source_template_dir, never a

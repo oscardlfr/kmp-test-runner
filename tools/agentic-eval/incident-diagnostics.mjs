@@ -181,7 +181,7 @@ const DIAGNOSTIC_SCHEMA_1_KEYS = new Set([
   'emergency_raw_persisted', 'emergency_raw_write_error', 'provenance', 'created_at',
 ]);
 const DIAGNOSTIC_SCHEMA_2_KEYS = new Set([...DIAGNOSTIC_SCHEMA_1_KEYS, 'failed_cell_correlation']);
-// Schema 3/4 (2026-09-29, WO-A2 auditor finding): adds path_diagnostics on top of schema 1/2's own
+// Schema 3/4: adds path_diagnostics on top of schema 1/2's own
 // key set respectively -- the SAME additive pattern schema 2 already established for
 // failed_cell_correlation, one axis (path_diagnostics) independent of the other (failed_cell_correlation).
 // finalizeIncident always computes path_diagnostics itself now (see computePathDiagnostics), so
@@ -206,7 +206,7 @@ function stripFilesystemRoot(p) {
 
 /** Computed once per finalizeIncident call, entirely from this process's own ambient state
  * (tmpdir()/process.cwd()/resolveBash()) -- never caller-supplied, so no wiring change is needed
- * at any of this repo's 12 call sites. Settles the Windows long-path hypothesis (WO-A2, 2026-09-29)
+ * at any of this repo's 12 call sites. Settles the Windows long-path hypothesis
  * from an incident diagnostic alone, without a live guest shell: the `*_length` fields are plain
  * numbers (never PII, always exact -- the actually load-bearing signal for a MAX_PATH-class
  * failure), and the `*_relative` fields strip the filesystem root so a normal reading never needs

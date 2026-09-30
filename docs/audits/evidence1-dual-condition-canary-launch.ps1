@@ -177,7 +177,7 @@ if ($InternalLibrary) {
     if ($set.exit_code -ne 0 -or -not $set.cleanup_ok) { throw 'agentic_eval_session_source_origin_update_failed' }
     $get = & $InvokeBoundedProcess -FileName $git -Arguments @('-C',$source,'remote','get-url','origin') -WorkingDirectory $source -EnvironmentVariables $RuntimeEnvironment -TimeoutSeconds 30
     if ($get.exit_code -ne 0 -or -not $get.cleanup_ok -or ([string]$get.stdout).Trim() -cne $projectUrl) { throw 'agentic_eval_session_source_origin_update_failed' }
-    # 2026-09-29 (WO-A2 auditor finding): the dot-source clobbering bug (bc7dd6a) meant every
+    # The dot-source clobbering bug meant every
     # guest bundle silently substituted a DIFFERENT source checkout (Evidence1's own) for months
     # -- this session path was traced and found safe (it always read
     # $CurrentCampaignInputs.source_template_dir, never a bare clobbered variable), but "safe

@@ -1,7 +1,7 @@
 # evidence1-clock-real.psm1
 #
-# ADR-S4's real Clock: wraps [DateTime]::UtcNow, nothing else. Overnight
-# work order item 3 -- previously evidence1-clock-fake.psm1 alone played
+# ADR-S4's real Clock: wraps [DateTime]::UtcNow, nothing else.
+# Previously evidence1-clock-fake.psm1 alone played
 # both roles (its own prior header explained why); this file is the "real"
 # half now split out to match the contract/real/fake pattern every other
 # ADR-S4 capability in this repo already uses.

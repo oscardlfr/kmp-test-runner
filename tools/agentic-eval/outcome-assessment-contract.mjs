@@ -10,7 +10,7 @@ export const PROVIDER_EVIDENCE_KIND_VALUES = Object.freeze([
 export const PROVIDER_EVIDENCE_STATUS_VALUES = Object.freeze([
   'matched', 'mismatched', 'partial', 'unavailable',
 ]);
-// 2026-09-29 (WO-A11, auditor-directed): 'test_count', not 'total' -- D5 renamed the agent-facing
+// 'test_count', not 'total' -- D5 renamed the agent-facing
 // requested field total -> test_count (prereg lines 61/162), but this vocabulary was never
 // updated. graders.mjs's compareKmpEvalResultBlockToObserved emits mismatch/missing field names
 // in the AGENT's own block-field naming (test_count), never the internal observed/ground-truth

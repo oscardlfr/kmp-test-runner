@@ -1,9 +1,9 @@
 #Requires -RunAsAdministrator
 
-# 2026-09-30 (WO-A11 follow-up, auditor-directed): read-only, host-only, content-free file
+# Read-only, host-only, content-free file
 # metadata via the same VHD-mount mechanism (VM must be exactly Off, mounts read-only, always
 # dismounts). Exists for exactly one question: is the Claude OAuth credential file fresh, without
-# ever reading its content -- the auditor's own explicit constraint ("NEVER read its content") is
+# ever reading its content -- the explicit constraint ("NEVER read its content") is
 # enforced structurally here, not just by convention: this script calls Get-Item only, never
 # Get-Content, and the guest path is a single fixed literal, never a caller-supplied path. Reports
 # LastWriteTimeUtc and Length only.

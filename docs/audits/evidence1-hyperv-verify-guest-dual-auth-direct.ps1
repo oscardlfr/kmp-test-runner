@@ -299,7 +299,7 @@ try {
     Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
   }
 
-  # schema=2 (overnight work order item A, maintainer's decided fix): this
+  # schema=2: this
   # producer always sets $CodexVersion (line 28, unconditional) -- there is
   # no code path in this file where Codex is NOT expected -- so its report
   # must always satisfy evidence1-live-handoff-contract.psm1's dual-auth,

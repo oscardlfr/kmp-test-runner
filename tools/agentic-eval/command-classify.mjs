@@ -61,7 +61,7 @@ function stripKnownSuffix(tokens) {
   return tokens;
 }
 
-// Basename rule, not a literal Set: real transcripts (H16, and 2026-09-30 auditor finding) keep
+// Basename rule, not a literal Set: real transcripts keep
 // surfacing gradlew invocation forms a fixed Set can't enumerate ahead of time -- a bare `.\gradlew`
 // (no .bat) and an absolute checkout path both slipped through the old Set the same way the forms
 // H16 added once already did. Matching on the trailing path segment instead closes the whole class:

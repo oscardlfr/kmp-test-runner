@@ -69,7 +69,7 @@ function Get-E1RunManifestPropertyNames($Value) {
 # manifest is exactly the kind of artifact where "which field, why" matters far
 # more than a plain yes/no, since a human has to act on the answer eventually.
 #
-# -TrustedRoot (overnight work order item B): the output_roots confinement
+# -TrustedRoot: the output_roots confinement
 # root, injected by the CALLER -- defaults to Get-E1RunManifestDefaultTrustedRoot
 # (below) so the common case needs no new configuration, but is never read
 # from $Manifest itself. See Assert-E1RunManifestOutputRootsConfined's own
@@ -129,7 +129,7 @@ function Assert-E1RunManifestShape($Manifest, [string]$TrustedRoot = (Get-E1RunM
   }
   # Compared against the derived CELL count (round_order.Count * runtimes.Count
   # -- Get-E1RunManifestExpectedCells), not round_order.Count alone: this is
-  # the fix for overnight work order item 2's confirmed divergence (see that
+  # the fix for a confirmed round/cell-count divergence (see that
   # function's own header). The reason_code string is kept as-is
   # (run_manifest_max_session_count_below_round_order) even though the
   # right-hand side is no longer just round_order.Count -- it is still
@@ -176,7 +176,7 @@ function Assert-E1RunManifestShape($Manifest, [string]$TrustedRoot = (Get-E1RunM
 # whichever state first touches the filesystem) rather than relying solely on
 # those two downstream asserts to catch a bad manifest days later.
 #
-# Overnight work order item B: this used to be a hardcoded module-level
+# This used to be a hardcoded module-level
 # constant ($script:E1RunOutputRootsTrustedRoot) with no way to override it
 # -- portability gap, fixed here. The trust root is now ALWAYS caller-
 # injected (an explicit -TrustedRoot parameter on every function below that
@@ -244,7 +244,7 @@ function Assert-E1RunManifestOutputRootsConfined($OutputRoots, [string]$TrustedR
 }
 
 # PUBLIC. Single source of truth for "how many LiveRunning cells does this
-# manifest describe, and which ones" -- overnight work order item 2.
+# manifest describe, and which ones".
 # round_order.Count * runtimes.Count, enumerated as one cell per
 # (round_index, runtime) PAIR, matching plan section 6.2's own diagram (round
 # 1: product, free / round 2: free, product / round 3: product, free -- 6

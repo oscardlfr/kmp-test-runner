@@ -33,7 +33,7 @@ import { analyzeRunRecord, summarizeNumericValues, buildTaskFieldCorrectness } f
 // provenance groups (runtime_cli_version/model_resolved/reasoning_effort) only from schema 2 on.
 export const CAMPAIGN_SUMMARY_SCHEMA = 2;
 
-// D3 (PLAN-A-cierre-evidence1.md 2.7, redirected by the auditor session to live here rather than
+// D3 (placed here rather than
 // at the integrity layer -- a rejected Codex cell abandoning an in-flight command at turn end is
 // honest agent/runtime behavior, not a capture defect, and must count as a real negative
 // observation in its arm's denominator rather than being discarded as missing data). Every one of
@@ -94,7 +94,7 @@ function expectedCellsFromManifest(manifest) {
  * mode (absent directory, unrecognized shape, malformed JSON, a failed cross-validator, a
  * digest mismatch) returns `{status:'missing', reason}` instead, matching this whole module's
  * fail-closed, honest-about-gaps discipline. */
-// 2026-09-30 (auditor-directed fix): the campaign's own private evidence directory can carry
+// The campaign's own private evidence directory can carry
 // well-known evidence files this summarizer does not itself read -- transcript.jsonl
 // (agentic-eval-accepted-raw-transcript / agentic-eval-rejected-raw-transcript, added post-hoc for
 // infra-flake classification, which DOES require it directly at this same path) and incident.json
@@ -191,7 +191,7 @@ function buildProvenance(loadedCells) {
   // equivalent, so unlike runtimeCliVersion/modelResolved above this tracker is accepted-cells-only,
   // honestly (never inferred for a rejected cell).
   const reasoningEffort = { 'claude-code': newProvenanceTracker(), 'codex-cli': newProvenanceTracker() };
-  // reasoning_effort_source (WO-C16, same schema-v9 accepted-only shape as reasoning_effort_requested
+  // reasoning_effort_source (same schema-v9 accepted-only shape as reasoning_effort_requested
   // above -- verified against a real record.json directly: the two are sibling fields on the same
   // object) -- e.g. "harness-pinned-cli-flag". Evidence2's own controls table names the source, not
   // just the requested value, so a reader can tell a pinned flag from a runtime default.
@@ -404,8 +404,8 @@ export function loadCountedCellTokens(campaignDir) {
  * gate, 2.8), then reads and cross-validates every declared cell before aggregating.
  * @param {Set<string>} [excludeCellKeys] -- cell keys (`${runtime_id}-${round_index}`) to drop
  *   entirely before aggregation, as if never expected -- the sensitivity-analysis seam
- *   (docs/audits/evidence2-preregistration.md Amendment A2 D13/R8). Defaults to an empty Set, so
- *   an omitted or empty argument reproduces today's output byte-for-byte (A2 R7's own required
+ *   (tools/runs/evidence2-agentic-benchmark-2026-09-30/preregistration.md Amendment A2 D13/R8). Defaults to an empty Set, so
+ *   an omitted or empty argument reproduces today's output byte-for-byte (Amendment A2 R7's required
  *   regression test) -- this parameter changes nothing about CAMPAIGN_SUMMARY_SCHEMA itself.
  * @returns {object} CAMPAIGN_SUMMARY_SCHEMA-shaped result -- see this file's own README/tests for
  *   the full field list; never throws for an individual cell's own defects (those become that
@@ -592,7 +592,7 @@ export function summarizeCampaign(campaignDir, excludeCellKeys = new Set()) {
 // code path here ever reads those fields at all.
 // ---------------------------------------------------------------------------------------------
 
-// Exported (WO-C16): evidence2-tables.mjs reuses these three verbatim rather than re-implementing
+// Exported: evidence2-tables.mjs reuses these three verbatim rather than re-implementing
 // the same x/n and median/min/max formatting a second time.
 export function fmtRate({ matched, of }) {
   return of > 0 ? `${matched}/${of}` : 'n/a';
@@ -683,10 +683,10 @@ function main(argv) {
     console.error('usage: campaign-summary.mjs <campaign-dir> [--markdown <file>] [--exclude-cells <infra-flake-classification.json>]');
     return 1;
   }
-  // Sensitivity-analysis seam (docs/audits/evidence2-preregistration.md Amendment A2 D13/R8):
+  // Sensitivity-analysis seam (tools/runs/evidence2-agentic-benchmark-2026-09-30/preregistration.md Amendment A2 D13/R8):
   // takes infra-flake-classifier.mjs's own output file directly, so the two scripts compose
   // without a redundant intermediate format -- only infra_flake_suspected===true cells (never
-  // 'unknown' ones, per A2 R6) are excluded. Writes to stdout like the primary run always has;
+  // 'unknown' ones, per Amendment A2 R6) are excluded. Writes to stdout like the primary run always has;
   // the caller redirects to a distinct file, so this never overwrites the primary output.
   let excludeCellKeys = new Set();
   if (excludeCellsPath) {

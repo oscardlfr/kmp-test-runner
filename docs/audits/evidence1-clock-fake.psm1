@@ -1,7 +1,7 @@
 # evidence1-clock-fake.psm1
 #
-# ADR-S4's fake Clock test double. Formalized this round (overnight work
-# order item 3) to route through evidence1-clock-contract.psm1, matching the
+# ADR-S4's fake Clock test double. Formalized to route
+# through evidence1-clock-contract.psm1, matching the
 # same contract/real/fake three-way pattern every other ADR-S4 capability in
 # this repo already uses -- see evidence1-clock-contract.psm1 and
 # evidence1-clock-real.psm1's own headers for what changed and why. Pinnable/

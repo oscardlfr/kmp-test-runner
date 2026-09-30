@@ -494,7 +494,7 @@ function Assert-Evidence1DualAuthHostReportShape {
         'schema','verdict','generated_at_utc','operation_id','vm_name','vm_id','vm_state',
         'readiness_sha256','account_binding_sha256','remote_auth_canary','model_pair','privacy'
     ) 'dual auth host report'
-    # Overnight work order item A (maintainer's decided fix): schema=2
+    # Schema=2
     # is now REQUIRED whenever an expected Codex version is supplied --
     # previously required schema=1, which was simply wrong (this
     # 12-key dual-auth shape, with account_binding_sha256 and

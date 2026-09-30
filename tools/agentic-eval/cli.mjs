@@ -1334,7 +1334,7 @@ function buildRunRecord({
     // keep their existing 'unknown' (this function never claimed to track their cache state).
     cache_state: isScenario ? 'cold' : 'unknown',
     daemon_policy: daemonPolicy ?? 'unknown',
-    // 2026-09-29 (WO-A2 auditor decision, Amendment A5): NOT a canonical/required field (unlike
+    // Amendment A5: NOT a canonical/required field (unlike
     // daemon_policy) -- deliberately kept optional and outside the fairness-partition contract,
     // so adding it never forces every existing run-record fixture across this suite to be
     // updated. A fixed literal (GRADLE_MEMORY_OVERRIDE_PROPERTIES in materialize.mjs), so its

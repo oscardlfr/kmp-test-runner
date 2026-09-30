@@ -119,7 +119,7 @@ function Get-E1ArtifactCopySpecRegistry {
       result_keys = @('files_copied')
     }
 
-    # 2026-09-29 (WO-A2 auditor finding): the ONLY diagnostic evidence a session that failed
+    # The ONLY diagnostic evidence a session that failed
     # BEFORE producing record.json/audit.json leaves behind (finalizeIncident,
     # tools/agentic-eval/incident-diagnostics.mjs) -- already PII-redacted before it's ever written
     # (assertCleanOrThrowObject), so read-only-copying it off the guest carries no exposure this

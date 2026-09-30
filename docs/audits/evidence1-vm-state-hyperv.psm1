@@ -159,7 +159,7 @@ function Invoke-E1VmEnsureState {
   return $result
 }
 
-# READ-ONLY. P0 #4 (publication hardening): the VmReady disk guard's own single source of truth,
+# READ-ONLY. The VmReady disk guard's own single source of truth,
 # shared with the standalone evidence1-hyperv-inspect-vhd-chain-direct.ps1 forensic script (that
 # script now calls this same function rather than duplicating the walk -- see its own header).
 # Depth-guarded, not recursive: a chain is normally 1-3 links (base + one or two checkpoints) -- 20

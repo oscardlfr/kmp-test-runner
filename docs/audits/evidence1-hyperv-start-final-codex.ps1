@@ -77,7 +77,7 @@ Import-Module (Join-Path $PSScriptRoot 'evidence1-live-handoff-contract.psm1') -
 $hostVerdict = Resolve-Evidence1DualAuthHostReportVerdict -Report $hostAuth -ExpectedVMName $vmName -ExpectedVMId $vmId `
     -ExpectedCodexModel 'gpt-5.6-terra' -ExpectedReadinessSha256 $readinessSha
 if ($hostVerdict.verdict -cne 'PASS') { throw "operation failed: $($hostVerdict.reason_code)" }
-# The host report is schema 2 (overnight work order item A: this call always
+# The host report is schema 2 (this call always
 # supplies -ExpectedCodexVersion below, so the contract's dual-auth,
 # Codex-expected branch applies, which requires schema 2). The canonical API
 # validates and unwraps its remote_auth_canary member; it is never passed as

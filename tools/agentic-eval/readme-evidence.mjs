@@ -226,7 +226,7 @@ export function validatePairing(summary, costEstimate) {
 // One session's cost at a given per-million-token price table. inputPrice defaults to the plain
 // input rate; a runtime whose usage events can't distinguish a cache write from a plain input
 // token (see armCostRange below) overrides it for the high bound only.
-// Exported (WO-C16): evidence2-tables.mjs's per-cell cost column reuses this exact per-session
+// Exported: evidence2-tables.mjs's per-cell cost column reuses this exact per-session
 // pricing formula (and costMetric's own low/high-then-midpoint pattern around it) rather than
 // re-deriving it.
 export function sessionCost(tokens, price, cacheWriteKey, inputPrice = price.input) {
@@ -318,7 +318,7 @@ export function fmtToolCallsMedian(median) {
 // bar: an all-4/4 result renders every bar identically full and conveys
 // nothing, so it is stated as text instead (see computeScorecardLayout).
 
-// Raw (unscaled) values only -- WO-C12 addendum point 1 requires the SAME 0..max scale for both
+// Raw (unscaled) values only -- the grid requires the SAME 0..max scale for both
 // agent columns (today's per-runtime max misleads any cross-agent reading: 3.2 min fills Claude's
 // row and 4.8 min fills Codex's, identically full bars for very different durations). Fracs are
 // attached afterward by attachSharedBarFracs, once both runtimes' raw metrics are known.
@@ -452,7 +452,7 @@ export function computeScorecardLayout(summary, costEstimate) {
         { id: 'codex-cli', x: PAD + COLUMN_W + COLUMN_GAP, title: 'Codex CLI · gpt-5.6-terra (low effort)' },
       ];
 
-  // Raw metrics for BOTH columns first, then shared fracs (WO-C12 addendum) -- a shared max needs
+  // Raw metrics for BOTH columns first, then shared fracs -- a shared max needs
   // both agents' values before either column's bars can be positioned.
   const rawMetricsByColumn = columns.map((col) => buildBarMetricsRaw(col.id, summary, costEstimate));
   attachSharedBarFracs(rawMetricsByColumn[0], rawMetricsByColumn[1]);
@@ -579,7 +579,7 @@ export function buildScorecardAlt(summary, costEstimate) {
 
 const GRID_W = SCORECARD_W;
 const GRID_DOT_R = 3;
-// WO-C12 redesign: numbers-first, in the scorecard's own visual language. Two row shapes, each a
+// Numbers-first, in the scorecard's own visual language. Two row shapes, each a
 // stack of non-overlapping bands (header, lane(s), footer), height = sum of only the bands used:
 //   STRIP rows (scalar metrics) -- two lanes stacked VERTICALLY sharing one horizontal axis (0 to
 //   a nice max), dots in the arm's own color (scorecard COLOR_WITH/COLOR_WITHOUT), a median tick,
@@ -602,8 +602,8 @@ const GRID_COMP_BAR_H = 14;
 const GRID_COMP_BAR_GAP = 4;
 const GRID_COMP_TOTAL_LABEL_W = 46;
 const GRID_COMP_BAR_W = COLUMN_W - GRID_LANE_LABEL_W - GRID_COMP_TOTAL_LABEL_W;
-const GRID_ROW_GAP = 14; // clearance before the next row (WO-C10 required >= 10px; kept generous)
-// WO-C15: distinct from COLOR_WITH/COLOR_WITHOUT (#0969da/#bc4c00) on purpose -- kmp_test and gradle
+const GRID_ROW_GAP = 14; // clearance before the next row (at least 10px; kept generous)
+// Distinct from COLOR_WITH/COLOR_WITHOUT (#0969da/#bc4c00) on purpose -- kmp_test and gradle
 // used to reuse those exact hex values, so a lane whose bar happened to be 100% one type (every FAKE
 // -DATA session this campaign) rendered as a solid blue/orange bar indistinguishable from "this is
 // just the arm's own color". With real, mixed-type data the two encodings (arm color in strip rows /
@@ -650,7 +650,7 @@ function countedCells(summary, runtimeId, arm) {
 // A scalar metric's per-session values when every counted cell carries `cellField`; otherwise the
 // run-level aggregate (median/min/max) `aggregateField` already provides. Never a partial mix of
 // some real dots and some inferred ones for the same lane.
-// Exported (WO-C16): evidence2-tables.mjs's aggregate table reuses this (and compositionMedians/
+// Exported: evidence2-tables.mjs's aggregate table reuses this (and compositionMedians/
 // tokenCompositionMedians/commandKindAggregate below) so its numbers are computed exactly the same
 // way as the grid's, never a second, potentially-diverging implementation of the same median/
 // per-type logic.
@@ -667,7 +667,7 @@ export function scalarMetric(summary, group, runtimeId, arm, cellField, aggregat
   return { kind: 'unavailable' };
 }
 
-// A composition row's per-component MEDIANS for one lane -- WO-C12 always renders ONE bar per
+// A composition row's per-component MEDIANS for one lane -- the grid always renders ONE bar per
 // lane (never a per-session mini-bar cluster), so the data layer always resolves to "one value per
 // component" up front, whichever source it comes from:
 //   - every counted cell carries `cellField` as an object -> the median of each component ACROSS
@@ -711,14 +711,14 @@ export function compositionMedians(summary, group, runtimeId, arm, cellField, ty
 // input_tokens is the TOTAL prompt size, cached_input_tokens a SUBSET, not additive), and raw
 // `output` INCLUDES `reasoning_output`. Claude's four raw fields (input/cached_input/cache_write/
 // output) are already disjoint -- Anthropic reports them as separate, non-overlapping, additive
-// charges. Stacking the raw fields as-is (the pre-WO-C13 bug) double-counted Codex's cached and
-// reasoning tokens into its own totals. Identical canonical labels across both runtimes (WO-C13):
+// charges. Stacking the raw fields as-is (an earlier bug) double-counted Codex's cached and
+// reasoning tokens into its own totals. Identical canonical labels across both runtimes:
 // "uncached input", "cache read", "cache write", "output", "reasoning".
 export const TOKEN_COMPONENT_TYPES = {
   'claude-code': ['uncached_input', 'cache_read', 'cache_write', 'output'],
   'codex-cli': ['uncached_input', 'cache_read', 'output', 'reasoning'], // Codex never has a cache-write token count (cost-estimate.mjs: cache_creation = 0 always)
 };
-// WO-C15: cache_read and output used to reuse COLOR_WITH/COLOR_WITHOUT exactly (#0969da/#bc4c00) --
+// cache_read and output used to reuse COLOR_WITH/COLOR_WITHOUT exactly (#0969da/#bc4c00) --
 // same collision as COMMAND_KIND_COLORS above, fixed the same way.
 const TOKEN_COMPONENT_COLORS = { uncached_input: '#8250df', cache_read: '#1b7c83', cache_write: '#1a7f37', output: '#bf3989', reasoning: '#cf222e' };
 export const TOKEN_COMPONENT_LABEL = { uncached_input: 'uncached input', cache_read: 'cache read', cache_write: 'cache write', output: 'output', reasoning: 'reasoning' };
@@ -728,7 +728,7 @@ export const TOKEN_COMPONENT_LABEL = { uncached_input: 'uncached input', cache_r
 // cache_write, never a reasoning_output key, verified directly against that file), not "genuinely
 // zero" -- those two must render differently (component omitted vs. component shown as 0), so this
 // checks raw nullness BEFORE any Number() coercion collapses both cases to the same 0.
-// Exported (WO-C16): evidence2-tables.mjs's per-cell token column reuses this exact mapping rather
+// Exported: evidence2-tables.mjs's per-cell token column reuses this exact mapping rather
 // than re-deriving the same Codex input/cached_input/output subset relationship a second time.
 export function disjointTokens(raw, runtimeId) {
   const input = Number(raw.input) || 0;
@@ -834,7 +834,7 @@ export function costMetric(summary, group, runtimeId, arm, costEstimate) {
 // that alone isn't enough -- axisMax/2 (the middle tick) is only a whole number when axisMax itself
 // is even, and the "nice" sequence includes odd values (1, 5, 50, 500, ...) whenever fraction<=1 or
 // fraction<=5 lands on a base of 1 -- e.g. niceAxisMax(1)=1, whose own midpoint 0.5 rendered as
-// "0.5 turns" (WO-C15). integerTicks rounds up to the nearest even integer >= 2 so axisMax/2 is
+// "0.5 turns". integerTicks rounds up to the nearest even integer >= 2 so axisMax/2 is
 // always a whole number too; every base for exp>=1 (10, 100, ...) is already even, so this only
 // ever adjusts the exp===0 cases (1->2, 5->6).
 function niceAxisMax(rawMax, integerTicks = false) {
@@ -849,10 +849,10 @@ function niceAxisMax(rawMax, integerTicks = false) {
   return rounded % 2 === 0 ? rounded : rounded + 1;
 }
 
-// A strip row's shared axis max: the addendum requires the SAME 0..max scale for both agent
+// A strip row's shared axis max: the grid uses the SAME 0..max scale for both agent
 // columns, so a viewer can compare Claude's and Codex's dots directly -- computed over every
 // per-session/aggregate value from BOTH runtimes' with/without lanes for this one metric, never
-// per-runtime (that was the pre-addendum scorecard bug this also fixes).
+// per-runtime (an earlier scorecard bug this also fixes).
 function scalarLaneMax(metric) {
   if (metric.kind === 'per-session') return Math.max(...metric.values, 0);
   if (metric.kind === 'aggregate') return metric.max;
@@ -1008,7 +1008,7 @@ function renderCompositionRow(colX, rowY, headerText, agentLabel, withComp, with
   // Greedily wrap tokens across lines within COLUMN_W (tokens-by-type, up to 5 components, easily
   // overflows one line -- confirmed by the real overlap this produced against Codex's own column
   // before this fix existed). Same chars x fontSize x 0.6 estimator as the layout tests, plus each
-  // token's own swatch + gap (WO-C15: a color swatch in front of each component so a reader can map
+  // token's own swatch + gap (a color swatch in front of each component so a reader can map
   // a bar segment's color to its legend entry, instead of a text-only line).
   const SEP_TEXT = ' · ';
   const SEP_W = SEP_TEXT.length * GRID_LEGEND_FS * 0.6;
@@ -1072,7 +1072,7 @@ function renderCompositionRow(colX, rowY, headerText, agentLabel, withComp, with
   return { items, rowHeight: cursor - rowY };
 }
 
-// Formatting, all numbers-first per WO-C12 point 7 (min at 1 decimal like the scorecard; tokens
+// Formatting, all numbers-first (min at 1 decimal like the scorecard; tokens
 // k/M; cost $; bytes KB/MB; plain counts for turns and tool-calls-by-kind).
 function fmtCount(v) { return Number.isInteger(v) ? String(v) : v.toFixed(1); }
 function fmtMinutesGrid(v) { return `${v.toFixed(1)} min`; }
@@ -1097,7 +1097,7 @@ function scaleMetric(metric, factor) {
 }
 
 // (with - without) / without from the medians, as a percent -- omitted (null) when either median
-// is missing or exactly zero, per WO-C12 point 3.
+// is missing or exactly zero.
 function stripDiffPct(withMetric, withoutMetric) {
   const wm = withMetric.median, wo = withoutMetric.median;
   if (typeof wm !== 'number' || typeof wo !== 'number' || wo === 0 || wm === 0) return null;
@@ -1115,8 +1115,8 @@ function stripHeaderLines(label, unit, diffPct, sourceNote) {
   return { mainText: mainParts.join(' — '), diffText };
 }
 
-// One runtime's full, FIXED row set and order (WO-C12 point 5) -- always all 6 rows; an agent
-// with nothing for a given row renders as a single "not recorded for <agent>" line there (point 6)
+// One runtime's full, FIXED row set and order -- always all 6 rows; an agent
+// with nothing for a given row renders as a single "not recorded for <agent>" line there
 // instead of the row being omitted campaign-wide.
 function buildGridRowData(runtimeId, summary, costEstimate) {
   const gp = findGroup(summary, runtimeId, 'product');
@@ -1138,7 +1138,7 @@ function buildGridRowData(runtimeId, summary, costEstimate) {
 
   return [
     {
-      // WO-C13: this counts SHELL commands (product_cli_command_count / direct_build_tool_command_count
+      // This counts SHELL commands (product_cli_command_count / direct_build_tool_command_count
       // -- campaign-summary.mjs's own kmp_test_vs_gradle), never ALL tool calls (Skill, Read, etc. are
       // not counted here) -- the scorecard's own "Tool calls" bar (4 vs 13) is a different, larger
       // population. Named precisely so a reader never reads the two side by side and thinks the chart
@@ -1190,8 +1190,8 @@ export function computeMetricsGridLayout(summary, costEstimate) {
   const headerBottom = subtitleY2 + ROW_GAP + 8;
 
   const columns = RUNTIME_ORDER.map((id, i) => ({ id, x: i === 0 ? PAD : PAD + COLUMN_W + COLUMN_GAP }));
-  // Both columns' full row data is built FIRST so shared cross-agent scales (WO-C12 addendum point
-  // 1) can be computed before anything is rendered -- a shared max needs both sides' raw values.
+  // Both columns' full row data is built FIRST so shared cross-agent scales
+  // can be computed before anything is rendered -- a shared max needs both sides' raw values.
   const rowDataByColumn = columns.map((col) => buildGridRowData(col.id, summary, costEstimate));
   const rowCount = rowDataByColumn[0].length;
 
@@ -1376,7 +1376,7 @@ function buildRuntimeBullet(runtimeId, summary, costEstimate, runsPath) {
   return `${displayName} (${model}): median ${toolsWith} tool calls with kmp-test vs ${toolsWithout} without; ${wallPhrase}.`;
 }
 
-// One descriptive bullet per arm comparing the two agents' medians (WO-C12 addendum point 2) --
+// One descriptive bullet per arm comparing the two agents' medians --
 // n=4 per cell, no inferential wording (states the numbers, never "faster"/"better"/causal). Omitted
 // entirely for that arm when either agent's median is missing, rather than rendering a partial claim.
 function buildCrossAgentBullet(summary, arm, armLabel) {
@@ -1387,7 +1387,7 @@ function buildCrossAgentBullet(summary, arm, armLabel) {
   if (typeof claudeMedian !== 'number' || typeof codexMedian !== 'number') return null;
   // Read from the group's own tool_calls_total.n (the exact count the median was computed from),
   // never a hardcoded "n=4" -- true for every real, complete campaign (always exactly 4 per arm by
-  // design), but a literal would silently misreport a smaller/partial run (WO-C14 dry run: n=1).
+  // design), but a literal would silently misreport a smaller/partial run (a dry run had n=1).
   // Claude and Codex are independent per-runtime data and can in principle diverge, so a shared
   // figure is only used when they genuinely agree.
   const claudeN = gClaude.tool_calls_total.n;

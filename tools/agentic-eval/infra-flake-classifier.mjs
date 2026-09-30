@@ -3,13 +3,13 @@
 //
 // tools/agentic-eval/infra-flake-classifier.mjs -- classifies each campaign cell for suspected
 // exposure to two rare, non-deterministic infra-level faults documented in
-// docs/audits/evidence2-preregistration.md D13: the Kotlin compiler-classloader cast fault
+// tools/runs/evidence2-agentic-benchmark-2026-09-30/preregistration.md D13: the Kotlin compiler-classloader cast fault
 // (Amendment A2) and the Gradle daemon-disappeared fault (Amendment A4). A separate, small script,
 // not a change to campaign-summary.mjs's own CAMPAIGN_SUMMARY_SCHEMA (stays 2) -- its output is a
 // new, standalone file, never merged into or overwriting campaign-summary.json/cost-estimate.json.
 //
 // Deliberately narrower than a first draft that also tried to detect "preceded by an agent's own
-// build-script edit" via executed_commands -- dropped per auditor review (A2 R5):
+// build-script edit" via executed_commands -- dropped per Amendment A2 R5:
 // executed_commands (schema v9) holds shell commands only, not tool-level Write/Edit/apply_patch
 // calls, which are not reliably visible across runtimes in the same shape. The regex below is
 // narrow enough (an internal Kotlin compiler-classloader identity cast) that no precedence check
@@ -36,14 +36,14 @@ export const INFRA_FLAKE_CLASSIFIER_SCHEMA = 1;
 // drift between canary and campaign.
 export const INFRA_FLAKE_CLASSIFIER_VERSION = 1;
 
-// The exact shape from the real P2 diagnostic capture (docs/audits/evidence2-preregistration.md
+// The exact shape from the real P2 diagnostic capture (tools/runs/evidence2-agentic-benchmark-2026-09-30/preregistration.md
 // Amendment A2 §2) -- an internal Kotlin compiler-classloader identity cast, not a shape an
 // agent's own build-script edit can produce. The generic "Script compilation error" string is
 // deliberately NOT matched here: an agent's own broken edit legitimately produces that text too.
 export const INFRA_FLAKE_SIGNATURE_RE =
   /org\.jetbrains\.kotlin\.cli\.jvm\.compiler\.jarfs\.\w+ cannot be cast to class org\.jetbrains\.kotlin\.cli\.jvm\.compiler\.jarfs\./;
 
-// Second, independent signature (2026-09-29, WO-A2 auditor finding, Amendment A4): Gradle's own
+// Second, independent signature (Amendment A4): Gradle's own
 // fixed daemon-death message, emitted by the Gradle CLIENT process -- never something a build
 // script or an agent's own code edit can produce, the same symmetric guarantee the jarfs cast
 // signature above relies on. Fires when the Gradle daemon JVM process itself disappears without a
@@ -113,7 +113,7 @@ function loadCellIdentity(privateRoot, cellKey) {
  *   - { infra_flake_suspected: false, reason: 'probe_failed_unrecovered' } (recovered:false, no signature)
  *   - { infra_flake_suspected: false, reason: 'clean' }
  *   - { infra_flake_suspected: 'unknown', reason: 'transcript_missing' | 'transcript_unreadable' }
- * Fail-closed (A2 R6): a missing or unreadable transcript is 'unknown', never coerced to false. */
+ * Fail-closed (Amendment A2 R6): a missing or unreadable transcript is 'unknown', never coerced to false. */
 export function classifyCellTranscript(transcriptPath) {
   if (!existsSync(transcriptPath)) {
     return { infra_flake_suspected: 'unknown', reason: 'transcript_missing' };
@@ -174,7 +174,7 @@ export function classifyTranscriptText(text) {
 }
 
 /** Full campaign classification. Enumerates every manifest-expected cell (not only accepted
- * ones -- a cell whose transcript can't be found at all still gets an 'unknown' row, per A2 R6),
+ * ones -- a cell whose transcript can't be found at all still gets an 'unknown' row, per Amendment A2 R6),
  * classifies each from its raw transcript, and rolls flagged/absorbed/unrecovered/unknown counts
  * up per (runtime, arm). Never throws for an individual cell's own defects. */
 export function classifyCampaign(campaignDir) {

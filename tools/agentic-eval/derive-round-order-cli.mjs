@@ -3,14 +3,14 @@
 //
 // tools/agentic-eval/derive-round-order-cli.mjs -- thin CLI wrapper around
 // scenario-campaign-plan.mjs's buildScenarioCampaignPlan, so evidence1-run.ps1's host-side
-// round_order pre-registration guard (P0 #2, publication hardening) can derive the same
+// round_order pre-registration guard can derive the same
 // single-source-of-truth sequence a PowerShell process cannot import directly. Takes one JSON
 // object on stdin ({designId, campaignCellIndices, executionProfiles}), prints
 // {round_order: [...]} (conditions mapped current-skill -> "product", no-skill -> "free", matching
 // every manifest's own round_order vocabulary) on success, or {ok:false, reason} with a non-zero
 // exit on failure. Never mutates anything; pure derivation.
 //
-// (auditor review) Indexes by campaignCellIndices into the design's own FULL pre-registered plan
+// Indexes by campaignCellIndices into the design's own FULL pre-registered plan
 // (always built at the design's real repeats) rather than trying to infer a repeat count and
 // special-case repeats:1 -- expected[i] = label(fullPlan.cells.find(c => c.order_index ===
 // campaignCellIndices[i]).condition). This is exactly the property the guest side already asserts

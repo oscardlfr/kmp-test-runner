@@ -837,7 +837,7 @@ function validateOutcomeAssessment(obj, errors) {
           errors.push({ field: 'outcome_assessment.task_outcome_mismatch_fields', message: 'must be a canonical unique field list, empty only for a matched outcome' });
         }
       }
-      // 2026-09-29 (WO-A2 auditor finding): task_outcome_matched now means content correctness
+      // task_outcome_matched now means content correctness
       // only (missing/mismatch fields), decoupled from unexpected keys -- see graders.mjs's own
       // compareKmpEvalResultBlockToObserved/computeTaskOutcome comments. A content-correct answer
       // that also hedges with an extra field is matched:true with unexpectedKeyCount>0 by design
@@ -846,7 +846,7 @@ function validateOutcomeAssessment(obj, errors) {
       if (!Number.isInteger(unexpectedKeyCount) || unexpectedKeyCount < 0) {
         errors.push({ field: 'outcome_assessment.task_outcome_unexpected_key_count', message: 'must be a non-negative integer when task_outcome_matched is boolean' });
       } else if (obj.product_e2e_success === true && unexpectedKeyCount > 0) {
-        // 2026-09-29 (WO-A2 auditor finding, defense-in-depth): computeProductE2eSuccess already
+        // Defense in depth: computeProductE2eSuccess already
         // rejects a hedged current-skill answer for this exact reason (see its own comment), but
         // that is grader-level enforcement, not schema-level -- a differently-written future caller
         // of this shared schema could reintroduce the hedge-is-still-credited bug without this

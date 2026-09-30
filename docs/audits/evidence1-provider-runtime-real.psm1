@@ -295,7 +295,7 @@ function Invoke-E1ProviderRuntimeSession {
   # serializes already-validated manifest input and forwards it through the
   # existing closed guest.invoke_bundle capability; it never starts a CLI.
   #
-  # 2026-09-29 (WO-A2 auditor finding): both FAIL branches below used to stamp
+  # Both FAIL branches below used to stamp
   # StartedAtUtc/CompletedAtUtc from two back-to-back UtcNow calls made AFTER
   # the guest call already returned -- always identical, never the real guest
   # transport duration. Capturing once before the call and once right after
