@@ -329,18 +329,88 @@ describe('prepareIsolatedHome -- executionProfile-aware settings/env compilation
   // ambient BASH_*_TIMEOUT_MS the launching shell happened to have. prepareIsolatedHome has no
   // `condition` parameter at all -- sharedEnv construction never branches on current-skill vs
   // no-skill -- so proving it once here covers both of Claude's arms by construction.
-  it('sets both Bash timeout env vars to 10 minutes explicitly, for both Claude conditions, regardless of execution profile', async () => {
+  // The limit was raised from 10 to 30 minutes (Evidence3 D11) so a long multi-module Gradle run is not cut
+  // by the tool; 30 minutes is the largest default Claude Code does not also apply to background commands.
+  it('sets both Bash timeout env vars to 30 minutes explicitly, for both Claude conditions, regardless of execution profile', async () => {
     const strict = await prepareIsolatedHome(baseOpts);
     const unrestricted = await prepareIsolatedHome({ ...baseOpts, executionProfile: UNRESTRICTED_PROFILE });
     try {
       for (const { sharedEnv } of [strict, unrestricted]) {
-        expect(sharedEnv.BASH_DEFAULT_TIMEOUT_MS).toBe('600000');
-        expect(sharedEnv.BASH_MAX_TIMEOUT_MS).toBe('600000');
+        expect(sharedEnv.BASH_DEFAULT_TIMEOUT_MS).toBe('1800000');
+        expect(sharedEnv.BASH_MAX_TIMEOUT_MS).toBe('1800000');
       }
     } finally {
       for (const p of strict.cleanupPaths) rmSync(p, { recursive: true, force: true });
       for (const p of unrestricted.cleanupPaths) rmSync(p, { recursive: true, force: true });
     }
+  });
+
+  // Runs `fn` with the given variables set in (or, for an undefined value, removed from) the ambient
+  // environment, and restores the original values afterwards.
+  async function withAmbientEnv(vars, fn) {
+    const saved = Object.fromEntries(Object.keys(vars).map((name) => [name, process.env[name]]));
+    const apply = (values) => { for (const [name, value] of Object.entries(values)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; } };
+    apply(vars);
+    try {
+      return await fn();
+    } finally {
+      apply(saved);
+    }
+  }
+
+  // Claude Code's auto memory is on by default and its directory is keyed by the git repository, so in
+  // Evidence2 every session of a campaign shared one. With CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 "Claude does
+  // not create or load auto memory files" (https://code.claude.com/docs/en/env-vars). Set here, like the
+  // Bash timeouts, because buildEvalEnv's allowlist drops every ambient value -- an ambient 0, which would
+  // force memory on, must never reach a session.
+  it('sets CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 under both execution profiles, even when the ambient environment says 0', async () => {
+    await withAmbientEnv({ CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0' }, async () => {
+      const strict = await prepareIsolatedHome(baseOpts);
+      const unrestricted = await prepareIsolatedHome({ ...baseOpts, executionProfile: UNRESTRICTED_PROFILE });
+      try {
+        for (const { sharedEnv } of [strict, unrestricted]) expect(sharedEnv.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1');
+      } finally {
+        for (const p of strict.cleanupPaths) rmSync(p, { recursive: true, force: true });
+        for (const p of unrestricted.cleanupPaths) rmSync(p, { recursive: true, force: true });
+      }
+    });
+  });
+
+  // The guest launcher sets these five on the node process, but buildEvalEnv drops every name it does not
+  // list, so the agent never received them (the Claude init event of Evidence2 reported analytics on).
+  const LAUNCHER_VARS = {
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: 'launcher-value-1',
+    DISABLE_TELEMETRY: 'launcher-value-2',
+    DISABLE_ERROR_REPORTING: 'launcher-value-3',
+    ENABLE_CLAUDEAI_MCP_SERVERS: 'launcher-value-4',
+    CLAUDE_CODE_DISABLE_ARTIFACT: 'launcher-value-5',
+  };
+
+  it('passes the five launcher variables through, with their values, when the parent environment has them, under both execution profiles', async () => {
+    await withAmbientEnv(LAUNCHER_VARS, async () => {
+      const strict = await prepareIsolatedHome(baseOpts);
+      const unrestricted = await prepareIsolatedHome({ ...baseOpts, executionProfile: UNRESTRICTED_PROFILE });
+      try {
+        for (const { sharedEnv } of [strict, unrestricted]) {
+          for (const [name, value] of Object.entries(LAUNCHER_VARS)) expect(sharedEnv[name], name).toBe(value);
+        }
+      } finally {
+        for (const p of strict.cleanupPaths) rmSync(p, { recursive: true, force: true });
+        for (const p of unrestricted.cleanupPaths) rmSync(p, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it('does not invent the launcher variables when the parent environment does not have them', async () => {
+    const absent = Object.fromEntries(Object.keys(LAUNCHER_VARS).map((name) => [name, undefined]));
+    await withAmbientEnv(absent, async () => {
+      const { sharedEnv, cleanupPaths } = await prepareIsolatedHome(baseOpts);
+      try {
+        for (const name of Object.keys(LAUNCHER_VARS)) expect(sharedEnv).not.toHaveProperty(name);
+      } finally {
+        for (const p of cleanupPaths) rmSync(p, { recursive: true, force: true });
+      }
+    });
   });
 });
 

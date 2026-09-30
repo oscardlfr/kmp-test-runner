@@ -190,6 +190,38 @@ describe('Codex project-skill isolation', () => {
     expect(isolated.sharedEnv).not.toHaveProperty('BASH_DEFAULT_TIMEOUT_MS');
     expect(isolated.sharedEnv).not.toHaveProperty('BASH_MAX_TIMEOUT_MS');
   });
+
+  // Claude Code's auto memory flag and the five launcher variables the Claude adapter passes through are
+  // Claude-only: Codex memories are off by default, and the Codex env must not grow any of them.
+  const CLAUDE_ONLY_VARS = [
+    'CLAUDE_CODE_DISABLE_AUTO_MEMORY', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', 'DISABLE_TELEMETRY',
+    'DISABLE_ERROR_REPORTING', 'ENABLE_CLAUDEAI_MCP_SERVERS', 'CLAUDE_CODE_DISABLE_ARTIFACT',
+  ];
+
+  async function codexSharedEnv() {
+    const isolated = await prepareIsolatedHome({
+      shimDir: 'C:\\shim', gradleUserHome: 'C:\\gradle', kmpEvalTempHome: 'C:\\temp',
+      expectedFixtureRoot: 'C:\\fixture', allowedGradleTasks: ['test'], allowedKmpTestSubcommands: ['parallel'],
+      executionProfile: PROFILE,
+    });
+    cleanup.push(...isolated.cleanupPaths);
+    return isolated.sharedEnv;
+  }
+
+  it('does not set the Claude auto-memory flag', async () => {
+    expect(await codexSharedEnv()).not.toHaveProperty('CLAUDE_CODE_DISABLE_AUTO_MEMORY');
+  });
+
+  it('does not pass the Claude-only variables through, even when the parent environment holds them', async () => {
+    const saved = Object.fromEntries(CLAUDE_ONLY_VARS.map((name) => [name, process.env[name]]));
+    for (const name of CLAUDE_ONLY_VARS) process.env[name] = 'parent-value';
+    try {
+      const sharedEnv = await codexSharedEnv();
+      for (const name of CLAUDE_ONLY_VARS) expect(sharedEnv, name).not.toHaveProperty(name);
+    } finally {
+      for (const [name, value] of Object.entries(saved)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+    }
+  });
 });
 
 describe('Codex observation normalization', () => {
