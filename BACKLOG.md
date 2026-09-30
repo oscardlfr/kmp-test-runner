@@ -3455,31 +3455,16 @@ All five gaps shipped in v0.5.2 (PRs #63 / #64 / #65 / #66 / #67). One scope red
 
 ## QUEUED — post-v0.3.4 ideas (newest first)
 
-### 💡 IDEA — 6 Evidence1 Pester files read sources through a hardcoded main-checkout path
+### ✅ DONE 2026-09-30 (PR #537) — Evidence1 Pester files read sources through a hardcoded main-checkout path
 
-**Status: IDEA, no CLI milestone.** Surfaced 2026-09-30 while closing PR #537: `git grep -lF
-"C:\kmp-eval\agentic-eval-codex-runtime" -- tests/pester` finds 6 files that hardcode the main
-checkout's absolute path instead of deriving it from where the test file itself lives:
-- `tests/pester/Evidence1-Guest-Disk-Cleanup-Bundle.Tests.ps1`
-- `tests/pester/Evidence1-Guest-Disk-Inventory-Bundle.Tests.ps1`
-- `tests/pester/Evidence1-Hyperv-Inspect-Vhd-Chain-Direct.Tests.ps1`
-- `tests/pester/Evidence1-Hyperv-Stat-Guest-File-Direct.Tests.ps1`
-- `tests/pester/Evidence1-Run-Disk-Space-Guards.Tests.ps1` (2 occurrences: a module import and a
-  direct `Get-Content` of `evidence1-run.ps1`)
-- `tests/pester/Evidence1-Run-Full-Campaign-Integration.Tests.ps1`
-
-Each hardcodes `$script:AuditsRoot` (or, in `Evidence1-Run-Disk-Space-Guards.Tests.ps1`, the
-`evidence1-run.ps1` source path and a `harness_dir` fixture value) as the literal
-`C:\kmp-eval\agentic-eval-codex-runtime\...` instead of a path derived from `$PSScriptRoot`. This
-means the suite only runs correctly from that one checkout location -- a worktree, a clone at a
-different path, or a renamed directory silently breaks these 6 files instead of just working.
-
-**Proposal:** switch each hardcoded root to `$PSScriptRoot`-derived paths (e.g.
-`(Resolve-Path (Join-Path $PSScriptRoot '..' '..')).Path` or the equivalent already used elsewhere in
-the Pester suite), so these tests run correctly regardless of checkout location.
-
-**Why captured here:** found during the closing publication pass; fixing 6 files across the Pester
-suite is real work with its own verification, not a one-line tweak to fold into that pass.
+Surfaced and fixed in the same closing pass: the first hosted CI run on the published harness
+failed on exactly this, so the fix landed before merge. All 6 files under `tests/pester/`
+(`Evidence1-Guest-Disk-Cleanup-Bundle`, `Evidence1-Guest-Disk-Inventory-Bundle`,
+`Evidence1-Hyperv-Inspect-Vhd-Chain-Direct`, `Evidence1-Hyperv-Stat-Guest-File-Direct`,
+`Evidence1-Run-Disk-Space-Guards`, `Evidence1-Run-Full-Campaign-Integration`) now derive every
+source path from `$PSScriptRoot`, the idiom their sibling files already used, so the suite runs
+from any checkout location. The one literal left, `harness_dir` in the full-campaign integration
+test's synthetic manifest, is input data naming the harness's canonical path, not a source read.
 
 ---
 
