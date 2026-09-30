@@ -16,10 +16,12 @@ import {
   loadCostEstimate,
   computeScorecardLayout,
   renderScorecardSvg,
+  renderMetricsGridSvg,
   buildScorecardAlt,
   buildBullets,
   armCostRange,
   validatePairing,
+  fmtToolCallsMedian,
 } from '../../tools/agentic-eval/readme-evidence.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -27,6 +29,12 @@ const REPO_ROOT = join(__dirname, '..', '..');
 const CAMPAIGN_DATE = '2026-09-28';
 const RUNS_DIR = join(REPO_ROOT, 'tools', 'runs', `evidence1-agentic-benchmark-${CAMPAIGN_DATE}`);
 const README_PATH = join(REPO_ROOT, 'README.md');
+
+// Evidence2 (schema 2, task B1) -- the campaign this closing PR publishes in the root README (via
+// `--evidence=2 --date=2026-09-30`) in place of Evidence1's above.
+const CAMPAIGN_DATE_V2 = '2026-09-30';
+const RUNS_DIR_NAME_V2 = `evidence2-agentic-benchmark-${CAMPAIGN_DATE_V2}`;
+const RUNS_DIR_V2 = join(REPO_ROOT, 'tools', 'runs', RUNS_DIR_NAME_V2);
 
 function crlfNormalize(s) {
   return s.replace(/\r\n/g, '\n');
@@ -225,15 +233,14 @@ describe('the committed evidence1-agentic-benchmark-2026-09-28 campaign', () => 
     expect(regenerated).toBe(committed);
   });
 
-  it('regenerating the README block matches what is committed, byte for byte (CRLF-normalized)', () => {
-    const readme = crlfNormalize(readFileSync(README_PATH, 'utf8'));
-    const start = readme.indexOf('<!-- agentic-benchmark:start');
-    const end = readme.indexOf('<!-- agentic-benchmark:end -->') + '<!-- agentic-benchmark:end -->'.length;
-    expect(start).toBeGreaterThan(-1);
-    const committedBlock = readme.slice(start, end);
-    const regenerated = crlfNormalize(renderReadmeBlock(summary, CAMPAIGN_DATE, costEstimate));
-    expect(regenerated).toBe(committedBlock);
-  });
+  // "Regenerating the README block matches what is committed in root README.md" and "every
+  // relative link/image path in the README block resolves inside this one campaign directory" used
+  // to live here, asserted against Evidence1's own data. Task B1/B5 (PR #537 closing pass) point the
+  // root README's agentic-benchmark block at Evidence2 instead (`--evidence=2 --date=2026-09-30`) --
+  // those two checks were never really about Evidence1's own bundle (which this describe block still
+  // fully validates below), they were about whichever campaign the root README actually shows, so
+  // they moved to the "the committed evidence2-agentic-benchmark-2026-09-30 campaign (published in
+  // the root README)" describe block further down, unchanged in spirit, re-pointed at the new data.
 
   it('the README block contains no unresolved {{placeholder}} markers', () => {
     const readme = readFileSync(README_PATH, 'utf8');
@@ -241,20 +248,6 @@ describe('the committed evidence1-agentic-benchmark-2026-09-28 campaign', () => 
     const end = readme.indexOf('<!-- agentic-benchmark:end -->') + '<!-- agentic-benchmark:end -->'.length;
     const block = readme.slice(start, end);
     expect(block).not.toMatch(/\{\{/);
-  });
-
-  it('every relative link/image path in the README block resolves inside this one campaign directory', () => {
-    const readme = readFileSync(README_PATH, 'utf8');
-    const start = readme.indexOf('<!-- agentic-benchmark:start');
-    const end = readme.indexOf('<!-- agentic-benchmark:end -->') + '<!-- agentic-benchmark:end -->'.length;
-    const block = readme.slice(start, end);
-    const paths = [...block.matchAll(/\]\(([^)]+)\)/g)].map(m => m[1]);
-    expect(paths.length).toBeGreaterThan(0);
-    // All evidence (doc, controls audit, preregistration, summary, chart) lives inside the one
-    // campaign directory -- no exceptions, unlike an earlier revision that carved out docs/.
-    for (const p of paths) {
-      expect(p.startsWith(`tools/runs/evidence1-agentic-benchmark-${CAMPAIGN_DATE}`)).toBe(true);
-    }
   });
 
   it('the README block links to the evidence doc, controls audit, and preregistration, all inside the campaign directory', () => {
@@ -484,6 +477,164 @@ describe('the committed evidence1-agentic-benchmark-2026-09-28 campaign', () => 
     expect(block).not.toMatch(/re-ran kmp-test/i);
     expect(block).not.toMatch(/because/i);
     expect(block).not.toMatch(/caused by/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Evidence2 (schema 2, task B1/B5, PR #537 closing pass): the root README's agentic-benchmark block
+// now publishes THIS campaign (`--evidence=2 --date=2026-09-30`), in place of the Evidence1 campaign
+// the describe block above still validates directly against its own committed bundle. The two checks
+// that used to assert "the root README matches a regeneration of Evidence1's data" moved here,
+// re-pointed at Evidence2 -- they were always about whichever campaign the root README shows, never
+// about Evidence1's bundle specifically (that bundle's own files are untouched and still valid).
+
+describe('the committed evidence2-agentic-benchmark-2026-09-30 campaign (published in the root README)', () => {
+  let summary, costEstimate;
+
+  beforeAll(() => {
+    summary = loadSummary(join(RUNS_DIR_V2, 'campaign-summary.json'));
+    costEstimate = loadCostEstimate(join(RUNS_DIR_V2, 'cost-estimate.json'));
+  });
+
+  it('is a valid, complete, live schema-2 summary', () => {
+    expect(validateSummary(summary)).toEqual([]);
+    expect(summary.schema).toBe(2);
+  });
+
+  it('is a valid, complete schema-2 cost estimate, consistent with the summary', () => {
+    expect(validateCostEstimate(costEstimate)).toEqual([]);
+    expect(validatePairing(summary, costEstimate)).toEqual([]);
+  });
+
+  it('regenerating scorecard.svg matches the committed file byte for byte (CRLF-normalized)', () => {
+    const committed = crlfNormalize(readFileSync(join(RUNS_DIR_V2, 'scorecard.svg'), 'utf8'));
+    const regenerated = crlfNormalize(renderScorecardSvg(summary, costEstimate));
+    expect(regenerated).toBe(committed);
+  });
+
+  it('regenerating metrics-grid.svg matches the committed file byte for byte (CRLF-normalized)', () => {
+    const committed = crlfNormalize(readFileSync(join(RUNS_DIR_V2, 'metrics-grid.svg'), 'utf8'));
+    const regenerated = crlfNormalize(renderMetricsGridSvg(summary, costEstimate));
+    expect(regenerated).toBe(committed);
+  });
+
+  it('regenerating the README block (--evidence=2 --date=2026-09-30) matches what is committed in root README.md, byte for byte (CRLF-normalized)', () => {
+    const readme = crlfNormalize(readFileSync(README_PATH, 'utf8'));
+    const start = readme.indexOf('<!-- agentic-benchmark:start');
+    const end = readme.indexOf('<!-- agentic-benchmark:end -->') + '<!-- agentic-benchmark:end -->'.length;
+    expect(start).toBeGreaterThan(-1);
+    const committedBlock = readme.slice(start, end);
+    const regenerated = crlfNormalize(renderReadmeBlock(summary, CAMPAIGN_DATE_V2, costEstimate, RUNS_DIR_NAME_V2));
+    expect(regenerated).toBe(committedBlock);
+  });
+
+  it('every relative link/image path in the README block resolves inside this one (Evidence2) campaign directory', () => {
+    const readme = readFileSync(README_PATH, 'utf8');
+    const start = readme.indexOf('<!-- agentic-benchmark:start');
+    const end = readme.indexOf('<!-- agentic-benchmark:end -->') + '<!-- agentic-benchmark:end -->'.length;
+    const block = readme.slice(start, end);
+    const paths = [...block.matchAll(/\]\(([^)]+)\)/g)].map(m => m[1]);
+    expect(paths.length).toBeGreaterThan(0);
+    for (const p of paths) {
+      expect(p.startsWith(`tools/runs/${RUNS_DIR_NAME_V2}`)).toBe(true);
+    }
+  });
+
+  it('the README block links to the evidence doc and pre-registration, but NOT a controls audit (Evidence2 does not produce one)', () => {
+    const block = renderReadmeBlock(summary, CAMPAIGN_DATE_V2, costEstimate, RUNS_DIR_NAME_V2);
+    const dir = `tools/runs/${RUNS_DIR_NAME_V2}`;
+    expect(block).toContain(`(${dir}/README.md)`);
+    expect(block).toContain(`(${dir}/preregistration.md)`);
+    expect(block).not.toContain('controls-audit.md');
+    expect(block).not.toContain('controls audit');
+  });
+
+  it('every file the README block links to (or embeds as an image) actually exists on disk', () => {
+    for (const name of ['README.md', 'preregistration.md', 'campaign-summary.json', 'cost-estimate.json', 'scorecard.svg', 'metrics-grid.svg']) {
+      expect(existsSync(join(RUNS_DIR_V2, name)), `${name} should exist in ${RUNS_DIR_V2}`).toBe(true);
+    }
+    // Evidence2 genuinely has no controls-audit.md (unlike Evidence1) -- confirms the omission
+    // above is because the file doesn't exist, not a generator bug hiding a real one.
+    expect(existsSync(join(RUNS_DIR_V2, 'controls-audit.md'))).toBe(false);
+  });
+
+  it('the README block contains no unresolved {{placeholder}} markers', () => {
+    const block = renderReadmeBlock(summary, CAMPAIGN_DATE_V2, costEstimate, RUNS_DIR_NAME_V2);
+    expect(block).not.toMatch(/\{\{/);
+  });
+
+  it('the Scope line reads reasoning effort "high" for BOTH runtimes from provenance (Amendment A7 equalized effort)', () => {
+    const block = renderReadmeBlock(summary, CAMPAIGN_DATE_V2, costEstimate, RUNS_DIR_NAME_V2);
+    expect(block).toContain('Claude Code 2.1.238 · claude-sonnet-5 · reasoning effort high.');
+    expect(block).toContain('Codex CLI 0.154.0 · gpt-5.6-terra · reasoning effort high.');
+  });
+
+  // The auditor-verified motivating case for the fmtToolCallsMedian fix (task B2): claude-code's
+  // product arm really did land on a 4.5 median (tool_calls_total 3, 3, 6, 15 -> the two middle
+  // values average to 4.5) -- Math.round(4.5) rounds UP to "5" in JS, which would silently misreport
+  // a genuine half-integer median as a whole number.
+  it('the tool-calls-per-session bullet prints the real non-integer median (4.5), not rounded to 5 (task B2)', () => {
+    const gp = summary.by_runtime_arm.find(g => g.runtime_id === 'claude-code' && g.arm === 'product');
+    expect(gp.tool_calls_total.median).toBe(4.5); // the real committed data
+    const block = renderReadmeBlock(summary, CAMPAIGN_DATE_V2, costEstimate, RUNS_DIR_NAME_V2);
+    expect(block).toContain('median 4.5 tool calls');
+    expect(block).not.toContain('median 5 tool calls');
+  });
+
+  it('never names the scenario\'s ground truth (module path, specific numeric answers) in generated text', () => {
+    const block = renderReadmeBlock(summary, CAMPAIGN_DATE_V2, costEstimate, RUNS_DIR_NAME_V2);
+    expect(block).not.toMatch(/nowinandroid.*(core|feature|app):/i);
+    expect(block).not.toMatch(/(?<!\.)\b23\b/);
+    expect(block).not.toMatch(/(?<!\.)\b15\b/);
+  });
+
+  it('never uses the word "baseline" to label an arm, and states no ratio or pooled cross-runtime row', () => {
+    const block = renderReadmeBlock(summary, CAMPAIGN_DATE_V2, costEstimate, RUNS_DIR_NAME_V2);
+    expect(block.toLowerCase()).not.toContain('baseline');
+    expect(block).not.toMatch(/\d+(\.\d+)?x\s*(faster|slower|cheaper)/i);
+    expect(block).not.toMatch(/all agents/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task B3 (PR #537 closing pass): the root README's concise block must never state full-answer
+// numbers -- that metric has a documented construct caveat (distinct test methods vs total
+// executions across build variants, see the evidence doc's own "Full-answer match" section) that
+// only a doc with room for the caveat can responsibly show; a bare "X/4 full answer" in the README
+// would read as an uncaveated capability result. The generator has never emitted this (confirmed
+// below against both real committed campaigns) -- this guards that it stays that way.
+
+describe('the README block never states full-answer numbers (task B3)', () => {
+  it('the real Evidence1 (schema 1) block never mentions full-answer/full_answer', () => {
+    const summary = loadSummary(join(RUNS_DIR, 'campaign-summary.json'));
+    const costEstimate = loadCostEstimate(join(RUNS_DIR, 'cost-estimate.json'));
+    const block = renderReadmeBlock(summary, CAMPAIGN_DATE, costEstimate);
+    expect(block).not.toMatch(/full[ _-]?answer/i);
+  });
+
+  it('the real Evidence2 (schema 2) block never mentions full-answer/full_answer', () => {
+    const summary = loadSummary(join(RUNS_DIR_V2, 'campaign-summary.json'));
+    const costEstimate = loadCostEstimate(join(RUNS_DIR_V2, 'cost-estimate.json'));
+    const block = renderReadmeBlock(summary, CAMPAIGN_DATE_V2, costEstimate, RUNS_DIR_NAME_V2);
+    expect(block).not.toMatch(/full[ _-]?answer/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fmtToolCallsMedian (task B2): n=4 medians are the average of the two middle values whenever they
+// differ, so a real median can legitimately be a half-integer (see the 4.5 case exercised against
+// real data above) -- a bare Math.round() would silently misreport it as a whole number.
+
+describe('fmtToolCallsMedian (task B2)', () => {
+  it('prints an integer median with no decimal point', () => {
+    expect(fmtToolCallsMedian(4)).toBe('4');
+    expect(fmtToolCallsMedian(13)).toBe('13');
+    expect(fmtToolCallsMedian(0)).toBe('0');
+  });
+
+  it('prints a non-integer median with exactly one decimal place, never rounded to an integer', () => {
+    expect(fmtToolCallsMedian(4.5)).toBe('4.5');
+    expect(fmtToolCallsMedian(6.75)).toBe('6.8'); // toFixed(1) rounds the 2nd decimal normally
   });
 });
 
@@ -723,6 +874,37 @@ describe('schema 2 (Evidence2): multi-runtime cost + reasoning effort', () => {
     expect(block).toContain('Claude Code 2.1.238 · claude-sonnet-5 · reasoning effort high.');
     expect(block).toContain('Codex CLI 0.154.0 · gpt-5.6-terra · reasoning effort low.');
     expect(block).not.toContain('effort not set by the harness');
+  });
+
+  // Task B1 (PR #537 closing pass): readme-evidence.mjs hardcoded the run dir as
+  // evidence1-agentic-benchmark-<date> everywhere renderReadmeBlock built a link or image path --
+  // harmless while only one campaign existed, but a schema-2 (Evidence2) summary rendered through it
+  // would link to a directory that doesn't hold its own scorecard.svg/metrics-grid.svg/README.md. An
+  // explicit 4th `runsDirName` argument (wired to main()'s own --evidence=/--date= flags) fixes this
+  // without touching the 3rd-arg-only call sites already covering the old behavior above.
+  it('accepts an explicit runsDirName (task B1) and uses it for every link/image path, not the evidence1-agentic-benchmark-<date> default', () => {
+    const block = renderReadmeBlock(baseSummaryV2(), '2026-09-30', baseCostEstimateV2(), 'evidence2-agentic-benchmark-2026-09-30');
+    const dir = 'tools/runs/evidence2-agentic-benchmark-2026-09-30';
+    expect(block).toContain(`](${dir}/scorecard.svg)`);
+    expect(block).toContain(`](${dir}/metrics-grid.svg)`);
+    expect(block).toContain(`(${dir}/README.md)`);
+    expect(block).not.toContain('evidence1-agentic-benchmark');
+  });
+
+  it('omitting runsDirName falls back to the historical evidence1-agentic-benchmark-<campaignDate> shape (back-compat default, task B1)', () => {
+    const block = renderReadmeBlock(baseSummaryV2(), '2026-09-30', baseCostEstimateV2());
+    expect(block).toContain('tools/runs/evidence1-agentic-benchmark-2026-09-30');
+  });
+
+  // Task B4: Evidence1's own run dir carries a controls-audit.md; Evidence2 does not produce one
+  // (tracked separately), so the Scope line must not link a file that doesn't exist there.
+  it('the Scope line omits the controls-audit link for schema 2 (Evidence2 does not produce a controls-audit.md) but still links the evidence doc and pre-registration (task B4)', () => {
+    const block = renderReadmeBlock(baseSummaryV2(), '2026-09-30', baseCostEstimateV2(), 'evidence2-agentic-benchmark-2026-09-30');
+    const dir = 'tools/runs/evidence2-agentic-benchmark-2026-09-30';
+    expect(block).toContain(`[Evidence, per-session detail and limitations](${dir}/README.md)`);
+    expect(block).toContain(`[pre-registration](${dir}/preregistration.md)`);
+    expect(block).not.toContain('controls-audit.md');
+    expect(block).not.toContain('controls audit');
   });
 
   it('the scorecard alt text reads the model from provenance for schema 2, not hardcoded RUNTIME_LABELS', () => {
