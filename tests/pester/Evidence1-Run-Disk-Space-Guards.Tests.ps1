@@ -221,7 +221,7 @@ Describe 'Get-E1RunHostDiskFreeBytes (real function, real evidence1-run.ps1 sour
     }
 
     It 'defines Get-E1RunHostDiskFreeBytes as a pure query, never a throw' {
-        $source = Get-Content -LiteralPath $script:RunScriptPath -Raw
+        $source = (Get-Content -LiteralPath $script:RunScriptPath -Raw) -replace "`r`n", "`n"
         $start = $source.IndexOf('function Get-E1RunHostDiskFreeBytes')
         $start | Should -BeGreaterThan 0
         $end = $source.IndexOf("`n}`n", $start)

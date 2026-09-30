@@ -647,7 +647,7 @@ Describe 'Evidence1 dual-auth producer (Task 2): source wiring for the FAIL repo
     # for the success-path schema=2 fix.
 
     BeforeAll {
-        $script:ProducerSource = Get-Content -LiteralPath (Join-Path $script:AuditRoot 'evidence1-hyperv-verify-guest-dual-auth-direct.ps1') -Raw
+        $script:ProducerSource = (Get-Content -LiteralPath (Join-Path $script:AuditRoot 'evidence1-hyperv-verify-guest-dual-auth-direct.ps1') -Raw) -replace "`r`n", "`n"
     }
 
     It 'the catch block builds its FAIL report through the shared New-Evidence1DualAuthFailureReport builder (Task 3), passing the mapped reason code through -- not hand-building the hashtable inline anymore' {

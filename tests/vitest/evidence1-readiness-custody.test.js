@@ -130,9 +130,7 @@ function Import-Module {
       while($current) {
         if(Test-Path -LiteralPath $current) {
           $item=Get-Item -LiteralPath $current -Force
-          $isLink=(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
-          if(-not $isLink) { try { $isLink=($item.LinkType -eq 'HardLink') } catch { } }
-          if($isLink) { throw 'path_link' }
+          if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $item.LinkType -eq 'HardLink') { throw 'path_link' }
         }
         $current=[IO.Path]::GetDirectoryName($current)
       }
@@ -199,7 +197,12 @@ $ledger=if(Test-Path -LiteralPath $ledgerPath) { Get-Content -LiteralPath $ledge
   return JSON.parse(result.stdout);
 }
 
-describe.skipIf(!hasPowerShell)('readiness source custody guest integration', { timeout: 45_000 }, () => {
+// Windows-only: exercises the guest's own readiness-custody semantics (ACLs, reparse points,
+// hardlinks via Resolve-E1Path) under a real pwsh subprocess -- concepts this harness's readiness
+// custody only ever runs inside a Windows guest for, and that pwsh/Linux cannot faithfully
+// reproduce (confirmed: more than one property read in this file's own Linux simulation throws
+// PlatformNotSupportedException there). Still runs on windows-latest and on this host.
+describe.skipIf(!hasPowerShell || process.platform !== 'win32')('readiness source custody guest integration', { timeout: 45_000 }, () => {
   it.skipIf(process.platform !== 'win32')('keeps a valid guest fixture when Windows TEMP uses a short-name alias', async () => {
     const parent = 'C:/kmp-eval/scratch';
     await mkdir(parent, { recursive: true });
