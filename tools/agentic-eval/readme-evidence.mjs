@@ -578,30 +578,29 @@ export function buildScorecardAlt(summary, costEstimate) {
 // availability) is omitted from the grid entirely rather than showing either.
 
 const GRID_W = SCORECARD_W;
-const GRID_DOT_R = 3;
-// Numbers-first, in the scorecard's own visual language. Two row shapes, each a
-// stack of non-overlapping bands (header, lane(s), footer), height = sum of only the bands used:
-//   STRIP rows (scalar metrics) -- two lanes stacked VERTICALLY sharing one horizontal axis (0 to
-//   a nice max), dots in the arm's own color (scorecard COLOR_WITH/COLOR_WITHOUT), a median tick,
-//   the median value printed to the right, 3 axis-tick labels shared below both lanes.
-//   COMPOSITION rows (tool calls by kind, tokens by type) -- two lanes, each ONE horizontal
-//   stacked bar of per-component MEDIANS (never per-session mini-bars), a total at the end, one
-//   legend line below both bars giving each component's with-vs-without value.
+// Numbers-first, in the scorecard's own visual language: every row is two horizontal bars, one
+// per arm, starting at the same x, with the value printed at the end. No axes, no dot clouds.
+//   STRIP rows (scalar metrics) -- each lane is ONE bar to the median in the arm's own color
+//   (scorecard COLOR_WITH/COLOR_WITHOUT), a thin whisker spanning the per-session min-max, and
+//   the median printed at the end.
+//   COMPOSITION rows (tool calls by kind, tokens by type) -- each lane is ONE stacked bar of
+//   per-component MEDIANS (never per-session mini-bars), a total at the end, one legend line below
+//   both bars giving each component's with-vs-without value.
+// Both columns share one scale per row (Turns excepted, per Amendment A9), so bar lengths compare
+// directly across agents.
 const GRID_HEADER_FS = 13;
 const GRID_HEADER_H = 18;
 const GRID_LANE_LABEL_FS = 11;
 const GRID_LANE_LABEL_W = 92; // "with kmp-test" / "without" text budget
 const GRID_VALUE_LABEL_FS = 11;
-const GRID_VALUE_LABEL_GAP = 8;
-const GRID_VALUE_LABEL_W = 96; // "median 190.0 s" text budget
-const GRID_STRIP_AXIS_W = COLUMN_W - GRID_LANE_LABEL_W - GRID_VALUE_LABEL_GAP - GRID_VALUE_LABEL_W;
-const GRID_STRIP_LANE_H = 20;
 const GRID_TICK_FS = 9;
 const GRID_TICK_H = 16;
 const GRID_COMP_BAR_H = 14;
 const GRID_COMP_BAR_GAP = 4;
-const GRID_COMP_TOTAL_LABEL_W = 46;
-const GRID_COMP_BAR_W = COLUMN_W - GRID_LANE_LABEL_W - GRID_COMP_TOTAL_LABEL_W;
+const GRID_VALUE_GAP = 12; // clearance between a bar (or its whisker cap) and its value label
+const GRID_VALUE_TEXT_W = 54; // "10.2 min" / "426.1k" text budget
+const GRID_COMP_BAR_W = COLUMN_W - GRID_LANE_LABEL_W - GRID_VALUE_GAP - GRID_VALUE_TEXT_W;
+const GRID_WHISKER_CAP_H = 8;
 const GRID_ROW_GAP = 14; // clearance before the next row (at least 10px; kept generous)
 // Distinct from COLOR_WITH/COLOR_WITHOUT (#0969da/#bc4c00) on purpose -- kmp_test and gradle
 // used to reuse those exact hex values, so a lane whose bar happened to be 100% one type (every FAKE
@@ -829,41 +828,24 @@ export function costMetric(summary, group, runtimeId, arm, costEstimate) {
   return { kind: 'per-session', values, median: medianOf(values), provider: false };
 }
 
-// Rounds up to a "nice" axis max (1/2/5 x 10^n) so the 3 tick labels (0/mid/max) are clean
-// numbers, not e.g. "0 / 96.3 / 192.7". For an integer-valued metric (turns, byte/tool-call counts)
-// that alone isn't enough -- axisMax/2 (the middle tick) is only a whole number when axisMax itself
-// is even, and the "nice" sequence includes odd values (1, 5, 50, 500, ...) whenever fraction<=1 or
-// fraction<=5 lands on a base of 1 -- e.g. niceAxisMax(1)=1, whose own midpoint 0.5 rendered as
-// "0.5 turns". integerTicks rounds up to the nearest even integer >= 2 so axisMax/2 is
-// always a whole number too; every base for exp>=1 (10, 100, ...) is already even, so this only
-// ever adjusts the exp===0 cases (1->2, 5->6).
-function niceAxisMax(rawMax, integerTicks = false) {
-  if (!(rawMax > 0)) return integerTicks ? 2 : 1;
-  const exp = Math.floor(Math.log10(rawMax));
-  const base = Math.pow(10, exp);
-  const fraction = rawMax / base;
-  const niceFraction = fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10;
-  const nice = niceFraction * base;
-  if (!integerTicks) return nice;
-  const rounded = Math.max(2, Math.ceil(nice));
-  return rounded % 2 === 0 ? rounded : rounded + 1;
+// A strip lane's per-session range: the min/max of its own sessions, or the run-level aggregate's
+// own min/max when per-session values are unavailable. null for an unavailable lane.
+function scalarLaneRange(metric) {
+  if (metric.kind === 'per-session') return { min: Math.min(...metric.values), max: Math.max(...metric.values) };
+  if (metric.kind === 'aggregate') return { min: metric.min, max: metric.max };
+  return null;
 }
 
-// A strip row's shared axis max: the grid uses the SAME 0..max scale for both agent
-// columns, so a viewer can compare Claude's and Codex's dots directly -- computed over every
-// per-session/aggregate value from BOTH runtimes' with/without lanes for this one metric, never
-// per-runtime (an earlier scorecard bug this also fixes).
-function scalarLaneMax(metric) {
-  if (metric.kind === 'per-session') return Math.max(...metric.values, 0);
-  if (metric.kind === 'aggregate') return metric.max;
-  return 0;
-}
-function sharedStripAxisMax(integerTicks, ...metrics) {
-  const raw = Math.max(...metrics.map(scalarLaneMax), 1e-9);
-  return niceAxisMax(raw, integerTicks);
+// A strip row's shared scale max: the grid uses the SAME 0..max scale for both agent columns, so
+// bar lengths compare directly across agents -- computed over every lane's range max (whiskers
+// included) from BOTH runtimes' with/without lanes for this one metric, never per-runtime (an
+// earlier scorecard bug this also fixes). No axis is drawn, so the raw max needs no rounding.
+function sharedStripScaleMax(...metrics) {
+  const maxima = metrics.map(scalarLaneRange).filter(Boolean).map((r) => r.max);
+  return Math.max(...maxima, 1e-9);
 }
 
-// A composition row's shared bar-total max, same cross-agent reasoning as sharedStripAxisMax --
+// A composition row's shared bar-total max, same cross-agent reasoning as sharedStripScaleMax --
 // null-total lanes (no data) don't participate.
 function sharedCompositionMax(...compositions) {
   const totals = compositions.filter(Boolean).map((c) => c.total);
@@ -883,13 +865,13 @@ function compositionValueFor(composition, type) {
   return seg ? seg.value : null;
 }
 
-// One STRIP row (scalar metric) for one runtime column: header (metric/unit/diff%) -> two lanes
-// stacked VERTICALLY sharing one 0..axisMax horizontal axis (dots in the arm's own scorecard
-// color, a median tick, the median value printed right of the axis) -> 3 shared tick labels ->
-// an optional word-wrapped caption (Amendment A9: Turns' own axis is per-agent, not shared, and
-// carries a caption explaining why -- see buildGridRowData) -> gap. Each band advances a single
-// cursor, so no band can silently overlap another.
-function renderStripRow(colX, rowY, mainHeaderText, diffText, agentLabel, withMetric, withoutMetric, axisMax, fmtValue, caption) {
+// One STRIP row (scalar metric) for one runtime column: header (metric/unit) -> the diff% line ->
+// two lanes, each a bar from 0 to the median in the arm's own scorecard color, a thin whisker over
+// the per-session min-max range, and the median printed at the end (the same geometry as a
+// composition row's bars) -> an optional word-wrapped caption (Amendment A9: Turns' own scale is
+// per-agent, not shared, and carries a caption explaining why -- see buildGridRowData) -> gap.
+// Each band advances a single cursor, so no band can silently overlap another.
+function renderStripRow(colX, rowY, mainHeaderText, diffText, agentLabel, withMetric, withoutMetric, scaleMax, fmtValue, caption) {
   const items = [];
   let cursor = rowY;
   items.push(textItem('gridRowHeader', null, colX, cursor + GRID_HEADER_FS, GRID_HEADER_FS, 500, COLOR_TEXT, mainHeaderText));
@@ -905,43 +887,29 @@ function renderStripRow(colX, rowY, mainHeaderText, diffText, agentLabel, withMe
     return { items, rowHeight: cursor - rowY };
   }
 
-  const axisLeft = colX + GRID_LANE_LABEL_W;
-  const axisRight = axisLeft + GRID_STRIP_AXIS_W;
-  const xFor = (v) => axisLeft + (Math.min(Math.max(v, 0), axisMax) / axisMax) * GRID_STRIP_AXIS_W;
+  const barX = colX + GRID_LANE_LABEL_W;
+  const xFor = (v) => barX + (Math.min(Math.max(v, 0), scaleMax) / scaleMax) * GRID_COMP_BAR_W;
 
   const lanes = [
     { m: withMetric, arm: 'with kmp-test', color: COLOR_WITH },
     { m: withoutMetric, arm: 'without', color: COLOR_WITHOUT },
   ];
   for (const lane of lanes) {
-    const laneCenterY = cursor + GRID_STRIP_LANE_H / 2;
-    items.push(textItem('gridLaneLabel', null, colX, laneCenterY + 4, GRID_LANE_LABEL_FS, 400, COLOR_SECONDARY, lane.arm));
-    if (lane.m.kind === 'unavailable') {
-      items.push(textItem('gridNotRecorded', null, axisLeft, laneCenterY + 4, GRID_VALUE_LABEL_FS, 400, COLOR_SECONDARY, 'n/a'));
+    const barY = cursor;
+    const barCenterY = barY + GRID_COMP_BAR_H / 2;
+    items.push(textItem('gridLaneLabel', null, colX, barCenterY + 4, GRID_LANE_LABEL_FS, 400, COLOR_SECONDARY, lane.arm));
+    const range = scalarLaneRange(lane.m);
+    if (!range) {
+      items.push(textItem('gridNotRecorded', null, barX, barCenterY + 4, GRID_VALUE_LABEL_FS, 400, COLOR_SECONDARY, 'n/a'));
     } else {
-      if (lane.m.kind === 'per-session') {
-        const n = lane.m.values.length;
-        lane.m.values.forEach((v, i) => {
-          // A small vertical jitter so n=4 real sessions landing at/near the same x are still all visible.
-          const dotY = laneCenterY + (i - (n - 1) / 2) * 3.2;
-          items.push({ kind: 'dot', column: null, cx: xFor(v), cy: dotY, r: GRID_DOT_R, fill: lane.color });
-        });
-      } else if (lane.m.kind === 'aggregate') {
-        items.push({ kind: 'rangeLineH', column: null, y: laneCenterY, x1: xFor(lane.m.min), x2: xFor(lane.m.max), stroke: lane.color });
+      items.push({ kind: 'bar', column: null, x: barX, y: barY, w: Math.max(xFor(lane.m.median) - barX, 1), h: GRID_COMP_BAR_H, rx: 1, fill: lane.color });
+      if (range.max > range.min) {
+        items.push({ kind: 'whisker', column: null, x1: xFor(range.min), x2: xFor(range.max), y: barCenterY, capH: GRID_WHISKER_CAP_H });
       }
-      items.push({ kind: 'tickV', column: null, x: xFor(lane.m.median), y1: laneCenterY - 6, y2: laneCenterY + 6 });
-      items.push(textItem('gridValueLabel', null, axisRight + GRID_VALUE_LABEL_GAP, laneCenterY + 4, GRID_VALUE_LABEL_FS, 400, COLOR_TEXT, `median ${fmtValue(lane.m.median)}`));
+      items.push(textItem('gridValueLabel', null, barX + GRID_COMP_BAR_W + GRID_VALUE_GAP, barCenterY + 4, GRID_VALUE_LABEL_FS, 400, COLOR_TEXT, fmtValue(lane.m.median)));
     }
-    cursor += GRID_STRIP_LANE_H;
+    cursor += GRID_COMP_BAR_H + GRID_COMP_BAR_GAP;
   }
-
-  items.push({ kind: 'axisLine', column: null, y: cursor, x1: axisLeft, x2: axisRight });
-  const tickY = cursor + GRID_TICK_FS + 4;
-  const ticks = [[0, 'start'], [axisMax / 2, 'middle'], [axisMax, 'end']];
-  for (const [t, anchor] of ticks) {
-    items.push(textItem('gridTickLabel', null, xFor(t), tickY, GRID_TICK_FS, 400, COLOR_SECONDARY, fmtValue(t), anchor));
-  }
-  cursor += GRID_TICK_H;
   if (caption) {
     for (const line of wrapWords(caption, GRID_TICK_FS, COLUMN_W)) {
       items.push(textItem('gridRowCaption', null, colX, cursor + GRID_TICK_FS, GRID_TICK_FS, 400, COLOR_SECONDARY, line));
@@ -989,7 +957,7 @@ function renderCompositionRow(colX, rowY, headerText, agentLabel, withComp, with
       // an unknown whole" (e.g. 0 kmp-test/gradle calls next to the scorecard's own ~12 tool calls
       // for the same lane). Omitted here; the legend's partialTotalNote explains why below.
       if (lane.c.totalIsComplete !== false) {
-        items.push(textItem('gridCompTotal', null, barX + GRID_COMP_BAR_W + 6, barCenterY + 4, GRID_VALUE_LABEL_FS, 400, COLOR_TEXT, fmtValue(lane.c.total)));
+        items.push(textItem('gridCompTotal', null, barX + GRID_COMP_BAR_W + GRID_VALUE_GAP, barCenterY + 4, GRID_VALUE_LABEL_FS, 400, COLOR_TEXT, fmtValue(lane.c.total)));
       }
     }
     cursor += GRID_COMP_BAR_H + GRID_COMP_BAR_GAP;
@@ -1158,17 +1126,17 @@ function buildGridRowData(runtimeId, summary, costEstimate) {
     {
       // Amendment A9: num_turns is not comparable across runtimes -- Claude counts assistant
       // turns (5-12 observed in canary 2), Codex reports one user turn per non-interactive
-      // session (always 1). perAgentScale keeps each column's own axis independent (see the
+      // session (always 1). perAgentScale keeps each column's own scale independent (see the
       // computeMetricsGridLayout call site); the caption states the reason directly on the row
       // rather than relying on a reader to infer it from two very different-looking scales.
-      kind: 'strip', label: 'Turns', unit: '', fmtValue: fmtCount, sourceNote: null, integerTicks: true,
+      kind: 'strip', label: 'Turns', unit: '', fmtValue: fmtCount, sourceNote: null,
       perAgentScale: true,
       caption: 'Not comparable across agents: Claude counts assistant turns; Codex reports one turn per session.',
       with: scalarMetric(summary, gp, runtimeId, 'product', 'num_turns', () => null),
       without: scalarMetric(summary, gf, runtimeId, 'free', 'num_turns', () => null),
     },
     {
-      kind: 'strip', label: 'Tool output returned to the model', unit: 'bytes', fmtValue: fmtBytesCompact, sourceNote: null, integerTicks: true,
+      kind: 'strip', label: 'Tool output returned to the model', unit: 'bytes', fmtValue: fmtBytesCompact, sourceNote: null,
       with: scalarMetric(summary, gp, runtimeId, 'product', 'output_bytes', () => null),
       without: scalarMetric(summary, gf, runtimeId, 'free', 'output_bytes', () => null),
     },
@@ -1184,7 +1152,7 @@ export function computeMetricsGridLayout(summary, costEstimate) {
   const subtitleY1 = titleY + ROW_GAP + subtitleFS;
   const subtitleY2 = subtitleY1 + subtitleFS + 4;
   items.push(textItem('gridSubtitle', null, PAD, subtitleY1, subtitleFS, 400, COLOR_SECONDARY,
-    'Each dot is one session; bars are the median session.'));
+    'Bars are the median session; whiskers span the per-session range.'));
   items.push(textItem('gridSubtitle', null, PAD, subtitleY2, subtitleFS, 400, COLOR_SECONDARY,
     'Descriptive only, not part of the pre-registered analysis.'));
   const headerBottom = subtitleY2 + ROW_GAP + 8;
@@ -1212,20 +1180,15 @@ export function computeMetricsGridLayout(summary, costEstimate) {
       if (row.kind === 'strip') {
         // Amendment A9: Turns is not comparable across runtimes (Claude counts assistant turns;
         // Codex reports one user turn per non-interactive session, always 1) -- perAgentScale
-        // rows compute their axis from ONLY this column's own two lanes, never otherData, so a
+        // rows compute their scale from ONLY this column's own two lanes, never otherData, so a
         // shared scale never implies the two columns' Turns values are meant to be read side by
         // side. Every other row is unaffected (perAgentScale is undefined => falsy there).
-        // Amendment A9: Turns is not comparable across runtimes (Claude counts assistant turns;
-        // Codex reports one user turn per non-interactive session, always 1) -- perAgentScale
-        // rows compute their axis from ONLY this column's own two lanes, never otherData, so a
-        // shared scale never implies the two columns' Turns values are meant to be read side by
-        // side. Every other row is unaffected (perAgentScale is undefined => falsy there).
-        const axisMax = row.perAgentScale
-          ? sharedStripAxisMax(!!row.integerTicks, row.with, row.without)
-          : sharedStripAxisMax(!!row.integerTicks, row.with, row.without, otherData[ri].with, otherData[ri].without);
+        const scaleMax = row.perAgentScale
+          ? sharedStripScaleMax(row.with, row.without)
+          : sharedStripScaleMax(row.with, row.without, otherData[ri].with, otherData[ri].without);
         const diffPct = stripDiffPct(row.with, row.without);
         const { mainText, diffText } = stripHeaderLines(row.label, row.unit, diffPct, row.sourceNote);
-        rendered = renderStripRow(col.x, cy, mainText, diffText, agentLabel, row.with, row.without, axisMax, row.fmtValue, row.caption);
+        rendered = renderStripRow(col.x, cy, mainText, diffText, agentLabel, row.with, row.without, scaleMax, row.fmtValue, row.caption);
       } else {
         const compMax = sharedCompositionMax(row.with, row.without, otherData[ri].with, otherData[ri].without);
         rendered = renderCompositionRow(col.x, cy, row.label, agentLabel, row.with, row.without, compMax, row.types, row.typeColors, row.typeLabels, row.fmtValue, row.partialTotalNote);
@@ -1250,14 +1213,13 @@ export function renderMetricsGridSvg(summary, costEstimate) {
       parts.push(`<rect x="${item.x.toFixed(1)}" y="${item.y.toFixed(1)}" width="${item.w.toFixed(1)}" height="${item.h.toFixed(1)}" rx="${item.rx}" fill="${item.fill}"/>`);
     } else if (item.kind === 'legendSwatch') {
       parts.push(`<rect x="${item.x.toFixed(1)}" y="${item.y.toFixed(1)}" width="${item.w}" height="${item.h}" fill="${item.fill}"/>`);
-    } else if (item.kind === 'dot') {
-      parts.push(`<circle cx="${item.cx.toFixed(1)}" cy="${item.cy.toFixed(1)}" r="${item.r}" fill="${item.fill}"/>`);
-    } else if (item.kind === 'tickV') {
-      parts.push(`<line x1="${item.x.toFixed(1)}" x2="${item.x.toFixed(1)}" y1="${item.y1.toFixed(1)}" y2="${item.y2.toFixed(1)}" stroke="${COLOR_TEXT}" stroke-width="2"/>`);
-    } else if (item.kind === 'axisLine') {
-      parts.push(`<line x1="${item.x1.toFixed(1)}" x2="${item.x2.toFixed(1)}" y1="${item.y.toFixed(1)}" y2="${item.y.toFixed(1)}" stroke="${COLOR_GRID}" stroke-width="1"/>`);
-    } else if (item.kind === 'rangeLineH') {
-      parts.push(`<line x1="${item.x1.toFixed(1)}" x2="${item.x2.toFixed(1)}" y1="${item.y.toFixed(1)}" y2="${item.y.toFixed(1)}" stroke="${item.stroke}" stroke-width="2"/>`);
+    } else if (item.kind === 'whisker') {
+      // Min-max range: a horizontal line with a short vertical cap at each end.
+      const x1 = item.x1.toFixed(1), x2 = item.x2.toFixed(1), y = item.y.toFixed(1);
+      const capTop = (item.y - item.capH / 2).toFixed(1), capBottom = (item.y + item.capH / 2).toFixed(1);
+      parts.push(`<line x1="${x1}" x2="${x2}" y1="${y}" y2="${y}" stroke="${COLOR_TEXT}" stroke-width="1.5"/>`);
+      parts.push(`<line x1="${x1}" x2="${x1}" y1="${capTop}" y2="${capBottom}" stroke="${COLOR_TEXT}" stroke-width="1.5"/>`);
+      parts.push(`<line x1="${x2}" x2="${x2}" y1="${capTop}" y2="${capBottom}" stroke="${COLOR_TEXT}" stroke-width="1.5"/>`);
     }
   }
   const tokenLegendDesc = Object.keys(TOKEN_COMPONENT_LABEL).map((t) => `${TOKEN_COMPONENT_LABEL[t]} (${TOKEN_COMPONENT_COLORS[t]})`).join(', ');
