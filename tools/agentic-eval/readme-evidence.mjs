@@ -553,10 +553,7 @@ export function buildScorecardAlt(summary, costEstimate) {
         ? `${label}: not estimated`
         : `${label}: ${metric.withLabel} with kmp-test, ${metric.withoutLabel} without`);
     }
-    const runtimeLabel = summary.schema === 2
-      ? `${RUNTIME_DISPLAY_NAME[runtimeId]} · ${provenanceValue(summary, 'model_resolved', runtimeId)}`
-      : RUNTIME_LABELS[runtimeId];
-    parts.push(`${runtimeLabel} — ${bits.join('; ')}`);
+    parts.push(`${runtimeModelLabel(summary, runtimeId)} — ${bits.join('; ')}`);
   }
   return parts.join('. ') + '.';
 }
@@ -790,7 +787,8 @@ export function commandKindAggregate(group) {
   return {
     // Per-session MEAN (total / n), not a median -- campaign-summary.mjs exposes only totals for
     // this bucket, so `.median` here is stackedMetric's generic per-type value field, not a claim
-    // this specific number is a median (see `stat` below, which renderMetricRow reads for the note).
+    // this specific number is a median (see `stat` below, which renderCompositionRow reads to label
+    // these values as means in the row legend).
     kmp_test: { median: mix.kmp_test_count / n },
     gradle: { median: mix.gradle_count / n },
     stat: 'mean',
@@ -1040,6 +1038,14 @@ function renderCompositionRow(colX, rowY, headerText, agentLabel, withComp, with
     // short "label N vs M" parts, and carries no swatch) -- at ~76 chars it exceeds one COLUMN_W line
     // on its own (estimated ~410px vs 396px), so it needs the same greedy wrapping, split on spaces.
     for (const noteLine of wrapWords(partialTotalNote, GRID_LEGEND_FS, maxLineWidth)) legendLines.push({ note: noteLine });
+  }
+  // stat 'mean' only comes from an aggregate that recorded campaign totals, not per-session values
+  // (see commandKindAggregate). The grid subtitle says bars are the median session, so these
+  // values must say what they are.
+  if ([withComp, withoutComp].some((c) => c && c.stat === 'mean')) {
+    for (const noteLine of wrapWords('per-session means, not medians (this campaign recorded totals only)', GRID_LEGEND_FS, maxLineWidth)) {
+      legendLines.push({ note: noteLine });
+    }
   }
 
   let legendY = cursor + GRID_LEGEND_FS + 2;
@@ -1298,6 +1304,14 @@ function wallClockPhrase(withMinutes, withoutMinutes, withGroup, withoutGroup, r
   return `median wall-clock ${w} vs ${wo} min (per-session range ${withRange} vs ${withoutRange} min; [breakdown](${breakdownLink}))`;
 }
 
+// "<DisplayName> · <model>". Schema 2 reads the model from provenance.model_resolved, the model the
+// campaign actually recorded; schema 1 keeps its fixed labels.
+function runtimeModelLabel(summary, runtimeId) {
+  return summary.schema === 2
+    ? `${RUNTIME_DISPLAY_NAME[runtimeId]} · ${provenanceValue(summary, 'model_resolved', runtimeId)}`
+    : RUNTIME_LABELS[runtimeId];
+}
+
 function buildKeyFactsBullet(summary) {
   const allGroups = RUNTIME_ORDER.flatMap(r => ARM_ORDER.map(a => findGroup(summary, r, a)));
   const atCeiling = allGroups.every(g => g.key_facts_match.matched === g.key_facts_match.of);
@@ -1312,7 +1326,7 @@ function buildKeyFactsBullet(summary) {
   const bits = RUNTIME_ORDER.map(r => {
     const gp = findGroup(summary, r, 'product');
     const gf = findGroup(summary, r, 'free');
-    return `${RUNTIME_LABELS[r]} reported the key facts correctly in ${fmtRatio(gp.key_facts_match)} sessions with kmp-test and ${fmtRatio(gf.key_facts_match)} without`;
+    return `${runtimeModelLabel(summary, r)} reported the key facts correctly in ${fmtRatio(gp.key_facts_match)} sessions with kmp-test and ${fmtRatio(gf.key_facts_match)} without`;
   });
   return bits.join('; ') + '.';
 }

@@ -233,6 +233,15 @@ describe('the committed evidence1-agentic-benchmark-2026-09-28 campaign', () => 
     expect(regenerated).toBe(committed);
   });
 
+  // The CLI's --check covers this grid only when run with --evidence=1, which also compares the
+  // root README block (now Evidence2's), so nothing else keeps this committed chart in step with
+  // the renderer.
+  it('regenerating metrics-grid.svg matches the committed file byte for byte (CRLF-normalized)', () => {
+    const committed = crlfNormalize(readFileSync(join(RUNS_DIR, 'metrics-grid.svg'), 'utf8'));
+    const regenerated = crlfNormalize(renderMetricsGridSvg(summary, costEstimate));
+    expect(regenerated).toBe(committed);
+  });
+
   // "Regenerating the README block matches what is committed in root README.md" and "every
   // relative link/image path in the README block resolves inside this one campaign directory" used
   // to live here, asserted against Evidence1's own data. Task B1/B5 (PR #537 closing pass) point the
@@ -1019,6 +1028,31 @@ describe('schema 2 (Evidence2): multi-runtime cost + reasoning effort', () => {
 
     expect(claudeBulletFlagged).toBe(claudeBulletUnflagged);
     expect(codexBulletFlagged).not.toBe(codexBulletUnflagged);
+  });
+
+  // The ceiling branch names no model, so only a non-ceiling schema-2 campaign reaches this
+  // fallback. Distinct fixture models prove the names come from provenance.model_resolved (what
+  // the campaign recorded, as the Scope line and scorecard already do), not from the fixed
+  // schema-1 labels, which happen to equal the real Evidence2 models.
+  it('the non-ceiling key-facts fallback names each runtime by provenance.model_resolved, not the fixed schema-1 labels', () => {
+    const summary = baseSummaryV2();
+    summary.provenance.model_resolved['claude-code'] = { values: ['claude-fixture-model'], mixed: false };
+    summary.provenance.model_resolved['codex-cli'] = { values: ['codex-fixture-model'], mixed: false };
+    summary.by_runtime_arm = summary.by_runtime_arm.map(g =>
+      g.runtime_id === 'codex-cli' && g.arm === 'free' ? { ...g, key_facts_match: { matched: 3, of: 4 } } : g
+    );
+    const costEstimate = baseCostEstimateV2();
+    costEstimate.runtimes['claude-code'].model = 'claude-fixture-model';
+    costEstimate.runtimes['codex-cli'].model = 'codex-fixture-model';
+    expect(validatePairing(summary, costEstimate)).toEqual([]);
+
+    const [bullet1] = buildBullets(summary, costEstimate, FAKE_RUNS_PATH);
+    expect(bullet1).toBe(
+      'Claude Code · claude-fixture-model reported the key facts correctly in 4/4 sessions with kmp-test and 4/4 without; ' +
+      'Codex CLI · codex-fixture-model reported the key facts correctly in 4/4 sessions with kmp-test and 3/4 without.'
+    );
+    expect(bullet1).not.toContain('claude-sonnet-5');
+    expect(bullet1).not.toContain('gpt-5.6-terra');
   });
 });
 

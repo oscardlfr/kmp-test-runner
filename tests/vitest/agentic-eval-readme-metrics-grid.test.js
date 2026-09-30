@@ -637,6 +637,32 @@ describe('metrics-grid.svg (WO-C13 residual): aggregate-sourced shell-command to
     // complete and prints normally.
     expect(section).toContain('>1<');
   });
+
+  // The aggregate records only campaign totals, so its per-type values are total / n: means. The
+  // grid subtitle says bars are the median session, so the row must say what these values are.
+  it('labels aggregate-sourced shell-command values as per-session means, not medians', () => {
+    const summary = v2Summary();
+    for (const cell of summary.cells) {
+      if (cell.runtime_id === 'codex-cli' && cell.arm === 'product') delete cell.command_kind_counts;
+    }
+    const layout = computeMetricsGridLayout(summary, v2CostEstimate());
+    const svg = renderMetricsGridSvg(summary, v2CostEstimate());
+    checkNoOverlapLayout(layout);
+
+    const codexShellStart = svg.indexOf('Shell commands by kind', svg.indexOf('Codex CLI'));
+    const codexTokensStart = svg.indexOf('Tokens per session, by type', codexShellStart);
+    const section = svg.slice(codexShellStart, codexTokensStart);
+    expect(section).toContain('per-session means, not medians');
+
+    // Claude's shell row still has per-cell counts in both lanes: medians, so no means note.
+    const claudeShellStart = svg.indexOf('Shell commands by kind');
+    const claudeTokensStart = svg.indexOf('Tokens per session, by type', claudeShellStart);
+    expect(svg.slice(claudeShellStart, claudeTokensStart)).not.toContain('per-session means');
+  });
+
+  it('adds no means note when every lane has per-cell command_kind_counts', () => {
+    expect(renderMetricsGridSvg(v2Summary(), v2CostEstimate())).not.toContain('per-session means');
+  });
 });
 
 // WO-C15: composition-row legend lines were text-only ("uncached input 9 vs 9 ..."), so a reader
