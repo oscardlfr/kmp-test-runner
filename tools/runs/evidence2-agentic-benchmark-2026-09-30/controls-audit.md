@@ -2,15 +2,47 @@
 
 Date: 2026-09-30. Harness commit: `c15aae3` (full SHA
 `c15aae3daf1ff9428c3d88e336047d3baf042717`), read via `git show c15aae3:<path>` from the
-`agentic-eval-codex-runtime` checkout (branch `codex/agentic-eval-codex-runtime`). No repository
-file was modified by this audit; this document and the `README.md` link update are the only
-changes this pass makes.
+`agentic-eval-codex-runtime` checkout (branch `codex/agentic-eval-codex-runtime`). The audit is
+read-only: it changed no harness, product, or campaign file.
 
 This is the full backing detail for the "Threats to validity" section of the main evidence document
 (`README.md` in this directory): read this file for every citation and the complete per-parameter
 breakdown; read the main document for the summary a reader needs to correctly bound this benchmark's
 claims. Structure and method mirror
 [Evidence1's own controls audit](../evidence1-agentic-benchmark-2026-09-28/controls-audit.md).
+
+## Summary
+
+**The campaign ran as pre-registered, and no control was set differently for the with-kmp-test
+and without-kmp-test arms of either agent.** Every claim below was checked against all 16 session
+records, not a sample.
+
+- **Complete and clean.** 16 of 16 sessions were accepted and none was truncated (the longest took
+  415 s against a 1,800 s cap). The frozen infra-flake classifier flagged 0 of 16, and its logic
+  hash was re-verified by running it. The first-mover alternated between the two agents on all 8
+  session pairs (Note H3).
+- **Same conditions in both arms.** Within each agent, these are identical on every session,
+  whichever arm it ran in: model, reasoning effort (`high` for both agents), CLI version,
+  invocation flags, timeouts, execution profile, scenario prompt, product version and commit,
+  scenario commit, Gradle settings, and VM. The arms differ only in the treatment: the kmp-test
+  skill and its delivery, the prompt line that asks for it, and the five `KMP_EVAL_*` variables the
+  free arm strips by design (Note F7).
+- **"Not recorded" does not mean missing from the run.** Those rows are either values fixed once
+  in code or in the campaign manifest and applied to every session (flags, timeouts, retry policy,
+  hooks, no turn cap), or things the vendor CLIs do not expose in this setup or do not let a
+  harness pin (sampling settings, the model snapshot behind an alias, the auth mode,
+  provider-reported cost). None is set per arm. The two that can drift during a campaign, the
+  served snapshot and sampling randomness, are spread across both arms by the interleaved
+  pre-registered order. Host quiescence during the live window is an operational commitment backed
+  by the operator's log, not a machine record (§I).
+- **Claude vs Codex is descriptive only.** The agents differ by construction in tool surface, in
+  how effort is set, in how turns and tool calls are counted, and in the token detail their usage
+  events report for the cost estimate. §2 lists each difference so none is read as a capability
+  finding.
+- **Two notes concern documentation only.** A Codex version-pin discrepancy between two documents
+  has since been reconciled in the provisioning README (§2 item 4). A source comment in the
+  infra-flake classifier still cites the earlier 8 GiB VM, with no effect on classification (§2
+  item 6).
 
 ## 0. Provenance and scope
 
@@ -54,14 +86,13 @@ claims. Structure and method mirror
   `public/` staging directory and `public.publication.ready.json` (schema 1, an artifact manifest of
   32 file hashes) contain only per-cell `record.json`/`audit.json` pairs, no campaign manifest, no
   `transcript.jsonl`, matching Evidence1's own finding. A value recoverable only from `manifest.json`
-  is marked `[manifest]` below, same convention as Evidence1's audit. Separately, and out of scope
-  for a *controls* audit but worth flagging once: at this staging snapshot, `public/claude-code-0/
-  record.json` is byte-identical to its `private/` counterpart, including the
-  `resolved_kmp_test_executable_path` field, which is an absolute host path. D10's own sanitization
-  pass ("machine-specific paths genericized") does not appear to have run yet on this field as of
-  this snapshot — flagged for whoever runs the actual publication step, not fixed here (out of this
-  audit's scope, and this document does not reproduce the path itself, per the privacy constraint
-  on this audit).
+  is marked `[manifest]` below, same convention as Evidence1's audit. At the staging snapshot this
+  audit read, `public/claude-code-0/record.json` was byte-identical to its `private/` counterpart,
+  including `resolved_kmp_test_executable_path`, an absolute host path that D10's sanitization
+  ("machine-specific paths genericized") had not yet rewritten. This document does not reproduce
+  the path. The bundle finally published in this directory contains no per-cell records at all
+  (only the campaign summary, the cost estimate, the two charts, and three documents), so that
+  field was never published, and `tools/decouple-audit.mjs` passes on the bundle.
 
 ### Classification legend
 
@@ -252,16 +283,21 @@ assignment.
    tooltip: input tokens are either plain input, cached input, or a cache write, and Codex's usage
    event never reports which) — so any Codex cost figure is a *range* (input-rate to cache-write-rate
    bound), never a single point estimate, while Claude's is a single figure.
-4. **The Codex base-vs-launch version-pin gap is a real, currently-unreconciled discrepancy between
-   two documents, not a live control failure.** `tools/evidence1/provisioning/README.md:26` and that
+4. **The Codex base-vs-launch version-pin gap was a discrepancy between two documents, not a
+   control failure.** `tools/evidence1/provisioning/README.md:26` and that
    same directory's `evidence1-windows-hyperv-e2e-v1.json` toolchain entry both state the
    provisioned/checkpointed base image ships Codex CLI `0.153.4`. The harness's own launch script
    (`evidence1-dual-condition-canary-launch.ps1:21-22,329-330`) pins and expects `0.154.0`, and all 8
    Codex cells in this campaign in fact ran `0.154.0` (`agent_runtime.cli_version`, §B above) —
    consistent with the launch pin, not the provisioning README. Nothing in the campaign itself is
    uncontrolled by this (all 8 Codex cells agree on `0.154.0`), but the two documents disagree about
-   what "the" pinned Codex version is, and this audit found no third file reconciling them (e.g. an
-   in-VM upgrade record). Flagged for whoever next touches the provisioning docs.
+   what "the" pinned Codex version is, and at `c15aae3` this audit found no third file reconciling
+   them. **Reconciled after this audit**, in the harness version published with this bundle: the
+   provisioning README now documents it under "Known base-vs-launch gap". The VM was provisioned
+   with `0.153.4` and upgraded in place to `0.154.0` by
+   `docs/audits/evidence1-hyperv-upgrade-canonical-codex-cli-direct.ps1`, and
+   `tests/pester/Evidence1-Codex-Provisioning-Launch-Pin-Drift-Guard.Tests.ps1` guards the launch
+   pin. Recording that upgrade in a new approved-inputs version is tracked in `BACKLOG.md`.
 5. **The `test_count` construct caveat (ground truth is `individual_total`, 2 methods × 2 build
    variants = 4 executions).** The scenario's target module has exactly 2 `@Test` methods, each run
    under 2 Gradle build variants (`testDemoDebugUnitTest`, `testProdDebugUnitTest`), for 4 total test
@@ -282,12 +318,12 @@ assignment.
    `startup_memory_bytes: 12884901888`) before any canary or campaign session ran. The classifier's
    own two regexes are unaffected by this (they match transcript text, not VM specs), and this
    audit's live re-run against the real campaign (§I above) found zero daemon-disappeared or jarfs
-   signatures — but the comment itself is stale relative to the config it describes and should be
-   updated if that file is touched again.
-7. **Publication-staging path leak (out of scope for this audit's own fix, noted once).** As stated
-   in §0, the pre-publication `public/` copy of at least one cell's `record.json` still carries an
-   absolute host path in `resolved_kmp_test_executable_path`, unsanitized, at the snapshot this audit
-   read. Not reproduced here; flagged for the actual publication step (D10).
+   signatures. The D9 freeze hash covers only the two signatures and `classifyTranscriptText`, not
+   comments, so the stale figure has no effect on classification or on the frozen hash.
+7. **Staging-copy host path, never published.** As stated in §0, the pre-publication `public/`
+   copy of at least one cell's `record.json` carried an absolute host path in
+   `resolved_kmp_test_executable_path` at the snapshot this audit read. The published bundle
+   contains no per-cell records, so the path was never published.
 8. **Inherited, not re-audited in depth here.** Evidence1's own controls audit raised several items
    this campaign's design does not specifically target: Codex's `model_resolved` being an echo
    rather than an independent observation (§A above); no dated model-snapshot pin for either runtime
