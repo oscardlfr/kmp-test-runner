@@ -3455,6 +3455,61 @@ All five gaps shipped in v0.5.2 (PRs #63 / #64 / #65 / #66 / #67). One scope red
 
 ## QUEUED — post-v0.3.4 ideas (newest first)
 
+### 💡 IDEA — 6 Evidence1 Pester files read sources through a hardcoded main-checkout path
+
+**Status: IDEA, no CLI milestone.** Surfaced 2026-09-30 while closing PR #537: `git grep -lF
+"C:\kmp-eval\agentic-eval-codex-runtime" -- tests/pester` finds 6 files that hardcode the main
+checkout's absolute path instead of deriving it from where the test file itself lives:
+- `tests/pester/Evidence1-Guest-Disk-Cleanup-Bundle.Tests.ps1`
+- `tests/pester/Evidence1-Guest-Disk-Inventory-Bundle.Tests.ps1`
+- `tests/pester/Evidence1-Hyperv-Inspect-Vhd-Chain-Direct.Tests.ps1`
+- `tests/pester/Evidence1-Hyperv-Stat-Guest-File-Direct.Tests.ps1`
+- `tests/pester/Evidence1-Run-Disk-Space-Guards.Tests.ps1` (2 occurrences: a module import and a
+  direct `Get-Content` of `evidence1-run.ps1`)
+- `tests/pester/Evidence1-Run-Full-Campaign-Integration.Tests.ps1`
+
+Each hardcodes `$script:AuditsRoot` (or, in `Evidence1-Run-Disk-Space-Guards.Tests.ps1`, the
+`evidence1-run.ps1` source path and a `harness_dir` fixture value) as the literal
+`C:\kmp-eval\agentic-eval-codex-runtime\...` instead of a path derived from `$PSScriptRoot`. This
+means the suite only runs correctly from that one checkout location -- a worktree, a clone at a
+different path, or a renamed directory silently breaks these 6 files instead of just working.
+
+**Proposal:** switch each hardcoded root to `$PSScriptRoot`-derived paths (e.g.
+`(Resolve-Path (Join-Path $PSScriptRoot '..' '..')).Path` or the equivalent already used elsewhere in
+the Pester suite), so these tests run correctly regardless of checkout location.
+
+**Why captured here:** found during the closing publication pass; fixing 6 files across the Pester
+suite is real work with its own verification, not a one-line tweak to fold into that pass.
+
+---
+
+### 💡 IDEA — Define count-field ground truth independently of the product's own counting convention
+
+**Status: IDEA, no CLI milestone.** Surfaced 2026-09-30 auditing Evidence2's campaign
+`48458826-2386-4e4d-a93f-01641f44253c`: the `coverage-threshold-failure-v2` scenario's target module
+(`:core:domain`) has exactly 2 `@Test` methods, which run in 2 Gradle build variants
+(`testDemoDebugUnitTest`, `testProdDebugUnitTest`), for 4 total test executions. D5's grading checks
+the agent-reported `test_count` field against kmp-test's own `individual_total` field (which counts
+executions, i.e. 4), while the scenario prompt asks for "the number of individual test methods that
+ran" -- wording a reader can equally reasonably parse as the count of distinct methods (2). All 8
+free-arm sessions in that campaign (both runtimes) reported `test_count`/`passed` as 2, a defensible
+reading of the prompt under that ambiguity, not a wrong answer -- see the evidence doc's own
+"Full-answer match: why the gap is definitional" section for the full per-field breakdown. The
+product arm never hits this ambiguity because a kmp-test invocation hands the agent `test_count`
+directly, already resolved to the product's own convention.
+
+**Proposal:** for any future scenario whose ground truth includes a count field, define that field's
+expected value independently of which counting convention (distinct test methods vs. total
+executions across build variants) the product under measurement happens to use -- either by making
+the prompt's wording unambiguous about which quantity is being asked for, or by grading against a
+field that cannot be read either way.
+
+**Why captured here:** the ambiguity is in the scenario/grading design, not any one campaign's data;
+worth fixing once for every future scenario that counts test methods, rather than re-discovering it
+per campaign.
+
+---
+
 ### 💡 IDEA — Pin Codex CLI 0.154.0 in approved-inputs v3 and profile e2e-v2
 
 **Status: IDEA, no CLI milestone.** The live campaign launch path pins Codex CLI 0.154.0
@@ -3534,16 +3589,6 @@ the post-campaign `#537` publication work instead.
 **Why captured here:** parked 2026-09-30 so this slot doesn't get silently dropped once the
 post-campaign publication work lands; each item cites its own concrete gap and fix shape so it
 stays independently actionable later.
-
----
-
-### 💡 IDEA — VmReady disk-space guard and AutomaticStopAction=ShutDown change (deferred, post-campaign hardening)
-
-**Status: IDEA, no CLI milestone.** Amendment A6 (2026-09-29) traced the harness's ~12 GiB host-disk gap to Hyper-V's `AutomaticStopAction=Save` default (`New-VM`'s own default, never overridden by this repo) -- a VM in the Saved state reserves a VMRS save-state file sized exactly to `MemoryStartup`. The A6 addendum resolved the immediate host risk directly (the user freed host space, from an order of magnitude below A6's own worst-case bound to well above it) rather than via a code change, since no campaign data depends on either fix. A principled `VmReady` guard (drafted mid-session as WO-A7: fail closed unless the volume holding the VM has free space >= max(15 GiB, the leaf disk's unallocated remainder + 3 GiB)) and switching the VM's `AutomaticStopAction` to `ShutDown` (avoiding the Save-state reservation entirely) were both deferred to a post-campaign publication-hardening work order.
-
-**Proposal:** implement the deferred `VmReady` guard and the `AutomaticStopAction=ShutDown` change in the post-campaign hardening pass, per amendment A6 / A6-addendum in `docs/audits/evidence2-preregistration.md`.
-
-**Why captured here:** so the deferral doesn't get silently forgotten once the campaign itself is done -- the root cause (the Save-state VMRS reservation) is real and will recur for any future re-provision unless addressed.
 
 ---
 
