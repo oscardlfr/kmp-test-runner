@@ -40,6 +40,7 @@ import {
   PROVIDER_EVIDENCE_STATUS_VALUES,
   TASK_OUTCOME_MISMATCH_FIELD_VALUES,
   outcomeAssessmentKeysFor,
+  taskOutcomeMismatchFieldValuesFor,
 } from './outcome-assessment-contract.mjs';
 
 export {
@@ -790,7 +791,7 @@ function validateTokens(tokens, errors) {
  * canonical mismatch field names and an unexpected-key count; schema 1 remains valid unchanged.
  * Called only once `run.
  * outcome_assessment` is already confirmed to be a non-null, non-array object by the caller. */
-function validateOutcomeAssessment(obj, errors) {
+function validateOutcomeAssessment(obj, errors, family) {
   const expectedKeys = outcomeAssessmentKeysFor(obj.schema);
   const allowedKeys = new Set(expectedKeys ?? []);
   const actualKeys = Object.keys(obj);
@@ -840,9 +841,12 @@ function validateOutcomeAssessment(obj, errors) {
       if (!Array.isArray(mismatchFields)) {
         errors.push({ field: 'outcome_assessment.task_outcome_mismatch_fields', message: 'must be an array when task_outcome_matched is boolean' });
       } else {
-        const canonical = TASK_OUTCOME_MISMATCH_FIELD_VALUES.filter((field) => mismatchFields.includes(field));
+        // The record's own family decides which closed list applies (the multi-module-tests family has
+        // its own four names); every other family keeps TASK_OUTCOME_MISMATCH_FIELD_VALUES exactly.
+        const fieldValues = taskOutcomeMismatchFieldValuesFor(family);
+        const canonical = fieldValues.filter((field) => mismatchFields.includes(field));
         const isCanonical = mismatchFields.length === new Set(mismatchFields).size
-          && mismatchFields.every((field) => TASK_OUTCOME_MISMATCH_FIELD_VALUES.includes(field))
+          && mismatchFields.every((field) => fieldValues.includes(field))
           && JSON.stringify(mismatchFields) === JSON.stringify(canonical);
         if (!isCanonical || (obj.task_outcome_matched === true && mismatchFields.length !== 0)
           || (obj.task_outcome_matched === false && mismatchFields.length === 0)) {
@@ -1274,7 +1278,7 @@ export function validateRun(run) {
       if (run.outcome_assessment == null || typeof run.outcome_assessment !== 'object' || Array.isArray(run.outcome_assessment)) {
         errors.push({ field: 'outcome_assessment', message: 'required (non-null object) for a schema:8+ run_kind:scenario record' });
       } else {
-        validateOutcomeAssessment(run.outcome_assessment, errors);
+        validateOutcomeAssessment(run.outcome_assessment, errors, run.family);
       }
     } else if (run.outcome_assessment != null) {
       errors.push({ field: 'outcome_assessment', message: `must be null for run_kind "${run.run_kind}" -- outcome_assessment only applies to scenario records` });

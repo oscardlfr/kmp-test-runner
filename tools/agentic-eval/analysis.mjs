@@ -50,7 +50,7 @@ import {
   PRODUCT_USAGE_MODE_VALUES,
 } from './product-access.mjs';
 import { emptyOutcomeObservabilitySummary } from './coverage-gate-observability.mjs';
-import { TASK_OUTCOME_MISMATCH_FIELD_VALUES } from './outcome-assessment-contract.mjs';
+import { TASK_OUTCOME_MISMATCH_FIELD_VALUES, taskOutcomeMismatchFieldValuesFor } from './outcome-assessment-contract.mjs';
 
 // v1 -> v2 (Section F, agentic-eval-runtime-neutral-records-v1): per-run entries and group
 // summaries both gained agent_runtime/execution_profile/skill_observation/usage reporting fields,
@@ -318,7 +318,7 @@ function fieldAppliesToDeclaredOutcome(field, declaredOutcomeKind) {
  * mismatch names. `not-applicable` describes fields the declared outcome intentionally omits;
  * `not-observed` is reserved for historical/unevaluable claims. No expected or declared values are
  * copied into analysis output. */
-export function buildTaskFieldCorrectness(outcomeAssessment, finalAnswerBlock) {
+export function buildTaskFieldCorrectness(outcomeAssessment, finalAnswerBlock, family) {
   const result = {};
   const assessmentAvailable = outcomeAssessment?.schema >= 2
     && typeof outcomeAssessment.task_outcome_matched === 'boolean'
@@ -327,7 +327,9 @@ export function buildTaskFieldCorrectness(outcomeAssessment, finalAnswerBlock) {
   const declaredOutcomeKind = typeof finalAnswerBlock?.declared_outcome_kind === 'string'
     ? finalAnswerBlock.declared_outcome_kind
     : null;
-  for (const field of TASK_OUTCOME_MISMATCH_FIELD_VALUES) {
+  // The record's family decides the field list: the multi-module-tests family has its own four names, every
+  // other family (and a call that passes no family) keeps exactly today's eight.
+  for (const field of taskOutcomeMismatchFieldValuesFor(family)) {
     if (!assessmentAvailable) result[field] = 'not-observed';
     else if (mismatchFields.has(field)) result[field] = 'mismatched';
     else if (declaredOutcomeKind != null && !fieldAppliesToDeclaredOutcome(field, declaredOutcomeKind)) result[field] = 'not-applicable';
@@ -630,7 +632,7 @@ export function analyzeRunRecord(record, sidecar) {
   const task_outcome_unexpected_key_count = hasOutcomeMismatchDiagnostics
     ? outcomeAssessment.task_outcome_unexpected_key_count
     : null;
-  const task_field_correctness = buildTaskFieldCorrectness(outcomeAssessment, finalAnswerBlock);
+  const task_field_correctness = buildTaskFieldCorrectness(outcomeAssessment, finalAnswerBlock, record.family);
   const claim_fingerprint = buildClaimFingerprint(outcomeAssessment, finalAnswerBlock, task_field_correctness);
   // task_outcome_available_ms (Stage B3 review-round correction): a TIME, never an event index --
   // first_useful_signal_event's own contract is specifically correlated to a real user.tool_result

@@ -1377,7 +1377,8 @@ function buildRunRecord({
           gradeResult.firstUsefulSignalEventIndex != null
             ? msSinceOrigin(observation.timing.receiptNsByEventIndex.get(gradeResult.firstUsefulSignalEventIndex), observation.process.spawnHrtimeNs)
             : null,
-          gradeResult.firstUsefulSignalEventIndex == null ? 'no correlated authoritative outcome event found' : undefined,
+          // A family with no authoritative terminal evidence (multi-module-tests) names that in the reason.
+          gradeResult.firstUsefulSignalEventIndex == null ? (gradeResult.notApplicableReason ?? 'no correlated authoritative outcome event found') : undefined,
         )
       : nullableMetric(null, `${runKind} run -- no first-useful-signal predicate applies`),
     first_useful_signal_event: isScenario && gradeResult.firstUsefulSignalEventIndex != null
