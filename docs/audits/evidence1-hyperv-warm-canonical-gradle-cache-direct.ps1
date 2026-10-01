@@ -8,7 +8,8 @@ param(
   [Parameter(Mandatory)][string]$AuthorizationPhrase,
   [string]$SourceDir='C:\kmp-eval\NowInAndroid-evidence1-coverage-threshold-windows-stageb-v1',
   [string]$PrivateStatusRoot='C:\kmp-eval\scratch\evidence1-gradle-cache',
-  [int]$TimeoutMinutes=20
+  [int]$TimeoutMinutes=20,
+  [string]$TaskList=''
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
@@ -16,9 +17,11 @@ Import-Module (Join-Path $PSScriptRoot 'evidence1-vm-identity-contract.psm1') -F
 
 $sourceCommit='7d45eae4f8720a0c77f507712ba2437ff974b6ed'
 $tasks=@(':core:domain:test',':core:domain:createDemoDebugUnitTestCoverageReport',':core:domain:createProdDebugUnitTestCoverageReport')
+# A scenario brings its own warm list as ONE comma-separated string (a single string avoids the array-binding problem of powershell -File).
+if($TaskList){$tasks=@($TaskList-split','|ForEach-Object{$_.Trim()}|Where-Object{$_});if($tasks.Count-eq0-or@($tasks|Where-Object{$_-cnotmatch'^(:[A-Za-z0-9_-]+)+$'}).Count-ne0){throw 'gradle_cache_task_list_invalid'}}
 if($OperationId-cnotmatch'^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$'){throw 'gradle_cache_operation_id_invalid'}
 if($AuthorizationPhrase-cne'authorize bounded canonical gradle cache warm and offline certification'){throw 'gradle_cache_authorization_required'}
-if($TimeoutMinutes-lt10-or$TimeoutMinutes-gt30){throw 'gradle_cache_timeout_invalid'}
+if($TimeoutMinutes-lt10-or$TimeoutMinutes-gt50){throw 'gradle_cache_timeout_invalid'}
 if(-not[IO.Path]::GetFullPath($SourceDir).Equals('C:\kmp-eval\NowInAndroid-evidence1-coverage-threshold-windows-stageb-v1',[StringComparison]::OrdinalIgnoreCase)){throw 'gradle_cache_source_path_invalid'}
 $identity=Get-Evidence1CanonicalE2EVmIdentity -ProfilePath $ProfilePath -CreatedInspectionReceiptPath $CreatedInspectionReceiptPath -GuestCredentialPath $GuestCredentialPath
 $root=[IO.Path]::GetFullPath($PrivateStatusRoot).TrimEnd('\');if(-not$root.Equals('C:\kmp-eval\scratch\evidence1-gradle-cache',[StringComparison]::OrdinalIgnoreCase)){throw 'gradle_cache_private_root_invalid'}
