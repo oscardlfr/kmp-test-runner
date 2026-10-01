@@ -197,8 +197,15 @@ const RUN_CANONICAL_FIELDS_V9 = [
 // Optional schema-9 fields: recorded when the harness has the evidence, never required, hence never
 // canonical -- a record without one (every record that predates it) stays valid, and on schema 9 none
 // is an "unrecognized field". agent_state is the content-free before/after listing
-// of the agent's config directory (agent-state.mjs); validateRun checks its shape when present.
-const OPTIONAL_RUN_FIELDS_V9 = ['agent_state'];
+// of the agent's config directory (agent-state.mjs); output_bytes_kind says what output_bytes measures
+// (OUTPUT_BYTES_KIND_BY_RUNTIME below). validateRun checks the shape of each when present.
+const OPTIONAL_RUN_FIELDS_V9 = ['agent_state', 'output_bytes_kind'];
+
+// What each runtime's output_bytes measures: the tool results returned to the model (claude-code), or the
+// command output as the runtime logged it (codex-cli, which may shorten what the model reads). The record
+// states it, so a reader never has to know which runtime's bytes they hold.
+export const OUTPUT_BYTES_KIND_BY_RUNTIME = Object.freeze({ 'claude-code': 'tool_results', 'codex-cli': 'command_output' });
+const OUTPUT_BYTES_KIND_VALUES = Object.freeze(Object.values(OUTPUT_BYTES_KIND_BY_RUNTIME));
 
 // Section 9.5's exact closed vocabularies -- exported so graders.mjs (the sole producer) and this
 // file's own validator can never independently drift on what values are legal.
@@ -936,6 +943,21 @@ function validateAgentState(state, errors) {
   }
 }
 
+// output_bytes_kind (optional, schema 9): one of the two vocabulary values, and the one the record's own
+// runtime measures -- a claude-code record cannot claim command output, nor a codex-cli record tool
+// results, because the metrics grid decides whether to draw a runtime's tool-output lanes from this label.
+function validateOutputBytesKind(run, errors) {
+  const kind = run.output_bytes_kind;
+  if (!OUTPUT_BYTES_KIND_VALUES.includes(kind)) {
+    errors.push({ field: 'output_bytes_kind', message: `must be one of ${OUTPUT_BYTES_KIND_VALUES.join('|')}` });
+    return;
+  }
+  const runtimeId = isPlainObjectLike(run.agent_runtime) ? run.agent_runtime.runtime_id : undefined;
+  if (Object.hasOwn(OUTPUT_BYTES_KIND_BY_RUNTIME, runtimeId) && OUTPUT_BYTES_KIND_BY_RUNTIME[runtimeId] !== kind) {
+    errors.push({ field: 'output_bytes_kind', message: `must be "${OUTPUT_BYTES_KIND_BY_RUNTIME[runtimeId]}" for runtime ${runtimeId}` });
+  }
+}
+
 export function validateRun(run) {
   const errors = [];
   const warnings = [];
@@ -957,6 +979,7 @@ export function validateRun(run) {
   const optionalFields = run.schema === 9 ? OPTIONAL_RUN_FIELDS_V9 : [];
   for (const k of keys) if (!canonicalFields.includes(k) && !optionalFields.includes(k)) warnings.push({ field: k, message: 'unrecognized field' });
   if (run.schema === 9 && keys.has('agent_state')) validateAgentState(run.agent_state, errors);
+  if (run.schema === 9 && keys.has('output_bytes_kind')) validateOutputBytesKind(run, errors);
 
   if (typeof run.run_id !== 'string' || run.run_id.length === 0) errors.push({ field: 'run_id', message: 'must be a non-empty string' });
   if (!RUN_KIND_VALUES.includes(run.run_kind)) errors.push({ field: 'run_kind', message: `must be one of ${RUN_KIND_VALUES.join('|')}` });

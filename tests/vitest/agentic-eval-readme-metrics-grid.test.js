@@ -8,7 +8,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   computeMetricsGridLayout, renderMetricsGridSvg, costMetric, loadSummary, loadCostEstimate,
-  computeScorecardLayout, buildBullets,
+  computeScorecardLayout, buildBullets, PAD,
 } from '../../tools/agentic-eval/readme-evidence.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -907,5 +907,65 @@ describe('metrics-grid.svg (Evidence2 erratum E6): Codex tool-output lanes', () 
     for (const cell of summary.cells) if (cell.runtime_id === 'claude-code') cell.output_bytes_kind = 'tool_result';
     const band = toolOutputBand(computeMetricsGridLayout(summary, costEstimate), 0);
     expect(band.filter((i) => i.kind === 'bar').length).toBe(2);
+  });
+
+  // Codex may shorten a command's output before the model reads it (tool_output_token_limit), so once its
+  // lanes are drawn the row says what the bytes are. The caption goes through the same mechanism as the Turns
+  // row's: word-wrapped gridRowCaption lines under the lanes.
+  const CODEX_CAPTION = 'Codex CLI: command output as logged; Codex may shorten what the model reads.';
+  const captionOf = (band) => band.filter((i) => i.role === 'gridRowCaption').map((i) => i.text).join(' ');
+  const measuredCodex = () => {
+    const { summary, costEstimate } = evidence2();
+    for (const cell of summary.cells) if (cell.runtime_id === 'codex-cli') cell.output_bytes_kind = 'command_output';
+    return { summary, costEstimate };
+  };
+
+  it('the drawn Codex lanes carry the caption: command output as logged, which Codex may shorten before the model reads it', () => {
+    const { summary, costEstimate } = measuredCodex();
+    expect(captionOf(toolOutputBand(computeMetricsGridLayout(summary, costEstimate), 1))).toBe(CODEX_CAPTION);
+  });
+
+  it('the caption sits below both lanes, never over them', () => {
+    const { summary, costEstimate } = measuredCodex();
+    const band = toolOutputBand(computeMetricsGridLayout(summary, costEstimate), 1);
+    const lastLaneY = Math.max(...band.filter((i) => i.role === 'gridLaneLabel').map((i) => i.y));
+    const captionLines = band.filter((i) => i.role === 'gridRowCaption');
+    expect(captionLines.length).toBeGreaterThan(0);
+    for (const line of captionLines) expect(line.y).toBeGreaterThan(lastLaneY);
+  });
+
+  it('every caption line stays inside the Codex column', () => {
+    const { summary, costEstimate } = measuredCodex();
+    const layout = computeMetricsGridLayout(summary, costEstimate);
+    for (const line of toolOutputBand(layout, 1).filter((i) => i.role === 'gridRowCaption')) {
+      expect(line.x + line.text.length * line.fontSize * 0.6).toBeLessThanOrEqual(layout.width - PAD);
+    }
+  });
+
+  it('the Claude tool-output row carries no caption: it measures the tool results, as it always did', () => {
+    const { summary, costEstimate } = measuredCodex();
+    expect(captionOf(toolOutputBand(computeMetricsGridLayout(summary, costEstimate), 0))).toBe('');
+  });
+
+  it('no caption while the Codex lanes are not drawn: the Evidence2 shape says "not recorded for Codex CLI" and nothing else', () => {
+    const { summary, costEstimate } = evidence2();
+    expect(captionOf(toolOutputBand(computeMetricsGridLayout(summary, costEstimate), 1))).toBe('');
+  });
+
+  it('one Codex cell without the kind keeps the lanes unavailable and the caption off', () => {
+    const { summary, costEstimate } = evidence2();
+    const codexCells = summary.cells.filter((c) => c.runtime_id === 'codex-cli');
+    for (const cell of codexCells.slice(1)) cell.output_bytes_kind = 'command_output';
+    expect(captionOf(toolOutputBand(computeMetricsGridLayout(summary, costEstimate), 1))).toBe('');
+  });
+
+  it('the caption reaches the svg', () => {
+    const { summary, costEstimate } = measuredCodex();
+    expect(renderMetricsGridSvg(summary, costEstimate)).toContain('Codex CLI: command output as logged;');
+  });
+
+  it('Evidence2\'s own grid is unchanged: no caption text anywhere in it', () => {
+    const { summary, costEstimate } = evidence2();
+    expect(renderMetricsGridSvg(summary, costEstimate)).not.toContain('command output as logged');
   });
 });

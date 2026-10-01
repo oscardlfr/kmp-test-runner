@@ -49,7 +49,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 
-import { LATEST_RUN_SCHEMA, SUPPORTED_RUN_SCHEMAS, validateRun, validateScenario, validateTriggerQueries } from './schemas.mjs';
+import { LATEST_RUN_SCHEMA, SUPPORTED_RUN_SCHEMAS, OUTPUT_BYTES_KIND_BY_RUNTIME, validateRun, validateScenario, validateTriggerQueries } from './schemas.mjs';
 import { materializeCalibrationProject, materializeScenarioProject, removeScenarioWorktree, realpath } from './materialize.mjs';
 import { msSinceOrigin, fingerprintNames, canonicalNamesKey, selectShellAttempts } from './runtimes/contract.mjs';
 import { acquireSharedEvalResources, runSingleCondition, runScenarioMatrix, runScenarioCampaign, reportCleanupFailures } from './matrix-runner.mjs';
@@ -1462,6 +1462,11 @@ function buildRunRecord({
     test_invocations_total: isScenario ? nullableMetric(gradeResult.testInvocationsTotal) : nullableMetric(null, `not tracked for ${runKind} runs`),
     retries: isScenario ? nullableMetric(gradeResult.retries) : nullableMetric(null, `not tracked for ${runKind} runs`),
     output_bytes: nullableMetric(observation.byteMetrics.outputBytes),
+    // What output_bytes measures, stated by the record (optional schema-9 field, not canonical): the tool
+    // results returned to the model for claude-code, the command output as logged for codex-cli (which may
+    // shorten what the model reads). Labelled from the table validateRun checks it against.
+    ...(Object.hasOwn(OUTPUT_BYTES_KIND_BY_RUNTIME, selection.runtime.runtime_id)
+      ? { output_bytes_kind: OUTPUT_BYTES_KIND_BY_RUNTIME[selection.runtime.runtime_id] } : {}),
     stream_json_bytes: nullableMetric(observation.byteMetrics.streamJsonBytes),
     human_interventions: nullableMetric(0),
     terminated: observation.process.terminated,

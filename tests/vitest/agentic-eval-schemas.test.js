@@ -15,6 +15,7 @@ import {
   HARD_PARTITION_FIELDS,
   CURRENT_AGGREGATE_SCHEMA,
   canonicalStructuredValue,
+  OUTPUT_BYTES_KIND_BY_RUNTIME,
 } from '../../tools/agentic-eval/schemas.mjs';
 import { GRADING_CHECK_NAMES } from '../../tools/agentic-eval/graders.mjs';
 import { canonicalJsonSha256 } from '../../tools/agentic-eval/canonical-json.mjs';
@@ -2506,6 +2507,64 @@ describe('schema v9 (eval-v2 recording fields, design.md (d)) -- reasoning effor
     it('agent_state is not a canonical field: RUN_CANONICAL_FIELDS for schema 9 never listed it, so its absence is never a missing-field error', () => {
       const { agent_state: _absent, ...without } = v9Base({ agent_state: UNLISTED });
       expect(validateRun(without).errors.some((e) => e.field === 'agent_state')).toBe(false);
+    });
+  });
+
+  // output_bytes_kind: says what the record's output_bytes measures -- the tool results returned to the
+  // model (claude-code) or the command output as logged (codex-cli). Like agent_state it is an OPTIONAL
+  // schema-9 field: not canonical, no schema bump, validated when present, and a record without it
+  // (every record that predates it) stays valid.
+  describe('output_bytes_kind -- optional, validated when present, never an unrecognized-field warning on schema 9', () => {
+    const forRuntime = (runtimeId, overrides = {}) => {
+      const base = v9Base();
+      return v9Base({ agent_runtime: { ...base.agent_runtime, runtime_id: runtimeId }, ...overrides });
+    };
+    const kindErrors = (record) => validateRun(record).errors.filter((e) => e.field === 'output_bytes_kind');
+
+    it('GREEN: a schema-9 record without it validates cleanly, with no warning (the Evidence2 shape)', () => {
+      expect(validateRun(v9Base())).toEqual({ errors: [], warnings: [] });
+    });
+
+    it('GREEN: a claude-code record that says tool_results validates, with no error and no unrecognized-field warning', () => {
+      expect(validateRun(v9Base({ output_bytes_kind: 'tool_results' }))).toEqual({ errors: [], warnings: [] });
+    });
+
+    it('GREEN: a codex-cli record that says command_output has no error and no warning for the field', () => {
+      const result = validateRun(forRuntime('codex-cli', { output_bytes_kind: 'command_output' }));
+      expect(result.errors.filter((e) => e.field === 'output_bytes_kind')).toEqual([]);
+      expect(result.warnings.filter((w) => w.field === 'output_bytes_kind')).toEqual([]);
+    });
+
+    it.each([
+      ['null', null],
+      ['a number', 1],
+      ['an empty string', ''],
+      ['a value outside the vocabulary', 'bytes'],
+      ['the singular tool_result', 'tool_result'],
+      ['an array', ['tool_results']],
+    ])('RED: %s is rejected', (_what, bad) => {
+      expect(kindErrors(v9Base({ output_bytes_kind: bad })).length).toBeGreaterThan(0);
+    });
+
+    it('RED: a claude-code record cannot say command_output: the label must match the runtime that produced the bytes', () => {
+      expect(kindErrors(v9Base({ output_bytes_kind: 'command_output' }))).toHaveLength(1);
+    });
+
+    it('RED: a codex-cli record cannot say tool_results', () => {
+      expect(kindErrors(forRuntime('codex-cli', { output_bytes_kind: 'tool_results' }))).toHaveLength(1);
+    });
+
+    it('output_bytes_kind is still an unrecognized field on a record of an older schema, as before', () => {
+      const result = validateRun(v8BaseV9({ output_bytes_kind: 'tool_results' }));
+      expect(result.warnings).toContainEqual({ field: 'output_bytes_kind', message: 'unrecognized field' });
+    });
+
+    it('output_bytes_kind is not a canonical field: its absence is never a missing-field error', () => {
+      expect(validateRun(v9Base()).errors.some((e) => e.field === 'output_bytes_kind')).toBe(false);
+    });
+
+    it('the table the record builder labels from names exactly the two runtimes and the two values the summary validator and the grid know', () => {
+      expect(OUTPUT_BYTES_KIND_BY_RUNTIME).toEqual({ 'claude-code': 'tool_results', 'codex-cli': 'command_output' });
     });
   });
 });
