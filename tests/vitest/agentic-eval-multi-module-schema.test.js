@@ -262,6 +262,9 @@ describe('multi-module-tests family -- no change for the existing families', () 
         expected_outcome: t.expected_outcome,
         expected: t.expected,
         first_useful_signal_predicate: t.first_useful_signal_predicate,
+        // The loaders carry the ground truth's smoke block through the same merge. Only a
+        // multi-module-tests scenario has one (the schema rejects it on every other family).
+        ...(t.smoke === undefined ? {} : { smoke: t.smoke }),
       });
       expect(result, file).toEqual({ errors: [], warnings: [] });
     }

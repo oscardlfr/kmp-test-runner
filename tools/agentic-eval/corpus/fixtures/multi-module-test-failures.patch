@@ -1,0 +1,26 @@
+diff --git a/core/data/src/main/kotlin/com/google/samples/apps/nowinandroid/core/data/repository/CompositeUserNewsResourceRepository.kt b/core/data/src/main/kotlin/com/google/samples/apps/nowinandroid/core/data/repository/CompositeUserNewsResourceRepository.kt
+index 64e02e7d..0766d5fd 100644
+--- a/core/data/src/main/kotlin/com/google/samples/apps/nowinandroid/core/data/repository/CompositeUserNewsResourceRepository.kt
++++ b/core/data/src/main/kotlin/com/google/samples/apps/nowinandroid/core/data/repository/CompositeUserNewsResourceRepository.kt
+@@ -62,7 +62,7 @@ class CompositeUserNewsResourceRepository @Inject constructor(
+         userDataRepository.userData.map { it.bookmarkedNewsResources }.distinctUntilChanged()
+             .flatMapLatest { bookmarkedNewsResources ->
+                 when {
+-                    bookmarkedNewsResources.isEmpty() -> flowOf(emptyList())
++                    bookmarkedNewsResources.isNotEmpty() -> flowOf(emptyList())
+                     else -> observeAll(NewsResourceQuery(filterNewsIds = bookmarkedNewsResources))
+                 }
+             }
+diff --git a/core/domain/src/main/kotlin/com/google/samples/apps/nowinandroid/core/domain/GetFollowableTopicsUseCase.kt b/core/domain/src/main/kotlin/com/google/samples/apps/nowinandroid/core/domain/GetFollowableTopicsUseCase.kt
+index 0167a319..86875cd0 100644
+--- a/core/domain/src/main/kotlin/com/google/samples/apps/nowinandroid/core/domain/GetFollowableTopicsUseCase.kt
++++ b/core/domain/src/main/kotlin/com/google/samples/apps/nowinandroid/core/domain/GetFollowableTopicsUseCase.kt
+@@ -45,7 +45,7 @@ class GetFollowableTopicsUseCase @Inject constructor(
+             .map { topic ->
+                 FollowableTopic(
+                     topic = topic,
+-                    isFollowed = topic.id in userData.followedTopics,
++                    isFollowed = topic.id !in userData.followedTopics,
+                 )
+             }
+         when (sortBy) {
