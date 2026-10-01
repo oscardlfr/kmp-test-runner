@@ -210,7 +210,11 @@ export function buildSessionsBlock(summary, costEstimate) {
   ];
   const align = header.map((_, i) => (i < 2 ? '---' : i === 3 || i === 4 ? '---' : '---:'));
   const lines = [`| ${header.join(' | ')} |`, `|${align.join('|')}|`];
-  const ordered = [...summary.cells].sort((a, b) => RUNTIME_ORDER.indexOf(a.runtime_id) - RUNTIME_ORDER.indexOf(b.runtime_id) || a.round_index - b.round_index);
+  // One row per counted session (accepted or negative-D3, the cells every aggregate and the cost
+  // estimate are built from). A session that was rejected and not replaced has no metrics to show and no
+  // cost cell, so it gets no row rather than a row of empty values.
+  const ordered = summary.cells.filter((c) => c.status !== 'missing')
+    .sort((a, b) => RUNTIME_ORDER.indexOf(a.runtime_id) - RUNTIME_ORDER.indexOf(b.runtime_id) || a.round_index - b.round_index);
   for (const cell of ordered) {
     const tokens = cell.tokens ? disjointTokens(cell.tokens, cell.runtime_id) : {};
     const kinds = cell.command_kind_counts;

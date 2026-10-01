@@ -9,7 +9,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   loadSummary, loadCostEstimate, costMetric, renderReadmeBlock, README_NOTES,
-  TOKEN_COMPONENT_TYPES, disjointTokens,
+  TOKEN_COMPONENT_TYPES, disjointTokens, validateSummary, validateCostEstimate, validatePairing,
 } from '../../tools/agentic-eval/readme-evidence.mjs';
 import { costEstimateCellEntry, costEstimateCellMidpoint } from '../../tools/agentic-eval/evidence2-tables.mjs';
 import {
@@ -348,6 +348,63 @@ describe('the committed Evidence2 cost breakdown', () => {
       expect(buildCostComponentsBlock(costEstimate)).toBe(buildCostComponentsBlock(costEstimate));
       expect(buildSessionsBlock(summary, costEstimate)).toBe(buildSessionsBlock(summary, costEstimate));
     });
+  });
+});
+
+// Any sample size: a rejected session (OAuth 401, a usage limit) is never replaced, so one group counts
+// fewer sessions than it declared. Evidence2's committed data with its last Claude Code "without" session
+// turned into such a cell: the summary row is missing (no metrics), the group counted 3 of 4, and the
+// cost estimate has no cell for it.
+describe('a campaign with one rejected session', () => {
+  let summary, costEstimate, rejected;
+  beforeAll(() => {
+    summary = structuredClone(loadSummary(join(RUNS_DIR, 'campaign-summary.json')));
+    costEstimate = structuredClone(loadCostEstimate(join(RUNS_DIR, 'cost-estimate.json')));
+    rejected = summary.cells.filter((c) => c.runtime_id === 'claude-code' && c.arm === 'free').at(-1);
+    Object.assign(rejected, {
+      status: 'missing', reason: 'rejected_not_reclassifiable', key_facts_match: null, full_answer_match: null, success: null,
+      duration_ms: null, tool_calls_total: null, tokens: null, num_turns: null, total_cost_usd: null, output_bytes: null, command_kind_counts: null,
+    });
+    const group = summary.by_runtime_arm.find((g) => g.runtime_id === 'claude-code' && g.arm === 'free');
+    Object.assign(group, { accepted: 3, missing: 1, counted: 3 });
+    const entry = costEstimate.runtimes['claude-code'];
+    entry.cells = entry.cells.filter((c) => !(c.arm === 'free' && c.order_index === rejected.round_index));
+  });
+
+  const sessionRows = (block) => block.split('\n').filter((l) => /^\| (Claude Code|Codex CLI) \|/.test(l));
+
+  it('the pair validates: the group counted 3 of its 4, and its arm has 3 cost cells', () => {
+    expect(validateSummary(summary)).toEqual([]);
+    expect(validateCostEstimate(costEstimate)).toEqual([]);
+    expect(validatePairing(summary, costEstimate)).toEqual([]);
+  });
+
+  it('the sessions table has one row per counted session: 15, and none for the rejected one', () => {
+    const rows = sessionRows(buildSessionsBlock(summary, costEstimate));
+    expect(rows).toHaveLength(15);
+    const claudeRounds = rows.filter((r) => r.startsWith('| Claude Code |')).map((r) => Number(r.split('|')[3].trim()));
+    expect(claudeRounds).not.toContain(rejected.round_index);
+    expect(claudeRounds).toHaveLength(7);
+  });
+
+  it('every row of the sessions table ends in a real cost: none is built from the rejected session\'s empty metrics', () => {
+    for (const row of sessionRows(buildSessionsBlock(summary, costEstimate))) {
+      const cost = row.split('|').slice(-2, -1)[0].trim();
+      expect(cost, row).toMatch(/^\d+\.\d{3}$/);
+    }
+  });
+
+  it('the cost table counts the sessions of each group: 3 for Claude Code without kmp-test, 4 for the others', () => {
+    const rows = buildCostComponentsBlock(costEstimate).split('\n').filter((l) => /^\| (Claude Code|Codex CLI) /.test(l));
+    const sessionsOf = (label) => Number(rows.find((r) => r.startsWith(`| ${label} |`)).split('|').slice(-2, -1)[0].trim());
+    expect(sessionsOf('Claude Code without')).toBe(3);
+    expect(sessionsOf('Claude Code with kmp-test')).toBe(4);
+    expect(sessionsOf('Codex CLI with kmp-test')).toBe(4);
+    expect(sessionsOf('Codex CLI without')).toBe(4);
+  });
+
+  it('the cost breakdown figure renders for the short group', () => {
+    expect(renderCostBreakdownSvg(summary, costEstimate)).toContain('<svg');
   });
 });
 

@@ -205,12 +205,14 @@ function sidecarFor(record) {
   };
 }
 
-function writeManifest(campaignDir, { providerMode = 'live' } = {}) {
+// cellCount: the number of cells declared per runtime (default 8, the Evidence2 shape: 4 per arm).
+function writeManifest(campaignDir, { providerMode = 'live', cellCount = 8 } = {}) {
+  const cellIndices = Array.from({ length: cellCount }, (_, i) => i);
   const manifest = {
     schema: 1, campaign_id: 'campaign-under-test', scenario_id: SCENARIO_ID, seed: 42, provider_mode: providerMode,
     runtimes: [
-      { runtime_id: 'claude-code', model_id: 'claude-sonnet-5', campaign_design_id: 'claude-product-vs-free-baseline-v1', campaign_cell_indices: [0, 1, 2, 3, 4, 5, 6, 7], max_budget_usd: 2.0 },
-      { runtime_id: 'codex-cli', model_id: 'gpt-5.6-terra', campaign_design_id: 'codex-product-vs-free-baseline-v2', campaign_cell_indices: [0, 1, 2, 3, 4, 5, 6, 7], max_budget_usd: null },
+      { runtime_id: 'claude-code', model_id: 'claude-sonnet-5', campaign_design_id: 'claude-product-vs-free-baseline-v1', campaign_cell_indices: cellIndices, max_budget_usd: 2.0 },
+      { runtime_id: 'codex-cli', model_id: 'gpt-5.6-terra', campaign_design_id: 'codex-product-vs-free-baseline-v2', campaign_cell_indices: cellIndices, max_budget_usd: null },
     ],
   };
   writeFileSync(path.join(campaignDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
@@ -354,19 +356,83 @@ describe('buildCostEstimate', () => {
     });
   });
 
-  it('fewer than 4 counted cells in one arm is refused, never silently reports a partial estimate', () => {
+  // Was "fewer than 4 counted cells in one arm is refused": the number of counted cells per arm is no
+  // longer fixed at 4, and the arms of one runtime may differ in count (a rejected session is never
+  // replaced). Only an arm with no counted cell at all is refused.
+  it('an arm with fewer counted cells than the other (3 product, 4 free) is accepted: arms may differ in count', () => {
     withTempDir((dir) => {
       writeManifest(dir);
-      // Only 7 of the 8 expected claude-code cells are ever written (3 product, 4 free); the 8th's
-      // cell directory is absent entirely (loadCell's own cell_directory_absent path), so it counts
-      // as missing, not counted. codex-cli gets a full, valid 4+4 set.
+      // Only 7 of the 8 declared claude-code cells are written (3 product, 4 free); the 8th's cell
+      // directory is absent entirely (loadCell's own cell_directory_absent path), so it counts as missing,
+      // not counted. codex-cli gets a full, valid 4+4 set.
       const claudeConditions = ['current-skill', 'no-skill', 'current-skill', 'no-skill', 'no-skill', 'current-skill', 'no-skill'];
       claudeConditions.forEach((condition, i) => writeAcceptedCell(dir, `claude-code-${i}`, { runtimeId: 'claude-code', condition, roundIndex: i }));
       const codexConditions = ['current-skill', 'no-skill', 'current-skill', 'no-skill', 'current-skill', 'no-skill', 'current-skill', 'no-skill'];
       codexConditions.forEach((condition, i) => writeAcceptedCell(dir, `codex-cli-${i}`, { runtimeId: 'codex-cli', condition, roundIndex: i }));
       const result = buildCostEstimate(dir);
+      expect(result.ok).toBe(true);
+      const claudeCells = result.doc.runtimes['claude-code'].cells;
+      expect(claudeCells.filter((c) => c.arm === 'product')).toHaveLength(3);
+      expect(claudeCells.filter((c) => c.arm === 'free')).toHaveLength(4);
+      expect(result.doc.runtimes['codex-cli'].cells).toHaveLength(8);
+      expect(validateCostEstimate(result.doc)).toEqual([]);
+    });
+  });
+
+  // Alternating arms: even cell index current-skill (product), odd no-skill (free).
+  const alternating = (count) => Array.from({ length: count }, (_, i) => (i % 2 === 0 ? 'current-skill' : 'no-skill'));
+  function writeAlternatingCampaign(dir, { cellCount, claudeCells = cellCount, codexCells = cellCount }) {
+    writeManifest(dir, { cellCount });
+    alternating(claudeCells).forEach((condition, i) => writeAcceptedCell(dir, `claude-code-${i}`, { runtimeId: 'claude-code', condition, roundIndex: i }));
+    alternating(codexCells).forEach((condition, i) => writeAcceptedCell(dir, `codex-cli-${i}`, { runtimeId: 'codex-cli', condition, roundIndex: i }));
+  }
+  const armCounts = (doc, runtimeId) => {
+    const cells = doc.runtimes[runtimeId].cells;
+    return { product: cells.filter((c) => c.arm === 'product').length, free: cells.filter((c) => c.arm === 'free').length };
+  };
+
+  it('a canary-sized campaign (1 counted cell per arm) builds an estimate that validates', () => {
+    withTempDir((dir) => {
+      writeAlternatingCampaign(dir, { cellCount: 2 });
+      const result = buildCostEstimate(dir);
+      expect(result.ok).toBe(true);
+      for (const runtimeId of ['claude-code', 'codex-cli']) expect(armCounts(result.doc, runtimeId)).toEqual({ product: 1, free: 1 });
+      expect(validateCostEstimate(result.doc)).toEqual([]);
+    });
+  });
+
+  it('a campaign of 8 counted cells per arm builds an estimate that validates', () => {
+    withTempDir((dir) => {
+      writeAlternatingCampaign(dir, { cellCount: 16 });
+      const result = buildCostEstimate(dir);
+      expect(result.ok).toBe(true);
+      for (const runtimeId of ['claude-code', 'codex-cli']) expect(armCounts(result.doc, runtimeId)).toEqual({ product: 8, free: 8 });
+      expect(validateCostEstimate(result.doc)).toEqual([]);
+    });
+  });
+
+  it('arms of 8 and 7 counted cells (one session of the 16 is missing) build an estimate with 8 product and 7 free cells', () => {
+    withTempDir((dir) => {
+      // claude-code: 15 of 16 declared cells written, so the last free cell (index 15) is missing.
+      writeAlternatingCampaign(dir, { cellCount: 16, claudeCells: 15 });
+      const result = buildCostEstimate(dir);
+      expect(result.ok).toBe(true);
+      expect(armCounts(result.doc, 'claude-code')).toEqual({ product: 8, free: 7 });
+      expect(armCounts(result.doc, 'codex-cli')).toEqual({ product: 8, free: 8 });
+      expect(validateCostEstimate(result.doc)).toEqual([]);
+    });
+  });
+
+  it('an arm with 0 counted cells is refused, naming the runtime and the arm, never a partial estimate', () => {
+    withTempDir((dir) => {
+      writeManifest(dir, { cellCount: 4 });
+      // claude-code has free cells only: its product arm has nothing counted.
+      ['no-skill', 'no-skill', 'no-skill', 'no-skill'].forEach((condition, i) => writeAcceptedCell(dir, `claude-code-${i}`, { runtimeId: 'claude-code', condition, roundIndex: i }));
+      alternating(4).forEach((condition, i) => writeAcceptedCell(dir, `codex-cli-${i}`, { runtimeId: 'codex-cli', condition, roundIndex: i }));
+      const result = buildCostEstimate(dir);
       expect(result.ok).toBe(false);
       expect(result.reason).toContain('claude-code');
+      expect(result.reason).toContain('product');
     });
   });
 

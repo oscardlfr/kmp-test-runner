@@ -20,10 +20,13 @@
 // Never edit scorecard.svg or the README block between the markers by hand --
 // edit this generator (or the campaign-summary.json / cost-estimate.json it
 // reads) and regenerate. Fails closed unless the summary is summary_status:"ok",
-// provider_mode:"live", schema 1, with all 4 (runtime x arm) groups declaring
-// exactly 4 cells each, and cost-estimate.json is schema 1 with 4 claude-code
-// cells per arm and a complete price table -- a partial or non-live summary,
-// or an incomplete cost estimate, must never render.
+// provider_mode:"live", schema 1 or 2, with all 4 (runtime x arm) groups declaring
+// the same number of cells (at least 1) and each counting between 1 and that
+// number, and cost-estimate.json has a complete price table and, for every
+// runtime it prices, at least 1 cell per arm -- as many as the summary counted
+// for that group (validatePairing) -- so a canary (1 per group), a campaign (8)
+// and a campaign that lost a session to a rejection all render, while a partial
+// or non-live summary, or an incomplete cost estimate, never does.
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -78,11 +81,21 @@ export function validateSummary(summary) {
   if (groups.length !== 4) {
     errors.push(`expected 4 (runtime x arm) groups, got ${groups.length}`);
   }
+  // Any sample size: `declared` is the design's session count, ONE number shared by every group (a canary
+  // declares 1, a campaign 8); `counted` is how many of them count, 1..declared per group, and may differ
+  // between groups because a rejected session is never replaced. A group without `counted` counts as
+  // `declared` (older and synthetic summaries carry only declared).
+  const declaredByGroup = [];
   for (const runtime of RUNTIME_ORDER) {
     for (const arm of ARM_ORDER) {
       const g = groups.find(x => x.runtime_id === runtime && x.arm === arm);
       if (!g) { errors.push(`missing group for ${runtime}/${arm}`); continue; }
-      if (g.declared !== 4) errors.push(`${runtime}/${arm}: declared must be 4, got ${g.declared}`);
+      const validDeclared = Number.isInteger(g.declared) && g.declared >= 1;
+      if (validDeclared) declaredByGroup.push({ group: `${runtime}/${arm}`, declared: g.declared });
+      else errors.push(`${runtime}/${arm}: declared must be an integer of at least 1, got ${JSON.stringify(g.declared)}`);
+      if (g.counted !== undefined && !(Number.isInteger(g.counted) && g.counted >= 1 && (!validDeclared || g.counted <= g.declared))) {
+        errors.push(`${runtime}/${arm}: counted must be an integer from 1 to declared (${JSON.stringify(g.declared)}), got ${JSON.stringify(g.counted)}`);
+      }
       // wallClockPhrase reads duration_ms.min/max directly (the same aggregate as the median) to
       // render the per-session range -- a group missing either, or a non-numeric value, must fail
       // closed here, not render literal "NaN–NaN" in the README.
@@ -91,6 +104,9 @@ export function validateSummary(summary) {
         errors.push(`${runtime}/${arm}: duration_ms.min/median/max must be finite with min <= median <= max, got ${JSON.stringify(d)}`);
       }
     }
+  }
+  if (new Set(declaredByGroup.map(d => d.declared)).size > 1) {
+    errors.push(`every group must declare the same number of sessions (the design's count), got ${declaredByGroup.map(d => `${d.group}=${d.declared}`).join(', ')}`);
   }
   // The README's Scope line names the kmp-test version under measurement, so a campaign that
   // mixes versions (or records none) must never silently render one: a later release can change
@@ -152,6 +168,33 @@ function findGroup(summary, runtime, arm) {
   return summary.by_runtime_arm.find(g => g.runtime_id === runtime && g.arm === arm);
 }
 
+// How many sessions a group counted: its `counted`, or its `declared` when it carries none (older and
+// synthetic summaries). validateSummary has already established that both are sensible integers.
+function countedOf(group) {
+  return group.counted !== undefined ? group.counted : group.declared;
+}
+
+// The four groups' counted values, in the order the prose lists them: Claude Code with kmp-test, Claude
+// Code without, Codex CLI with, Codex CLI without.
+function sessionCounts(summary) {
+  return RUNTIME_ORDER.flatMap(runtime => ARM_ORDER.map(arm => countedOf(findGroup(summary, runtime, arm))));
+}
+
+function allEqual(counts) {
+  return counts.every(n => n === counts[0]);
+}
+
+// The per-arm session count as the generated prose states it: the bare number when all four groups
+// counted the same ("8"), otherwise each group's count ("8 with kmp-test and 7 without for Claude Code;
+// 8 and 8 for Codex CLI"). Every generated sentence that states the count goes through this, so a
+// campaign that lost a session to a rejection (never replaced) can never be described as if it had not.
+export function countPhrase(summary) {
+  const counts = sessionCounts(summary);
+  if (allEqual(counts)) return String(counts[0]);
+  const [claudeWith, claudeWithout, codexWith, codexWithout] = counts;
+  return `${claudeWith} with kmp-test and ${claudeWithout} without for Claude Code; ${codexWith} and ${codexWithout} for Codex CLI`;
+}
+
 // ---------------------------------------------------------------------------
 // Cost estimate -- Claude Code only (schema 1 has no token data for Codex).
 // Fails closed on the same "not recorded" philosophy as validateSummary: a
@@ -168,10 +211,12 @@ export function validateCostEstimate(doc) {
     for (const key of COST_ESTIMATE_PRICE_KEYS) {
       if (!price || typeof price[key] !== 'number') errors.push(`pricing.per_million_tokens.${key} must be a number`);
     }
+    // Any sample size: each arm needs at least one cell; how many it has is checked against the summary's
+    // counted by validatePairing, the one function that sees both documents.
     const cells = Array.isArray(doc.cells) ? doc.cells : [];
     for (const arm of ARM_ORDER) {
       const n = cells.filter(c => c.runtime_id === 'claude-code' && c.arm === arm).length;
-      if (n !== 4) errors.push(`expected 4 claude-code/${arm} cells, got ${n}`);
+      if (n < 1) errors.push(`expected at least 1 claude-code/${arm} cell, got ${n}`);
     }
     return errors;
   }
@@ -192,7 +237,7 @@ export function validateCostEstimate(doc) {
       const cells = Array.isArray(entry && entry.cells) ? entry.cells : [];
       for (const arm of ARM_ORDER) {
         const n = cells.filter(c => c.arm === arm).length;
-        if (n !== 4) errors.push(`runtimes.${runtimeId}: expected 4 ${arm} cells, got ${n}`);
+        if (n < 1) errors.push(`runtimes.${runtimeId}: expected at least 1 ${arm} cell, got ${n}`);
       }
       // Optional; when present it must genuinely be a boolean -- a truthy non-boolean (e.g. the
       // string "true") would silently pass the `=== true` check armCostRange relies on, always
@@ -228,11 +273,31 @@ export function loadCostEstimate(path) {
 // model's rates. Partial schema-2 cost coverage (a runtime present in the summary but absent from
 // cost-estimate.runtimes) stays valid -- that is not a mismatch, it is the documented "not
 // estimated" fallback.
+//
+// Any sample size: each arm of the cost estimate must also hold exactly as many cells as its summary
+// group counted (`counted`, or `declared` for a group that carries none). Neither validator alone can
+// check this -- the cost estimate does not know the design's count and the summary does not hold the
+// cells -- and a mismatch would price a different set of sessions than the ones the prose reports.
+function pairingCellCountError(label, arm, cellCount, group) {
+  const counted = countedOf(group);
+  return cellCount === counted ? null
+    : `${label}: ${arm} has ${cellCount} cost-estimate cells but the summary counted ${counted} sessions for that group`;
+}
+
 export function validatePairing(summary, costEstimate) {
   const errors = [];
   if (summary.schema !== costEstimate.schema) {
     errors.push(`summary schema ${JSON.stringify(summary.schema)} does not match cost-estimate schema ${JSON.stringify(costEstimate.schema)}`);
     return errors;
+  }
+  if (summary.schema === 1 && costEstimate.schema === 1) {
+    for (const arm of ARM_ORDER) {
+      const group = findGroup(summary, 'claude-code', arm);
+      if (!group) continue;
+      const cellCount = (Array.isArray(costEstimate.cells) ? costEstimate.cells : []).filter(c => c.runtime_id === 'claude-code' && c.arm === arm).length;
+      const error = pairingCellCountError('cost-estimate claude-code', arm, cellCount, group);
+      if (error) errors.push(error);
+    }
   }
   if (summary.schema === 2 && costEstimate.schema === 2) {
     for (const [runtimeId, entry] of Object.entries(costEstimate.runtimes || {})) {
@@ -243,6 +308,13 @@ export function validatePairing(summary, costEstimate) {
       const provenanceModel = provenanceValue(summary, 'model_resolved', runtimeId);
       if (entry.model !== provenanceModel) {
         errors.push(`cost-estimate.runtimes.${runtimeId}.model (${JSON.stringify(entry.model)}) does not match provenance.model_resolved.${runtimeId} (${JSON.stringify(provenanceModel)})`);
+      }
+      for (const arm of ARM_ORDER) {
+        const group = findGroup(summary, runtimeId, arm);
+        if (!group) continue;
+        const cellCount = (Array.isArray(entry.cells) ? entry.cells : []).filter(c => c.arm === arm).length;
+        const error = pairingCellCountError(`cost-estimate.runtimes.${runtimeId}`, arm, cellCount, group);
+        if (error) errors.push(error);
       }
     }
   }
@@ -455,10 +527,22 @@ export function computeScorecardLayout(summary, costEstimate) {
 
   const subtitleFS = 13;
   const subtitleY = titleY + ROW_GAP + subtitleFS;
-  items.push(textItem('subtitle', null, PAD, subtitleY, subtitleFS, 400, COLOR_SECONDARY,
-    '1 pre-registered scenario · 4 sessions per arm per agent · Windows 11 · details in the evidence doc'));
+  // The per-arm session count is stated through countPhrase. A single number (every group counted the
+  // same) keeps the one-line subtitle as before; the phrase that names each group's count is too long
+  // for that line, so it takes a second one.
+  let subtitleBottom = subtitleY;
+  if (allEqual(sessionCounts(summary))) {
+    items.push(textItem('subtitle', null, PAD, subtitleY, subtitleFS, 400, COLOR_SECONDARY,
+      `1 pre-registered scenario · ${countPhrase(summary)} sessions per arm per agent · Windows 11 · details in the evidence doc`));
+  } else {
+    items.push(textItem('subtitle', null, PAD, subtitleY, subtitleFS, 400, COLOR_SECONDARY,
+      '1 pre-registered scenario · Windows 11 · details in the evidence doc'));
+    subtitleBottom = subtitleY + subtitleFS + 4;
+    items.push(textItem('subtitle', null, PAD, subtitleBottom, subtitleFS, 400, COLOR_SECONDARY,
+      `Counted per arm and agent: ${countPhrase(summary)}`));
+  }
 
-  const headerBottom = subtitleY + ROW_GAP;
+  const headerBottom = subtitleBottom + ROW_GAP;
 
   // Two columns, each: panel title, key-facts text line, then 3 bar metrics
   // (tool calls, wall-clock, cost). Both columns share the same row Y's, so
@@ -1375,8 +1459,9 @@ function buildRuntimeBullet(runtimeId, summary, costEstimate, runsPath, anchor) 
 }
 
 // One descriptive bullet per arm comparing the two agents' medians --
-// n=4 per cell, no inferential wording (states the numbers, never "faster"/"better"/causal). Omitted
-// entirely for that arm when either agent's median is missing, rather than rendering a partial claim.
+// n per cell as each group counted it, no inferential wording (states the numbers, never
+// "faster"/"better"/causal). Omitted entirely for that arm when either agent's median is missing,
+// rather than rendering a partial claim.
 function buildCrossAgentBullet(summary, arm, armLabel) {
   const gClaude = findGroup(summary, 'claude-code', arm);
   const gCodex = findGroup(summary, 'codex-cli', arm);
@@ -1384,10 +1469,10 @@ function buildCrossAgentBullet(summary, arm, armLabel) {
   const codexMedian = gCodex && gCodex.tool_calls_total && gCodex.tool_calls_total.median;
   if (typeof claudeMedian !== 'number' || typeof codexMedian !== 'number') return null;
   // Read from the group's own tool_calls_total.n (the exact count the median was computed from),
-  // never a hardcoded "n=4" -- true for every real, complete campaign (always exactly 4 per arm by
-  // design), but a literal would silently misreport a smaller/partial run (a dry run had n=1).
-  // Claude and Codex are independent per-runtime data and can in principle diverge, so a shared
-  // figure is only used when they genuinely agree.
+  // never a literal: a campaign's per-arm count is whatever its design says (a canary 1, a campaign 8)
+  // and a group that lost a session to a rejection counts one fewer, so any literal would misreport.
+  // Claude and Codex are independent per-runtime data and can diverge, so a shared figure is only used
+  // when they genuinely agree.
   const claudeN = gClaude.tool_calls_total.n;
   const codexN = gCodex.tool_calls_total.n;
   const nLabel = claudeN === codexN ? `n=${claudeN} per cell` : `n=${claudeN} for Claude, n=${codexN} for Codex`;
@@ -1459,11 +1544,22 @@ export function renderReadmeBlock(summary, campaignDate, costEstimate, runsDirNa
   // Both published run dirs (Evidence1 and Evidence2) carry a controls-audit.md, so the link set is
   // the same for either schema; the "every linked file exists" tests guard against a dead link.
   const evidenceLinks = `[Evidence, per-session detail and limitations](${runsPath}/README.md) · [controls audit](${runsPath}/controls-audit.md) · [pre-registration](${runsPath}/preregistration.md)`;
+  // The per-arm session count (any sample size), stated through countPhrase in the intro and the Scope
+  // line. One number keeps each sentence exactly as it always read; when the groups counted differently
+  // (a rejected session is never replaced) the sentence names each group's count instead.
+  const sessionPhrase = countPhrase(summary);
+  const equalCounts = allEqual(sessionCounts(summary));
+  const introCount = equalCounts
+    ? `: ${sessionPhrase} sessions with the kmp-test skill and CLI, ${sessionPhrase} without.`
+    : `. Sessions counted per arm and agent: ${sessionPhrase}.`;
+  const scopeCount = equalCounts
+    ? `n=${sessionPhrase} sessions per arm per agent in counterbalanced order`
+    : `sessions in counterbalanced order, counted per arm and agent: ${sessionPhrase}`;
 
   return `<!-- agentic-benchmark:start (generated by tools/agentic-eval/readme-evidence.mjs from ${runsPath}/campaign-summary.json; edit the generator, not this block) -->
 ### Agent sessions with and without kmp-test
 
-kmp-test hands an agent the test and coverage verdict as one JSON envelope instead of Gradle logs and report files. To check that this helps end to end, Claude Code and Codex CLI each ran the same pre-registered coverage-gate task on a pinned NowInAndroid commit: 4 sessions with the kmp-test skill and CLI, 4 without. Every session is shown; none was re-run or replaced.
+kmp-test hands an agent the test and coverage verdict as one JSON envelope instead of Gradle logs and report files. To check that this helps end to end, Claude Code and Codex CLI each ran the same pre-registered coverage-gate task on a pinned NowInAndroid commit${introCount} Every session is shown; none was re-run or replaced.
 
 ![${buildScorecardAlt(summary, costEstimate)}](${runsPath}/scorecard.svg)
 
@@ -1471,7 +1567,7 @@ kmp-test hands an agent the test and coverage verdict as one JSON envelope inste
 
 ${bulletsText}
 
-${noteText}**Scope:** one scenario, tagged \`train\` (the skill was tuned on this task family); n=4 sessions per arm per agent in counterbalanced order; Windows 11 in an isolated VM with a restricted network (provider APIs only); design and metrics fixed before any live session. kmp-test ${kmpTestVersion}. ${runtimeScopeText} Key facts = module, outcome, coverage numbers. ${evidenceLinks}
+${noteText}**Scope:** one scenario, tagged \`train\` (the skill was tuned on this task family); ${scopeCount}; Windows 11 in an isolated VM with a restricted network (provider APIs only); design and metrics fixed before any live session. kmp-test ${kmpTestVersion}. ${runtimeScopeText} Key facts = module, outcome, coverage numbers. ${evidenceLinks}
 <!-- agentic-benchmark:end -->`;
 }
 
