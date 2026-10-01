@@ -373,6 +373,10 @@ describe('final Codex host/guest operational chain', () => {
     finally { rmSync(fixture.root, { recursive: true, force: true }); }
   }, 40_000);
 
+  // Generous timeout: the body starts about fifteen Windows PowerShell 5.1 and pwsh 7 processes one after the
+  // other. It takes 37 s alone on a fast development machine and 60 to 87 s on a hosted windows-latest runner
+  // (18 recent passes, with the whole suite running in parallel), so the former 90 s limit had 3 s of margin on
+  // the slowest pass and timed the test out once. The limit only has to catch a hang; the assertions are unchanged.
   it.skipIf(process.platform !== 'win32')('installs a self-contained hash-bound snapshot and preflights final place/start/copy from it', async () => {
     const root = mkdtempSync('C:\\kmp-eval\\scratch\\e1-final-snapshot-e2e-');
     let deployed = null;
@@ -509,7 +513,7 @@ describe('final Codex host/guest operational chain', () => {
       if (deployed && /^C:\\ProgramData\\KmpEval\\Evidence1ElevatedRunner\\Evidence1SnapshotFixture-[0-9a-f]{64}-[0-9a-f]{32}$/i.test(deployed)) rmSync(deployed, { recursive: true, force: true });
       rmSync(root, { recursive: true, force: true });
     }
-  }, 90_000);
+  }, 180_000);
 
   // Proves execFileAsync (the helper the test above now uses throughout) genuinely doesn't block
   // the worker's event loop, the same way evidence1-validation-ops.test.js:130 proves it for its
