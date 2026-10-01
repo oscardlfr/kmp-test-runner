@@ -229,7 +229,8 @@ condition, 16 sessions), claude-product-vs-free-baseline-v1 (product-assisted vs
 free-baseline/no-product, 8 sessions), claude-product-vs-free-baseline-v2 (the frozen three-pair
 product/control order, 6 sessions), codex-product-vs-free-baseline-v1 (the same product/control
 contrast, 6 sessions), codex-product-vs-free-baseline-v2 (balanced four-pair product/control,
-8 sessions), claude-product-canary-v1 and claude-free-baseline-canary-v1
+8 sessions), claude-product-vs-free-n8-v1 and codex-product-vs-free-n8-v1 (counterbalanced
+eight-pair product/control, 16 sessions each), claude-product-canary-v1 and claude-free-baseline-canary-v1
 (one session each), and codex-product-canary-v1 and codex-free-baseline-canary-v1 (one session
 each); all canaries require --scenario coverage-threshold-failure-v2. Every claude-* design is
 bound to claude-code and every codex-* design to codex-cli; a mismatch fails before runtime

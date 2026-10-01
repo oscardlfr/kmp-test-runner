@@ -1974,7 +1974,7 @@ planning/execution machinery `scenario-campaign-plan.mjs` (a pure, dependency-fr
 `--execution-profile` matrix (`run --execution-profile <id>` keeps working completely unchanged;
 see "Isolation" above for the profile registry itself).
 
-Three full campaign designs and four one-cell canary designs are currently supported. Every
+Seven full campaign designs and four one-cell canary designs are currently supported. Every
 design is bound to one runtime in the closed registry: `claude-*` designs require `claude-code`
 and `codex-*` designs require `codex-cli`. A mismatch is rejected before any runtime subprocess
 or source materialization, and the binding is design metadata rather than a new historical cell
@@ -2069,6 +2069,18 @@ and product-specific `KMP_EVAL_*`/`KMP_TEST_*` environment variables. It exits n
 counts/statuses only, never raw paths or environment values. This gate proves the baseline
 workspace/process surface is not product-visible; it does **not** prove the model lacks latent
 knowledge of `kmp-test-runner`.
+
+`claude-product-vs-free-n8-v1` and `codex-product-vs-free-n8-v1` are the counterbalanced
+eight-pair versions of the same product/control contrast: the same two cells, 8 repetitions,
+16 sessions each, bound to `claude-code` and `codex-cli` respectively. Like the baseline designs
+they are not tied to one scenario. Each cell opens four of the eight pairs:
+
+```text
+rep 0: A B    rep 4: B A
+rep 1: B A    rep 5: A B
+rep 2: B A    rep 6: A B
+rep 3: A B    rep 7: B A
+```
 
 ### Single-cell canary planning
 
