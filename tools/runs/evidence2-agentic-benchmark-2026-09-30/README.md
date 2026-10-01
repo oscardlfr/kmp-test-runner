@@ -118,8 +118,8 @@ published in this record changes.
     Claude sessions. The directory is keyed by the source repository.
   - No tool call or command in the eight transcripts wrote to or referenced that directory; the
     sessions had only the Bash and Skill tools.
-  - Not verified here: whether the directory held notes from earlier runs, which every Claude session
-    in both arms would then have loaded.
+  - When the directory was listed on 2026-10-01, after this campaign, it held no files. That listing
+    cannot show what the directory held during this campaign.
 - **E4: Session claude-code-6.**
   - Its first `kmp-test parallel` call sent the JSON envelope to a file and read it back later
     (`kmp-test parallel ... > parallel_result.json 2>&1; echo "EXIT:$?"; ...`).
