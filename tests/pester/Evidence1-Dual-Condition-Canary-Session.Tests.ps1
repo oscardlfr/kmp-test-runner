@@ -321,4 +321,14 @@ Describe 'New-E1FakeAgenticEvalRuntimeShim: the multi-module-tests family variab
         $noSmoke = ($script:MmExpectedText | ConvertFrom-Json) | Select-Object -Property * -ExcludeProperty smoke | ConvertTo-Json -Depth 8
         { New-MmShimText 'claude-code' 'multi-module-test-failures' $script:MmScenarioText $noSmoke } | Should -Throw '*agentic_eval_fake_expected_invalid*'
     }
+
+    It 'fails closed when the scenario file of the campaign is not valid JSON' {
+        { New-MmShimText 'claude-code' 'multi-module-test-failures' '{ not json' $script:MmExpectedText } | Should -Throw '*agentic_eval_fake_scenario_invalid*'
+    }
+
+    It 'fails closed when a multi-module scenario allows no Gradle test task for the free arm to run' {
+        $scenario = $script:MmScenarioText | ConvertFrom-Json
+        $scenario.policy.allowed_gradle_tasks = @(':core:common:tasks', ':core:data:tasks')
+        { New-MmShimText 'claude-code' 'multi-module-test-failures' ($scenario | ConvertTo-Json -Depth 8) $script:MmExpectedText } | Should -Throw '*agentic_eval_fake_scenario_invalid*'
+    }
 }
