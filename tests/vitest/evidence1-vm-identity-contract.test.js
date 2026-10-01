@@ -56,6 +56,49 @@ describe.skipIf(process.platform !== 'win32')('Evidence1 canonical E2E VM identi
   });
 });
 
+describe('Evidence1 VM identity profile amendment source guards (WO-10a)', () => {
+  const source = readFileSync(modulePath, 'utf8');
+  const SEALED = '2d9bbe2b31b363197bdcc1e89292d21e7ad44a0f71ccc7627406d218cb7140b9';
+  const CURRENT = 'c8330a3f68d2df456ce8b32a953942897edf8451d8f556c7eb3bb3de41d8f81f';
+
+  it('keeps a closed amendment table with exactly one entry, from the sealed profile hash to the current one', () => {
+    const table = source.match(/\$script:E1VmIdentityProfileAmendments = @\(([\s\S]*?)\n\)/);
+    expect(table).not.toBeNull();
+    const pairs = [...table[1].matchAll(/from_sha256 = '([0-9a-f]{64})'; to_sha256 = '([0-9a-f]{64})'/g)];
+    expect(pairs.map((m) => [m[1], m[2]])).toEqual([[SEALED, CURRENT]]);
+  });
+
+  it('names the whole memory history of the profile in the table comment', () => {
+    expect(source).toContain('8589934592');
+    expect(source).toContain('91cb129');
+    expect(source).toContain('07e5d1f');
+    expect(source).toContain('12884901888');
+  });
+
+  it('binds the inspection receipt and the custody marker to the profile hash only through the amendment helper', () => {
+    expect(source).toContain('Test-E1VmIdentityProfileBound ([string]$inspection.profile_sha256) ([string]$profileReceipt.sha256)');
+    expect(source).toContain('Test-E1VmIdentityProfileBound ([string]$marker.profile_sha256) ([string]$profileReceipt.sha256)');
+    expect(source).not.toMatch(/\$inspection\.profile_sha256 -cne \$profileReceipt\.sha256/);
+    expect(source).not.toMatch(/\$marker\.profile_sha256 -cne \$profileReceipt\.sha256/);
+    expect(source.match(/Test-E1VmIdentityProfileBound \(/g)?.length).toBe(2);
+  });
+
+  it('compares with exact (case-sensitive) operators, never with a hashtable lookup', () => {
+    const helper = source.match(/function Test-E1VmIdentityProfileBound[\s\S]*?\n\}/);
+    expect(helper).not.toBeNull();
+    expect(helper[0]).toContain('-ceq');
+    expect(helper[0]).not.toMatch(/ContainsKey|-match|-like/);
+  });
+
+  it('leaves the VM, input lock, receipt, marker and credential checks in place', () => {
+    for (const code of ['vm_identity_hyperv_mismatch', 'vm_identity_custody_invalid', 'vm_identity_inspection_invalid', 'vm_identity_guest_credential_mismatch']) {
+      expect(source).toContain(`throw '${code}'`);
+    }
+    expect(source).toContain('$marker.input_lock_sha256 -cne $inspection.input_lock_sha256');
+    expect(source).toContain('$marker.created_inspection_receipt_sha256 -cne $inspectionReceipt.sha256');
+  });
+});
+
 describe('Evidence1 VM identity rebinding source guards', () => {
   it('anchors the profile and private artifacts before consulting Hyper-V authority', () => {
     const source = readFileSync(modulePath, 'utf8');

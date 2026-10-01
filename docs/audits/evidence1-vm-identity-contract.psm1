@@ -69,6 +69,27 @@ function Get-E1VmIdentityCanonicalProfilePath {
     return $source
 }
 
+# Audited profile amendments (plan-author amendment WO-10a).
+#
+# The created-inspection receipt and the custody marker of the canonical E2E VM were sealed on 2026-09-14 against the
+# sha256 of the profile as it was then (startup_memory_bytes 8589934592, 8 GiB). The profile's memory setting was changed
+# afterwards, outside the sealed chain: to 16 GiB in 91cb129, then locked to the validated 12 GiB (12884901888) in 07e5d1f.
+# The profile hash is now c8330a3f..., and startup_memory_bytes is the ONLY difference between the sealed profile and the
+# current one (git diff of the sealed version, commit 990223f, against develop). Memory is not part of the VM's identity:
+# vm_id is still contrasted with Hyper-V below, and the input lock, the receipt, the marker and the guest credential stay bound.
+# The table is closed: ONE entry, from the sealed hash to the current hash. Any other pair fails closed, as before.
+$script:E1VmIdentityProfileAmendments = @(
+    [pscustomobject]@{ from_sha256 = '2d9bbe2b31b363197bdcc1e89292d21e7ad44a0f71ccc7627406d218cb7140b9'; to_sha256 = 'c8330a3f68d2df456ce8b32a953942897edf8451d8f556c7eb3bb3de41d8f81f' }
+)
+
+function Test-E1VmIdentityProfileBound([string]$RecordedSha256, [string]$CurrentSha256) {
+    if ($RecordedSha256 -ceq $CurrentSha256) { return $true }
+    foreach ($amendment in $script:E1VmIdentityProfileAmendments) {
+        if ($RecordedSha256 -ceq $amendment.from_sha256 -and $CurrentSha256 -ceq $amendment.to_sha256) { return $true }
+    }
+    return $false
+}
+
 function Get-Evidence1CanonicalE2EVmIdentity {
     [CmdletBinding()]
     param(
@@ -112,7 +133,7 @@ function Get-Evidence1CanonicalE2EVmIdentity {
     ) 'vm_identity_inspection_invalid'
     $vmId = ([string]$inspection.vm_id).ToLowerInvariant()
     if ($inspection.schema -ne 1 -or $inspection.verdict -cne 'PASS' -or $inspection.mode -cne 'InspectCreated' -or
-        $inspection.profile_id -cne $profile.profile_id -or $inspection.profile_sha256 -cne $profileReceipt.sha256 -or
+        $inspection.profile_id -cne $profile.profile_id -or -not (Test-E1VmIdentityProfileBound ([string]$inspection.profile_sha256) ([string]$profileReceipt.sha256)) -or
         [string]$inspection.input_lock_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
         $vmId -cnotmatch '^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$' -or
         $inspection.vm_state -cne 'Off' -or $inspection.vhd_partition_style -cne 'RAW' -or
@@ -132,7 +153,7 @@ function Get-Evidence1CanonicalE2EVmIdentity {
     ) 'vm_identity_custody_invalid'
     if ($marker.schema -ne 1 -or $marker.profile_id -cne $profile.profile_id -or
         ([string]$marker.vm_id).ToLowerInvariant() -cne $vmId -or
-        $marker.profile_sha256 -cne $profileReceipt.sha256 -or
+        -not (Test-E1VmIdentityProfileBound ([string]$marker.profile_sha256) ([string]$profileReceipt.sha256)) -or
         $marker.input_lock_sha256 -cne $inspection.input_lock_sha256 -or
         $marker.created_inspection_receipt_sha256 -cne $inspectionReceipt.sha256 -or
         [string]$marker.guest_credential_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
