@@ -1483,6 +1483,36 @@ never selectable.
 `aggregate`/`analyze`/`validate`/`corpus`/`scope` never accept these flags — selection is a
 per-run-command concern, not a reporting one.
 
+### The `multi-module-tests` scenario family
+
+A scenario of family `multi-module-tests` has the agent run a project's tests across many Gradle
+modules and report what failed. Its ground truth is four fields of the scenario's `expected` block:
+`outcome_kind` (`tests_failed` or `tests_passed`), `failing_modules` (Gradle project paths such as
+`:core:data`), `failed_test_classes` (simple class names, no package) and `failed_count` (distinct
+failing test methods). The agent answers with a `KMP_EVAL_RESULT` block carrying exactly those four
+keys, and the grader compares them with the ground truth directly: a module without its leading
+colon is accepted, set order does not matter, class names are case-sensitive.
+
+What differs from every other family:
+
+- **No evidence binding.** A multi-module run spans many Gradle tasks, so no single kmp-test
+  envelope or JUnit result stands for the authoritative evidence. The terminal-evidence checks, the
+  first useful signal and `product_e2e_success` are reported as not applicable, with the reason
+  `multi_module_tests_family`.
+- **`success`** is the answer matching the ground truth AND at least one test command having run
+  (`kmp-test parallel` or `changed`, or a Gradle `test*` task). A correct answer without running
+  any tests never counts.
+- **Field names.** `outcome_assessment.task_outcome_mismatch_fields`, `task_field_correctness` and
+  the accepted-run audit's final-answer block use the four names above instead of the eight
+  historical ones, and the campaign summary's key facts are those four fields. Records of every
+  other family are unchanged.
+- **`fixture_setup.operation: "apply_patch"`** (this family only) applies a harness-owned patch from
+  the corpus's `fixtures/` directory to the pinned checkout with `git apply`, unstaged, and fails
+  closed unless exactly the declared `expected_paths` end up modified.
+- **`smoke`** (a block of the ground-truth file, this family only) carries `kmp_test_args`, the
+  scoped command of the product arm, and `warm_tasks`, the Gradle tasks an offline seed must warm.
+  The fake providers and the VM runbook read it.
+
 ## Fairness Contract
 
 `aggregate.mjs`/`schemas.mjs` refuse to fold runs into one aggregate unless they agree on every
@@ -1974,7 +2004,7 @@ planning/execution machinery `scenario-campaign-plan.mjs` (a pure, dependency-fr
 `--execution-profile` matrix (`run --execution-profile <id>` keeps working completely unchanged;
 see "Isolation" above for the profile registry itself).
 
-Three full campaign designs and four one-cell canary designs are currently supported. Every
+Seven full campaign designs and four one-cell canary designs are currently supported. Every
 design is bound to one runtime in the closed registry: `claude-*` designs require `claude-code`
 and `codex-*` designs require `codex-cli`. A mismatch is rejected before any runtime subprocess
 or source materialization, and the binding is design metadata rather than a new historical cell
@@ -2069,6 +2099,18 @@ and product-specific `KMP_EVAL_*`/`KMP_TEST_*` environment variables. It exits n
 counts/statuses only, never raw paths or environment values. This gate proves the baseline
 workspace/process surface is not product-visible; it does **not** prove the model lacks latent
 knowledge of `kmp-test-runner`.
+
+`claude-product-vs-free-n8-v1` and `codex-product-vs-free-n8-v1` are the counterbalanced
+eight-pair versions of the same product/control contrast: the same two cells, 8 repetitions,
+16 sessions each, bound to `claude-code` and `codex-cli` respectively. Like the baseline designs
+they are not tied to one scenario. Each cell opens four of the eight pairs:
+
+```text
+rep 0: A B    rep 4: B A
+rep 1: B A    rep 5: A B
+rep 2: B A    rep 6: A B
+rep 3: A B    rep 7: B A
+```
 
 ### Single-cell canary planning
 

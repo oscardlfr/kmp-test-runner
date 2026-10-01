@@ -31,6 +31,7 @@ import { classifyBashCommand } from './command-classify.mjs';
 import { assertCleanOrThrowObject } from './privacy.mjs';
 import { DISPATCH_STATUS_VALUES as BASH_DISPATCH_STATUS_VALUES } from './dispatch-accounting.mjs';
 import { canonicalJsonSha256 } from './canonical-json.mjs';
+import { MULTI_MODULE_TASK_FIELD_VALUES } from './outcome-assessment-contract.mjs';
 import {
   COVERAGE_GATE_ERROR_BUCKET_FIELDS,
   validateOutcomeObservabilitySummary,
@@ -264,6 +265,12 @@ const TERMINAL_FINAL_ANSWER_MISMATCH_FIELD_VALUES = [
   'threshold',
   'modules_contributing',
 ];
+// The multi-module-tests family's own vocabularies (PLAN.md D4): its answer declares tests_failed or tests_passed and
+// its fields are its own four names. Selected by the record's family (validateAcceptedRunAuditSidecar's `family`
+// option), so no other family's sidecar can carry them: the lists above stay exactly as they were for every other family.
+const MULTI_MODULE_FAMILY = 'multi-module-tests';
+const MULTI_MODULE_DECLARED_OUTCOME_KIND_VALUES = ['tests_failed', 'tests_passed'];
+
 const TERMINAL_COVERAGE_GATE_DIAGNOSTIC_VALUES = [
   'not-applicable',
   'matched',
@@ -693,25 +700,27 @@ function validateNullableOutcomeKind(value, field, errors) {
   }
 }
 
-function validateNullableDeclaredOutcomeKind(value, field, errors) {
-  if (value !== null && value !== 'unrecognized' && !TERMINAL_OUTCOME_KIND_VALUES.includes(value)) {
-    errors.push({ field, message: `must be null, unrecognized, or one of ${TERMINAL_OUTCOME_KIND_VALUES.join('|')}` });
+function validateNullableDeclaredOutcomeKind(value, field, errors, family) {
+  const allowed = family === MULTI_MODULE_FAMILY ? MULTI_MODULE_DECLARED_OUTCOME_KIND_VALUES : TERMINAL_OUTCOME_KIND_VALUES;
+  if (value !== null && value !== 'unrecognized' && !allowed.includes(value)) {
+    errors.push({ field, message: `must be null, unrecognized, or one of ${allowed.join('|')}` });
   }
 }
 
-function validateFieldNameArray(value, field, errors) {
+function validateFieldNameArray(value, field, errors, family) {
   if (!Array.isArray(value)) {
     errors.push({ field, message: 'must be an array' });
     return;
   }
+  const allowed = family === MULTI_MODULE_FAMILY ? MULTI_MODULE_TASK_FIELD_VALUES : TERMINAL_FINAL_ANSWER_MISMATCH_FIELD_VALUES;
   for (const [i, item] of value.entries()) {
-    if (!TERMINAL_FINAL_ANSWER_MISMATCH_FIELD_VALUES.includes(item)) {
-      errors.push({ field: `${field}[${i}]`, message: `must be one of ${TERMINAL_FINAL_ANSWER_MISMATCH_FIELD_VALUES.join('|')}` });
+    if (!allowed.includes(item)) {
+      errors.push({ field: `${field}[${i}]`, message: `must be one of ${allowed.join('|')}` });
     }
   }
 }
 
-function validateFinalAnswerBlock(finalBlock, field, errors, schema) {
+function validateFinalAnswerBlock(finalBlock, field, errors, schema, family) {
   if (finalBlock == null || typeof finalBlock !== 'object' || Array.isArray(finalBlock)) {
     errors.push({ field, message: 'must be an object' });
     return;
@@ -730,10 +739,10 @@ function validateFinalAnswerBlock(finalBlock, field, errors, schema) {
   if (!TERMINAL_FINAL_ANSWER_COMPARISON_STATUS_VALUES.includes(finalBlock.comparison_status)) {
     errors.push({ field: `${field}.comparison_status`, message: `must be one of ${TERMINAL_FINAL_ANSWER_COMPARISON_STATUS_VALUES.join('|')}` });
   }
-  validateNullableDeclaredOutcomeKind(finalBlock.declared_outcome_kind, `${field}.declared_outcome_kind`, errors);
+  validateNullableDeclaredOutcomeKind(finalBlock.declared_outcome_kind, `${field}.declared_outcome_kind`, errors, family);
   validateNullableOutcomeKind(finalBlock.observed_outcome_kind, `${field}.observed_outcome_kind`, errors);
-  validateFieldNameArray(finalBlock.missing_fields, `${field}.missing_fields`, errors);
-  validateFieldNameArray(finalBlock.mismatch_fields, `${field}.mismatch_fields`, errors);
+  validateFieldNameArray(finalBlock.missing_fields, `${field}.missing_fields`, errors, family);
+  validateFieldNameArray(finalBlock.mismatch_fields, `${field}.mismatch_fields`, errors, family);
   if (!(Number.isInteger(finalBlock.unexpected_key_count) && finalBlock.unexpected_key_count >= 0)) {
     errors.push({ field: `${field}.unexpected_key_count`, message: 'must be a non-negative integer' });
   }
@@ -886,7 +895,7 @@ function validateCoverageGateAttempts(coverageGateAttempts, field, errors, toolC
   }
 }
 
-function validateTerminalEvidence(terminalEvidence, field, errors, schema) {
+function validateTerminalEvidence(terminalEvidence, field, errors, schema, family) {
   if (terminalEvidence == null || typeof terminalEvidence !== 'object' || Array.isArray(terminalEvidence)) {
     errors.push({ field, message: 'must be an object' });
     return;
@@ -940,7 +949,7 @@ function validateTerminalEvidence(terminalEvidence, field, errors, schema) {
     }
   }
 
-  validateFinalAnswerBlock(terminalEvidence.final_answer_block, `${field}.final_answer_block`, errors, schema);
+  validateFinalAnswerBlock(terminalEvidence.final_answer_block, `${field}.final_answer_block`, errors, schema, family);
   if ((schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V7 || schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8 || schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9 || schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V10)
     && !TERMINAL_COVERAGE_GATE_DIAGNOSTIC_VALUES.includes(terminalEvidence.coverage_gate_diagnostic)) {
     errors.push({ field: `${field}.coverage_gate_diagnostic`, message: `must be one of ${TERMINAL_COVERAGE_GATE_DIAGNOSTIC_VALUES.join('|')}` });
@@ -958,9 +967,12 @@ function validateTerminalEvidence(terminalEvidence, field, errors, schema) {
  * terminal_authoritative_event correlates to a real tool_calls[] entry's own result index (the
  * only terminal-event coherence check achievable without a second, independent record field to
  * compare against -- see crossValidateAcceptedRunAuditAgainstRecord for the record-comparison half).
+ * `family` (optional, the record's family): the multi-module-tests family has its own declared outcome kinds and
+ * final-answer field names, so only a sidecar validated with that family accepts them; with no family (or any
+ * other) the closed lists are exactly the ones every other family has always had.
  * @returns {{errors: Array<{field:string,message:string}>, warnings: Array}}
  */
-export function validateAcceptedRunAuditSidecar(sidecar) {
+export function validateAcceptedRunAuditSidecar(sidecar, { family } = {}) {
   const errors = [];
   const warnings = [];
   if (sidecar == null || typeof sidecar !== 'object' || Array.isArray(sidecar)) {
@@ -1308,7 +1320,7 @@ export function validateAcceptedRunAuditSidecar(sidecar) {
     errors.push({ field: 'summary.dispatch_unaccounted_total', message: 'must be exactly 0 -- a sidecar only ever accompanies an accepted run, so every Bash-family attempt must have a correlated result or a recognized pre-dispatch block' });
   }
   if (hasTerminalEvidence) {
-    validateTerminalEvidence(sidecar.terminal_evidence, 'terminal_evidence', errors, sidecar.schema);
+    validateTerminalEvidence(sidecar.terminal_evidence, 'terminal_evidence', errors, sidecar.schema, family);
     if ((schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V8 || schema === ACCEPTED_AUDIT_SIDECAR_SCHEMA_V9 || isV10) && sidecar.terminal_evidence != null && typeof sidecar.terminal_evidence === 'object' && !Array.isArray(sidecar.terminal_evidence)) {
       validateCoverageGateAttempts(sidecar.terminal_evidence.coverage_gate_attempts, 'terminal_evidence.coverage_gate_attempts', errors, toolCalls, sidecar.terminal_authoritative_event, schema);
     }

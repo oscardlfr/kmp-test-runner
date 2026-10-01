@@ -229,7 +229,8 @@ condition, 16 sessions), claude-product-vs-free-baseline-v1 (product-assisted vs
 free-baseline/no-product, 8 sessions), claude-product-vs-free-baseline-v2 (the frozen three-pair
 product/control order, 6 sessions), codex-product-vs-free-baseline-v1 (the same product/control
 contrast, 6 sessions), codex-product-vs-free-baseline-v2 (balanced four-pair product/control,
-8 sessions), claude-product-canary-v1 and claude-free-baseline-canary-v1
+8 sessions), claude-product-vs-free-n8-v1 and codex-product-vs-free-n8-v1 (counterbalanced
+eight-pair product/control, 16 sessions each), claude-product-canary-v1 and claude-free-baseline-canary-v1
 (one session each), and codex-product-canary-v1 and codex-free-baseline-canary-v1 (one session
 each); all canaries require --scenario coverage-threshold-failure-v2. Every claude-* design is
 bound to claude-code and every codex-* design to codex-cli; a mismatch fails before runtime
@@ -1377,7 +1378,8 @@ function buildRunRecord({
           gradeResult.firstUsefulSignalEventIndex != null
             ? msSinceOrigin(observation.timing.receiptNsByEventIndex.get(gradeResult.firstUsefulSignalEventIndex), observation.process.spawnHrtimeNs)
             : null,
-          gradeResult.firstUsefulSignalEventIndex == null ? 'no correlated authoritative outcome event found' : undefined,
+          // A family with no authoritative terminal evidence (multi-module-tests) names that in the reason.
+          gradeResult.firstUsefulSignalEventIndex == null ? (gradeResult.notApplicableReason ?? 'no correlated authoritative outcome event found') : undefined,
         )
       : nullableMetric(null, `${runKind} run -- no first-useful-signal predicate applies`),
     first_useful_signal_event: isScenario && gradeResult.firstUsefulSignalEventIndex != null
@@ -3582,6 +3584,13 @@ async function cmdSmoke(args) {
   }
 }
 
+/** The multi-module-tests family keeps a `smoke` block in its ground-truth file. Every other family's
+ * ground truth has none, and its merged scenario must not gain a `smoke` key (not even an undefined
+ * one: validateScenario would report it as an unrecognized field). */
+function smokeOf(groundTruth) {
+  return groundTruth != null && groundTruth.smoke !== undefined ? { smoke: groundTruth.smoke } : {};
+}
+
 /**
  * Loads and validates one scenario by id, merging the committed corpus/scenarios/<id>.json
  * (task -- id, family, project_alias/url/commit, prompt, policy, fixture_setup, tags: everything a
@@ -3640,7 +3649,7 @@ function loadScenarioById(scenarioId) {
   } else {
     return { ok: false, reason: `no ground-truth file found for --scenario ${scenarioId} (expected ${expectedPath}, and the task file carries no inline expected block either)` };
   }
-  const scenario = { ...task, expected_outcome: groundTruth.expected_outcome, expected: groundTruth.expected, first_useful_signal_predicate: groundTruth.first_useful_signal_predicate };
+  const scenario = { ...task, expected_outcome: groundTruth.expected_outcome, expected: groundTruth.expected, first_useful_signal_predicate: groundTruth.first_useful_signal_predicate, ...smokeOf(groundTruth) };
   const { errors } = validateScenario(scenario);
   if (errors.length > 0) {
     return { ok: false, reason: `scenario file for ${scenarioId} failed schema validation: ${JSON.stringify(errors)}` };
@@ -4678,7 +4687,7 @@ function mergeExpectedIntoLoadedScenarios(loaded, expectedDir) {
     } catch (err) {
       return { file: entry.file, parseError: `ground truth for ${entry.scenario.id} is not valid JSON: ${err.message}` };
     }
-    return { file: entry.file, scenario: { ...entry.scenario, expected_outcome: groundTruth.expected_outcome, expected: groundTruth.expected, first_useful_signal_predicate: groundTruth.first_useful_signal_predicate } };
+    return { file: entry.file, scenario: { ...entry.scenario, expected_outcome: groundTruth.expected_outcome, expected: groundTruth.expected, first_useful_signal_predicate: groundTruth.first_useful_signal_predicate, ...smokeOf(groundTruth) } };
   });
 }
 

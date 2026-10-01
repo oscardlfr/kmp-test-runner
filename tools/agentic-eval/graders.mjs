@@ -30,6 +30,7 @@ import { classifyBashCommand, normalizeModuleName } from './command-classify.mjs
 import { matchModuleFilter } from '../../lib/orchestrators/module-filter.js';
 import { summarizeCoverageGateErrors } from './coverage-gate-observability.mjs';
 import { LATEST_OUTCOME_ASSESSMENT_SCHEMA, TASK_OUTCOME_MISMATCH_FIELD_VALUES } from './outcome-assessment-contract.mjs';
+import { gradeMultiModuleScenario } from './graders-multi-module.mjs';
 import { GRADING_CHECK_NAMES } from './grading-contract.mjs';
 
 export { GRADING_CHECK_NAMES } from './grading-contract.mjs';
@@ -1929,7 +1930,7 @@ const KMP_EVAL_RESULT_BLOCK_RE = /^[ \t]*KMP_EVAL_RESULT[ \t]*\r?\n([\s\S]*?)^[ 
  * kmp-test envelope with two conforming candidates is untrustworthy, never resolved by picking
  * one; `parsed:null` (with `found:true`, `ambiguous:false`) when exactly one block exists but its
  * content is not valid JSON. */
-function extractKmpEvalResultBlock(text) {
+export function extractKmpEvalResultBlock(text) {
   if (typeof text !== 'string' || text.length === 0) return { found: false, parsed: null, ambiguous: false };
   const rawMatches = [...text.matchAll(KMP_EVAL_RESULT_BLOCK_RE)];
   if (rawMatches.length === 0) return { found: false, parsed: null, ambiguous: false };
@@ -2672,6 +2673,13 @@ export function gradeScenarioCondition(conditionResult, scenario) {
   // attempt, so two attempts dispatched in the same turn (e.g. one allowed, one denied) silently
   // collided into one map slot (see attributeCondition's own doc comment for the full incident).
   const { ambiguousJunitEvidence, captureIncomplete: gradleJunitEvidenceCaptureIncomplete, unreliable: gradleJunitEvidenceUnreliable } = junitAttribution;
+
+  // The multi-module-tests family (PLAN.md D4, D5) grades the final answer against the ground truth and has no
+  // terminal tool evidence to bind it to: it takes its own path from here, after the three integrity checks
+  // above, which apply to every family. Every other family continues below, untouched.
+  if (scenario.family === 'multi-module-tests') {
+    return gradeMultiModuleScenario({ scenario, observation, bashResults, checks, junitAttribution });
+  }
 
   // Evaluate every attempt capable of producing target evidence, from either provider, in
   // transcript order -- excludes --dry-run entirely (evaluateKmpTestAttempt/evaluateGradleAttempt

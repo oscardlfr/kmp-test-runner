@@ -25,6 +25,7 @@ import { fileURLToPath } from 'node:url';
 import { validateRun } from './schemas.mjs';
 import { validateAcceptedRunAuditSidecar, crossValidateAcceptedRunAuditAgainstRecord } from './accepted-run-audit.mjs';
 import { analyzeRunRecord, summarizeNumericValues, buildTaskFieldCorrectness } from './analysis.mjs';
+import { MULTI_MODULE_TASK_FIELD_VALUES } from './outcome-assessment-contract.mjs';
 
 // Schema 2 (Evidence2): adds provenance.reasoning_effort, a per-runtime {values, mixed} tracker
 // sourced from each accepted cell's own reasoning_effort_requested (schema v9 recording field) --
@@ -66,9 +67,21 @@ function qualifiesForD3NegativeReclassification(runtimeId, rejectionCell) {
 // admitting 'not-applicable' would only ever open a loophole for a future scenario, never reflect
 // a real exemption for this one. 'not-observed' (claim-missing) is also a miss, not a pass.
 const KEY_FACTS_FIELDS = Object.freeze(['module', 'outcome_kind', 'missed_lines', 'threshold']);
+// The multi-module-tests family answers with its own four fields (PLAN.md D4), so its key facts are those four,
+// each exactly 'matched' by the same strict rule; every other family keeps KEY_FACTS_FIELDS above.
+const KEY_FACTS_FIELDS_BY_FAMILY = Object.freeze({ 'multi-module-tests': MULTI_MODULE_TASK_FIELD_VALUES });
 
-function isKeyFactsMatch(taskFieldCorrectness) {
-  return taskFieldCorrectness != null && KEY_FACTS_FIELDS.every((field) => taskFieldCorrectness[field] === 'matched');
+function isKeyFactsMatch(taskFieldCorrectness, family) {
+  const fields = KEY_FACTS_FIELDS_BY_FAMILY[family] ?? KEY_FACTS_FIELDS;
+  return taskFieldCorrectness != null && fields.every((field) => taskFieldCorrectness[field] === 'matched');
+}
+
+/** The family every accepted cell of this campaign agrees on, or null when none is accepted or they disagree.
+ * A rejected cell carries no family of its own, and key facts of a D3-reclassified cell (no claim at all) are
+ * false whichever field list applies; this only picks the list. */
+function campaignFamilyOf(loadedCells) {
+  const families = new Set(loadedCells.filter((c) => c.loaded.status === 'accepted').map((c) => c.loaded.record.family));
+  return families.size === 1 ? [...families][0] : null;
 }
 
 function armFor(condition) {
@@ -149,7 +162,8 @@ function loadCell(privateRoot, cellKey) {
 
     const recordShape = validateRun(record);
     if (recordShape.errors.length > 0) return { status: 'missing', reason: 'record_shape_invalid' };
-    const auditShape = validateAcceptedRunAuditSidecar(audit);
+    // The record's family selects the final-answer vocabularies (the multi-module-tests family has its own).
+    const auditShape = validateAcceptedRunAuditSidecar(audit, { family: record.family });
     if (auditShape.errors.length > 0) return { status: 'missing', reason: 'audit_shape_invalid' };
     const crossErrors = crossValidateAcceptedRunAuditAgainstRecord(audit, record);
     if (crossErrors.length > 0) return { status: 'missing', reason: 'record_audit_cross_validation_failed' };
@@ -546,6 +560,7 @@ export function summarizeCampaign(campaignDir, excludeCellKeys = new Set(), { ac
 
   const byRuntimeArm = [];
   const cellRows = [];
+  const campaignFamily = campaignFamilyOf(loadedCells);
 
   for (const key of sortedGroupKeys) {
     const group = groups.get(key);
@@ -571,7 +586,7 @@ export function summarizeCampaign(campaignDir, excludeCellKeys = new Set(), { ac
         acceptedCount += 1;
         counted.push(cell);
         const e = cell.loaded.entry;
-        keyFactsMatch = isKeyFactsMatch(e.task_field_correctness);
+        keyFactsMatch = isKeyFactsMatch(e.task_field_correctness, cell.loaded.record.family);
         fullAnswerMatch = e.task_outcome_matched === true;
         if (keyFactsMatch) keyFactsMatches += 1;
         if (fullAnswerMatch) fullAnswerMatches += 1;
@@ -584,8 +599,8 @@ export function summarizeCampaign(campaignDir, excludeCellKeys = new Set(), { ac
         status = 'negative-d3';
         negativeD3Count += 1;
         counted.push(cell);
-        const correctness = buildTaskFieldCorrectness(cell.loaded.rejectionCell.outcome_assessment, null);
-        keyFactsMatch = isKeyFactsMatch(correctness);
+        const correctness = buildTaskFieldCorrectness(cell.loaded.rejectionCell.outcome_assessment, null, campaignFamily);
+        keyFactsMatch = isKeyFactsMatch(correctness, campaignFamily);
         fullAnswerMatch = cell.loaded.rejectionCell.outcome_assessment?.task_outcome_matched === true;
         if (keyFactsMatch) keyFactsMatches += 1;
         if (fullAnswerMatch) fullAnswerMatches += 1;

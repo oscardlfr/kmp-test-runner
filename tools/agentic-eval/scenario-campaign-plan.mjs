@@ -30,6 +30,20 @@ const PRODUCT_CONTROL_CELLS = Object.freeze({
   B: Object.freeze({ execution_profile_id: 'sandboxed-unrestricted-v1', condition: 'no-skill', product_access_mode: 'free-baseline-no-product' }),
 });
 
+// Eight counterbalanced product/control pairs (Evidence3, multi-module-tests family). Each cell opens
+// four of the eight pairs; the first four pairs are the balanced four-pair order the baseline-v2 and
+// baseline-v1 designs already use. One constant, so the Claude and Codex designs cannot drift apart.
+const PRODUCT_CONTROL_N8_ORDER = Object.freeze([
+  Object.freeze(['A', 'B']),
+  Object.freeze(['B', 'A']),
+  Object.freeze(['B', 'A']),
+  Object.freeze(['A', 'B']),
+  Object.freeze(['B', 'A']),
+  Object.freeze(['A', 'B']),
+  Object.freeze(['A', 'B']),
+  Object.freeze(['B', 'A']),
+]);
+
 /** Closed registry of campaign designs. Each design is a fixed 2-axis (execution profile x skill
  * condition) cell definition set (`cellDefinitions`, keyed by a short label) plus a literal,
  * pre-registered per-repetition dispatch ORDER of those labels (`order`, one array per repetition,
@@ -98,6 +112,20 @@ const CAMPAIGN_DESIGNS = Object.freeze({
       Object.freeze(['B', 'A']),
       Object.freeze(['A', 'B']),
     ]),
+  }),
+  'claude-product-vs-free-n8-v1': Object.freeze({
+    id: 'claude-product-vs-free-n8-v1',
+    runtime_id: 'claude-code',
+    repeats: 8,
+    cellDefinitions: PRODUCT_CONTROL_CELLS,
+    order: PRODUCT_CONTROL_N8_ORDER,
+  }),
+  'codex-product-vs-free-n8-v1': Object.freeze({
+    id: 'codex-product-vs-free-n8-v1',
+    runtime_id: 'codex-cli',
+    repeats: 8,
+    cellDefinitions: PRODUCT_CONTROL_CELLS,
+    order: PRODUCT_CONTROL_N8_ORDER,
   }),
   'claude-product-canary-v1': Object.freeze({
     id: 'claude-product-canary-v1',

@@ -41,3 +41,16 @@ export function outcomeAssessmentKeysFor(schema) {
   if (schema === OUTCOME_ASSESSMENT_SCHEMA_V2) return OUTCOME_ASSESSMENT_KEYS_V2;
   return null;
 }
+
+// The multi-module-tests family answers with a set of Gradle modules, a set of test class simple
+// names and a count of distinct failing methods (PLAN.md D4), so its mismatch names are its own
+// closed list. TASK_OUTCOME_MISMATCH_FIELD_VALUES above is unchanged: a record of any other family
+// still gets exactly today's eight names.
+export const MULTI_MODULE_TASK_FIELD_VALUES = Object.freeze([
+  'outcome_kind', 'failing_modules', 'failed_test_classes', 'failed_count',
+]);
+
+/** The closed list of mismatch field names a record of `family` may carry. */
+export function taskOutcomeMismatchFieldValuesFor(family) {
+  return family === 'multi-module-tests' ? MULTI_MODULE_TASK_FIELD_VALUES : TASK_OUTCOME_MISMATCH_FIELD_VALUES;
+}

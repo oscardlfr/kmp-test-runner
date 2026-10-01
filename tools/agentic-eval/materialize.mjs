@@ -11,6 +11,7 @@ import { randomBytes, createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, dirname, basename, isAbsolute, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { resolveBash } from './resolve-bash.mjs';
 import { isWithinOrEqualCanonical } from './policy-hook.mjs';
 
@@ -553,21 +554,100 @@ export function isExactlyOneUnstagedModificationAt(porcelainOutput, relativePath
   return line.slice(3) === relativePath;
 }
 
+/** Pure postcondition check for `apply_patch`, directly unit-testable with synthetic
+ * `git status --porcelain` text: true only when the ENTIRE output is one UNSTAGED modification
+ * (` M `) for each expected path -- in any order, each exactly once -- and nothing else (no staged,
+ * untracked, deleted, renamed or extra entry). */
+export function isExactlyUnstagedModificationsAt(porcelainOutput, relativePaths) {
+  if (!Array.isArray(relativePaths) || relativePaths.length === 0 || new Set(relativePaths).size !== relativePaths.length) return false;
+  const lines = String(porcelainOutput ?? '').split(/\r?\n/).filter((l) => l.length > 0);
+  if (lines.length !== relativePaths.length) return false;
+  if (!lines.every((l) => l.startsWith(' M '))) return false;
+  const got = new Set(lines.map((l) => l.slice(3)));
+  return got.size === relativePaths.length && relativePaths.every((p) => got.has(p));
+}
+
+// `apply_patch` (multi-module-tests family): the patch is a harness-owned file at
+// <corpus root>/fixtures/<patch_file>, the corpus root being the parent of the scenarios directory
+// (KMP_EVAL_SCENARIOS_DIR is honored exactly as cli.mjs resolves its own SCENARIOS_DIR).
+const APPLY_PATCH_FILE_RE = /^[a-z0-9-]+\.patch$/;
+
+/** Defense in depth, mirroring schemas.mjs's own safe-relative-path rule: never trust the
+ * already-schema-validated `expected_paths` strings alone. */
+function isSafeRelativePosixPath(p) {
+  if (typeof p !== 'string' || p.length === 0 || p.includes('\\') || p.startsWith('/') || /^[A-Za-z]:/.test(p)) return false;
+  return p.split('/').every((seg) => seg !== '.' && seg !== '..' && /^[A-Za-z0-9._-]+$/.test(seg));
+}
+
+function applyPatchFixtureSetup({ fixtureDir, fixtureSetup, scenariosDir }) {
+  const patchFile = fixtureSetup.patch_file;
+  const expectedPaths = fixtureSetup.expected_paths;
+  // Fail closed BEFORE any git/file I/O.
+  if (typeof patchFile !== 'string' || !APPLY_PATCH_FILE_RE.test(patchFile)) {
+    throw new Error(`fixture_setup.patch_file must be a bare lowercase .patch file name, got: ${JSON.stringify(patchFile)}`);
+  }
+  if (!Array.isArray(expectedPaths) || expectedPaths.length === 0 || new Set(expectedPaths).size !== expectedPaths.length || !expectedPaths.every(isSafeRelativePosixPath)) {
+    throw new Error('fixture_setup.expected_paths must be a non-empty, duplicate-free array of safe repo-relative POSIX paths');
+  }
+
+  const statusBefore = runGitViaBash(['status', '--porcelain'], fixtureDir);
+  if (statusBefore.trim() !== '') {
+    throw new Error(`fixture_setup precondition failed: working tree not clean before mutation:\n${statusBefore}`);
+  }
+
+  const scenariosRoot = scenariosDir ?? (process.env.KMP_EVAL_SCENARIOS_DIR || join(dirname(fileURLToPath(import.meta.url)), 'corpus', 'scenarios'));
+  const fixturesDir = join(dirname(scenariosRoot), 'fixtures');
+  const patchPath = join(fixturesDir, patchFile);
+  // Only the bare file name appears in any message: the corpus location is a host path.
+  if (!existsSync(patchPath)) {
+    throw new Error(`fixture_setup patch not found in the corpus fixtures directory: ${patchFile}`);
+  }
+  if (!isWithinOrEqualCanonical(realpathSync(fixturesDir), realpathSync(patchPath))) {
+    throw new Error(`fixture_setup patch resolves outside the corpus fixtures directory: ${patchFile}`);
+  }
+
+  const patchArg = toPosixPath(patchPath);
+  const withoutPath = (message) => String(message).split(patchArg).join(patchFile);
+  try {
+    runGitViaBash(['apply', '--check', patchArg], fixtureDir);
+  } catch (err) {
+    throw new Error(`fixture_setup apply_patch: ${patchFile} does not apply to the pinned checkout: ${withoutPath(err.message)}`);
+  }
+  try {
+    runGitViaBash(['apply', patchArg], fixtureDir);
+  } catch (err) {
+    throw new Error(`fixture_setup apply_patch: git apply of ${patchFile} failed after a passing check: ${withoutPath(err.message)}`);
+  }
+
+  const statusAfter = runGitViaBash(['status', '--porcelain'], fixtureDir);
+  if (!isExactlyUnstagedModificationsAt(statusAfter, expectedPaths)) {
+    const err = new Error(`fixture_setup postcondition failed: expected exactly one unstaged modification at each of ${expectedPaths.join(', ')}, got:\n${statusAfter}`);
+    err.code = 'fixture_setup_postcondition_failed';
+    throw err;
+  }
+}
+
 /**
  * Applies (or re-applies, on a freshly-reset worktree) a scenario's `fixture_setup` mutation --
  * called from matrix-runner.mjs's runSingleCondition, immediately after materializeFixture's own
  * clean/reset and before spawnCondition. Because materializeFixture always yields a byte-for-byte
  * pristine tree first, re-running this on every repetition x condition is naturally idempotent --
  * no undo logic needed, and every cell reproduces an identical diff.
- * @param {{fixtureDir: string, fixtureSetup: {operation: string, relative_path: string, expected_blob_oid: string}}} opts
+ * @param {{fixtureDir: string, fixtureSetup: object, scenariosDir?: string}} opts `fixtureSetup` is
+ *   `{operation:'append_comment', relative_path, expected_blob_oid}` or
+ *   `{operation:'apply_patch', patch_file, expected_paths}`; `scenariosDir` (apply_patch only)
+ *   defaults to KMP_EVAL_SCENARIOS_DIR, else the committed corpus/scenarios directory.
  */
-export function applyFixtureSetup({ fixtureDir, fixtureSetup }) {
+export function applyFixtureSetup({ fixtureDir, fixtureSetup, scenariosDir }) {
+  if (fixtureSetup.operation === 'apply_patch') {
+    applyPatchFixtureSetup({ fixtureDir, fixtureSetup, scenariosDir });
+    return;
+  }
   // Fail closed BEFORE any git/file I/O -- never trust that the caller already validated this
   // against schemas.mjs's own closed FIXTURE_SETUP_OPERATION_VALUES enum (a post-open-PR review
-  // found this exact gap: the enum currently closes to exactly one value, but this exported
-  // primitive itself never re-checked it, so a future second enum value -- or any caller bypassing
-  // schema validation -- would silently fall through to the append_comment mutation below no matter
-  // what `operation` actually said).
+  // found this exact gap: this exported primitive itself never re-checked it, so a future enum
+  // value -- or any caller bypassing schema validation -- would silently fall through to the
+  // append_comment mutation below no matter what `operation` actually said).
   if (fixtureSetup.operation !== 'append_comment') {
     throw new Error(`fixture_setup.operation not supported by this harness: ${fixtureSetup.operation}`);
   }

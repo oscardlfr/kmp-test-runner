@@ -86,7 +86,7 @@ export function validateAcceptedAuditOnDisk(runPath, record) {
     errors.push({ field: 'accepted_audit', message: 'sidecar file is not valid JSON' });
     return { errors, sidecar: null };
   }
-  const { errors: shapeErrors } = validateAcceptedRunAuditSidecar(sidecarObj);
+  const { errors: shapeErrors } = validateAcceptedRunAuditSidecar(sidecarObj, { family: record.family });
   errors.push(...shapeErrors.map((e) => ({ field: `accepted_audit.sidecar.${e.field}`, message: e.message })));
   // Cross-validation is skipped once the sidecar's own shape is already invalid (review finding
   // 5) -- a null/scalar/array sidecar root (valid JSON, but not a real sidecar object) is caught
