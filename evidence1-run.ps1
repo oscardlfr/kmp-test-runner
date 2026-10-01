@@ -850,8 +850,15 @@ function Invoke-E1RunDryRunPassedState($Context) {
     # second hardcoded copy of the commit drifting out of sync with the scenario file.
     $scenarioPath = Join-Path $sourceRepoDir (Join-Path 'tools\agentic-eval\corpus\scenarios' ("$([string]$Context.Manifest.scenario_id).json"))
     if (-not (Test-Path -LiteralPath $scenarioPath -PathType Leaf)) { throw 'dry_run_passed_scenario_missing' }
-    $expectedSourceCommit = [string]((Get-Content -LiteralPath $scenarioPath -Raw | ConvertFrom-Json -ErrorAction Stop).project_commit)
+    $scenario = Get-Content -LiteralPath $scenarioPath -Raw | ConvertFrom-Json -ErrorAction Stop
+    $expectedSourceCommit = [string]$scenario.project_commit
     if ($expectedSourceCommit -notmatch '^[0-9a-f]{40}$') { throw 'dry_run_passed_expected_source_commit_invalid' }
+    # The scenario's family sizes the guest call. The coverage smoke is the 4-minute run this state has always
+    # made (1200 s); a multi-module-tests smoke applies the scenario's patch and runs kmp-test over a dozen
+    # modules inside the guest for up to 3300 s, so its bundle call gets 3600 s. The guest decides what a
+    # scenario id means from the scenario's own files and refuses what it cannot run (smoke_scenario_unsupported).
+    $isMultiModuleScenario = ([string]$scenario.family -ceq 'multi-module-tests')
+    $smokeTimeoutSeconds = $(if ($isMultiModuleScenario) { 3600 } else { 1200 })
     $smokeRoot = Join-Path ([string]$Context.Manifest.private_root) (Join-Path $Context.CampaignId 'provider-free-product-smoke')
     $transportArgs = Get-E1RunRealTransportArguments
     $smoke = Invoke-E1GuestBundle -VMName $Context.VMName -GuestCredentialPath $Context.GuestCredentialPath `
@@ -865,10 +872,18 @@ function Invoke-E1RunDryRunPassedState($Context) {
         ExpectedBinTreeHash = $expectedBinTreeHash
         ExpectedSkillsTreeHash = $expectedSkillsTreeHash
         ExpectedSourceCommit = $expectedSourceCommit
-      }) -TimeoutSeconds 1200 @transportArgs
+        ScenarioId = [string]$Context.Manifest.scenario_id
+      }) -TimeoutSeconds $smokeTimeoutSeconds @transportArgs
     $detail.provider_free_product_smoke = $smoke
+    # A multi-module-tests smoke must report what it observed in the envelope (the receipt is where the operator
+    # reads it); the coverage smoke has never returned these keys.
+    $observedReportMissing = $false
+    if ($isMultiModuleScenario -and $null -ne $smoke.output) {
+      $smokeOutputKeys = @(Get-E1RunPropertyNames $smoke.output)
+      $observedReportMissing = @(@('observed_failing_modules', 'observed_failed_test_classes', 'observed_failed_count') | Where-Object { $_ -cnotin $smokeOutputKeys }).Count -ne 0
+    }
     if ([string]$smoke.verdict -cne 'PASS' -or $null -eq $smoke.output -or
-        [string]$smoke.output.verdict -cne 'PASS' -or [int]$smoke.output.inference_sessions_consumed -ne 0) {
+        [string]$smoke.output.verdict -cne 'PASS' -or [int]$smoke.output.inference_sessions_consumed -ne 0 -or $observedReportMissing) {
       return New-E1RunStateReceipt -CampaignId $Context.CampaignId -StateName 'DryRunPassed' -Verdict 'FAIL' `
         -ReasonCode 'dry_run_product_smoke_failed' -Detail $detail
     }
