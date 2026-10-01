@@ -1,7 +1,8 @@
 // tests/vitest/agentic-eval-transcript-access-scan.test.js
 // Coverage for tools/agentic-eval/transcript-access-scan.mjs: at closure, scan the raw text of every
-// cell's transcript for the corpus, the preregistration and the private-evidence paths an agent must
-// never reach. Synthetic closure directories only; no network.
+// cell's transcript for the corpus, the preregistration, the private-evidence paths and the harness's own
+// test fixtures (which hold copies of a scenario's answer) that an agent must never reach. Synthetic closure
+// directories only; no network.
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -38,7 +39,7 @@ function transcript(dir, cellKey, lines) {
 }
 const cellOf = (scan, key) => scan.cells.find((c) => c.cell_key === key);
 
-describe('scanClosure -- the four patterns', () => {
+describe('scanClosure -- the patterns', () => {
   it('finds a corpus path written the way a JSON line holds a Windows path (every backslash doubled)', () => {
     const dir = closureDir();
     transcript(dir, 'claude-code-0', [String.raw`{"type":"tool_result","content":"C:\\kmp-eval\\h\\tools\\agentic-eval\\corpus\\expected\\x.json"}`]);
@@ -121,6 +122,64 @@ describe('scanClosure -- the four patterns', () => {
   });
 });
 
+describe('scanClosure -- the harness test fixtures that hold copies of a scenario\'s answer', () => {
+  it('finds a fixture path written the way a JSON line holds a Windows path, and the answer fixture inside it', () => {
+    const dir = closureDir();
+    transcript(dir, 'a', [
+      String.raw`{"content":"C:\\kmp-eval\\h\\tests\\fixtures\\agentic-eval-multi-module\\expected-draft.json"}`,
+    ]);
+    expect(cellOf(scanClosure(dir), 'a').hits).toEqual([{ label: 'harness_tests', count: 1 }, { label: 'answer_fixtures', count: 1 }]);
+  });
+
+  it.each(['fixtures', 'pester', 'vitest'])('finds tests/%s written with forward slashes, and nothing else under tests', (segment) => {
+    const dir = closureDir();
+    transcript(dir, 'a', [`{"p":"cat /home/u/h/tests/${segment}/x.json"}`]);
+    transcript(dir, 'b', ['{"p":"cat /home/u/h/tests/other/x.json"}']);
+    expect(cellOf(scanClosure(dir), 'a').hits).toEqual([{ label: 'harness_tests', count: 1 }]);
+    expect(cellOf(scanClosure(dir), 'b').hits).toEqual([]);
+  });
+
+  it('finds the answer fixtures by name alone, wherever the agent saw them', () => {
+    const dir = closureDir();
+    transcript(dir, 'a', ['{"p":"cat kmp-test-envelope-failing.json"}']);
+    transcript(dir, 'b', ['{"p":"grep -r agentic-eval-multi-module ."}']);
+    expect(cellOf(scanClosure(dir), 'a').hits).toEqual([{ label: 'answer_fixtures', count: 1 }]);
+    expect(cellOf(scanClosure(dir), 'b').hits).toEqual([{ label: 'answer_fixtures', count: 1 }]);
+  });
+
+  it('matches in any letter case', () => {
+    const dir = closureDir();
+    transcript(dir, 'a', ['{"p":"H/TESTS/Fixtures/X and KMP-TEST-ENVELOPE-FAILING"}']);
+    expect(cellOf(scanClosure(dir), 'a').hits).toEqual([{ label: 'harness_tests', count: 1 }, { label: 'answer_fixtures', count: 1 }]);
+  });
+
+  it('needs a separator before tests: a directory merely ending in tests is no hit', () => {
+    const dir = closureDir();
+    transcript(dir, 'a', ['{"p":"cat /home/u/contests/fixtures/x.json"}']);
+    expect(cellOf(scanClosure(dir), 'a').hits).toEqual([]);
+  });
+
+  it('is no hit on the project under test: its own test sources, test reports and test results', () => {
+    const dir = closureDir();
+    transcript(dir, 'a', [
+      '{"p":"core/data/src/test/kotlin/com/google/samples/apps/nowinandroid/core/data/repository/CompositeUserNewsResourceRepositoryTest.kt"}',
+      '{"p":"core/data/build/reports/tests/testDemoDebugUnitTest/index.html"}',
+      String.raw`{"p":"C:\\Users\\u\\nowinandroid\\feature\\bookmarks\\impl\\build\\reports\\tests\\testDemoDebugUnitTest\\index.html"}`,
+      '{"p":"feature/bookmarks/impl/build/test-results/testDemoDebugUnitTest/TEST-BookmarksViewModelTest.xml"}',
+    ]);
+    expect(cellOf(scanClosure(dir), 'a')).toEqual({ cell_key: 'a', scanned: true, hits: [] });
+  });
+
+  it('is no hit on a kmp-test stack-trace path inside the harness lib directory', () => {
+    const dir = closureDir();
+    transcript(dir, 'a', [
+      String.raw`{"content":"Error\n    at runGradle (C:\\kmp-eval\\h\\lib\\runner.js:184:9)\n    at async C:\\kmp-eval\\h\\lib\\orchestrators\\parallel.js:77:3"}`,
+      '{"content":"    at runGradle (/home/u/h/lib/runner.js:184:9)"}',
+    ]);
+    expect(cellOf(scanClosure(dir), 'a')).toEqual({ cell_key: 'a', scanned: true, hits: [] });
+  });
+});
+
 describe('scanClosure -- cells and output shape', () => {
   it('reports a cell whose transcript is missing as scanned:false with no hits', () => {
     const dir = closureDir();
@@ -146,7 +205,7 @@ describe('scanClosure -- cells and output shape', () => {
     transcript(dir, 'a', ['{}']);
     expect(scanClosure(dir)).toEqual({
       schema: 1, campaign_id: 'campaign-under-test',
-      patterns: ['corpus', 'preregistration', 'private_evidence', 'private_root'],
+      patterns: ['corpus', 'preregistration', 'private_evidence', 'harness_tests', 'answer_fixtures', 'private_root'],
       cells: [{ cell_key: 'a', scanned: true, hits: [] }],
     });
   });
@@ -154,7 +213,7 @@ describe('scanClosure -- cells and output shape', () => {
   it('leaves the private_root label out when the manifest has none', () => {
     const dir = closureDir({ campaign_id: 'c' });
     transcript(dir, 'a', ['{}']);
-    expect(scanClosure(dir).patterns).toEqual(['corpus', 'preregistration', 'private_evidence']);
+    expect(scanClosure(dir).patterns).toEqual(['corpus', 'preregistration', 'private_evidence', 'harness_tests', 'answer_fixtures']);
   });
 
   it('never carries the text it matched: only labels and counts', () => {

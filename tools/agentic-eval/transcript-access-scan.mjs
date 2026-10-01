@@ -3,8 +3,9 @@
 //
 // tools/agentic-eval/transcript-access-scan.mjs <closure-dir> -- at closure, scan the raw text of every
 // cell's transcript for the ground truth an agent must never have reached: the scenario corpus (expected
-// answers, scenarios, fixtures), the preregistration, and the private-evidence directories. The scan
-// reports, per cell, how many times each pattern matched; it never prints or keeps the text it matched.
+// answers, scenarios, fixtures), the preregistration, the private-evidence directories, and the harness's own
+// test fixtures, which hold copies of a scenario's answer. The scan reports, per cell, how many times each
+// pattern matched; it never prints or keeps the text it matched.
 // campaign-summary.mjs --access-scan excludes every cell with a hit.
 //
 // It reads `<closure-dir>/manifest.json` (for the campaign id and the campaign's own private root) and
@@ -24,10 +25,16 @@ const SEPARATOR = /[\\/]+/.source;
 
 // `Evidence1Private` is the guest prefix every run's private root shares, so a path into a SIBLING
 // campaign's private evidence is a hit too, not only this campaign's own.
+// The guest's harness checkout also holds copies of a scenario's answer outside the corpus: the harness's test
+// fixtures and Pester and vitest suites. `harness_tests` needs a separator before `tests` and one of the three
+// harness directories after it, so the project under test (`src/test/`, `build/reports/tests/<task>/`) is no
+// hit; `answer_fixtures` names the two fixture files that carry the multi-module answer.
 const FIXED_PATTERNS = Object.freeze([
   { label: 'corpus', source: `corpus${SEPARATOR}(?:expected|scenarios|fixtures)` },
   { label: 'preregistration', source: 'preregistration' },
   { label: 'private_evidence', source: 'Evidence1Private' },
+  { label: 'harness_tests', source: String.raw`[\\/]tests[\\/]+(?:fixtures|pester|vitest)[\\/]` },
+  { label: 'answer_fixtures', source: 'agentic-eval-multi-module|kmp-test-envelope-failing' },
 ]);
 
 function escapeRegExp(text) {

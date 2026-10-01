@@ -4,18 +4,24 @@
 // audit validators, their cross-validation, the cell-integrity gate, and then a closure directory read
 // by campaign-summary's loadCell and summarizeCampaign. Every rejection this test revealed was fixed for
 // this family only; the assertions below pin that every cell is accepted with its key facts.
+// The last two blocks drive cells through finalizeAcceptedRunAuditSidecar and finalizeAndWriteMatrixRecords, the two
+// steps cmdRun runs between the grader and the closure directory: a sidecar is validated there for its scenario
+// family, so a wrong answer is promoted as a cell with its key facts false instead of stopping the run.
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gradeScenarioCondition } from '../../tools/agentic-eval/graders.mjs';
-import { buildRunRecord, scenarioCellIntegrityOk, scenarioHardGate } from '../../tools/agentic-eval/cli.mjs';
+import {
+  buildRunRecord, finalizeAndWriteMatrixRecords, scenarioCellIntegrityOk, scenarioHardGate, validateRunRecordFile,
+} from '../../tools/agentic-eval/cli.mjs';
 import { resolveSelection } from '../../tools/agentic-eval/registries.mjs';
 import { validateRun, validateScenario } from '../../tools/agentic-eval/schemas.mjs';
 import {
-  buildAcceptedRunAuditSidecar, validateAcceptedRunAuditSidecar, crossValidateAcceptedRunAuditAgainstRecord,
+  acceptedAuditRelativePathFor, buildAcceptedRunAuditSidecar, crossValidateAcceptedRunAuditAgainstRecord,
+  finalizeAcceptedRunAuditSidecar, validateAcceptedRunAuditSidecar,
 } from '../../tools/agentic-eval/accepted-run-audit.mjs';
 import { computePolicySha256 } from '../../tools/agentic-eval/policy-config.mjs';
 import { summarizeCampaign } from '../../tools/agentic-eval/campaign-summary.mjs';
@@ -183,6 +189,11 @@ describe.each(CELLS)('multi-module-tests cell: $runtimeId / $condition', (cell) 
     expect(crossValidateAcceptedRunAuditAgainstRecord(JSON.parse(built.auditText), built.record)).toEqual([]);
   });
 
+  it('is finalized for its scenario family, the way promotion finalizes it', () => {
+    const finalized = finalizeAcceptedRunAuditSidecar(built.audit, { privatePatternsFile: null, family: built.record.family });
+    expect(finalized.ok, finalized.reason).toBe(true);
+  });
+
   it('passes the cell-integrity gate', () => {
     const cellIntegrity = scenarioCellIntegrityOk(built.record, built.conditionResult);
     expect(cellIntegrity.ok, JSON.stringify(cellIntegrity.checks?.filter((c) => c.passed === false))).toBe(true);
@@ -212,6 +223,12 @@ describe.each(WRONG_ANSWERS)('multi-module-tests cell with $label', (wrong) => {
     expect(block.mismatch_fields).toEqual(wrong.mismatch);
     expect(block.missing_fields).toEqual(wrong.missing);
     expect(block.declared_outcome_kind).toBe(wrong.declared);
+  });
+
+  it('is finalized for its scenario family, so promotion records it instead of failing', () => {
+    const finalized = finalizeAcceptedRunAuditSidecar(built.audit, { privatePatternsFile: null, family: built.record.family });
+    expect(finalized.ok, finalized.reason).toBe(true);
+    expect(finalized.redactedObj.terminal_evidence.final_answer_block.declared_outcome_kind).toBe(wrong.declared);
   });
 
   it('is still a valid, cross-validated, integrity-clean cell', () => {
@@ -273,5 +290,108 @@ describe('multi-module-tests -- a synthetic closure', () => {
       expect(group.accepted, `${group.runtime_id}/${group.arm}`).toBe(1);
       expect(group.key_facts_match, `${group.runtime_id}/${group.arm}`).toEqual({ matched: 1, of: 1 });
     }
+  });
+});
+
+describe('finalizeAcceptedRunAuditSidecar -- the scenario family', () => {
+  const wrongBuilt = produceCell({
+    runtimeId: 'codex-cli', condition: 'no-skill', orderIndex: 1,
+    finalText: answerText({ ...GOOD_ANSWER, failed_count: GOOD_ANSWER.failed_count + 1 }),
+  });
+
+  it('validates the sidecar against the family vocabularies, before and after redaction', () => {
+    const finalized = finalizeAcceptedRunAuditSidecar(wrongBuilt.audit, { family: wrongBuilt.record.family });
+    expect(finalized.ok, finalized.reason).toBe(true);
+    expect(JSON.parse(finalized.redactedText)).toEqual(finalized.redactedObj);
+  });
+
+  it('keeps validating without a family against the legacy vocabularies, as every other family always has', () => {
+    const finalized = finalizeAcceptedRunAuditSidecar(wrongBuilt.audit);
+    expect(finalized.ok).toBe(false);
+    expect(finalized.reason).toContain('sidecar failed schema validation before redaction');
+  });
+
+  it("is called with the record's family at every production site that validates a known cell's sidecar", () => {
+    const toolsDir = path.join(here, '..', '..', 'tools', 'agentic-eval');
+    const callSites = [];
+    for (const name of readdirSync(toolsDir).filter((n) => n.endsWith('.mjs'))) {
+      const source = readFileSync(path.join(toolsDir, name), 'utf8');
+      for (const match of source.matchAll(/\bvalidateAcceptedRunAuditSidecar\(([^;\n]*)/g)) {
+        if (/^\s*sidecar\b/.test(match[1])) continue; // the definition: validateAcceptedRunAuditSidecar(sidecar, { family } = {})
+        callSites.push(`${name}: validateAcceptedRunAuditSidecar(${match[1]}`);
+      }
+    }
+    expect(callSites.length).toBeGreaterThanOrEqual(4);
+    expect(callSites.filter((site) => !/family/.test(site))).toEqual([]);
+  });
+
+  it("is called by cmdRun's two promotion paths with the record's family", () => {
+    const cliSource = readFileSync(path.join(here, '..', '..', 'tools', 'agentic-eval', 'cli.mjs'), 'utf8');
+    const callSites = [...cliSource.matchAll(/finalizeAcceptedRunAuditSidecar\(builtSidecar, \{([^}]*)\}\)/g)].map((m) => m[1]);
+    expect(callSites).toHaveLength(2);
+    for (const args of callSites) expect(args).toMatch(/family:\s*record\.family/);
+  });
+});
+
+describe('multi-module-tests -- promotion of a wrong answer and of a correct one', () => {
+  /** What cmdRun's buildSidecars does for every record, with the same calls in the same order. */
+  function promotionSidecarBuilder(gradeResults) {
+    return async (recs, condResults) => {
+      const texts = [];
+      for (const [i, record] of recs.entries()) {
+        const builtSidecar = buildAcceptedRunAuditSidecar({
+          record, conditionResult: condResults[i],
+          terminalAuthoritativeEventIndex: gradeResults[i].terminalAuthoritativeEventIndex,
+          terminalEvidence: gradeResults[i].terminalEvidence ?? null,
+        });
+        const sidecarResult = finalizeAcceptedRunAuditSidecar(builtSidecar, { privatePatternsFile: null, family: record.family });
+        if (!sidecarResult.ok) return { ok: false, reason: `sidecar for record [${i}]: ${sidecarResult.reason}` };
+        record.accepted_audit = { schema: builtSidecar.schema, relative_path: acceptedAuditRelativePathFor(record.run_id), sha256: sidecarResult.sha256 };
+        texts.push(sidecarResult.redactedText);
+      }
+      return { ok: true, sidecarTexts: texts };
+    };
+  }
+
+  it('promotes both cells, and the closure summary keeps the wrong one with its key facts false', async () => {
+    const correct = produceCell({ runtimeId: 'claude-code', condition: 'current-skill', orderIndex: 0 });
+    const wrong = produceCell({
+      runtimeId: 'claude-code', condition: 'no-skill', orderIndex: 1,
+      finalText: answerText({ ...GOOD_ANSWER, failing_modules: GOOD_ANSWER.failing_modules.slice(1) }),
+    });
+    // produceCell attached a placeholder pointer to each record; promotion builds its own.
+    for (const cell of [correct, wrong]) delete cell.record.accepted_audit;
+    const records = [correct.record, wrong.record];
+    const runsRoot = mkdtempSync(path.join(os.tmpdir(), 'aemm-promote-'));
+    cleanup.push(runsRoot);
+    const result = await finalizeAndWriteMatrixRecords({
+      runKind: 'scenario', records, conditionResults: [correct.conditionResult, wrong.conditionResult],
+      hardGateFn: () => ({ ok: true, reason: null, cellResults: [], ambientProfileMatrixOk: true }),
+      repeats: 1, runsRootOverride: runsRoot,
+      buildSidecarsFn: promotionSidecarBuilder([correct.gradeResult, wrong.gradeResult]),
+      transcriptsByRunId: { [correct.record.run_id]: 'raw correct\n', [wrong.record.run_id]: 'raw wrong\n' },
+    });
+    expect(result.ok, result.reason).toBe(true);
+
+    // What was really written: the record and its sidecar, read back through the trusted-input gate.
+    const evidenceDir = path.join(runsRoot, 'agentic-eval-scenario');
+    const closure = mkdtempSync(path.join(os.tmpdir(), 'aemm-promoted-closure-'));
+    cleanup.push(closure);
+    for (const [cellKey, cell] of [['claude-code-0', correct], ['claude-code-1', wrong]]) {
+      const onDisk = validateRunRecordFile(path.join(evidenceDir, `${cell.record.run_id}.json`));
+      expect(onDisk.errors, JSON.stringify(onDisk.errors)).toEqual([]);
+      expect(onDisk.sidecar).not.toBeNull();
+      const cellDir = path.join(closure, 'private', cellKey);
+      mkdirSync(cellDir, { recursive: true });
+      writeFileSync(path.join(cellDir, 'record.json'), readFileSync(path.join(evidenceDir, `${cell.record.run_id}.json`)));
+      writeFileSync(path.join(cellDir, 'audit.json'), readFileSync(path.join(evidenceDir, 'audit', `${cell.record.run_id}.json`)));
+    }
+    writeFileSync(path.join(closure, 'manifest.json'), JSON.stringify({
+      schema: 1, campaign_id: 'multi-module-promotion', scenario_id: SCENARIO.id, seed: 42, provider_mode: 'live',
+      runtimes: [{ runtime_id: 'claude-code', model_id: 'claude-sonnet-5', campaign_design_id: 'claude-product-vs-free-baseline-v1', campaign_cell_indices: [0, 1], max_budget_usd: 6 }],
+    }, null, 2));
+    const summary = summarizeCampaign(closure);
+    expect(summary.cells.map((c) => c.status), JSON.stringify(summary.cells)).toEqual(['accepted', 'accepted']);
+    expect(Object.fromEntries(summary.cells.map((c) => [c.cell_key, c.key_facts_match]))).toEqual({ 'claude-code-0': true, 'claude-code-1': false });
   });
 });

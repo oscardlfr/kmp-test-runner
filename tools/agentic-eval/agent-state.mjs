@@ -11,8 +11,8 @@
 import { lstatSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 
-// The child env variable that names each runtime's config directory (the harness points
-// every session at a fresh one).
+// The child env variable that names each runtime's config directory (the launcher points every session
+// of a runtime at the same one, so the before and after listing is what shows whether a session changed it).
 const STATE_DIR_ENV = Object.freeze({ 'claude-code': 'CLAUDE_CONFIG_DIR', 'codex-cli': 'CODEX_HOME' });
 
 // What a NEW session of each runtime loads into its context from the config directory (official docs
