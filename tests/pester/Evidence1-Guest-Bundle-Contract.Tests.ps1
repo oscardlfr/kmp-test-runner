@@ -168,6 +168,7 @@ Describe 'Evidence1 guest-bundle result shape accepts raw hashtables, not only P
             ExpectedBinTreeHash = $fortyHex
             ExpectedSkillsTreeHash = $fortyHex
             ExpectedSourceCommit = $fortyHex
+            ScenarioId = 'coverage-threshold-failure-v2'
         }
         { Assert-E1GuestBundleArguments 'run-agentic-eval-product-smoke' $arguments } | Should -Not -Throw
         # A caller that still supplies only the pre-WO-A2 three arguments must be rejected --
@@ -180,7 +181,7 @@ Describe 'Evidence1 guest-bundle result shape accepts raw hashtables, not only P
         }
         { Assert-E1GuestBundleArguments 'run-agentic-eval-product-smoke' $legacyArguments } | Should -Throw
         $bundle = (Get-E1GuestBundleRegistry)['run-agentic-eval-product-smoke']
-        $bundle.argument_schema.Keys | Should -Be @('HarnessDir', 'SourceTemplateDir', 'SmokeRoot', 'ExpectedProductCommit', 'ExpectedProductVersion', 'ExpectedLibTreeHash', 'ExpectedBinTreeHash', 'ExpectedSkillsTreeHash', 'ExpectedSourceCommit')
+        $bundle.argument_schema.Keys | Should -Be @('HarnessDir', 'SourceTemplateDir', 'SmokeRoot', 'ExpectedProductCommit', 'ExpectedProductVersion', 'ExpectedLibTreeHash', 'ExpectedBinTreeHash', 'ExpectedSkillsTreeHash', 'ExpectedSourceCommit', 'ScenarioId')
         $source = $bundle.scriptblock.ToString()
         $source | Should -Match "'parallel'.*'--module-filter'.*':core:domain'.*'--min-missed-lines'.*'15'"
         $source | Should -Match 'E1GradleUserHomeSeedDir'
@@ -308,6 +309,7 @@ Describe 'Evidence1 guest-bundle result shape accepts raw hashtables, not only P
             source_identity_verified = $true; observed_source_commit = $fortyHex
             observed_source_tree = $fortyHex; expected_source_tree = $fortyHex
             gradle_memory_override_sha256 = $sixtyFourHex; no_gradle_daemon_survived = $true
+            kmp_test_duration_ms = 93000
         }) } | Should -Not -Throw
         { Assert-E1GuestBundleResultShape 'run-agentic-eval-product-smoke' ([ordered]@{
             verdict = 'FAIL'; reason_code = 'product_identity_mismatch'; exit_code = $null; error_codes = @()
@@ -322,6 +324,7 @@ Describe 'Evidence1 guest-bundle result shape accepts raw hashtables, not only P
             source_identity_verified = $false; observed_source_commit = $null
             observed_source_tree = $null; expected_source_tree = $null
             gradle_memory_override_sha256 = $null; no_gradle_daemon_survived = $false
+            kmp_test_duration_ms = 93000
         }) } | Should -Not -Throw
         { Assert-E1GuestBundleResultShape 'run-agentic-eval-product-smoke' ([ordered]@{
             verdict = 'FAIL'; reason_code = 'product_smoke_source_identity_mismatch'; exit_code = $null; error_codes = @()
@@ -336,6 +339,7 @@ Describe 'Evidence1 guest-bundle result shape accepts raw hashtables, not only P
             source_identity_verified = $false; observed_source_commit = 'deadbeef'
             observed_source_tree = 'deadbeef'; expected_source_tree = $fortyHex
             gradle_memory_override_sha256 = $sixtyFourHex; no_gradle_daemon_survived = $true
+            kmp_test_duration_ms = 93000
         }) } | Should -Not -Throw
     }
 

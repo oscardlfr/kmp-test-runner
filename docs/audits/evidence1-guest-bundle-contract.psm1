@@ -128,9 +128,14 @@ function Assert-E1GuestBundleResultShape([string]$Name, $Result) {
   if ($null -eq $Result) { throw "guest_bundle_result_missing: $Name" }
   $actual = @(Get-E1GuestBundlePropertyNames $Result | Sort-Object)
   $expected = @($bundle.result_keys | Sort-Object)
-  if (@(Compare-Object $actual $expected).Count -ne 0) {
-    throw "guest_bundle_result_shape_invalid: $Name"
+  if (@(Compare-Object $actual $expected).Count -eq 0) { return }
+  # A bundle may also declare optional_result_keys: keys that exist for only one of the shapes it returns, and
+  # then all of them together. Bundles that declare none keep the exact check above.
+  if ($bundle.Contains('optional_result_keys')) {
+    $withOptional = @(@($bundle.result_keys) + @($bundle.optional_result_keys) | Sort-Object)
+    if (@(Compare-Object $actual $withOptional).Count -eq 0) { return }
   }
+  throw "guest_bundle_result_shape_invalid: $Name"
 }
 
 # Common argument validators, reusable across bundle definitions below.
@@ -155,6 +160,8 @@ function Test-E1GuestBundleCanonicalToolchainPath($Value) {
 #                          order. Keep the two adjacent when adding a bundle so
 #                          this is easy to eyeball.
 #   result_keys         -- exact expected key set of what the scriptblock returns
+#   optional_result_keys -- (rare, optional) keys the scriptblock returns for only one of its shapes; a result
+#                          carries all of them or none (Assert-E1GuestBundleResultShape)
 #   scriptblock          -- the fixed, literal code that runs inside the guest.
 #                           Takes its arguments via param() bound through
 #                           -ArgumentList only (see evidence1-guest-bundle-hyperv.psm1) --
@@ -656,11 +663,17 @@ function Get-E1GuestBundleRegistry {
       }
     }
 
-    # Provider-free functional gate for the exact product path exercised by
-    # coverage-threshold-failure-v2.  This deliberately runs the real CLI
-    # against a disposable clone while invoking neither Claude nor Codex.
+    # Provider-free functional gate for the exact product path exercised by the
+    # campaign's scenario.  This deliberately runs the real CLI against a
+    # disposable clone while invoking neither Claude nor Codex.  ScenarioId
+    # selects the smoke: coverage-threshold-failure-v2 runs the canonical
+    # coverage command and asserts its envelope (unchanged); a scenario of family
+    # multi-module-tests gets its patch applied to the clone, runs the kmp-test
+    # arguments its ground-truth file names, and asserts the failing modules, test
+    # classes and failing-test count against that ground truth.  Any other scenario
+    # is refused (smoke_scenario_unsupported).
     'run-agentic-eval-product-smoke' = [ordered]@{
-      description     = 'Execute the canonical kmp-test coverage-threshold command in a disposable guest clone without starting a provider.'
+      description     = 'Execute the scenario''s canonical kmp-test command in a disposable guest clone without starting a provider.'
       argument_schema = [ordered]@{
         HarnessDir = { param($v) $v -is [string] -and $v -cmatch '^[A-Za-z]:\\' }
         SourceTemplateDir = { param($v) $v -is [string] -and $v -cmatch '^[A-Za-z]:\\' }
@@ -677,10 +690,15 @@ function Get-E1GuestBundleRegistry {
         ExpectedBinTreeHash = { param($v) $v -is [string] -and $v -cmatch '^[0-9a-f]{40}$' }
         ExpectedSkillsTreeHash = { param($v) $v -is [string] -and $v -cmatch '^[0-9a-f]{40}$' }
         ExpectedSourceCommit = { param($v) $v -is [string] -and $v -cmatch '^[0-9a-f]{40}$' }
+        # The manifest's scenario_id: a bare kebab-case corpus id, the same shape cli.mjs accepts for --scenario.
+        # Whether the bundle supports it is decided in the guest from the scenario's own files, never here.
+        ScenarioId = { param($v) $v -is [string] -and $v -cmatch '^[a-z0-9-]+$' }
       }
-      result_keys = @('verdict', 'reason_code', 'exit_code', 'error_codes', 'tests_total', 'tests_passed', 'coverage_missed_lines', 'individual_total', 'inference_sessions_consumed', 'raw_envelope_json', 'stdout_tail', 'stderr_tail', 'exception_type', 'exception_message', 'exception_stack_trace', 'long_path_delete_entries_removed', 'product_identity_verified', 'product_identity_mismatches', 'observed_product_commit', 'observed_product_version', 'observed_lib_tree_hash', 'observed_bin_tree_hash', 'observed_skills_tree_hash', 'identity_diagnostics', 'source_identity_verified', 'observed_source_commit', 'observed_source_tree', 'expected_source_tree', 'gradle_memory_override_sha256', 'no_gradle_daemon_survived')
+      result_keys = @('verdict', 'reason_code', 'exit_code', 'error_codes', 'tests_total', 'tests_passed', 'coverage_missed_lines', 'individual_total', 'inference_sessions_consumed', 'raw_envelope_json', 'stdout_tail', 'stderr_tail', 'exception_type', 'exception_message', 'exception_stack_trace', 'long_path_delete_entries_removed', 'product_identity_verified', 'product_identity_mismatches', 'observed_product_commit', 'observed_product_version', 'observed_lib_tree_hash', 'observed_bin_tree_hash', 'observed_skills_tree_hash', 'identity_diagnostics', 'source_identity_verified', 'observed_source_commit', 'observed_source_tree', 'expected_source_tree', 'gradle_memory_override_sha256', 'no_gradle_daemon_survived', 'kmp_test_duration_ms')
+      # What a multi-module-tests scenario's smoke observed in the envelope; the coverage smoke never returns them.
+      optional_result_keys = @('observed_failing_modules', 'observed_failed_test_classes', 'observed_failed_count')
       scriptblock = {
-        param($HarnessDir, $SourceTemplateDir, $SmokeRoot, $ExpectedProductCommit, $ExpectedProductVersion, $ExpectedLibTreeHash, $ExpectedBinTreeHash, $ExpectedSkillsTreeHash, $ExpectedSourceCommit)
+        param($HarnessDir, $SourceTemplateDir, $SmokeRoot, $ExpectedProductCommit, $ExpectedProductVersion, $ExpectedLibTreeHash, $ExpectedBinTreeHash, $ExpectedSkillsTreeHash, $ExpectedSourceCommit, $ScenarioId)
 
         # Diagnosability: a semantic mismatch previously left only the six
         # summary fields above -- no way to see WHAT kmp-test actually printed without a separate,
@@ -752,6 +770,126 @@ function Get-E1GuestBundleRegistry {
           return $entriesRemoved
         }
 
+        # Evidence3, scenario-driven smoke. Which smoke a scenario id gets, decided from the scenario's own
+        # files in the harness checkout: coverage-threshold-failure-v2 (the scenario this smoke was written for)
+        # needs no file; a scenario of family multi-module-tests is described by its scenario file (the patch
+        # it applies), its ground-truth file (what must fail) and that file's smoke block (the kmp-test
+        # arguments). Everything else, and any file that is missing, malformed or incomplete, is unsupported.
+        # Never throws: the caller turns "unsupported" into smoke_scenario_unsupported before any guest work.
+        function Resolve-E1SmokeScenario([string]$HarnessDir, [string]$ScenarioId) {
+          $unsupported = [ordered]@{ supported = $false }
+          if ($ScenarioId -ceq 'coverage-threshold-failure-v2') { return [ordered]@{ supported = $true; mode = 'coverage-v2' } }
+          try {
+            if ($ScenarioId -cnotmatch '^[a-z0-9-]+$') { return $unsupported }
+            $corpus = Join-Path $HarnessDir 'tools\agentic-eval\corpus'
+            $scenarioPath = Join-Path $corpus "scenarios\$ScenarioId.json"
+            $truthPath = Join-Path $corpus "expected\$ScenarioId.json"
+            if (-not (Test-Path -LiteralPath $scenarioPath -PathType Leaf) -or -not (Test-Path -LiteralPath $truthPath -PathType Leaf)) { return $unsupported }
+            $scenario = [IO.File]::ReadAllText($scenarioPath) | ConvertFrom-Json
+            $truth = [IO.File]::ReadAllText($truthPath) | ConvertFrom-Json
+            if ($scenario.family -cne 'multi-module-tests' -or $scenario.id -cne $ScenarioId) { return $unsupported }
+            $fixture = $scenario.fixture_setup
+            if ($fixture.operation -cne 'apply_patch' -or [string]$fixture.patch_file -cnotmatch '^[a-z0-9-]+\.patch$') { return $unsupported }
+            $paths = @($fixture.expected_paths | ForEach-Object { [string]$_ })
+            if ($paths.Count -eq 0 -or @($paths | Where-Object { $_ -cnotmatch '^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$' -or $_ -cmatch '(^|/)\.\.?(/|$)' }).Count -ne 0) { return $unsupported }
+            $expected = $truth.expected
+            $outcomeKind = [string]$expected.outcome_kind
+            $failingModules = @($expected.failing_modules | ForEach-Object { [string]$_ })
+            $failedClasses = @($expected.failed_test_classes | ForEach-Object { [string]$_ })
+            if ($outcomeKind -ceq 'tests_failed') {
+              if ($failingModules.Count -eq 0 -or $failedClasses.Count -eq 0) { return $unsupported }
+            } elseif ($outcomeKind -ceq 'tests_passed') {
+              if ($failingModules.Count -ne 0 -or $failedClasses.Count -ne 0) { return $unsupported }
+            } else { return $unsupported }
+            if ($expected.failed_count -isnot [int] -and $expected.failed_count -isnot [long]) { return $unsupported }
+            $kmpTestArguments = @($truth.smoke.kmp_test_args | ForEach-Object { [string]$_ })
+            if ($kmpTestArguments.Count -eq 0 -or @($kmpTestArguments | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -ne 0) { return $unsupported }
+            return [ordered]@{
+              supported = $true
+              mode = 'multi-module-tests'
+              patch_file = [string]$fixture.patch_file
+              expected_paths = @($paths)
+              kmp_test_args = @($kmpTestArguments)
+              expected = [ordered]@{
+                outcome_kind = $outcomeKind
+                failing_modules = @($failingModules)
+                failed_test_classes = @($failedClasses)
+                failed_count = [int]$expected.failed_count
+              }
+            }
+          } catch { return $unsupported }
+        }
+
+        # What a kmp-test envelope says failed, in the terms the multi-module-tests ground truth uses: the Gradle
+        # paths of the modules that have failing tests (the envelope names a module with or without its leading
+        # colon), the simple names of the classes of those tests, and the number of distinct failing tests. A test
+        # is "<fully qualified class>.<method>", the method possibly followed by a bracketed parameter label that
+        # may itself contain dots; a name with no class part counts as a failing test and names no class. Sets are
+        # ordinal and sorted, so a receipt is stable. Never throws: no usable report is an empty observation.
+        function Get-E1SmokeMultiModuleObservation($Report) {
+          $modules = New-Object 'System.Collections.Generic.SortedSet[string]' ([StringComparer]::Ordinal)
+          $classes = New-Object 'System.Collections.Generic.SortedSet[string]' ([StringComparer]::Ordinal)
+          $tests = New-Object 'System.Collections.Generic.SortedSet[string]' ([StringComparer]::Ordinal)
+          if ($null -ne $Report -and $null -ne $Report.PSObject.Properties['modules']) {
+            foreach ($module in @($Report.modules)) {
+              if ($null -eq $module -or $null -eq $module.PSObject.Properties['test_failures']) { continue }
+              $moduleTests = @()
+              foreach ($failure in @($module.test_failures)) {
+                if ($null -eq $failure -or $null -eq $failure.PSObject.Properties['test']) { continue }
+                $test = [string]$failure.test
+                if (-not [string]::IsNullOrWhiteSpace($test)) { $moduleTests += $test }
+              }
+              if ($moduleTests.Count -eq 0 -or $null -eq $module.PSObject.Properties['name']) { continue }
+              $name = [string]$module.name
+              [void]$modules.Add($(if ($name.StartsWith(':')) { $name } else { ':' + $name }))
+              foreach ($test in $moduleTests) {
+                [void]$tests.Add($test)
+                $head = $test
+                $bracket = $head.IndexOf('[')
+                if ($bracket -ge 0) { $head = $head.Substring(0, $bracket) }
+                $methodDot = $head.LastIndexOf('.')
+                if ($methodDot -lt 1) { continue }
+                $classPart = $head.Substring(0, $methodDot)
+                [void]$classes.Add($classPart.Substring($classPart.LastIndexOf('.') + 1))
+              }
+            }
+          }
+          return [ordered]@{
+            failing_modules = @($modules)
+            failed_test_classes = @($classes)
+            failed_count = [int]$tests.Count
+          }
+        }
+
+        # The ground-truth comparison: the failing modules and test classes as ordinal sets (exact case, any
+        # order) and the failing-test count as an integer.
+        function Test-E1SmokeMultiModuleMatches($Observation, $Expected) {
+          $setKey = {
+            param($Values)
+            $set = New-Object 'System.Collections.Generic.SortedSet[string]' ([StringComparer]::Ordinal)
+            foreach ($value in @($Values)) { if ($null -ne $value) { [void]$set.Add([string]$value) } }
+            return [string]::Join("`n", $set)
+          }
+          return ((& $setKey $Observation.failing_modules) -ceq (& $setKey $Expected.failing_modules)) -and
+            ((& $setKey $Observation.failed_test_classes) -ceq (& $setKey $Expected.failed_test_classes)) -and
+            ([int]$Observation.failed_count -eq [int]$Expected.failed_count)
+        }
+
+        # `git status --porcelain` after the scenario's patch: exactly one unstaged modification (" M <path>") for
+        # each expected path and nothing else, the same postcondition the harness checks after apply_patch.
+        function Test-E1SmokePatchPostcondition([string]$PorcelainOutput, [string[]]$ExpectedPaths) {
+          $lines = @(($PorcelainOutput -split "`r?`n") | Where-Object { $_.Length -gt 0 })
+          if ($ExpectedPaths.Count -eq 0 -or $lines.Count -ne $ExpectedPaths.Count) { return $false }
+          $got = New-Object 'System.Collections.Generic.SortedSet[string]' ([StringComparer]::Ordinal)
+          foreach ($line in $lines) {
+            if (-not $line.StartsWith(' M ', [StringComparison]::Ordinal)) { return $false }
+            [void]$got.Add($line.Substring(3))
+          }
+          $want = New-Object 'System.Collections.Generic.SortedSet[string]' ([StringComparer]::Ordinal)
+          foreach ($path in $ExpectedPaths) { [void]$want.Add($path) }
+          return ($got.Count -eq $ExpectedPaths.Count) -and ([string]::Join("`n", $got) -ceq [string]::Join("`n", $want))
+        }
+
         Set-StrictMode -Version Latest
         $ErrorActionPreference = 'Stop'
 
@@ -774,6 +912,47 @@ function Get-E1GuestBundleRegistry {
           $expectedSourceTree = $null
           $gradleMemoryOverrideSha256 = $null
           $noGradleDaemonSurvived = $false
+          $kmpTestDurationMs = $null
+
+          # Which smoke this scenario gets, decided before any guest work (no clone, no seed, no process) from the
+          # scenario's own files; anything this bundle cannot run is refused here, with the full result shape.
+          $smokeScenario = Resolve-E1SmokeScenario $HarnessDir $ScenarioId
+          if (-not $smokeScenario.supported) {
+            return [ordered]@{
+              verdict = 'FAIL'
+              reason_code = 'smoke_scenario_unsupported'
+              exit_code = $null
+              error_codes = @()
+              tests_total = 0
+              tests_passed = 0
+              coverage_missed_lines = 0
+              individual_total = 0
+              inference_sessions_consumed = 0
+              raw_envelope_json = $null
+              stdout_tail = @()
+              stderr_tail = @()
+              exception_type = $null
+              exception_message = $null
+              exception_stack_trace = $null
+              long_path_delete_entries_removed = $null
+              product_identity_verified = $false
+              product_identity_mismatches = @()
+              observed_product_commit = $null
+              observed_product_version = $null
+              observed_lib_tree_hash = $null
+              observed_bin_tree_hash = $null
+              observed_skills_tree_hash = $null
+              identity_diagnostics = $null
+              source_identity_verified = $false
+              observed_source_commit = $null
+              observed_source_tree = $null
+              expected_source_tree = $null
+              gradle_memory_override_sha256 = $null
+              no_gradle_daemon_survived = $false
+              kmp_test_duration_ms = $null
+            }
+          }
+          $isMultiModule = ($smokeScenario.mode -ceq 'multi-module-tests')
 
           $worker = Join-Path $HarnessDir 'docs\audits\evidence1-dual-condition-canary-launch.ps1'
           if (-not (Test-Path -LiteralPath $worker -PathType Leaf)) { throw 'product_smoke_worker_missing' }
@@ -848,6 +1027,9 @@ function Get-E1GuestBundleRegistry {
               observed_source_commit = $null
               observed_source_tree = $null
               expected_source_tree = $null
+              gradle_memory_override_sha256 = $null
+              no_gradle_daemon_survived = $false
+              kmp_test_duration_ms = $null
             }
           }
 
@@ -954,14 +1136,46 @@ function Get-E1GuestBundleRegistry {
           $expectedSourceTree = ([string]$expectedSourceTreeResult.stdout).Trim()
           $sourceIdentityVerified = ($observedSourceCommit -ceq $ExpectedSourceCommit -and $observedSourceTree -ceq $expectedSourceTree)
 
+          # multi-module-tests scenario: the scenario's own patch goes onto the disposable clone first, the way the
+          # harness applies it to each session's checkout (git apply --check, then git apply; nothing staged), and
+          # the clone must then differ from the pinned commit by exactly the files the scenario names. A clone that
+          # is not the pinned source is refused here, before the patch and before a kmp-test run that can take an
+          # hour, because nothing measured on it would mean anything.
+          if ($isMultiModule) {
+            if (-not $sourceIdentityVerified) { throw "product_smoke_source_identity_mismatch:$observedSourceCommit" }
+            $patchPath = Join-Path $HarnessDir (Join-Path 'tools\agentic-eval\corpus\fixtures' $smokeScenario.patch_file)
+            if (-not (Test-Path -LiteralPath $patchPath -PathType Leaf)) { throw "product_smoke_patch_missing:$($smokeScenario.patch_file)" }
+            $patchCheck = & $script:E1InternalBoundedProcess -FileName $git -Arguments @('-C', $cloneRoot, 'apply', '--check', $patchPath) -WorkingDirectory $cloneRoot -EnvironmentVariables $environment -TimeoutSeconds 60
+            if ($patchCheck.exit_code -ne 0 -or -not $patchCheck.cleanup_ok) { throw "product_smoke_patch_check_failed:$($smokeScenario.patch_file)" }
+            $patchApply = & $script:E1InternalBoundedProcess -FileName $git -Arguments @('-C', $cloneRoot, 'apply', $patchPath) -WorkingDirectory $cloneRoot -EnvironmentVariables $environment -TimeoutSeconds 60
+            if ($patchApply.exit_code -ne 0 -or -not $patchApply.cleanup_ok) { throw "product_smoke_patch_apply_failed:$($smokeScenario.patch_file)" }
+            $patchStatus = & $script:E1InternalBoundedProcess -FileName $git -Arguments @('-C', $cloneRoot, 'status', '--porcelain') -WorkingDirectory $cloneRoot -EnvironmentVariables $environment -TimeoutSeconds 60
+            if ($patchStatus.exit_code -ne 0 -or -not $patchStatus.cleanup_ok) { throw 'product_smoke_patch_status_unreadable' }
+            if (-not (Test-E1SmokePatchPostcondition ([string]$patchStatus.stdout) @($smokeScenario.expected_paths))) { throw "product_smoke_patch_postcondition_failed:$($smokeScenario.patch_file)" }
+          }
+
+          # The coverage smoke's command and its 900 s bound are the ones this bundle has always run. A
+          # multi-module-tests scenario runs the arguments its own ground-truth file names, with the same CLI and
+          # project root, bounded at 3300 s.
+          $kmpTestArguments = [string[]]@($cli, 'parallel', '--module-filter', ':core:domain', '--min-missed-lines', '15', '--json', '--project-root', $cloneRoot)
+          $kmpTestTimeoutSeconds = [int]900
+          if ($isMultiModule) {
+            $kmpTestArguments = [string[]]@($cli) + [string[]]@($smokeScenario.kmp_test_args) + [string[]]@('--project-root', $cloneRoot)
+            $kmpTestTimeoutSeconds = [int]3300
+          }
           $processParameters = @{
             FileName = [string]$node
-            Arguments = [string[]]@($cli, 'parallel', '--module-filter', ':core:domain', '--min-missed-lines', '15', '--json', '--project-root', $cloneRoot)
+            Arguments = $kmpTestArguments
             WorkingDirectory = [string]$HarnessDir
             EnvironmentVariables = [hashtable]$environment
-            TimeoutSeconds = [int]900
+            TimeoutSeconds = $kmpTestTimeoutSeconds
           }
+          # The kmp-test process's wall time, as the receipt reports it (both families): measured around the one
+          # call that runs it, not around the clone, the patch or the daemon check.
+          $kmpTestWatch = [Diagnostics.Stopwatch]::StartNew()
           $process = & $script:E1InternalBoundedProcess @processParameters
+          $kmpTestWatch.Stop()
+          $kmpTestDurationMs = [int64]$kmpTestWatch.ElapsedMilliseconds
           # Amendment A5: direct evidence that the
           # org.gradle.daemon=false override actually took effect -- `gradlew --status` against the
           # SAME GRADLE_USER_HOME the build just used, right after it, lists any daemon still alive
@@ -989,6 +1203,19 @@ function Get-E1GuestBundleRegistry {
           $testsPassed = if ($null -eq $report -or $null -eq $report.tests) { 0 } else { [int]$report.tests.passed }
           $missedLines = if ($null -eq $report -or $null -eq $report.coverage) { 0 } else { [int]$report.coverage.missed_lines }
           $individualTotal = if ($null -eq $report -or $null -eq $report.tests) { 0 } else { [int]$report.tests.individual_total }
+
+          # multi-module-tests scenario: what the envelope reports failed, compared with the scenario's ground truth.
+          $observedFailingModules = @()
+          $observedFailedTestClasses = @()
+          $observedFailedCount = 0
+          $multiModuleMatches = $false
+          if ($isMultiModule) {
+            $multiModuleObservation = Get-E1SmokeMultiModuleObservation $report
+            $observedFailingModules = @($multiModuleObservation.failing_modules)
+            $observedFailedTestClasses = @($multiModuleObservation.failed_test_classes)
+            $observedFailedCount = [int]$multiModuleObservation.failed_count
+            $multiModuleMatches = Test-E1SmokeMultiModuleMatches $multiModuleObservation $smokeScenario.expected
+          }
 
           $observedProductVersion = if ($null -eq $report) { $null } else { [string]$report.version }
           if ($observedProductVersion -cne $ExpectedProductVersion) { $identityMismatches += "version: expected $ExpectedProductVersion, observed '$observedProductVersion'" }
@@ -1084,9 +1311,17 @@ process.stdout.write(JSON.stringify(result));
             path_entries_of_interest = @($pathEntriesOfInterest)
           }
 
-          $semanticPass = $productIdentityVerified -and $sourceIdentityVerified -and $process.cleanup_ok -and $process.exit_code -eq 1 -and
-            $errorCodes -contains 'coverage_threshold_exceeded' -and
-            $testsTotal -eq 1 -and $testsPassed -eq 1 -and $missedLines -eq 23 -and $individualTotal -eq 4
+          if ($isMultiModule) {
+            # kmp-test exits 1 when tests fail and 0 when they all pass; either way what it reports must be exactly
+            # what the scenario's ground truth says.
+            $expectedExitCode = $(if ($smokeScenario.expected.outcome_kind -ceq 'tests_failed') { 1 } else { 0 })
+            $semanticPass = $productIdentityVerified -and $sourceIdentityVerified -and $process.cleanup_ok -and $process.exit_code -eq $expectedExitCode -and
+              $multiModuleMatches
+          } else {
+            $semanticPass = $productIdentityVerified -and $sourceIdentityVerified -and $process.cleanup_ok -and $process.exit_code -eq 1 -and
+              $errorCodes -contains 'coverage_threshold_exceeded' -and
+              $testsTotal -eq 1 -and $testsPassed -eq 1 -and $missedLines -eq 23 -and $individualTotal -eq 4
+          }
           $smokeResult = [ordered]@{
             verdict = $(if ($semanticPass) { 'PASS' } else { 'FAIL' })
             reason_code = $(
@@ -1127,6 +1362,14 @@ process.stdout.write(JSON.stringify(result));
             expected_source_tree = $expectedSourceTree
             gradle_memory_override_sha256 = $gradleMemoryOverrideSha256
             no_gradle_daemon_survived = $noGradleDaemonSurvived
+            kmp_test_duration_ms = $kmpTestDurationMs
+          }
+          # Only a multi-module-tests scenario's receipt carries what the envelope reported (the coverage smoke
+          # returns none of these three keys, so its receipt only gains kmp_test_duration_ms).
+          if ($isMultiModule) {
+            $smokeResult['observed_failing_modules'] = @($observedFailingModules)
+            $smokeResult['observed_failed_test_classes'] = @($observedFailedTestClasses)
+            $smokeResult['observed_failed_count'] = [int]$observedFailedCount
           }
           # 2026-09-29 (canary attempt 1 on 8869d9c2, Amendment A6): the pre-clean above only
           # protects the NEXT run's own replay -- nothing previously removed this run's own
@@ -1171,6 +1414,7 @@ process.stdout.write(JSON.stringify(result));
             expected_source_tree = $expectedSourceTree
             gradle_memory_override_sha256 = $gradleMemoryOverrideSha256
             no_gradle_daemon_survived = $noGradleDaemonSurvived
+            kmp_test_duration_ms = $kmpTestDurationMs
           }
         }
       }
