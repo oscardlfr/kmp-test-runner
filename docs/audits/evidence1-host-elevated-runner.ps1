@@ -278,6 +278,7 @@ $TrustedNodeFiles = @(
   'tools/agentic-eval/execution-profiles/isolation-attestation.mjs',
   'tools/agentic-eval/execution-profiles/registry.json',
   'tools/agentic-eval/final-campaign-control.mjs',
+  'tools/agentic-eval/graders-multi-module.mjs',
   'tools/agentic-eval/graders.mjs',
   'tools/agentic-eval/incident-diagnostics.mjs',
   'tools/agentic-eval/input-artifacts.mjs',

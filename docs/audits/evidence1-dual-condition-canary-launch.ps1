@@ -197,7 +197,7 @@ if ($InternalLibrary) {
       $normalized = $original.Replace('\"model\":\"claude-sonnet-5-fake-resolved\"', ('\"model\":\"' + [string]$Cell.model_id + '\"')).Replace('\"claude_code_version\":\"fake\"', '\"claude_code_version\":\"2.1.238\"')
       if ($normalized -ceq $original) { throw 'agentic_eval_fake_claude_fixture_normalization_failed' }
       [IO.File]::WriteAllText($shimExecutable, (Add-E1FakeScenarioExports $normalized $exportText), [Text.UTF8Encoding]::new($false))
-      $wrapper ='@echo off' + [Environment]::NewLine + '"%CLAUDE_CODE_GIT_BASH_PATH%" --noprofile --norc "%~dp0claude" %*' + [Environment]::NewLine
+      $wrapper = '@echo off' + [Environment]::NewLine + '"%CLAUDE_CODE_GIT_BASH_PATH%" --noprofile --norc "%~dp0claude" %*' + [Environment]::NewLine
       [IO.File]::WriteAllText((Join-Path $shimDir 'claude.cmd'), $wrapper, [Text.UTF8Encoding]::new($false))
     } elseif ([string]::IsNullOrEmpty($exportText)) {
       Copy-Item -LiteralPath $fixturePath -Destination $shimExecutable -ErrorAction Stop

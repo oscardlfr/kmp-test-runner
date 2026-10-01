@@ -3584,6 +3584,13 @@ async function cmdSmoke(args) {
   }
 }
 
+/** The multi-module-tests family keeps a `smoke` block in its ground-truth file. Every other family's
+ * ground truth has none, and its merged scenario must not gain a `smoke` key (not even an undefined
+ * one: validateScenario would report it as an unrecognized field). */
+function smokeOf(groundTruth) {
+  return groundTruth != null && groundTruth.smoke !== undefined ? { smoke: groundTruth.smoke } : {};
+}
+
 /**
  * Loads and validates one scenario by id, merging the committed corpus/scenarios/<id>.json
  * (task -- id, family, project_alias/url/commit, prompt, policy, fixture_setup, tags: everything a
@@ -3605,13 +3612,6 @@ async function cmdSmoke(args) {
  * cross-checks each file's OWN declared id against the requested id, mirroring the
  * filename-must-match-id invariant cmdCorpusValidate already enforces for the committed corpus.
  */
-/** The multi-module-tests family keeps a `smoke` block in its ground-truth file. Every other family's
- * ground truth has none, and its merged scenario must not gain a `smoke` key (not even an undefined
- * one: validateScenario would report it as an unrecognized field). */
-function smokeOf(groundTruth) {
-  return groundTruth != null && groundTruth.smoke !== undefined ? { smoke: groundTruth.smoke } : {};
-}
-
 function loadScenarioById(scenarioId) {
   if (typeof scenarioId !== 'string' || !/^[a-z0-9-]+$/.test(scenarioId)) {
     return { ok: false, reason: `--scenario must be a kebab-case scenario id, got: ${JSON.stringify(scenarioId)}` };
