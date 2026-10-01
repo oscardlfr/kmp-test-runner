@@ -1,0 +1,180 @@
+{
+  "tool": "kmp-test",
+  "schema_version": 3,
+  "subcommand": "parallel",
+  "version": "0.16.0",
+  "exit_code": 1,
+  "duration_ms": 37317,
+  "tests": {
+    "total": 27,
+    "passed": 24,
+    "failed": 3,
+    "skipped": 0,
+    "individual_total": 93
+  },
+  "modules": [
+    {
+      "name": "core:common",
+      "type": "kmp",
+      "coverage_plugin": "jacoco",
+      "test_build_type": null,
+      "has_flavor": true,
+      "flavors": [
+        "demo",
+        "prod"
+      ],
+      "android_dsl": false,
+      "android_dsl_variant": null
+    },
+    {
+      "name": "core:data",
+      "type": "android",
+      "coverage_plugin": "jacoco",
+      "test_build_type": null,
+      "has_flavor": true,
+      "flavors": [
+        "demo",
+        "prod"
+      ],
+      "android_dsl": false,
+      "android_dsl_variant": null,
+      "test_failures": [
+        {
+          "test": "com.google.samples.apps.nowinandroid.core.data.CompositeUserNewsResourceRepositoryTest.whenFilteredByBookmarkedResources_matchingNewsResourcesAreReturned",
+          "cause": "java.lang.AssertionError: expected value differs",
+          "type": "java.lang.AssertionError"
+        }
+      ]
+    },
+    {
+      "name": "core:datastore",
+      "type": "android",
+      "coverage_plugin": "jacoco",
+      "test_build_type": null,
+      "has_flavor": true,
+      "flavors": [
+        "demo",
+        "prod"
+      ],
+      "android_dsl": false,
+      "android_dsl_variant": null
+    },
+    {
+      "name": "core:domain",
+      "type": "android",
+      "coverage_plugin": "jacoco",
+      "test_build_type": null,
+      "has_flavor": true,
+      "flavors": [
+        "demo",
+        "prod"
+      ],
+      "android_dsl": false,
+      "android_dsl_variant": null,
+      "test_failures": [
+        {
+          "test": "com.google.samples.apps.nowinandroid.core.domain.GetFollowableTopicsUseCaseTest.whenNoParams_followableTopicsAreReturnedWithNoSorting",
+          "cause": "java.lang.AssertionError: expected value differs",
+          "type": "java.lang.AssertionError"
+        },
+        {
+          "test": "com.google.samples.apps.nowinandroid.core.domain.GetFollowableTopicsUseCaseTest.whenSortOrderIsByName_topicsSortedByNameAreReturned",
+          "cause": "java.lang.AssertionError: expected value differs",
+          "type": "java.lang.AssertionError"
+        }
+      ]
+    },
+    {
+      "name": "core:network",
+      "type": "android",
+      "coverage_plugin": "jacoco",
+      "test_build_type": null,
+      "has_flavor": true,
+      "flavors": [
+        "demo",
+        "prod"
+      ],
+      "android_dsl": false,
+      "android_dsl_variant": null
+    },
+    {
+      "name": "feature:bookmarks:impl",
+      "type": "android",
+      "coverage_plugin": "jacoco",
+      "test_build_type": null,
+      "has_flavor": true,
+      "flavors": [
+        "demo",
+        "prod"
+      ],
+      "android_dsl": false,
+      "android_dsl_variant": null,
+      "test_failures": [
+        {
+          "test": "com.google.samples.apps.nowinandroid.feature.bookmarks.impl.BookmarksViewModelTest.feedUiState_resourceIsViewed_setResourcesViewed",
+          "cause": "java.lang.AssertionError: expected value differs",
+          "type": "java.lang.AssertionError"
+        },
+        {
+          "test": "com.google.samples.apps.nowinandroid.feature.bookmarks.impl.BookmarksViewModelTest.feedUiState_undoneBookmarkRemoval_bookmarkIsRestored",
+          "cause": "java.lang.AssertionError: expected value differs",
+          "type": "java.lang.AssertionError"
+        },
+        {
+          "test": "com.google.samples.apps.nowinandroid.feature.bookmarks.impl.BookmarksViewModelTest.oneBookmark_showsInFeed",
+          "cause": "java.lang.AssertionError: expected value differs",
+          "type": "java.lang.AssertionError"
+        }
+      ]
+    },
+    {
+      "name": "feature:search:impl",
+      "type": "android",
+      "coverage_plugin": "jacoco",
+      "test_build_type": null,
+      "has_flavor": true,
+      "flavors": [
+        "demo",
+        "prod"
+      ],
+      "android_dsl": false,
+      "android_dsl_variant": null,
+      "test_failures": []
+    },
+    {
+      "name": "lint",
+      "type": "jvm",
+      "coverage_plugin": "jacoco",
+      "test_build_type": null,
+      "has_flavor": true,
+      "flavors": [
+        "demo",
+        "prod"
+      ],
+      "android_dsl": false,
+      "android_dsl_variant": null
+    }
+  ],
+  "skipped": [],
+  "errors": [
+    {
+      "code": "module_failed",
+      "module": "core:data",
+      "task": ":core:data:testDemoDebugUnitTest",
+      "message": "[FAIL] core:data"
+    },
+    {
+      "code": "module_failed",
+      "module": "core:domain",
+      "task": ":core:domain:testDemoDebugUnitTest",
+      "message": "[FAIL] core:domain"
+    },
+    {
+      "code": "module_failed",
+      "module": "feature:bookmarks:impl",
+      "task": ":feature:bookmarks:impl:testDemoDebugUnitTest",
+      "message": "[FAIL] feature:bookmarks:impl"
+    }
+  ],
+  "warnings": []
+}
