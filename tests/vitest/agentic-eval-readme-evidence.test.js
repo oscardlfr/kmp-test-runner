@@ -27,6 +27,8 @@ import {
   README_NOTES,
   ownsReadmeBlock,
   resultsHeadingAnchor,
+  countPhrase,
+  PAD,
 } from '../../tools/agentic-eval/readme-evidence.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -102,9 +104,71 @@ describe('validateSummary', () => {
     expect(errors.some(e => e.includes('4 (runtime x arm) groups'))).toBe(true);
   });
 
-  it('rejects a group with declared !== 4', () => {
+  // Was "rejects a group with declared !== 4": the design's session count is no longer fixed at 4, but
+  // it is still ONE number, so every group must declare the same.
+  it('rejects groups that declare different numbers of sessions (the design has one count)', () => {
     const s = complete(); s.by_runtime_arm[0].declared = 3;
-    expect(validateSummary(s).some(e => e.includes('declared must be 4'))).toBe(true);
+    expect(validateSummary(s).some(e => e.includes('same number of sessions'))).toBe(true);
+  });
+
+  // Any sample size: a canary (1 per group), a campaign (8 per group) and a campaign in which a rejected
+  // session leaves one group with fewer counted sessions than the others (rejected sessions are never
+  // replaced). `counted` is what by_runtime_arm[] carries next to `declared`.
+  describe('any sample size: declared is one number, counted is 1..declared per group', () => {
+    const withCounts = (declared, counted) => {
+      const s = complete();
+      s.by_runtime_arm.forEach((g, i) => { g.declared = declared; if (counted !== undefined) g.counted = counted[i]; });
+      return s;
+    };
+
+    it.each([
+      ['a canary of 1 per group', 1, [1, 1, 1, 1]],
+      ['a campaign of 8 per group', 8, [8, 8, 8, 8]],
+      ['8 declared with one group that counted 7', 8, [8, 7, 8, 8]],
+      ['8 declared with several short groups', 8, [8, 1, 5, 8]],
+    ])('accepts %s', (_what, declared, counted) => {
+      expect(validateSummary(withCounts(declared, counted))).toEqual([]);
+    });
+
+    it('accepts a summary whose groups carry only declared (older and synthetic summaries): counted falls back to declared', () => {
+      expect(validateSummary(withCounts(8))).toEqual([]);
+    });
+
+    it('rejects counted = 0: a group with nothing counted has nothing to report', () => {
+      const errors = validateSummary(withCounts(8, [8, 0, 8, 8]));
+      expect(errors.some(e => e.includes('claude-code/free') && e.includes('counted'))).toBe(true);
+    });
+
+    it('rejects counted greater than declared', () => {
+      const errors = validateSummary(withCounts(8, [8, 9, 8, 8]));
+      expect(errors.some(e => e.includes('claude-code/free') && e.includes('counted'))).toBe(true);
+    });
+
+    it.each([
+      ['a string', '7'],
+      ['null', null],
+      ['a fraction', 7.5],
+    ])('rejects a counted that is %s', (_what, bad) => {
+      const s = withCounts(8, [8, 8, 8, 8]);
+      s.by_runtime_arm[2].counted = bad;
+      expect(validateSummary(s).some(e => e.includes('codex-cli/product') && e.includes('counted'))).toBe(true);
+    });
+
+    it.each([
+      ['0', 0],
+      ['a fraction', 2.5],
+      ['a string', '4'],
+    ])('rejects a declared that is %s', (_what, bad) => {
+      const s = withCounts(4);
+      s.by_runtime_arm.forEach(g => { g.declared = bad; });
+      expect(validateSummary(s).some(e => e.includes('declared'))).toBe(true);
+    });
+
+    it('still requires exactly 4 (runtime x arm) groups, whatever the sample size', () => {
+      const s = withCounts(8, [8, 8, 8, 8]);
+      s.by_runtime_arm = s.by_runtime_arm.slice(0, 3);
+      expect(validateSummary(s).some(e => e.includes('4 (runtime x arm) groups'))).toBe(true);
+    });
   });
 
   // wallClockPhrase (F-B) reads duration_ms.min/max directly to render the per-session range --
@@ -260,10 +324,28 @@ describe('validateCostEstimate', () => {
     expect(validateCostEstimate(d).join(' ')).toContain('cache_write_1h');
   });
 
-  it('rejects fewer than 4 claude-code cells in either arm', () => {
-    const d = complete(); d.cells = d.cells.filter(c => !(c.arm === 'free' && c.order_index === 3));
-    const errors = validateCostEstimate(d);
-    expect(errors.some(e => e.includes('claude-code/free'))).toBe(true);
+  // Was "rejects fewer than 4 claude-code cells in either arm": the per-arm cell count is no longer
+  // fixed at 4; an arm with no cell at all is still refused.
+  it('rejects an arm with no claude-code cell, in either arm', () => {
+    for (const emptied of ['free', 'product']) {
+      const d = complete(); d.cells = d.cells.filter(c => c.arm !== emptied);
+      const errors = validateCostEstimate(d);
+      expect(errors.some(e => e.includes(`claude-code/${emptied}`)), `arm ${emptied}`).toBe(true);
+    }
+  });
+
+  it.each([
+    ['1 cell per arm (a canary)', 1, 1],
+    ['8 cells per arm (a campaign)', 8, 8],
+    ['arms of different sizes (3 product, 4 free)', 3, 4],
+    ['arms of 8 and 7', 8, 7],
+  ])('accepts %s', (_what, product, free) => {
+    const d = complete();
+    d.cells = [];
+    for (const [arm, n] of [['product', product], ['free', free]]) {
+      for (let i = 0; i < n; i++) d.cells.push({ runtime_id: 'claude-code', arm, order_index: i, tokens: { input: 1, output: 1, cache_read: 1, cache_creation: 1 } });
+    }
+    expect(validateCostEstimate(d)).toEqual([]);
   });
 
   it('loadCostEstimate throws (does not silently proceed) on an incomplete file on disk', () => {
@@ -1162,10 +1244,26 @@ describe('schema 2 (Evidence2): multi-runtime cost + reasoning effort', () => {
     expect(validateCostEstimate(c).some(e => e.includes('runtimes.codex-cli.per_million_tokens.output'))).toBe(true);
   });
 
-  it('rejects a v2 cost-estimate with fewer than 4 cells for one arm of one runtime', () => {
+  // Was "...with fewer than 4 cells for one arm of one runtime": the count is no longer fixed at 4, so
+  // what is refused is an arm with no cell at all. The count-versus-counted check lives in
+  // validatePairing (see its tests), the only function that sees both documents.
+  it('rejects a v2 cost-estimate with no cell for one arm of one runtime', () => {
     const c = baseCostEstimateV2();
-    c.runtimes['codex-cli'].cells = c.runtimes['codex-cli'].cells.filter(cell => !(cell.arm === 'free' && cell.order_index === 3));
+    c.runtimes['codex-cli'].cells = c.runtimes['codex-cli'].cells.filter(cell => cell.arm !== 'free');
     expect(validateCostEstimate(c).some(e => e.includes('runtimes.codex-cli') && e.includes('free'))).toBe(true);
+  });
+
+  it.each([
+    ['1 cell per arm (a canary)', [1, 1, 1, 1]],
+    ['8 cells per arm (a campaign)', [8, 8, 8, 8]],
+    ['arms of different sizes within one runtime (8 and 7)', [8, 7, 8, 8]],
+  ])('accepts a v2 cost-estimate with %s', (_what, [claudeProduct, claudeFree, codexProduct, codexFree]) => {
+    const c = baseCostEstimateV2();
+    const cellsFor = (product, free) => [['product', product], ['free', free]].flatMap(([arm, n]) =>
+      Array.from({ length: n }, (_, i) => ({ arm, order_index: i, tokens: { input: 10, output: 1000, cache_read: 100000, cache_creation: 20000 } })));
+    c.runtimes['claude-code'].cells = cellsFor(claudeProduct, claudeFree);
+    c.runtimes['codex-cli'].cells = cellsFor(codexProduct, codexFree);
+    expect(validateCostEstimate(c)).toEqual([]);
   });
 
   it('rejects a v2 cost-estimate with an empty runtimes object', () => {
@@ -1262,6 +1360,138 @@ describe('schema 2 (Evidence2): multi-runtime cost + reasoning effort', () => {
     expect(bullet1).not.toContain('claude-sonnet-5');
     expect(bullet1).not.toContain('gpt-5.6-terra');
   });
+
+  // Any sample size. A canary has 1 session per group, a campaign 8, and a rejected session (never
+  // replaced) leaves one group with fewer counted sessions than the others. countPhrase renders the
+  // count from the groups' counted values (declared when a group carries no counted); every generated
+  // sentence that states it goes through countPhrase, keeping the rest of its sentence.
+  describe('any sample size: the session count in generated wording', () => {
+    // counts: [claude with kmp-test, claude without, codex with, codex without]; declared is the largest.
+    const summaryCounting = (counts, { withCounted = true } = {}) => {
+      const s = baseSummaryV2();
+      const declared = Math.max(...counts);
+      s.by_runtime_arm.forEach((g, i) => { g.declared = declared; if (withCounted) g.counted = counts[i]; });
+      return s;
+    };
+    const costCounting = (counts) => {
+      const c = baseCostEstimateV2();
+      const cellsFor = (product, free) => [['product', product], ['free', free]].flatMap(([arm, n]) =>
+        Array.from({ length: n }, (_, i) => ({ arm, order_index: i, tokens: { input: 10, output: 1000, cache_read: 100000, cache_creation: 20000 } })));
+      c.runtimes['claude-code'].cells = cellsFor(counts[0], counts[1]);
+      c.runtimes['codex-cli'].cells = cellsFor(counts[2], counts[3]);
+      return c;
+    };
+    const UNEQUAL = [8, 7, 8, 8];
+    const UNEQUAL_PHRASE = '8 with kmp-test and 7 without for Claude Code; 8 and 8 for Codex CLI';
+
+    describe('countPhrase', () => {
+      it.each([[[4, 4, 4, 4], '4'], [[8, 8, 8, 8], '8'], [[1, 1, 1, 1], '1']])('is just the number when every group counted the same: %j', (counts, expected) => {
+        expect(countPhrase(summaryCounting(counts))).toBe(expected);
+      });
+
+      it('is the per-group phrase when the groups counted differently: (8, 7, 8, 8)', () => {
+        expect(countPhrase(summaryCounting(UNEQUAL))).toBe(UNEQUAL_PHRASE);
+      });
+
+      it.each([
+        [[8, 8, 7, 8], '8 with kmp-test and 8 without for Claude Code; 7 and 8 for Codex CLI'],
+        [[1, 2, 3, 4], '1 with kmp-test and 2 without for Claude Code; 3 and 4 for Codex CLI'],
+      ])('puts each count in its own place: %j', (counts, expected) => {
+        expect(countPhrase(summaryCounting(counts))).toBe(expected);
+      });
+
+      it('reads declared when the groups carry no counted (older and synthetic summaries)', () => {
+        expect(countPhrase(summaryCounting([8, 8, 8, 8], { withCounted: false }))).toBe('8');
+      });
+
+      it('counted wins over declared', () => {
+        const s = summaryCounting([7, 7, 7, 7]);
+        s.by_runtime_arm.forEach((g) => { g.declared = 8; });
+        expect(countPhrase(s)).toBe('7');
+      });
+
+      it('mixes the two group by group when only some groups carry counted', () => {
+        const s = summaryCounting(UNEQUAL);
+        delete s.by_runtime_arm[2].counted;
+        delete s.by_runtime_arm[3].counted;
+        expect(countPhrase(s)).toBe(UNEQUAL_PHRASE);
+      });
+    });
+
+    describe('equal counts keep the existing wording, with the number from countPhrase', () => {
+      const introOf = (block) => block.split('\n').find((l) => l.startsWith('kmp-test hands an agent'));
+      const scopeOf = (block) => block.split('\n').find((l) => l.includes('**Scope:**'));
+      const subtitleOf = (layout) => layout.items.filter((i) => i.role === 'subtitle').map((i) => i.text);
+
+      it.each([4, 8, 1])('%i per group: intro, Scope and scorecard subtitle', (n) => {
+        const counts = [n, n, n, n];
+        const block = renderReadmeBlock(summaryCounting(counts), '2026-09-30', costCounting(counts), 'evidence2-agentic-benchmark-2026-09-30');
+        expect(introOf(block)).toContain(`on a pinned NowInAndroid commit: ${n} sessions with the kmp-test skill and CLI, ${n} without. Every session is shown; none was re-run or replaced.`);
+        expect(scopeOf(block)).toContain(`n=${n} sessions per arm per agent in counterbalanced order;`);
+        expect(subtitleOf(computeScorecardLayout(summaryCounting(counts), costCounting(counts)))).toEqual([
+          `1 pre-registered scenario · ${n} sessions per arm per agent · Windows 11 · details in the evidence doc`,
+        ]);
+      });
+    });
+
+    describe('unequal counts state the per-group phrase, never one number', () => {
+      const block = () => renderReadmeBlock(summaryCounting(UNEQUAL), '2026-09-30', costCounting(UNEQUAL), 'evidence2-agentic-benchmark-2026-09-30');
+      const introOf = (b) => b.split('\n').find((l) => l.startsWith('kmp-test hands an agent'));
+      const scopeOf = (b) => b.split('\n').find((l) => l.includes('**Scope:**'));
+
+      it('the README intro says how many sessions counted per arm and agent', () => {
+        expect(introOf(block())).toContain(`on a pinned NowInAndroid commit. Sessions counted per arm and agent: ${UNEQUAL_PHRASE}. Every session is shown; none was re-run or replaced.`);
+        expect(introOf(block())).not.toContain('sessions with the kmp-test skill and CLI');
+      });
+
+      it('the Scope line says how many sessions counted per arm and agent, and keeps the rest of its sentence', () => {
+        expect(scopeOf(block())).toContain(`sessions in counterbalanced order, counted per arm and agent: ${UNEQUAL_PHRASE}; Windows 11 in an isolated VM`);
+        expect(scopeOf(block())).not.toMatch(/n=\d+ sessions per arm per agent/);
+      });
+
+      it('the scorecard subtitle puts the phrase on a second line, so the first line keeps its place', () => {
+        const subtitles = computeScorecardLayout(summaryCounting(UNEQUAL), costCounting(UNEQUAL)).items.filter((i) => i.role === 'subtitle');
+        expect(subtitles.map((i) => i.text)).toEqual([
+          '1 pre-registered scenario · Windows 11 · details in the evidence doc',
+          `Counted per arm and agent: ${UNEQUAL_PHRASE}`,
+        ]);
+        expect(subtitles[1].y).toBeGreaterThan(subtitles[0].y + subtitles[0].fontSize);
+      });
+
+      it('the scorecard svg carries that line', () => {
+        expect(renderScorecardSvg(summaryCounting(UNEQUAL), costCounting(UNEQUAL))).toContain(`Counted per arm and agent: ${UNEQUAL_PHRASE}`);
+      });
+
+      it('the header lines fit inside the card, and no two text boxes overlap (the longer header changes the layout)', () => {
+        const layout = computeScorecardLayout(summaryCounting(UNEQUAL), costCounting(UNEQUAL));
+        // Same approximation the layout test above uses: chars x fontSize x 0.6 wide, ascent above the baseline.
+        const box = (item) => {
+          const width = item.text.length * item.fontSize * 0.6;
+          const x0 = item.anchor === 'end' ? item.x - width : item.x;
+          return { x0, x1: x0 + width, y0: item.y - item.fontSize * 0.8, y1: item.y + item.fontSize * 0.25, label: item.text };
+        };
+        const boxes = layout.items.filter((i) => i.kind === 'text').map(box);
+        for (const header of layout.items.filter((i) => i.role === 'title' || i.role === 'subtitle').map(box)) {
+          expect(header.x0, `"${header.label}" starts inside the card`).toBeGreaterThanOrEqual(PAD);
+          expect(header.x1, `"${header.label}" ends inside the card padding`).toBeLessThanOrEqual(layout.width - PAD);
+        }
+        for (let i = 0; i < boxes.length; i++) {
+          for (let j = i + 1; j < boxes.length; j++) {
+            const a = boxes[i]; const c = boxes[j];
+            expect(a.x0 < c.x1 && c.x0 < a.x1 && a.y0 < c.y1 && c.y0 < a.y1, `"${a.label}" overlaps "${c.label}"`).toBe(false);
+          }
+        }
+      });
+
+      it('the cross-agent bullet keeps reading n from each group, which is already right for any count', () => {
+        const s = summaryCounting(UNEQUAL);
+        s.by_runtime_arm.forEach((g, i) => { g.tool_calls_total = { n: UNEQUAL[i], median: 10 }; });
+        const bullets = buildBullets(s, costCounting(UNEQUAL), FAKE_RUNS_PATH);
+        expect(bullets.find((b) => b.startsWith('Without kmp-test (descriptive)'))).toContain('n=7 for Claude, n=8 for Codex');
+        expect(bullets.find((b) => b.startsWith('With kmp-test (descriptive)'))).toContain('n=8 per cell');
+      });
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1282,10 +1512,19 @@ describe('validatePairing', () => {
     ],
     provenance: { kmp_test_cli_version: { values: ['0.16.0'], mixed: false } },
   });
-  const v1CostEstimate = () => ({
+  // Cost-estimate cells for one runtime, `product` of the with-kmp-test arm and `free` of the other. The
+  // pairing check compares these counts with the summary's counted per group, so the fixtures below carry
+  // cells matching the 4 sessions their summaries declare (they used to carry none, which only held while
+  // nothing compared the two). runtimeId: schema 1 tags every cell with its runtime; schema 2 does not.
+  const pairingCells = (product, free, runtimeId) => [['product', product], ['free', free]].flatMap(([arm, n]) =>
+    Array.from({ length: n }, (_, i) => ({
+      ...(runtimeId ? { runtime_id: runtimeId } : {}), arm, order_index: i,
+      tokens: { input: 10, output: 1000, cache_read: 100000, cache_creation: 20000 },
+    })));
+  const v1CostEstimate = (product = 4, free = 4) => ({
     schema: 1,
     pricing: { per_million_tokens: { input: 2, cache_write_5m: 2.5, cache_write_1h: 4, cache_read: 0.2, output: 10 } },
-    cells: [],
+    cells: pairingCells(product, free, 'claude-code'),
   });
   const v2Group = (runtime, arm) => ({
     runtime_id: runtime, arm, declared: 4, key_facts_match: { matched: 4, of: 4 },
@@ -1301,11 +1540,11 @@ describe('validatePairing', () => {
       reasoning_effort: { 'claude-code': { values: ['high'], mixed: false }, 'codex-cli': { values: ['low'], mixed: false } },
     },
   });
-  const v2CostEstimate = () => ({
+  const v2CostEstimate = (counts = [4, 4, 4, 4]) => ({
     schema: 2,
     runtimes: {
-      'claude-code': { model: 'claude-sonnet-5', per_million_tokens: { input: 2, cache_write_5m: 2.5, cache_write_1h: 4, cache_read: 0.2, output: 10 }, cells: [] },
-      'codex-cli': { model: 'gpt-5.6-terra', per_million_tokens: { input: 2, cache_write_5m: 2.5, cache_write_1h: 2.5, cache_read: 0.2, output: 12 }, cells: [] },
+      'claude-code': { model: 'claude-sonnet-5', per_million_tokens: { input: 2, cache_write_5m: 2.5, cache_write_1h: 4, cache_read: 0.2, output: 10 }, cells: pairingCells(counts[0], counts[1]) },
+      'codex-cli': { model: 'gpt-5.6-terra', per_million_tokens: { input: 2, cache_write_5m: 2.5, cache_write_1h: 2.5, cache_read: 0.2, output: 12 }, cells: pairingCells(counts[2], counts[3]) },
     },
   });
 
@@ -1349,6 +1588,77 @@ describe('validatePairing', () => {
     c.runtimes['claude-code'].model = 'claude-opus-5'; // provenance says claude-sonnet-5
     const errors = validatePairing(v2Summary(), c);
     expect(errors.some(e => e.includes('claude-code') && e.includes('claude-opus-5') && e.includes('claude-sonnet-5'))).toBe(true);
+  });
+
+  // Any sample size: the cost estimate's arm sizes are compared with what the summary counted, the one
+  // place that sees both documents. A group's counted falls back to its declared when it carries no
+  // counted (older and synthetic summaries).
+  describe('cell counts: each cost-estimate arm has as many cells as its summary group counted', () => {
+    // counts: [claude product, claude free, codex product, codex free]
+    const summaryCounting = (counts, { withCounted = true } = {}) => {
+      const s = v2Summary();
+      s.by_runtime_arm.forEach((g, i) => { g.declared = 8; if (withCounted) g.counted = counts[i]; });
+      return s;
+    };
+
+    it.each([
+      ['a canary (1, 1, 1, 1)', [1, 1, 1, 1]],
+      ['a campaign (8, 8, 8, 8)', [8, 8, 8, 8]],
+      ['a campaign with one short group (8, 7, 8, 8)', [8, 7, 8, 8]],
+    ])('accepts a pair that agrees: %s', (_what, counts) => {
+      expect(validatePairing(summaryCounting(counts), v2CostEstimate(counts))).toEqual([]);
+    });
+
+    it('accepts a summary without counted when the cost estimate has as many cells as declared (the fallback)', () => {
+      expect(validatePairing(summaryCounting([8, 8, 8, 8], { withCounted: false }), v2CostEstimate([8, 8, 8, 8]))).toEqual([]);
+    });
+
+    it('rejects a cost-estimate arm with more cells than its group counted, naming the runtime, the arm and both numbers', () => {
+      const errors = validatePairing(summaryCounting([8, 7, 8, 8]), v2CostEstimate([8, 8, 8, 8]));
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain('claude-code');
+      expect(errors[0]).toContain('free');
+      expect(errors[0]).toContain('8');
+      expect(errors[0]).toContain('7');
+    });
+
+    it('rejects a cost-estimate arm with fewer cells than its group counted', () => {
+      const errors = validatePairing(summaryCounting([8, 8, 8, 8]), v2CostEstimate([8, 8, 7, 8]));
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain('codex-cli');
+      expect(errors[0]).toContain('product');
+    });
+
+    it('compares against declared when the summary has no counted: a short cost estimate is rejected', () => {
+      const errors = validatePairing(summaryCounting([8, 8, 8, 8], { withCounted: false }), v2CostEstimate([8, 8, 8, 7]));
+      expect(errors.some(e => e.includes('codex-cli') && e.includes('free'))).toBe(true);
+    });
+
+    it('reports every disagreeing arm, not only the first', () => {
+      const errors = validatePairing(summaryCounting([8, 8, 8, 8]), v2CostEstimate([7, 7, 8, 8]));
+      expect(errors).toHaveLength(2);
+    });
+
+    it('does not compare a runtime the cost estimate leaves out (partial coverage stays valid)', () => {
+      const c = v2CostEstimate([8, 8, 8, 8]);
+      delete c.runtimes['codex-cli'];
+      expect(validatePairing(summaryCounting([8, 8, 1, 1]), c)).toEqual([]);
+    });
+
+    it('schema 1: the claude-code cells of each arm are compared with that group\'s counted', () => {
+      const summary = v1Summary();
+      summary.by_runtime_arm.forEach((g, i) => { g.declared = 8; g.counted = [8, 7, 8, 8][i]; });
+      expect(validatePairing(summary, v1CostEstimate(8, 7))).toEqual([]);
+      const errors = validatePairing(summary, v1CostEstimate(8, 8));
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain('claude-code');
+      expect(errors[0]).toContain('free');
+    });
+
+    it('the committed Evidence1 and Evidence2 pairs agree (4 counted per group, 4 cells per arm)', () => {
+      expect(validatePairing(loadSummary(join(RUNS_DIR, 'campaign-summary.json')), loadCostEstimate(join(RUNS_DIR, 'cost-estimate.json')))).toEqual([]);
+      expect(validatePairing(loadSummary(join(RUNS_DIR_V2, 'campaign-summary.json')), loadCostEstimate(join(RUNS_DIR_V2, 'cost-estimate.json')))).toEqual([]);
+    });
   });
 
   it('main() calls validatePairing before either render function runs (static wiring check)', () => {

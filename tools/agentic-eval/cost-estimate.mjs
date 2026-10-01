@@ -84,8 +84,9 @@ export const RUNTIME_PRICING = Object.freeze({
 
 /** Applies the BINDING per-runtime token mapping (see this file's header) to one counted cell's
  * raw usage. A missing/non-number dimension reads as 0 -- never inferred, but a cost-estimate row
- * only exists for a cell this module's own 4-per-arm completeness gate already accepted, so an
- * absent dimension here means "genuinely zero for this session", not "not yet measured". */
+ * only exists for a cell this module's own completeness gate (every arm has at least one counted
+ * cell) already accepted, so an absent dimension here means "genuinely zero for this session", not
+ * "not yet measured". */
 export function tokensForRow(runtimeId, usage) {
   const u = usage ?? {};
   const input = typeof u.input === 'number' ? u.input : 0;
@@ -102,7 +103,9 @@ export function tokensForRow(runtimeId, usage) {
  * @returns {{ok:true, doc:object}|{ok:false, reason:string}} Never a partial or guessed estimate:
  *   fails closed on a non-live/unreadable campaign, a cell whose recorded model_id doesn't match
  *   this module's own pinned RUNTIME_PRICING (the price table would silently describe the wrong
- *   model), or a runtime with other than exactly 4 counted cells per arm.
+ *   model), or a runtime with an arm that has no counted cell. Each arm's cells are that arm's
+ *   counted cells, whatever their number (a canary has 1 per arm, a campaign 8) and whether or not
+ *   the two arms of a runtime match.
  */
 export function buildCostEstimate(campaignDir) {
   const rows = loadCountedCellTokens(campaignDir);
@@ -115,9 +118,11 @@ export function buildCostEstimate(campaignDir) {
     if (modelMismatch) {
       return { ok: false, reason: `${runtimeId}: campaign cell reports model_id ${JSON.stringify(modelMismatch.modelId)}, pinned pricing is for ${JSON.stringify(pricing.model)}` };
     }
+    // Any sample size: the arms of a runtime may count different numbers of cells (a rejected session is
+    // never replaced), but an arm with none has nothing to price.
     for (const arm of ['product', 'free']) {
       const n = runtimeRows.filter((r) => r.arm === arm).length;
-      if (n !== 4) return { ok: false, reason: `${runtimeId}: expected 4 counted ${arm} cells, got ${n}` };
+      if (n < 1) return { ok: false, reason: `${runtimeId}: expected at least 1 counted ${arm} cell, got ${n}` };
     }
     const cells = runtimeRows
       .slice()
