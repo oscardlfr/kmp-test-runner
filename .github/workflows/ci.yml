@@ -235,7 +235,9 @@ jobs:
       - name: Node 18 smoke — npm ci under Node 18
         run: npm ci
       - name: Node 18 smoke — vitest run on declared-minimum Node (engines.node >=18)
-        timeout-minutes: 8
+        # The full suite takes 5.5 to 8 minutes here on a hosted Windows runner (measured over recent runs, the
+        # slowest 480 s); the previous 8-minute limit timed the step out on a slow runner.
+        timeout-minutes: 12
         run: npx vitest run
   secrets-scan:
     # Always runs — security checks are non-negotiable, even on docs-only PRs.
