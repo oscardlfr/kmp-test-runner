@@ -75,7 +75,7 @@ export const CURRENT_AGGREGATE_SCHEMA = 4;
 
 export const RUN_KIND_VALUES = ['calibration', 'corpus-probe', 'scenario', 'smoke'];
 export const CONDITION_VALUES = ['no-skill', 'current-skill', 'candidate-skill'];
-export const FAMILY_VALUES = ['test-only', 'coverage', 'trigger-only'];
+export const FAMILY_VALUES = ['test-only', 'coverage', 'trigger-only', 'multi-module-tests'];
 export const CACHE_STATE_VALUES = ['cold', 'warm', 'mixed', 'unknown'];
 export const PLATFORM_VALUES = ['windows', 'macos', 'linux', 'not-recorded'];
 export const TERMINATION_REASON_VALUES = [null, 'timeout', 'error', 'unsupported-platform-profile'];
@@ -1381,11 +1381,14 @@ export function validateRun(run) {
 const SCENARIO_CANONICAL_FIELDS = [
   'schema', 'id', 'family', 'project_alias', 'project_url', 'project_commit', 'prompt',
   'expected_outcome', 'policy', 'expected', 'first_useful_signal_predicate', 'tags', 'fixture_setup',
+  'smoke',
 ];
 // The first-ever OPTIONAL canonical field -- every other entry above is unconditionally required.
 // `fixture_setup` only applies to a scenario that mutates its own pinned checkout before the agent
-// runs (today: exactly the changed-module-verification shape) -- absent for every other scenario.
-const OPTIONAL_SCENARIO_FIELDS = ['fixture_setup'];
+// runs (the changed-module-verification shape, and the multi-module-tests family's patch) -- absent
+// for every other scenario. `smoke` belongs to the ground-truth file of the multi-module-tests
+// family alone (validateSmoke below): it is required there and rejected for every other family.
+const OPTIONAL_SCENARIO_FIELDS = ['fixture_setup', 'smoke'];
 
 const OUTCOME_KIND_VALUES = ['tests_executed', 'no_applicable_tests', 'tests_failed', 'coverage_threshold_exceeded'];
 const GRADLE_MARKER_VALUES = ['NO-SOURCE'];
@@ -1456,7 +1459,12 @@ const CHANGED_BASE_REF_EXPECTED_VALUES = ['HEAD'];
 // scenario-supplied free text -- this field only ever names WHICH tracked file to mutate and what
 // its pre-mutation blob must be, never the mutation's own bytes.
 const FIXTURE_SETUP_KEYS = ['operation', 'relative_path', 'expected_blob_oid'];
-const FIXTURE_SETUP_OPERATION_VALUES = ['append_comment'];
+// apply_patch -- the multi-module-tests family's own operation. The patch is a harness-owned file in
+// the corpus's fixtures/ directory (materialize.mjs's applyFixtureSetup resolves it), named here by
+// bare file name only; `expected_paths` lists exactly the tracked files the patch must modify.
+const APPLY_PATCH_KEYS = ['operation', 'patch_file', 'expected_paths'];
+const APPLY_PATCH_FILE_RE = /^[a-z0-9-]+\.patch$/;
+const FIXTURE_SETUP_OPERATION_VALUES = ['append_comment', 'apply_patch'];
 
 /** Closed, defense-in-depth safety check for `fixture_setup.relative_path` -- rejects absolute
  * paths (POSIX leading `/` or a Windows drive-letter prefix), any backslash, and any `.`/`..`
@@ -1482,6 +1490,10 @@ function validateFixtureSetup(fixtureSetup, errors) {
     errors.push({ field: 'fixture_setup', message: 'must be an object' });
     return;
   }
+  if (fixtureSetup.operation === 'apply_patch') {
+    validateApplyPatchFixtureSetup(fixtureSetup, errors);
+    return;
+  }
   rejectUnrecognizedKeys(fixtureSetup, FIXTURE_SETUP_KEYS, 'fixture_setup', errors);
   if (!FIXTURE_SETUP_OPERATION_VALUES.includes(fixtureSetup.operation)) {
     errors.push({ field: 'fixture_setup.operation', message: `must be one of ${FIXTURE_SETUP_OPERATION_VALUES.join('|')}` });
@@ -1491,6 +1503,24 @@ function validateFixtureSetup(fixtureSetup, errors) {
   }
   if (typeof fixtureSetup.expected_blob_oid !== 'string' || !/^[0-9a-f]{40}$/.test(fixtureSetup.expected_blob_oid)) {
     errors.push({ field: 'fixture_setup.expected_blob_oid', message: 'must be a real 40-hex-character git blob SHA' });
+  }
+}
+
+/** Validates the `apply_patch` shape of `fixture_setup`: a bare patch file name and the non-empty,
+ * duplicate-free list of repo-relative paths the patch is expected to modify. One error per field
+ * at most, so a single broken rule reads as a single finding. */
+function validateApplyPatchFixtureSetup(fixtureSetup, errors) {
+  rejectUnrecognizedKeys(fixtureSetup, APPLY_PATCH_KEYS, 'fixture_setup', errors);
+  if (typeof fixtureSetup.patch_file !== 'string' || !APPLY_PATCH_FILE_RE.test(fixtureSetup.patch_file)) {
+    errors.push({ field: 'fixture_setup.patch_file', message: `must match ${APPLY_PATCH_FILE_RE} -- a bare lowercase file name under the corpus fixtures directory` });
+  }
+  const paths = fixtureSetup.expected_paths;
+  if (!Array.isArray(paths) || paths.length === 0) {
+    errors.push({ field: 'fixture_setup.expected_paths', message: 'must be a non-empty array of repo-relative paths' });
+  } else if (paths.some((p) => !isSafeFixtureRelativePath(p))) {
+    errors.push({ field: 'fixture_setup.expected_paths', message: 'every entry must be a safe relative POSIX path -- no leading slash, no backslash, no drive letter, no ./.. segment' });
+  } else if (new Set(paths).size !== paths.length) {
+    errors.push({ field: 'fixture_setup.expected_paths', message: 'must not contain duplicate entries' });
   }
 }
 
@@ -1526,6 +1556,14 @@ function validateChangedContract(changed, errors) {
  * `changed` subcommand, and the setup's own mechanics (an always-UNSTAGED mutation) mean
  * `staged_only` can only ever legitimately be `false`. */
 function validateFixtureSetupCoupling(scenario, errors) {
+  // apply_patch has no expected.changed counterpart: its only coupling is to the family that owns it.
+  const fixture = scenario.fixture_setup;
+  if (fixture != null && typeof fixture === 'object' && !Array.isArray(fixture) && fixture.operation === 'apply_patch') {
+    if (scenario.family !== 'multi-module-tests') {
+      errors.push({ field: 'fixture_setup.operation', message: 'apply_patch is only allowed for family multi-module-tests' });
+    }
+    return;
+  }
   const hasFixtureSetup = 'fixture_setup' in scenario && scenario.fixture_setup != null;
   const expected = scenario.expected;
   const hasExpectedChanged = expected != null && typeof expected === 'object' && !Array.isArray(expected) && expected.changed != null;
@@ -1924,6 +1962,89 @@ function validateExpected(expected, policy, errors) {
   }
 }
 
+// The multi-module-tests family's own ground-truth contract (PLAN.md D4): what the agent must report,
+// not what each provider would print -- the answer is a set of Gradle modules, a set of test class
+// simple names and a count of distinct failing methods. Kept apart from OUTCOME_KIND_VALUES so that
+// `tests_passed` is valid for this family alone and never relaxes any other family's outcome check.
+const MULTI_MODULE_EXPECTED_KEYS = ['outcome_kind', 'failing_modules', 'failed_test_classes', 'failed_count'];
+const MULTI_MODULE_OUTCOME_KIND_VALUES = ['tests_failed', 'tests_passed'];
+const MULTI_MODULE_FAILING_MODULE_RE = /^(:[A-Za-z0-9_-]+)+$/;
+const JAVA_IDENTIFIER_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+const SMOKE_KEYS = ['kmp_test_args', 'warm_tasks'];
+
+/** Validates a string-set field (`failing_modules` or `failed_test_classes`): an array of unique
+ * entries that each match `entryRe`, empty exactly when the outcome is `tests_passed`. At most one
+ * error is pushed, so a single broken rule reads as a single finding. Returns the array when it is
+ * well-formed (so the count rule can use its length), else null. */
+function validateExpectedStringSet(values, field, entryRe, entryText, outcomeKind, errors) {
+  if (!Array.isArray(values)) {
+    errors.push({ field, message: 'must be an array' });
+    return null;
+  }
+  if (values.some((v) => typeof v !== 'string' || !entryRe.test(v))) {
+    errors.push({ field, message: `every entry must be ${entryText}` });
+    return null;
+  }
+  if (new Set(values).size !== values.length) {
+    errors.push({ field, message: 'must not contain duplicate entries' });
+    return null;
+  }
+  if (outcomeKind === 'tests_failed' && values.length === 0) {
+    errors.push({ field, message: 'must be non-empty when outcome_kind is tests_failed' });
+    return null;
+  }
+  if (outcomeKind === 'tests_passed' && values.length !== 0) {
+    errors.push({ field, message: 'must be empty when outcome_kind is tests_passed' });
+    return null;
+  }
+  return values;
+}
+
+/** Validates `expected` for family `multi-module-tests`: the four answer fields, nothing else --
+ * `module`, `kmp_test`, `gradle` and `changed` belong to the other families' provider contracts and
+ * are rejected as unrecognized. */
+function validateMultiModuleExpected(expected, errors) {
+  if (expected == null || typeof expected !== 'object' || Array.isArray(expected)) {
+    errors.push({ field: 'expected', message: 'must be an object' });
+    return;
+  }
+  rejectUnrecognizedKeys(expected, MULTI_MODULE_EXPECTED_KEYS, 'expected', errors);
+  const kind = expected.outcome_kind;
+  const kindValid = MULTI_MODULE_OUTCOME_KIND_VALUES.includes(kind);
+  if (!kindValid) {
+    errors.push({ field: 'expected.outcome_kind', message: `must be one of ${MULTI_MODULE_OUTCOME_KIND_VALUES.join('|')}` });
+  }
+  const outcomeKind = kindValid ? kind : null;
+  validateExpectedStringSet(expected.failing_modules, 'expected.failing_modules', MULTI_MODULE_FAILING_MODULE_RE,
+    'a colon-prefixed Gradle project path such as ":core:data"', outcomeKind, errors);
+  const classes = validateExpectedStringSet(expected.failed_test_classes, 'expected.failed_test_classes', JAVA_IDENTIFIER_RE,
+    'a Java identifier (a simple class name without package)', outcomeKind, errors);
+  const count = expected.failed_count;
+  if (!Number.isInteger(count) || count < 0) {
+    errors.push({ field: 'expected.failed_count', message: 'must be an integer >= 0' });
+  } else if (outcomeKind === 'tests_passed' && count !== 0) {
+    errors.push({ field: 'expected.failed_count', message: 'must be 0 when outcome_kind is tests_passed' });
+  } else if (outcomeKind === 'tests_failed' && classes != null && count < classes.length) {
+    errors.push({ field: 'expected.failed_count', message: `must be at least the number of failed test classes (${classes.length}) -- each failed class has at least one failing method` });
+  }
+}
+
+/** Validates the `smoke` block that the multi-module-tests ground-truth file carries: the exact
+ * kmp-test arguments the VM's smoke run uses and the Gradle tasks its offline seed must warm. */
+function validateSmoke(smoke, errors) {
+  if (smoke == null || typeof smoke !== 'object' || Array.isArray(smoke)) {
+    errors.push({ field: 'smoke', message: 'is required for family multi-module-tests and must be an object' });
+    return;
+  }
+  rejectUnrecognizedKeys(smoke, SMOKE_KEYS, 'smoke', errors);
+  for (const key of SMOKE_KEYS) {
+    const value = smoke[key];
+    if (!Array.isArray(value) || value.length === 0 || value.some((v) => typeof v !== 'string' || v.length === 0)) {
+      errors.push({ field: `smoke.${key}`, message: 'must be a non-empty array of non-empty strings' });
+    }
+  }
+}
+
 export function validateScenario(scenario) {
   const errors = [];
   const warnings = [];
@@ -1940,7 +2061,7 @@ export function validateScenario(scenario) {
   if (scenario.schema !== CURRENT_SCENARIO_SCHEMA) errors.push({ field: 'schema', message: `expected ${CURRENT_SCENARIO_SCHEMA}` });
   if (typeof scenario.id !== 'string' || !/^[a-z0-9-]+$/.test(scenario.id)) errors.push({ field: 'id', message: 'must be a kebab-case string' });
   if (!FAMILY_VALUES.includes(scenario.family) || scenario.family === 'trigger-only') {
-    errors.push({ field: 'family', message: 'must be test-only or coverage for a scenario' });
+    errors.push({ field: 'family', message: 'must be test-only, coverage or multi-module-tests for a scenario' });
   }
   if (typeof scenario.project_alias !== 'string' || scenario.project_alias.length === 0) {
     errors.push({ field: 'project_alias', message: 'must be a non-empty string' });
@@ -1967,7 +2088,13 @@ export function validateScenario(scenario) {
     errors.push({ field: 'expected_outcome', message: 'must be a non-empty string' });
   }
   validatePolicy(scenario.policy, errors);
-  validateExpected(scenario.expected, scenario.policy, errors);
+  if (scenario.family === 'multi-module-tests') {
+    validateMultiModuleExpected(scenario.expected, errors);
+    validateSmoke(scenario.smoke, errors);
+  } else {
+    validateExpected(scenario.expected, scenario.policy, errors);
+    if ('smoke' in scenario) errors.push({ field: 'smoke', message: 'is only allowed for family multi-module-tests' });
+  }
   if (scenario.first_useful_signal_predicate == null || typeof scenario.first_useful_signal_predicate.description !== 'string') {
     errors.push({ field: 'first_useful_signal_predicate', message: 'must have a string "description"' });
   }

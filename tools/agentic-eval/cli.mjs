@@ -3603,6 +3603,13 @@ async function cmdSmoke(args) {
  * cross-checks each file's OWN declared id against the requested id, mirroring the
  * filename-must-match-id invariant cmdCorpusValidate already enforces for the committed corpus.
  */
+/** The multi-module-tests family keeps a `smoke` block in its ground-truth file. Every other family's
+ * ground truth has none, and its merged scenario must not gain a `smoke` key (not even an undefined
+ * one: validateScenario would report it as an unrecognized field). */
+function smokeOf(groundTruth) {
+  return groundTruth != null && groundTruth.smoke !== undefined ? { smoke: groundTruth.smoke } : {};
+}
+
 function loadScenarioById(scenarioId) {
   if (typeof scenarioId !== 'string' || !/^[a-z0-9-]+$/.test(scenarioId)) {
     return { ok: false, reason: `--scenario must be a kebab-case scenario id, got: ${JSON.stringify(scenarioId)}` };
@@ -3640,7 +3647,7 @@ function loadScenarioById(scenarioId) {
   } else {
     return { ok: false, reason: `no ground-truth file found for --scenario ${scenarioId} (expected ${expectedPath}, and the task file carries no inline expected block either)` };
   }
-  const scenario = { ...task, expected_outcome: groundTruth.expected_outcome, expected: groundTruth.expected, first_useful_signal_predicate: groundTruth.first_useful_signal_predicate };
+  const scenario = { ...task, expected_outcome: groundTruth.expected_outcome, expected: groundTruth.expected, first_useful_signal_predicate: groundTruth.first_useful_signal_predicate, ...smokeOf(groundTruth) };
   const { errors } = validateScenario(scenario);
   if (errors.length > 0) {
     return { ok: false, reason: `scenario file for ${scenarioId} failed schema validation: ${JSON.stringify(errors)}` };
@@ -4678,7 +4685,7 @@ function mergeExpectedIntoLoadedScenarios(loaded, expectedDir) {
     } catch (err) {
       return { file: entry.file, parseError: `ground truth for ${entry.scenario.id} is not valid JSON: ${err.message}` };
     }
-    return { file: entry.file, scenario: { ...entry.scenario, expected_outcome: groundTruth.expected_outcome, expected: groundTruth.expected, first_useful_signal_predicate: groundTruth.first_useful_signal_predicate } };
+    return { file: entry.file, scenario: { ...entry.scenario, expected_outcome: groundTruth.expected_outcome, expected: groundTruth.expected, first_useful_signal_predicate: groundTruth.first_useful_signal_predicate, ...smokeOf(groundTruth) } };
   });
 }
 

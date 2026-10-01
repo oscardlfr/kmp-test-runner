@@ -1,0 +1,52 @@
+{
+  "schema": 1,
+  "id": "multi-module-test-failures",
+  "family": "multi-module-tests",
+  "project_alias": "nowinandroid",
+  "project_url": "https://github.com/android/nowinandroid",
+  "project_commit": "7d45eae4f8720a0c77f507712ba2437ff974b6ed",
+  "prompt": "This is a large, multi-module Android project. I changed some production code and I think I broke some tests. Run the unit tests of every module except `:app`, `:core:designsystem`, `:feature:foryou:impl` and `:feature:interests:impl` (their Robolectric tests need network access this machine doesn't have); where a module has build variants, use the demoDebug variant. Then tell me which tests fail. Once you know the result, end your reply with a block in exactly this format (keep the two marker lines exactly as shown, with valid JSON in between):\n\nKMP_EVAL_RESULT\n{\"outcome_kind\": \"tests_failed\", \"failing_modules\": [\"<Gradle project path>\", ...], \"failed_test_classes\": [\"<test class simple name>\", ...], \"failed_count\": <integer>}\nKMP_EVAL_RESULT_END\n\nfailing_modules lists every module with at least one failing test, as Gradle project paths (for example \":some:module\"). failed_test_classes lists the simple name, without package, of every test class with at least one failing test. failed_count is the number of distinct failing test methods. If no test fails, use {\"outcome_kind\": \"tests_passed\", \"failing_modules\": [], \"failed_test_classes\": [], \"failed_count\": 0}.",
+  "policy": {
+    "allowed_kmptest_subcommands": [
+      "doctor",
+      "describe",
+      "parallel",
+      "changed"
+    ],
+    "allowed_gradle_tasks": [
+      ":core:common:tasks",
+      ":core:common:test",
+      ":core:data:tasks",
+      ":core:data:testDemoDebugUnitTest",
+      ":core:datastore:tasks",
+      ":core:datastore:testDemoDebugUnitTest",
+      ":core:domain:tasks",
+      ":core:domain:testDemoDebugUnitTest",
+      ":core:navigation:tasks",
+      ":core:navigation:testDemoDebugUnitTest",
+      ":core:network:tasks",
+      ":core:network:testDemoDebugUnitTest",
+      ":feature:bookmarks:impl:tasks",
+      ":feature:bookmarks:impl:testDemoDebugUnitTest",
+      ":feature:search:impl:tasks",
+      ":feature:search:impl:testDemoDebugUnitTest",
+      ":feature:settings:impl:tasks",
+      ":feature:settings:impl:testDemoDebugUnitTest",
+      ":feature:topic:impl:tasks",
+      ":feature:topic:impl:testDemoDebugUnitTest",
+      ":lint:tasks",
+      ":lint:test"
+    ]
+  },
+  "fixture_setup": {
+    "operation": "apply_patch",
+    "patch_file": "multi-module-test-failures.patch",
+    "expected_paths": [
+      "core/data/src/main/kotlin/com/google/samples/apps/nowinandroid/core/data/repository/CompositeUserNewsResourceRepository.kt",
+      "core/domain/src/main/kotlin/com/google/samples/apps/nowinandroid/core/domain/GetFollowableTopicsUseCase.kt"
+    ]
+  },
+  "tags": [
+    "held-out"
+  ]
+}
