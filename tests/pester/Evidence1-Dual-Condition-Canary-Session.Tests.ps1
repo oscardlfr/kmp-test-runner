@@ -224,3 +224,101 @@ Describe 'Invoke-E1DualConditionCanarySession: source-identity assertion (WO-A2 
     }
 }
 
+
+Describe 'New-E1FakeAgenticEvalRuntimeShim: the multi-module-tests family variables (WO-07)' {
+    BeforeAll {
+        $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+        $script:MmFixtureDir = Join-Path $script:RepoRoot 'tests\fixtures\agentic-eval-multi-module'
+        $script:MmScenarioText = [IO.File]::ReadAllText((Join-Path $script:MmFixtureDir 'scenario-draft.json'))
+        $script:MmExpectedText = [IO.File]::ReadAllText((Join-Path $script:MmFixtureDir 'expected-draft.json'))
+
+        # A harness directory holding just what the shim generator reads: the two fixtures, and the scenario
+        # file and (when given) the expected file of the scenario id under corpus/. Returns the shim text.
+        function New-MmShimText([string]$RuntimeId, [string]$ScenarioId, [string]$ScenarioText, [string]$ExpectedText) {
+            $harness = Join-Path $script:ScratchRoot ('mm-harness-' + [guid]::NewGuid().ToString('N'))
+            foreach ($relative in @('fake-claude-campaign-success\claude', 'fake-codex-campaign-success\codex')) {
+                $destination = Join-Path $harness (Join-Path 'tests\fixtures' $relative)
+                New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
+                Copy-Item -LiteralPath (Join-Path $script:RepoRoot (Join-Path 'tests\fixtures' $relative)) -Destination $destination
+            }
+            $corpus = Join-Path $harness 'tools\agentic-eval\corpus'
+            New-Item -ItemType Directory -Force -Path (Join-Path $corpus 'scenarios'), (Join-Path $corpus 'expected') | Out-Null
+            [IO.File]::WriteAllText((Join-Path $corpus "scenarios\$ScenarioId.json"), $ScenarioText, [Text.UTF8Encoding]::new($false))
+            if ($ExpectedText) { [IO.File]::WriteAllText((Join-Path $corpus "expected\$ScenarioId.json"), $ExpectedText, [Text.UTF8Encoding]::new($false)) }
+            $runsRoot = Join-Path $script:ScratchRoot ('mm-runs-' + [guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Force -Path $runsRoot | Out-Null
+            $inputs = [pscustomobject]@{ harness_dir = $harness; scenario_id = $ScenarioId }
+            $cell = [pscustomobject]@{ runtime_id = $RuntimeId; model_id = 'model-under-test' }
+            $shimDir = New-E1FakeAgenticEvalRuntimeShim $inputs $cell $runsRoot
+            $executable = if ($RuntimeId -ceq 'claude-code') { 'claude' } else { 'codex' }
+            return [IO.File]::ReadAllText((Join-Path $shimDir $executable))
+        }
+        $script:MmExpectedExports = @(
+            "export KMP_FAKE_SCENARIO_FAMILY='multi-module-tests'",
+            "export KMP_FAKE_SCENARIO_PROJECT_NAME='nowinandroid'",
+            "export KMP_FAKE_SCENARIO_INCLUDE_MARKER='include("":core:data"")'",
+            "export KMP_FAKE_SCENARIO_KMP_TEST_ARGS='parallel --flavor demo --exclude-modules app,core:designsystem,feature:foryou:impl,feature:interests:impl --json'",
+            "export KMP_FAKE_SCENARIO_GRADLE_TASKS=':core:common:test'",
+            "export KMP_FAKE_SCENARIO_EXPECTED_JSON='{""outcome_kind"":""tests_failed"",""failing_modules"":["":core:data"","":core:domain"","":feature:bookmarks:impl""],""failed_test_classes"":[""BookmarksViewModelTest"",""CompositeUserNewsResourceRepositoryTest"",""GetFollowableTopicsUseCaseTest""],""failed_count"":6}'"
+        )
+        # A v2-style scenario: no family branch applies, so the shim must stay exactly what it always was.
+        $script:MmV2ScenarioText = '{ "schema": 1, "id": "coverage-threshold-failure-v2", "family": "coverage", "project_alias": "nowinandroid" }'
+    }
+
+    It 'writes the family variables as export lines right after the shebang of the Claude shim, in a fixed order' {
+        $text = New-MmShimText 'claude-code' 'multi-module-test-failures' $script:MmScenarioText $script:MmExpectedText
+        $lines = $text -split "`n"
+        $lines[0] | Should -BeExactly '#!/usr/bin/env bash'
+        $lines[1..6] | Should -BeExactly $script:MmExpectedExports
+    }
+
+    It 'writes the same export lines for the Codex shim' {
+        $text = New-MmShimText 'codex-cli' 'multi-module-test-failures' $script:MmScenarioText $script:MmExpectedText
+        $lines = $text -split "`n"
+        $lines[0] | Should -BeExactly '#!/usr/bin/env bash'
+        $lines[1..6] | Should -BeExactly $script:MmExpectedExports
+    }
+
+    It 'changes nothing else in either shim: the rest of the text equals the shim of a scenario without the family' {
+        foreach ($runtime in @('claude-code', 'codex-cli')) {
+            $withFamily = (New-MmShimText $runtime 'multi-module-test-failures' $script:MmScenarioText $script:MmExpectedText) -split "`n"
+            $without = (New-MmShimText $runtime 'coverage-threshold-failure-v2' $script:MmV2ScenarioText '') -split "`n"
+            ($withFamily[7..($withFamily.Count - 1)] -join "`n") | Should -BeExactly (($without[1..($without.Count - 1)]) -join "`n")
+        }
+    }
+
+    It 'leaves the shims of a scenario of another family without any KMP_FAKE_SCENARIO export' {
+        foreach ($runtime in @('claude-code', 'codex-cli')) {
+            $text = New-MmShimText $runtime 'coverage-threshold-failure-v2' $script:MmV2ScenarioText ''
+            $text | Should -Not -Match 'export KMP_FAKE_SCENARIO'
+        }
+    }
+
+    It 'keeps the line endings LF, so bash reads the shebang and every export' {
+        $text = New-MmShimText 'claude-code' 'multi-module-test-failures' $script:MmScenarioText $script:MmExpectedText
+        $text | Should -Not -Match "`r"
+    }
+
+    It 'quotes a single quote inside a value for bash single quotes' {
+        $edited = $script:MmExpectedText.Replace('"parallel"', '"par''allel"')
+        $edited | Should -Not -BeExactly $script:MmExpectedText
+        $text = New-MmShimText 'claude-code' 'multi-module-test-failures' $script:MmScenarioText $edited
+        $text | Should -Match ([regex]::Escape("export KMP_FAKE_SCENARIO_KMP_TEST_ARGS='par'\''allel --flavor demo"))
+    }
+
+    It 'picks the first allowed Gradle test task, not the first allowed task' {
+        $text = New-MmShimText 'claude-code' 'multi-module-test-failures' $script:MmScenarioText $script:MmExpectedText
+        $script:MmScenarioText | Should -Match '":core:common:tasks",\s*":core:common:test"'
+        $text | Should -Match ([regex]::Escape("export KMP_FAKE_SCENARIO_GRADLE_TASKS=':core:common:test'"))
+    }
+
+    It 'fails closed when the expected file of a multi-module scenario is missing' {
+        { New-MmShimText 'claude-code' 'multi-module-test-failures' $script:MmScenarioText '' } | Should -Throw '*agentic_eval_fake_expected_missing*'
+    }
+
+    It 'fails closed when the expected file is not valid JSON or has no smoke block' {
+        { New-MmShimText 'claude-code' 'multi-module-test-failures' $script:MmScenarioText '{ not json' } | Should -Throw '*agentic_eval_fake_expected_invalid*'
+        $noSmoke = ($script:MmExpectedText | ConvertFrom-Json) | Select-Object -Property * -ExcludeProperty smoke | ConvertTo-Json -Depth 8
+        { New-MmShimText 'claude-code' 'multi-module-test-failures' $script:MmScenarioText $noSmoke } | Should -Throw '*agentic_eval_fake_expected_invalid*'
+    }
+}

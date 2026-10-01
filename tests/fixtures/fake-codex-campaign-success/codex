@@ -41,6 +41,13 @@ FAKE_SCENARIO_MODULE="${KMP_FAKE_SCENARIO_MODULE:-:core:domain}"
 FAKE_SCENARIO_MIN_MISSED_LINES="${KMP_FAKE_SCENARIO_MIN_MISSED_LINES:-15}"
 FAKE_SCENARIO_GRADLE_TASKS="${KMP_FAKE_SCENARIO_GRADLE_TASKS:-:core:domain:testDemoDebugUnitTest :core:domain:createDemoDebugUnitTestCoverageReport}"
 
+# multi-module-tests family (PLAN.md D4/D5, WO-07): mirrors fake-claude-campaign-success/claude's three
+# variables exactly (see that fixture's comment): KMP_FAKE_SCENARIO_FAMILY, KMP_FAKE_SCENARIO_KMP_TEST_ARGS
+# and KMP_FAKE_SCENARIO_EXPECTED_JSON, all empty by default so an invocation that sets none is untouched.
+FAKE_SCENARIO_FAMILY="${KMP_FAKE_SCENARIO_FAMILY:-}"
+FAKE_SCENARIO_KMP_TEST_ARGS="${KMP_FAKE_SCENARIO_KMP_TEST_ARGS:-}"
+FAKE_SCENARIO_EXPECTED_JSON="${KMP_FAKE_SCENARIO_EXPECTED_JSON:-}"
+
 # Provider-free exec gate: true only when cwd is the real materialized workspace for the
 # CURRENTLY-CONFIGURED scenario (never any synthetic/temp source repo any existing test uses). When
 # true, this fixture stops emitting the hardcoded :fakemod literal below and genuinely invokes the
@@ -58,6 +65,52 @@ is_real_scenario_workspace() {
   grep -q "$FAKE_SCENARIO_INCLUDE_MARKER" "$PWD/settings.gradle.kts" || return 1
   return 0
 }
+
+if [ "$FAKE_SCENARIO_FAMILY" = "multi-module-tests" ]; then
+  # One scoped test command (the one the offline seed's warm list covers), then the ground-truth answer, in
+  # both arms (the skill file decides the arm, as below). Same shape as the real Codex-on-Windows command: the
+  # full launcher path around a single-quoted inner command. It really runs only in the real materialized
+  # workspace; anywhere else the transcript carries the command and a placeholder result.
+  FAMILY_ANSWER=$(node -e 'console.log(JSON.stringify(JSON.parse(process.argv[1])))' "$FAKE_SCENARIO_EXPECTED_JSON") || {
+    echo "fake codex: KMP_FAKE_SCENARIO_EXPECTED_JSON is not valid JSON" >&2
+    exit 1
+  }
+  HAS_SKILL=0
+  [ -f "$PWD/.agents/skills/kmp-test-runner/SKILL.md" ] && HAS_SKILL=1
+  if [ "$HAS_SKILL" = "1" ]; then
+    INNER_CMD="kmp-test $FAKE_SCENARIO_KMP_TEST_ARGS --project-root ."
+  else
+    INNER_CMD="./gradlew.bat $FAKE_SCENARIO_GRADLE_TASKS --offline --console=plain"
+  fi
+  POWERSHELL_EXE='C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+  FAMILY_CMD="\"$POWERSHELL_EXE\" -Command '$INNER_CMD'"
+
+  echo '{"type":"thread.started","thread_id":"fake-codex-thread"}'
+  echo '{"type":"turn.started"}'
+  node -e "console.log(JSON.stringify({type:'item.started',item:{id:'cmd-1',type:'command_execution',command:process.argv[1]}}))" "$FAMILY_CMD"
+
+  FAMILY_EXIT=1
+  if is_real_scenario_workspace; then
+    set +e
+    FAMILY_OUTPUT=$("$POWERSHELL_EXE" -Command "$INNER_CMD" 2>&1)
+    FAMILY_EXIT=$?
+    set -e
+  else
+    FAMILY_OUTPUT="[fake] scoped multi-module test run (no real workspace)"
+  fi
+  FAMILY_STATUS='completed'
+  [ "$FAMILY_EXIT" != "0" ] && FAMILY_STATUS='failed'
+  node -e "console.log(JSON.stringify({type:'item.completed',item:{id:'cmd-1',type:'command_execution',command:process.argv[1],aggregated_output:process.argv[2],exit_code:Number(process.argv[3]),status:process.argv[4]}}))" "$FAMILY_CMD" "$FAMILY_OUTPUT" "$FAMILY_EXIT" "$FAMILY_STATUS"
+
+  FINAL_ANSWER="Ran the scoped multi-module tests.
+
+KMP_EVAL_RESULT
+$FAMILY_ANSWER
+KMP_EVAL_RESULT_END"
+  node -e "console.log(JSON.stringify({type:'item.completed',item:{id:'msg-1',type:'agent_message',text:process.argv[1]}}))" "$FINAL_ANSWER"
+  echo '{"type":"turn.completed","usage":{"input_tokens":11,"cached_input_tokens":2,"output_tokens":7,"reasoning_output_tokens":3}}'
+  exit 0
+fi
 
 if is_real_scenario_workspace; then
   HAS_SKILL=0

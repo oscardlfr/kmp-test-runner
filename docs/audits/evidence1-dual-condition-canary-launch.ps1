@@ -124,11 +124,71 @@ if ($InternalLibrary) {
     if ([int64]$Value -lt 0 -or [int64]$Value -gt [int]::MaxValue) { throw $ErrorCode }
     return [int]$Value
   }
+  # Bash single quotes cannot contain a single quote: close the quote, escape the quote, reopen.
+  function ConvertTo-E1BashSingleQuoted([string]$Value) { return "'" + $Value.Replace("'", "'\''") + "'" }
+  # The `export` lines the fake provider needs for the multi-module-tests scenario of this campaign, as text
+  # ending in a line feed, or '' for every other scenario (so their shims stay exactly what they always were).
+  # The fake runs as the agent child, whose environment the harness filters, so a variable set by this launcher
+  # would never reach it: the values go into the shim text itself. They come from the scenario file and its
+  # ground-truth file under the harness directory's corpus; both are read here, never passed around.
+  # Strict mode makes a missing property on parsed JSON a raw error; a missing one must read as absent instead.
+  function Get-E1JsonProperty($Object, [string]$Name) {
+    if ($null -eq $Object) { return $null }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+    return $property.Value
+  }
+  function Get-E1FakeScenarioExportText($CurrentCampaignInputs) {
+    $scenarioId = [string]$CurrentCampaignInputs.scenario_id
+    $corpus = Join-Path ([string]$CurrentCampaignInputs.harness_dir) 'tools\agentic-eval\corpus'
+    $scenarioPath = Join-Path $corpus (Join-Path 'scenarios' "$scenarioId.json")
+    if (-not (Test-Path -LiteralPath $scenarioPath -PathType Leaf)) { return '' }
+    try { $scenario = [IO.File]::ReadAllText($scenarioPath) | ConvertFrom-Json -ErrorAction Stop } catch { throw 'agentic_eval_fake_scenario_invalid' }
+    if ([string](Get-E1JsonProperty $scenario 'family') -cne 'multi-module-tests') { return '' }
+    $expectedPath = Join-Path $corpus (Join-Path 'expected' "$scenarioId.json")
+    if (-not (Test-Path -LiteralPath $expectedPath -PathType Leaf)) { throw 'agentic_eval_fake_expected_missing' }
+    try { $truth = [IO.File]::ReadAllText($expectedPath) | ConvertFrom-Json -ErrorAction Stop } catch { throw 'agentic_eval_fake_expected_invalid' }
+    $answer = Get-E1JsonProperty $truth 'expected'
+    $smoke = Get-E1JsonProperty $truth 'smoke'
+    $kmpArgumentsRaw = Get-E1JsonProperty $smoke 'kmp_test_args'
+    $kmpArguments = if ($null -eq $kmpArgumentsRaw) { @() } else { @($kmpArgumentsRaw) }
+    $failingModules = Get-E1JsonProperty $answer 'failing_modules'
+    $failedClasses = Get-E1JsonProperty $answer 'failed_test_classes'
+    if ($null -eq $answer -or $null -eq $smoke -or $kmpArguments.Count -eq 0 -or $null -eq $failingModules -or $null -eq $failedClasses -or $null -eq (Get-E1JsonProperty $answer 'outcome_kind')) {
+      throw 'agentic_eval_fake_expected_invalid'
+    }
+    try { $count = [int](Get-E1JsonProperty $answer 'failed_count') } catch { throw 'agentic_eval_fake_expected_invalid' }
+    $json = { param($value) (ConvertTo-Json -InputObject ([string]$value) -Compress) }
+    $modules = @($failingModules)
+    $moduleJson = '[' + ((@($modules | ForEach-Object { & $json $_ })) -join ',') + ']'
+    $classJson = '[' + ((@(@($failedClasses) | ForEach-Object { & $json $_ })) -join ',') + ']'
+    $answerJson = '{"outcome_kind":' + (& $json $answer.outcome_kind) + ',"failing_modules":' + $moduleJson + ',"failed_test_classes":' + $classJson + ',"failed_count":' + $count + '}'
+    $firstTestTask = @((Get-E1JsonProperty (Get-E1JsonProperty $scenario 'policy') 'allowed_gradle_tasks') | Where-Object { ([string]$_).Split(':')[-1] -cmatch '^test[A-Za-z]*$' } | Select-Object -First 1)
+    if ($firstTestTask.Count -eq 0 -or $modules.Count -eq 0) { throw 'agentic_eval_fake_scenario_invalid' }
+    $variables = [ordered]@{
+      KMP_FAKE_SCENARIO_FAMILY = 'multi-module-tests'
+      KMP_FAKE_SCENARIO_PROJECT_NAME = [string](Get-E1JsonProperty $scenario 'project_alias')
+      KMP_FAKE_SCENARIO_INCLUDE_MARKER = ('include("' + [string]$modules[0] + '")')
+      KMP_FAKE_SCENARIO_KMP_TEST_ARGS = (($kmpArguments | ForEach-Object { [string]$_ }) -join ' ')
+      KMP_FAKE_SCENARIO_GRADLE_TASKS = [string]$firstTestTask[0]
+      KMP_FAKE_SCENARIO_EXPECTED_JSON = $answerJson
+    }
+    $lines = foreach ($name in $variables.Keys) { 'export ' + $name + '=' + (ConvertTo-E1BashSingleQuoted ([string]$variables[$name])) }
+    return (($lines -join "`n") + "`n")
+  }
+  # Inserts the export text right after the shebang line. LF only: bash reads a trailing CR as part of the name.
+  function Add-E1FakeScenarioExports([string]$ShimText, [string]$ExportText) {
+    if ([string]::IsNullOrEmpty($ExportText)) { return $ShimText }
+    $lineEnd = $ShimText.IndexOf("`n")
+    if ($lineEnd -lt 0 -or -not $ShimText.StartsWith('#!')) { throw 'agentic_eval_fake_runtime_fixture_shebang_missing' }
+    return $ShimText.Substring(0, $lineEnd + 1) + $ExportText + $ShimText.Substring($lineEnd + 1)
+  }
   function New-E1FakeAgenticEvalRuntimeShim($CurrentCampaignInputs, $Cell, [string]$RunsRoot) {
     $fixtureName = if ([string]$Cell.runtime_id -ceq 'claude-code') { 'fake-claude-campaign-success' } else { 'fake-codex-campaign-success' }
     $executable = if ([string]$Cell.runtime_id -ceq 'claude-code') { 'claude' } else { 'codex' }
     $fixturePath = Join-Path ([string]$CurrentCampaignInputs.harness_dir) (Join-Path 'tests\fixtures' (Join-Path $fixtureName $executable))
     if (-not (Test-Path -LiteralPath $fixturePath -PathType Leaf)) { throw 'agentic_eval_fake_runtime_fixture_missing' }
+    $exportText = Get-E1FakeScenarioExportText $CurrentCampaignInputs
     $shimDir = Join-Path $RunsRoot 'provider-shim'
     New-Item -ItemType Directory -Path $shimDir -ErrorAction Stop | Out-Null
     $shimExecutable = Join-Path $shimDir $executable
@@ -136,11 +196,13 @@ if ($InternalLibrary) {
       $original = [IO.File]::ReadAllText($fixturePath)
       $normalized = $original.Replace('\"model\":\"claude-sonnet-5-fake-resolved\"', ('\"model\":\"' + [string]$Cell.model_id + '\"')).Replace('\"claude_code_version\":\"fake\"', '\"claude_code_version\":\"2.1.238\"')
       if ($normalized -ceq $original) { throw 'agentic_eval_fake_claude_fixture_normalization_failed' }
-      [IO.File]::WriteAllText($shimExecutable, $normalized, [Text.UTF8Encoding]::new($false))
-      $wrapper = '@echo off' + [Environment]::NewLine + '"%CLAUDE_CODE_GIT_BASH_PATH%" --noprofile --norc "%~dp0claude" %*' + [Environment]::NewLine
+      [IO.File]::WriteAllText($shimExecutable, (Add-E1FakeScenarioExports $normalized $exportText), [Text.UTF8Encoding]::new($false))
+      $wrapper ='@echo off' + [Environment]::NewLine + '"%CLAUDE_CODE_GIT_BASH_PATH%" --noprofile --norc "%~dp0claude" %*' + [Environment]::NewLine
       [IO.File]::WriteAllText((Join-Path $shimDir 'claude.cmd'), $wrapper, [Text.UTF8Encoding]::new($false))
-    } else {
+    } elseif ([string]::IsNullOrEmpty($exportText)) {
       Copy-Item -LiteralPath $fixturePath -Destination $shimExecutable -ErrorAction Stop
+    } else {
+      [IO.File]::WriteAllText($shimExecutable, (Add-E1FakeScenarioExports ([IO.File]::ReadAllText($fixturePath)) $exportText), [Text.UTF8Encoding]::new($false))
     }
     return $shimDir
   }

@@ -34,6 +34,17 @@ FAKE_SCENARIO_MODULE="${KMP_FAKE_SCENARIO_MODULE:-:core:domain}"
 FAKE_SCENARIO_MIN_MISSED_LINES="${KMP_FAKE_SCENARIO_MIN_MISSED_LINES:-15}"
 FAKE_SCENARIO_GRADLE_TASKS="${KMP_FAKE_SCENARIO_GRADLE_TASKS:-:core:domain:testDemoDebugUnitTest :core:domain:createDemoDebugUnitTestCoverageReport}"
 
+# multi-module-tests family (PLAN.md D4/D5, WO-07): three more variables, every one empty by default, so an
+# invocation that sets none of them is untouched. The launcher's provider shim writes them (as `export`
+# lines after the shebang, since this process's environment is filtered) for a multi-module scenario:
+#   KMP_FAKE_SCENARIO_FAMILY         the family name; only "multi-module-tests" changes anything
+#   KMP_FAKE_SCENARIO_KMP_TEST_ARGS  expected.smoke.kmp_test_args joined by spaces (the product arm's command)
+#   KMP_FAKE_SCENARIO_EXPECTED_JSON  the four expected answer fields as JSON (the answer both arms give)
+# The free arm runs ./gradlew $KMP_FAKE_SCENARIO_GRADLE_TASKS, i.e. the scenario's first allowed test task.
+FAKE_SCENARIO_FAMILY="${KMP_FAKE_SCENARIO_FAMILY:-}"
+FAKE_SCENARIO_KMP_TEST_ARGS="${KMP_FAKE_SCENARIO_KMP_TEST_ARGS:-}"
+FAKE_SCENARIO_EXPECTED_JSON="${KMP_FAKE_SCENARIO_EXPECTED_JSON:-}"
+
 write_sidecar() {
   local kind="$1" toolUseId="$2" recordJson="$3"
   node -e '
@@ -99,6 +110,41 @@ if [ "$HAS_PLUGIN_DIR" = "1" ]; then
 else
   echo '{"type":"assistant","message":{"model":"claude-sonnet-5","content":[{"type":"tool_use","id":"toolu_fakeskill1","name":"Skill","input":{"skill":"kmp-test-runner"}}],"usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}'
   echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"<tool_use_error>Unknown skill: kmp-test-runner</tool_use_error>","is_error":true,"tool_use_id":"toolu_fakeskill1"}]}}'
+fi
+
+if [ "$FAKE_SCENARIO_FAMILY" = "multi-module-tests" ]; then
+  # One scoped test command (the one the offline seed's warm list covers), then the ground-truth answer: the
+  # fake agent always answers correctly for this family, in both arms. The command really runs only in the real
+  # materialized workspace; anywhere else the transcript carries the command and a placeholder result.
+  FAMILY_ANSWER=$(node -e 'console.log(JSON.stringify(JSON.parse(process.argv[1])))' "$FAKE_SCENARIO_EXPECTED_JSON") || {
+    echo "fake-claude-campaign-success: KMP_FAKE_SCENARIO_EXPECTED_JSON is not valid JSON" >&2
+    exit 1
+  }
+  if [ "$HAS_PLUGIN_DIR" = "1" ]; then
+    FAMILY_CMD="kmp-test $FAKE_SCENARIO_KMP_TEST_ARGS --project-root ."
+  else
+    FAMILY_CMD="./gradlew $FAKE_SCENARIO_GRADLE_TASKS --offline --console=plain"
+  fi
+  node -e "console.log(JSON.stringify({type:'assistant',message:{model:'claude-sonnet-5',content:[{type:'tool_use',id:'toolu_fakebash1',name:'Bash',input:{command:process.argv[1],description:'fake'}}],usage:{input_tokens:1,output_tokens:1,cache_read_input_tokens:0,cache_creation_input_tokens:0}}}))" "$FAMILY_CMD"
+  if [ "$PERMISSION_MODE" = "dontAsk" ]; then
+    echo '{"type":"system","subtype":"hook_started","hook_id":"fake-hook-1","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse"}'
+    echo '{"type":"system","subtype":"hook_response","hook_id":"fake-hook-1","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse","output":"{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"permissionDecisionReason\":\"fake\"}}","exit_code":0,"outcome":"success"}'
+    FAMILY_SIDECAR_JSON=$(node -e "console.log(JSON.stringify({decision:'allow',command:process.argv[1]}))" "$FAMILY_CMD")
+    write_sidecar decisions toolu_fakebash1 "$FAMILY_SIDECAR_JSON"
+  fi
+  if is_real_scenario_workspace; then
+    FAMILY_OUTPUT=$(eval "$FAMILY_CMD" 2>&1 || true)
+  else
+    FAMILY_OUTPUT="[fake] scoped multi-module test run (no real workspace)"
+  fi
+  node -e "console.log(JSON.stringify({type:'user',message:{role:'user',content:[{type:'tool_result',content:process.argv[1],tool_use_id:'toolu_fakebash1'}]}}))" "$FAMILY_OUTPUT"
+  FINAL_ANSWER="Ran the scoped multi-module tests.
+
+KMP_EVAL_RESULT
+$FAMILY_ANSWER
+KMP_EVAL_RESULT_END"
+  node -e "console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,duration_ms:10,num_turns:1,result:process.argv[1],permission_denials:[],usage:{input_tokens:2,output_tokens:2,cache_read_input_tokens:0,cache_creation_input_tokens:0}}))" "$FINAL_ANSWER"
+  exit 0
 fi
 
 if is_real_scenario_workspace; then

@@ -15,10 +15,11 @@
 // them -- test 1 and test 5 below pin that byte-identical fallback as a regression guard.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawn } from 'node:child_process';
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { resolveBash } from '../../tools/agentic-eval/resolve-bash.mjs';
+import { compareMultiModuleAnswer } from '../../tools/agentic-eval/graders-multi-module.mjs';
 
 const isWindows = process.platform === 'win32';
 
@@ -438,5 +439,168 @@ describe('fake-codex-campaign-success/codex -- Phase 3-bis gate', () => {
 
     const completedCmd = evts.find((e) => e.type === 'item.completed' && e.item?.type === 'command_execution');
     expect(completedCmd.item.aggregated_output, diag).toContain('BUILD SUCCESSFUL');
+  });
+});
+
+// -------------------------------------------------------------------------------------------------
+// multi-module-tests family (PLAN.md D4, D5; WO-07): the same two fixtures answer correctly for the
+// new family when KMP_FAKE_SCENARIO_FAMILY says so, in both arms. Three more variables carry what the
+// launcher's shim writes for a multi-module scenario: the kmp-test arguments the VM's smoke run uses
+// (expected.smoke.kmp_test_args), and the four expected fields as JSON. The other families, and a v2
+// invocation that sets none of them, are covered by every test above and stay byte-identical.
+// -------------------------------------------------------------------------------------------------
+describe('multi-module-tests family -- the fake providers answer correctly in both arms', () => {
+  const multiModuleTruth = JSON.parse(readFileSync(path.join(FIXTURES_DIR, 'agentic-eval-multi-module', 'expected-draft.json'), 'utf8'));
+  const EXPECTED_FIELDS = multiModuleTruth.expected;
+  const FAMILY_ENV = {
+    KMP_FAKE_SCENARIO_FAMILY: 'multi-module-tests',
+    KMP_FAKE_SCENARIO_KMP_TEST_ARGS: multiModuleTruth.smoke.kmp_test_args.join(' '),
+    KMP_FAKE_SCENARIO_EXPECTED_JSON: JSON.stringify(EXPECTED_FIELDS),
+    KMP_FAKE_SCENARIO_GRADLE_TASKS: ':core:common:test',
+    KMP_FAKE_SCENARIO_INCLUDE_MARKER: 'include(":core:data")',
+  };
+  const KMP_COMMAND = `kmp-test ${multiModuleTruth.smoke.kmp_test_args.join(' ')} --project-root .`;
+
+  const blockOf = (text) => JSON.parse(text.split('KMP_EVAL_RESULT\n')[1].split('\nKMP_EVAL_RESULT_END')[0]);
+  const matchesGroundTruth = (block) => compareMultiModuleAnswer(block, EXPECTED_FIELDS).matched === true;
+
+  function writeMultiModuleWorkspace() {
+    writeFileSync(path.join(workspaceDir, 'settings.gradle.kts'), ['rootProject.name = "nowinandroid"', 'include(":core:data")', ''].join('\n'));
+    writeFileSync(path.join(workspaceDir, 'gradlew.bat'), '@echo off\r\n');
+  }
+
+  describe('fake-claude-campaign-success/claude', () => {
+    it('product arm, no real workspace: runs the smoke kmp-test command and answers with the ground truth', async () => {
+      const cwd = mkdtempSync(path.join(os.tmpdir(), 'gate-exec-family-plain-'));
+      try {
+        const result = await runFixture(CLAUDE_FIXTURE, ['--plugin-dir', '/fake/plugin', '--permission-mode', 'bypassPermissions'], { cwd, env: { ...stubEnv(), ...FAMILY_ENV } });
+        const diag = diagBlock(result);
+        expect(result.code, diag).toBe(0);
+        const evts = events(result.stdout);
+        const bash = evts.find((e) => e.type === 'assistant' && e.message?.content?.[0]?.name === 'Bash');
+        expect(bash.message.content[0].input.command, diag).toBe(KMP_COMMAND);
+        expect(evts.some((e) => e.type === 'assistant' && e.message?.content?.[0]?.name === 'Skill'), diag).toBe(true);
+        const text = resultText(result.stdout);
+        expect(blockOf(text), diag).toEqual(EXPECTED_FIELDS);
+        expect(matchesGroundTruth(blockOf(text)), diag).toBe(true);
+      } finally {
+        rmSync(cwd, { recursive: true, force: true });
+      }
+    });
+
+    it('free arm, no real workspace: runs the first allowed Gradle test task and answers with the ground truth', async () => {
+      const cwd = mkdtempSync(path.join(os.tmpdir(), 'gate-exec-family-plain-'));
+      try {
+        const result = await runFixture(CLAUDE_FIXTURE, ['--permission-mode', 'bypassPermissions'], { cwd, env: { ...stubEnv(), ...FAMILY_ENV } });
+        const diag = diagBlock(result);
+        expect(result.code, diag).toBe(0);
+        const bash = events(result.stdout).find((e) => e.type === 'assistant' && e.message?.content?.[0]?.name === 'Bash');
+        expect(bash.message.content[0].input.command, diag).toBe('./gradlew :core:common:test --offline --console=plain');
+        expect(matchesGroundTruth(blockOf(resultText(result.stdout))), diag).toBe(true);
+      } finally {
+        rmSync(cwd, { recursive: true, force: true });
+      }
+    });
+
+    it('product arm in a real-looking workspace: actually runs the command (stub output reaches the transcript) and still answers with the ground truth', async () => {
+      writeMultiModuleWorkspace();
+      writeStub(path.join(stubBinDir, 'kmp-test'), ['#!/usr/bin/env bash', 'echo "stub kmp-test ran: $*"', 'exit 1'], { mode: 0o755 });
+      const result = await runFixture(CLAUDE_FIXTURE, ['--plugin-dir', '/fake/plugin', '--permission-mode', 'bypassPermissions'], { cwd: workspaceDir, env: { ...stubEnv(), ...FAMILY_ENV } });
+      const diag = diagBlock(result);
+      expect(result.code, diag).toBe(0);
+      const toolResult = events(result.stdout).find((e) => e.type === 'user' && e.message?.content?.[0]?.tool_use_id === 'toolu_fakebash1');
+      expect(toolResult.message.content[0].content, diag).toContain('stub kmp-test ran: parallel --flavor demo --exclude-modules');
+      expect(matchesGroundTruth(blockOf(resultText(result.stdout))), diag).toBe(true);
+    });
+
+    it('records the policy decision for the one command when the permission mode is dontAsk', async () => {
+      const cwd = mkdtempSync(path.join(os.tmpdir(), 'gate-exec-family-plain-'));
+      const evidenceDir = mkdtempSync(path.join(os.tmpdir(), 'gate-exec-family-evidence-'));
+      try {
+        const result = await runFixture(CLAUDE_FIXTURE, ['--plugin-dir', '/fake/plugin', '--permission-mode', 'dontAsk'], { cwd, env: { ...stubEnv(), ...FAMILY_ENV, KMP_EVAL_JUNIT_EVIDENCE_DIR: evidenceDir } });
+        const diag = diagBlock(result);
+        expect(result.code, diag).toBe(0);
+        const hookResponses = events(result.stdout).filter((e) => e.type === 'system' && e.subtype === 'hook_response');
+        expect(hookResponses, diag).toHaveLength(1);
+        expect(matchesGroundTruth(blockOf(resultText(result.stdout))), diag).toBe(true);
+      } finally {
+        rmSync(cwd, { recursive: true, force: true });
+        rmSync(evidenceDir, { recursive: true, force: true });
+      }
+    });
+
+    it('fails loudly when the expected JSON is not valid JSON', async () => {
+      const cwd = mkdtempSync(path.join(os.tmpdir(), 'gate-exec-family-plain-'));
+      try {
+        const result = await runFixture(CLAUDE_FIXTURE, ['--plugin-dir', '/fake/plugin', '--permission-mode', 'bypassPermissions'], { cwd, env: { ...stubEnv(), ...FAMILY_ENV, KMP_FAKE_SCENARIO_EXPECTED_JSON: '{not json' } });
+        expect(result.code, diagBlock(result)).not.toBe(0);
+        expect(result.stderr).toContain('KMP_FAKE_SCENARIO_EXPECTED_JSON');
+      } finally {
+        rmSync(cwd, { recursive: true, force: true });
+      }
+    });
+
+    it('leaves a v2 invocation untouched: the family variables absent, the :fakemod literal is still emitted', async () => {
+      const cwd = mkdtempSync(path.join(os.tmpdir(), 'gate-exec-family-v2-'));
+      try {
+        const result = await runFixture(CLAUDE_FIXTURE, ['--plugin-dir', '/fake/plugin', '--permission-mode', 'bypassPermissions'], { cwd, env: stubEnv() });
+        expect(resultText(result.stdout), diagBlock(result)).toContain('":fakemod"');
+      } finally {
+        rmSync(cwd, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('fake-codex-campaign-success/codex', () => {
+    // The fixture's own launcher path (the existing Codex describe block above keeps its own copy of this constant).
+    const POWERSHELL_EXE = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+    function writeSkill() {
+      mkdirSync(path.join(workspaceDir, '.agents', 'skills', 'kmp-test-runner'), { recursive: true });
+      writeFileSync(path.join(workspaceDir, '.agents', 'skills', 'kmp-test-runner', 'SKILL.md'), '# fake\n');
+    }
+
+    it('product arm, no real workspace: runs the smoke kmp-test command and answers with the ground truth', async () => {
+      writeSkill();
+      const result = await runFixture(CODEX_FIXTURE, ['exec'], { cwd: workspaceDir, env: { ...stubEnv(), ...FAMILY_ENV } });
+      const diag = diagBlock(result);
+      expect(result.code, diag).toBe(0);
+      const evts = events(result.stdout);
+      const started = evts.find((e) => e.type === 'item.started');
+      expect(started.item.command, diag).toBe(`"${POWERSHELL_EXE}" -Command '${KMP_COMMAND}'`);
+      const message = evts.find((e) => e.type === 'item.completed' && e.item?.type === 'agent_message');
+      expect(blockOf(message.item.text), diag).toEqual(EXPECTED_FIELDS);
+      expect(matchesGroundTruth(blockOf(message.item.text)), diag).toBe(true);
+    });
+
+    it('free arm, no real workspace: runs the first allowed Gradle test task and answers with the ground truth', async () => {
+      const result = await runFixture(CODEX_FIXTURE, ['exec'], { cwd: workspaceDir, env: { ...stubEnv(), ...FAMILY_ENV } });
+      const diag = diagBlock(result);
+      expect(result.code, diag).toBe(0);
+      const evts = events(result.stdout);
+      const started = evts.find((e) => e.type === 'item.started');
+      expect(started.item.command, diag).toBe(`"${POWERSHELL_EXE}" -Command './gradlew.bat :core:common:test --offline --console=plain'`);
+      const message = evts.find((e) => e.type === 'item.completed' && e.item?.type === 'agent_message');
+      expect(matchesGroundTruth(blockOf(message.item.text)), diag).toBe(true);
+    });
+
+    it.skipIf(!isWindows)('product arm in a real-looking workspace: actually runs the command and still answers with the ground truth', async () => {
+      writeMultiModuleWorkspace();
+      writeSkill();
+      writeStub(path.join(stubBinDir, 'kmp-test.cmd'), ['@echo off', 'echo stub kmp-test ran', 'exit /b 1'], {});
+      const result = await runFixture(CODEX_FIXTURE, ['exec'], { cwd: workspaceDir, env: { ...stubEnv(), ...FAMILY_ENV } });
+      const diag = diagBlock(result);
+      expect(result.code, diag).toBe(0);
+      const evts = events(result.stdout);
+      const completed = evts.find((e) => e.type === 'item.completed' && e.item?.type === 'command_execution');
+      expect(completed.item.aggregated_output, diag).toContain('stub kmp-test ran');
+      const message = evts.find((e) => e.type === 'item.completed' && e.item?.type === 'agent_message');
+      expect(matchesGroundTruth(blockOf(message.item.text)), diag).toBe(true);
+    });
+
+    it('leaves a v2 invocation untouched: the family variables absent, the :fakemod literal is still emitted', async () => {
+      const result = await runFixture(CODEX_FIXTURE, ['exec'], { cwd: workspaceDir, env: stubEnv() });
+      const message = events(result.stdout).find((e) => e.type === 'item.completed' && e.item?.type === 'agent_message');
+      expect(message.item.text, diagBlock(result)).toContain('":fakemod"');
+    });
   });
 });
