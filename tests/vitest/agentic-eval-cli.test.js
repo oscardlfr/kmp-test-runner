@@ -3512,3 +3512,63 @@ describe('cmdAggregate -- a malformed top-level run file never aborts the batch'
     }
   });
 });
+
+// output_bytes_kind: the record says what its output_bytes measures, so nobody has to guess which runtime's
+// bytes they hold. Claude's are the tool results returned to the model; Codex's are the command output as
+// logged (Codex may shorten what the model reads). It is an optional schema-9 field, never canonical.
+describe('buildRunRecord -- output_bytes_kind labels what output_bytes measures', () => {
+  function recordFor(runtimeId) {
+    const result = resolveSelection({ runtimeId, executionProfileId: 'sandboxed-unrestricted-v1' });
+    if (!result.ok) throw new Error(`test setup: resolveSelection(${runtimeId}) failed: ${result.reason}`);
+    const { selection } = result;
+    const observation = {
+      schema: 1,
+      runtime: { id: runtimeId, protocolVersion: 1 },
+      process: { exitCode: 0, terminated: false, terminationReason: null, spawnHrtimeNs: 0n, endedHrtimeNs: 1000n },
+      session: { initPresent: true, modelResolved: selection.model.model_id, sessionIdObserved: 'sess-1', runtimeVersion: 'fake', toolProfileMatchesExpected: true, modelSnapshot: null },
+      transcript: { malformedLineCount: 0, strictStructuralIssues: [], effectiveStructuralIssues: [], strictIncompleteToolResults: [], effectiveIncompleteToolResults: [] },
+      terminal: { present: true, isError: false, turnCount: 1, finalText: 'irrelevant', resultSubtype: 'success', usage: { input: null, cached_input: null, cache_write: null, output: null, reasoning_output: null } },
+      toolAttempts: [],
+      skill: {
+        available: false, profileMatchesCondition: true, snapshotBindingMatches: false,
+        targetInvocation: null, foreignInvocations: [],
+        ambient: { names: new Set(), structurallyWellFormed: true, targetIdentityOk: true },
+      },
+      hookStats: { hookCallCount: 0, hookResponseCount: 0, hookDenyCount: 0, hookAllowCount: 0, hookPairingOk: true, everyCallHooked: true },
+      byteMetrics: { outputBytes: 12, streamJsonBytes: 34 },
+      timing: { receiptNsByEventIndex: new Map() },
+    };
+    return buildRunRecord({
+      conditionResult: {
+        observation, startedAt: new Date('2026-01-01T00:00:00.000Z'), endedAt: new Date('2026-01-01T00:00:01.000Z'),
+        argvSha256: 'a'.repeat(64), deliveredPromptSha256: 'b'.repeat(64), envKeys: ['PATH'],
+        reasoningEffortRequested: 'high', reasoningEffortSource: 'harness-pinned-cli-flag',
+        treatmentDeliverySha256: null, maxBudgetUsd: 0.6, timeoutMs: 300000,
+      },
+      condition: 'no-skill', runKind: 'calibration', scenarioId: 'test-output-bytes-kind', skillSourceSha: null,
+      daemonPolicy: 'disabled-via-gradle-user-home-properties', allowedGradleTasks: ['build'], allowedKmpTestSubcommands: ['doctor'],
+      policySha256: computePolicySha256(), modelRequested: selection.model.model_id, selection,
+      promptArtifact: TEST_RUN_RECORD_V6_INPUTS.promptArtifact, skillSnapshotArtifact: TEST_RUN_RECORD_V6_INPUTS.skillSnapshotArtifact,
+      ambientProfileScopeId: '00000000-0000-4000-8000-000000000000', ambientProfileKey: Buffer.from('0'.repeat(64), 'hex'),
+      isolationAttestationSha256: 'e'.repeat(64),
+    });
+  }
+
+  it('a claude-code record says its output_bytes are the tool results returned to the model', () => {
+    const record = recordFor('claude-code');
+    expect(record.output_bytes.value).toBe(12);
+    expect(record.output_bytes_kind).toBe('tool_results');
+  });
+
+  it('a codex-cli record says its output_bytes are the command output as logged', () => {
+    const record = recordFor('codex-cli');
+    expect(record.output_bytes.value).toBe(12);
+    expect(record.output_bytes_kind).toBe('command_output');
+  });
+
+  it.each(['claude-code', 'codex-cli'])('a %s record with the label validates, with no error and no unrecognized-field warning for it', (runtimeId) => {
+    const result = validateRun(recordFor(runtimeId));
+    expect(result.errors).toEqual([]);
+    expect(result.warnings.filter((w) => w.field === 'output_bytes_kind')).toEqual([]);
+  });
+});

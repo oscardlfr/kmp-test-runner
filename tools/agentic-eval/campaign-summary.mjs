@@ -318,7 +318,7 @@ function usageDimensionValues(countedCells, dimension) {
  */
 function perCellSchema2Fields(cell, status) {
   if (status === 'missing') {
-    return { tokens: null, num_turns: null, total_cost_usd: null, output_bytes: null, command_kind_counts: null };
+    return { tokens: null, num_turns: null, total_cost_usd: null, output_bytes: null, output_bytes_kind: null, command_kind_counts: null };
   }
   const usage = countedCellMetrics(cell).usage;
   const tokens = usage
@@ -333,7 +333,7 @@ function perCellSchema2Fields(cell, status) {
     }
     : null;
   if (status !== 'accepted') {
-    return { tokens, num_turns: null, total_cost_usd: null, output_bytes: null, command_kind_counts: null };
+    return { tokens, num_turns: null, total_cost_usd: null, output_bytes: null, output_bytes_kind: null, command_kind_counts: null };
   }
   const e = cell.loaded.entry;
   // num_turns/total_cost_usd/output_bytes are RAW record fields -- analyzeRunRecord's own entry
@@ -350,6 +350,9 @@ function perCellSchema2Fields(cell, status) {
     num_turns: typeof r.num_turns?.value === 'number' ? r.num_turns.value : null,
     total_cost_usd: typeof r.total_cost_usd?.value === 'number' ? r.total_cost_usd.value : null,
     output_bytes: typeof r.output_bytes?.value === 'number' ? r.output_bytes.value : null,
+    // What output_bytes measures (tool_results for claude-code, command_output for codex-cli); null for a
+    // record that predates the label. A rejection carries neither the bytes nor the label.
+    output_bytes_kind: typeof r.output_bytes_kind === 'string' ? r.output_bytes_kind : null,
     command_kind_counts: {
       kmp_test: typeof e.product_cli_command_count === 'number' ? e.product_cli_command_count : null,
       gradle: typeof e.direct_build_tool_command_count === 'number' ? e.direct_build_tool_command_count : null,

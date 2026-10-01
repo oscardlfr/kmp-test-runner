@@ -71,6 +71,11 @@ const ARM_LABEL = { product: 'with kmp-test', free: 'without kmp-test' };
 // ---------------------------------------------------------------------------
 // Loading + validation -- fails closed on anything but a complete, live summary
 
+// What a cell's output_bytes measures: the tool results returned to the model (claude-code) or the command
+// output as logged (codex-cli). The same two values schemas.mjs's OUTPUT_BYTES_KIND_BY_RUNTIME validates a
+// record against; this generator stays free of the harness's schema module, and a test pins the two lists.
+export const OUTPUT_BYTES_KINDS = ['tool_results', 'command_output'];
+
 export function validateSummary(summary) {
   const errors = [];
   if (!summary || typeof summary !== 'object') return ['summary is not an object'];
@@ -142,6 +147,10 @@ export function validateSummary(summary) {
     }
     if ('agent_state_clean' in cell && cell.agent_state_clean !== null && typeof cell.agent_state_clean !== 'boolean') {
       errors.push(`cells[${name}].agent_state_clean must be true, false or null`);
+    }
+    // What the cell's output_bytes measures (campaign-summary.mjs): optional, and Evidence2's summary has none.
+    if ('output_bytes_kind' in cell && cell.output_bytes_kind !== null && !OUTPUT_BYTES_KINDS.includes(cell.output_bytes_kind)) {
+      errors.push(`cells[${name}].output_bytes_kind must be one of ${OUTPUT_BYTES_KINDS.join(', ')} or null`);
     }
   });
   return errors;
@@ -1194,6 +1203,9 @@ export function toolOutputMeasured(summary, runtimeId) {
   return cells.length > 0 && cells.every((c) => c.output_bytes_kind === 'command_output');
 }
 
+// The caption under Codex's tool-output lanes (renderStripRow word-wraps it, like the Turns row's).
+const CODEX_TOOL_OUTPUT_CAPTION = 'Codex CLI: command output as logged; Codex may shorten what the model reads.';
+
 function toolOutputMetric(summary, group, runtimeId, arm) {
   if (!toolOutputMeasured(summary, runtimeId)) return { kind: 'unavailable' };
   return scalarMetric(summary, group, runtimeId, arm, 'output_bytes', () => null);
@@ -1252,6 +1264,10 @@ function buildGridRowData(runtimeId, summary, costEstimate) {
     },
     {
       kind: 'strip', label: 'Tool output returned to the model', unit: 'bytes', fmtValue: fmtBytesCompact, sourceNote: null,
+      // Codex may shorten a command's output before the model reads it (tool_output_token_limit), so once its
+      // lanes are drawn -- every counted cell labelled command_output -- the row says what the bytes are.
+      // Claude's bytes are the tool results returned to the model, which the row's own label already says.
+      ...(runtimeId === 'codex-cli' && toolOutputMeasured(summary, runtimeId) ? { caption: CODEX_TOOL_OUTPUT_CAPTION } : {}),
       with: toolOutputMetric(summary, gp, runtimeId, 'product'),
       without: toolOutputMetric(summary, gf, runtimeId, 'free'),
     },

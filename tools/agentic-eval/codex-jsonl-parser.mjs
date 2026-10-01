@@ -141,9 +141,21 @@ export function findCodexStructuralIssues(events, attempts) {
   return issues;
 }
 
+// outputBytes is the UTF-8 byte length of the output of the commands Codex ran, as it logged them: the
+// aggregated_output of every completed command_execution item. It is NOT the agent's own messages (which
+// is what this used to sum: Evidence2 erratum E6) and NOT necessarily what the model read -- Codex may
+// shorten a command's output before the model sees it (`tool_output_token_limit`, the token budget for
+// storing individual tool outputs in history). Claude's measure is a different one (the tool results
+// returned to the model), which the record labels with output_bytes_kind.
 export function computeCodexByteMetrics(rawJsonl, events) {
+  let outputBytes = 0;
+  for (const event of events) {
+    if (event?.type === 'item.completed' && event.item?.type === 'command_execution' && typeof event.item.aggregated_output === 'string') {
+      outputBytes += Buffer.byteLength(event.item.aggregated_output, 'utf8');
+    }
+  }
   return {
-    outputBytes: Buffer.byteLength(events.map((event) => event?.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string' ? event.item.text : '').join(''), 'utf8'),
+    outputBytes,
     streamJsonBytes: Buffer.byteLength(String(rawJsonl ?? ''), 'utf8'),
   };
 }

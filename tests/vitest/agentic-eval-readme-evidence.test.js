@@ -29,7 +29,9 @@ import {
   resultsHeadingAnchor,
   countPhrase,
   PAD,
+  OUTPUT_BYTES_KINDS,
 } from '../../tools/agentic-eval/readme-evidence.mjs';
+import { OUTPUT_BYTES_KIND_BY_RUNTIME } from '../../tools/agentic-eval/schemas.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..');
@@ -288,6 +290,37 @@ describe('validateSummary -- the optional cells[] isolation keys', () => {
   it('names the offending cell in the error', () => {
     const errors = validateSummary(withCells([cell(), cell({ cell_key: 'claude-code-1', agent_state_clean: 'yes' })]));
     expect(errors.some(e => e.includes('claude-code-1') && e.includes('agent_state_clean'))).toBe(true);
+  });
+
+  // output_bytes_kind says what a cell's output_bytes measures: tool_results (claude-code) or command_output
+  // (codex-cli). Optional like the two keys above; Evidence2's committed summary carries none.
+  it.each([
+    ['tool_results', 'tool_results'],
+    ['command_output', 'command_output'],
+    ['null', null],
+  ])('accepts a cell whose output_bytes_kind is %s', (_what, kind) => {
+    expect(validateSummary(withCells([cell({ output_bytes_kind: kind })]))).toEqual([]);
+  });
+
+  it('the generator\'s two values are the ones a record is validated against (schemas.mjs OUTPUT_BYTES_KIND_BY_RUNTIME), so the two lists cannot drift', () => {
+    expect([...OUTPUT_BYTES_KINDS].sort()).toEqual(Object.values(OUTPUT_BYTES_KIND_BY_RUNTIME).sort());
+  });
+
+  it('accepts the real committed Evidence2 summary with output_bytes_kind added to every cell: schema 2 is unchanged', () => {
+    const real = JSON.parse(readFileSync(join(RUNS_DIR_V2, 'campaign-summary.json'), 'utf8'));
+    real.cells = real.cells.map((c) => ({ ...c, output_bytes_kind: c.runtime_id === 'codex-cli' ? 'command_output' : 'tool_results' }));
+    expect(validateSummary(real)).toEqual([]);
+  });
+
+  it.each([
+    ['a value outside the vocabulary', 'bytes'],
+    ['the singular tool_result', 'tool_result'],
+    ['an empty string', ''],
+    ['a number', 1],
+    ['an object', {}],
+  ])('rejects an output_bytes_kind that is %s, naming the cell', (_what, bad) => {
+    const errors = validateSummary(withCells([cell({ cell_key: 'codex-cli-0', output_bytes_kind: bad })]));
+    expect(errors.some(e => e.includes('codex-cli-0') && e.includes('output_bytes_kind'))).toBe(true);
   });
 });
 

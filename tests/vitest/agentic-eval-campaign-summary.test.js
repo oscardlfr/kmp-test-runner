@@ -1413,3 +1413,88 @@ describe('CLI entry point -- --access-scan <file>', () => {
     expect(result.stderr).toContain('--markdown');
   });
 });
+
+// output_bytes_kind on cells[]: what the cell's output_bytes measures -- the tool results returned to the
+// model (claude-code) or the command output as logged (codex-cli). Copied from an accepted record; null for
+// a record that predates the field, and for a rejected or missing cell, which carry no such field.
+describe('summarizeCampaign -- output_bytes_kind on cells[]', () => {
+  const codexRuntimes = (count) => [{
+    runtime_id: 'codex-cli', model_id: 'gpt-5.6-terra', campaign_design_id: 'codex-product-vs-free-baseline-v2',
+    campaign_cell_indices: Array.from({ length: count }, (_, i) => i),
+  }];
+  const writeCodexV9Cell = (dir, cellKey, extraRecordFields) => writeAcceptedCellV9(
+    dir, cellKey,
+    { runtimeId: 'codex-cli', condition: 'current-skill', roundIndex: Number(cellKey.split('-').pop()) },
+    { reasoningEffortRequested: 'low', extraRecordFields },
+  );
+
+  it('an accepted claude-code cell carries its record\'s output_bytes_kind: tool_results', () => {
+    withTempDir((dir) => {
+      writeManifest(dir, { runtimes: claudeCampaignRuntimes(1) });
+      writeV9Cell(dir, 'claude-code-0', { output_bytes_kind: 'tool_results' });
+      const cell = cellOf(summarizeCampaign(dir), 'claude-code-0');
+      expect(cell.status).toBe('accepted');
+      expect(cell.output_bytes_kind).toBe('tool_results');
+    });
+  });
+
+  it('an accepted codex-cli cell carries its record\'s output_bytes_kind: command_output', () => {
+    withTempDir((dir) => {
+      writeManifest(dir, { runtimes: codexRuntimes(1) });
+      writeCodexV9Cell(dir, 'codex-cli-0', { output_bytes_kind: 'command_output' });
+      const cell = cellOf(summarizeCampaign(dir), 'codex-cli-0');
+      expect(cell.status).toBe('accepted');
+      expect(cell.output_bytes_kind).toBe('command_output');
+    });
+  });
+
+  it('is null on a record that predates the field, whether schema 9 without it or schema 8', () => {
+    withTempDir((dir) => {
+      writeManifest(dir, { runtimes: claudeCampaignRuntimes(2) });
+      writeV9Cell(dir, 'claude-code-0', {});
+      writeAcceptedCell(dir, 'claude-code-1', { runtimeId: 'claude-code', condition: 'current-skill', roundIndex: 1 });
+      const result = summarizeCampaign(dir);
+      expect(cellOf(result, 'claude-code-0').status).toBe('accepted');
+      expect(cellOf(result, 'claude-code-0').output_bytes_kind).toBeNull();
+      expect(cellOf(result, 'claude-code-1').status).toBe('accepted');
+      expect(cellOf(result, 'claude-code-1').output_bytes_kind).toBeNull();
+    });
+  });
+
+  it('a record whose label does not match its runtime is a missing cell, never a labelled one', () => {
+    withTempDir((dir) => {
+      writeManifest(dir, { runtimes: claudeCampaignRuntimes(1) });
+      writeV9Cell(dir, 'claude-code-0', { output_bytes_kind: 'command_output' });
+      const cell = cellOf(summarizeCampaign(dir), 'claude-code-0');
+      expect(cell.status).toBe('missing');
+      expect(cell.reason).toBe('record_shape_invalid');
+      expect(cell.output_bytes_kind).toBeNull();
+    });
+  });
+
+  it('a D3-negative rejected cell and a missing cell publish null: a rejection carries no such field', () => {
+    withTempDir((dir) => {
+      writeManifest(dir, { runtimes: codexRuntimes(2) });
+      writeRejectedCell(dir, 'codex-cli-0', { runtimeId: 'codex-cli', condition: 'current-skill', roundIndex: 0, d3Qualifying: true });
+      const result = summarizeCampaign(dir);
+      expect(cellOf(result, 'codex-cli-0').status).toBe('negative-d3');
+      expect(cellOf(result, 'codex-cli-0').output_bytes_kind).toBeNull();
+      expect(cellOf(result, 'codex-cli-1').status).toBe('missing');
+      expect(cellOf(result, 'codex-cli-1').output_bytes_kind).toBeNull();
+    });
+  });
+
+  it('adds no top-level or by_runtime_arm key: the new key lives on cells[] only, and the schema number stays', () => {
+    withTempDir((dir) => {
+      writeManifest(dir, { runtimes: codexRuntimes(1) });
+      writeCodexV9Cell(dir, 'codex-cli-0', { output_bytes_kind: 'command_output' });
+      const result = summarizeCampaign(dir);
+      expect(result.schema).toBe(CAMPAIGN_SUMMARY_SCHEMA);
+      expect(Object.keys(result).sort()).toEqual([
+        'benchmark_eligible_counts', 'by_runtime_arm', 'campaign_id', 'cells', 'limitations', 'provenance',
+        'provider_mode', 'reason_code', 'scenario_id', 'schema', 'summary_status',
+      ]);
+      for (const group of result.by_runtime_arm) expect(Object.keys(group)).not.toContain('output_bytes_kind');
+    });
+  });
+});
