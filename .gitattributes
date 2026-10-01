@@ -141,6 +141,9 @@ tools/agentic-eval/**/*.mjs text eol=lf
 tools/agentic-eval/README.md text eol=lf
 tools/agentic-eval/corpus/*.json text eol=lf
 tools/agentic-eval/corpus/scenarios/*.json text eol=lf
+# Scenario fixture patches are applied with `git apply`, which needs their exact LF bytes
+# (a CRLF checkout would stop them applying to the LF source tree).
+tools/agentic-eval/corpus/fixtures/*.patch text eol=lf
 tools/agentic-eval/fixtures/calibration-project/*.kts text eol=lf
 tools/agentic-eval/fixtures/calibration-project/gradlew text eol=lf
 tools/agentic-eval/fixtures/calibration-project/gradlew.bat text eol=crlf
