@@ -4167,7 +4167,7 @@ async function cmdRunCampaign(args, campaignDesignId) {
           terminalAuthoritativeEventIndex: terminalAuthoritativeEventIndices[i],
           terminalEvidence: terminalEvidenceDiagnostics[i] ?? null,
         });
-        const sidecarResult = finalizeAcceptedRunAuditSidecar(builtSidecar, { privatePatternsFile });
+        const sidecarResult = finalizeAcceptedRunAuditSidecar(builtSidecar, { privatePatternsFile, family: record.family });
         if (!sidecarResult.ok) {
           return { ok: false, reason: `accepted-run-audit sidecar for record [${i}] (repetition ${record.repetition_index}, ${record.condition}): ${sidecarResult.reason}` };
         }
@@ -4482,7 +4482,7 @@ async function cmdRun(args) {
           terminalAuthoritativeEventIndex: terminalAuthoritativeEventIndices[i],
           terminalEvidence: terminalEvidenceDiagnostics[i] ?? null,
         });
-        const sidecarResult = finalizeAcceptedRunAuditSidecar(builtSidecar, { privatePatternsFile });
+        const sidecarResult = finalizeAcceptedRunAuditSidecar(builtSidecar, { privatePatternsFile, family: record.family });
         if (!sidecarResult.ok) {
           return { ok: false, reason: `accepted-run-audit sidecar for record [${i}] (repetition ${record.repetition_index}, ${record.condition}): ${sidecarResult.reason}` };
         }

@@ -1542,10 +1542,13 @@ export function crossValidateAcceptedRunAuditAgainstRecord(sidecar, record) {
  * throws -- returns {ok:false, reason} for any failure, exactly like cli.mjs's own
  * finalizeAndWrite{Records,MatrixRecords} contract, so a caller can report a clean reason and write
  * nothing rather than propagating an uncaught exception.
+ * `family` (the record's scenario family) goes to both validations, exactly as validateAcceptedRunAuditSidecar takes
+ * it: without it a multi-module-tests sidecar that records a wrong answer is checked against the legacy vocabularies,
+ * fails, and promotion stops the run instead of recording the cell.
  * @returns {{ok:true, redactedObj:object, redactedText:string, sha256:string} | {ok:false, reason:string}}
  */
-export function finalizeAcceptedRunAuditSidecar(built, { privatePatternsFile } = {}) {
-  const { errors: builtErrors } = validateAcceptedRunAuditSidecar(built);
+export function finalizeAcceptedRunAuditSidecar(built, { privatePatternsFile, family } = {}) {
+  const { errors: builtErrors } = validateAcceptedRunAuditSidecar(built, { family });
   if (builtErrors.length > 0) {
     return { ok: false, reason: `sidecar failed schema validation before redaction: ${JSON.stringify(builtErrors)}` };
   }
@@ -1556,7 +1559,7 @@ export function finalizeAcceptedRunAuditSidecar(built, { privatePatternsFile } =
   } catch (err) {
     return { ok: false, reason: `sidecar privacy check refused: ${err.message}` };
   }
-  const { errors: redactedErrors } = validateAcceptedRunAuditSidecar(redactedObj);
+  const { errors: redactedErrors } = validateAcceptedRunAuditSidecar(redactedObj, { family });
   if (redactedErrors.length > 0) {
     return { ok: false, reason: `redacted sidecar failed schema validation (redaction corrupted a field): ${JSON.stringify(redactedErrors)}` };
   }
