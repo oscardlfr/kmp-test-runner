@@ -220,7 +220,7 @@ evidence is committable until
 schema, policy-hash freshness, privacy, and the run-kind's hard acceptance gate all pass.
 
 --max-budget-usd <usd> is passed directly to Claude Code's per-session --max-budget-usd flag
-(default: 0.60, max: 5.00). Codex CLI does not expose an equivalent per-session spend cap, so
+(default: 0.60, max: 6.00). Codex CLI does not expose an equivalent per-session spend cap, so
 the flag is rejected for codex-cli and dry-run records null with an explicit reason code.
 
 run --campaign-design <id> expands one scenario into a closed, pre-registered multi-profile
@@ -387,7 +387,7 @@ function resolveMeasurementScopeOrFail(measurementScopeFile) {
 }
 
 const DEFAULT_MAX_BUDGET_USD = 0.60;
-const MAX_MAX_BUDGET_USD = 5.00;
+const MAX_MAX_BUDGET_USD = 6.00;
 
 /** Resolves Claude Code's per-session --max-budget-usd before any spawn. The default preserves
  * the historical launcher argv exactly; a supplied value is intentionally bounded so a typo cannot

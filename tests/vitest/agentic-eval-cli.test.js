@@ -651,12 +651,37 @@ describe('resolveMaxBudgetUsdOrFail', () => {
     expect(resolveMaxBudgetUsdOrFail('5')).toEqual({ ok: true, maxBudgetUsd: 5, source: 'supplied' });
   });
 
+  it('accepts the 6 USD per-session ceiling of the Evidence3 manifests, and a value just above 5', () => {
+    expect(resolveMaxBudgetUsdOrFail('5.01')).toEqual({ ok: true, maxBudgetUsd: 5.01, source: 'supplied' });
+    expect(resolveMaxBudgetUsdOrFail('6')).toEqual({ ok: true, maxBudgetUsd: 6, source: 'supplied' });
+  });
+
   it('rejects zero, negatives, non-decimal notation, and values above the reviewed cap', () => {
-    for (const value of ['0', '-1', '1e3', 'Infinity', 'NaN', '', '5.01']) {
+    for (const value of ['0', '-1', '1e3', 'Infinity', 'NaN', '', '6.01']) {
       const result = resolveMaxBudgetUsdOrFail(value);
       expect(result.ok).toBe(false);
       expect(result.reason).toContain('--max-budget-usd');
     }
+  });
+
+  it('names the 6.00 cap in the reason when a value above it is rejected', () => {
+    const result = resolveMaxBudgetUsdOrFail('6.01');
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain('exceeds the maximum of 6.00');
+  });
+
+  it('still refuses any value for codex-cli, which has no per-session spend cap', () => {
+    for (const value of ['1', '6']) {
+      const result = resolveMaxBudgetUsdOrFail(value, 'codex-cli');
+      expect(result.ok).toBe(false);
+      expect(result.reason).toContain('unsupported by codex-cli');
+    }
+  });
+
+  it('states the same cap in the usage text as the code enforces', () => {
+    const help = spawnSync(process.execPath, [path.join(REPO_ROOT, 'tools', 'agentic-eval', 'cli.mjs'), '--help'], { encoding: 'utf8', cwd: REPO_ROOT });
+    expect(help.status).toBe(0);
+    expect(help.stdout).toContain('(default: 0.60, max: 6.00)');
   });
 });
 
