@@ -7,6 +7,15 @@ BeforeAll {
   $script:VMName = 'Evidence1-Runner-E2E'
   $script:VMId = '00000000-0000-4000-8000-000000000001'
   $script:Node = (Get-Command node.exe -ErrorAction Stop).Source
+  # The runner bounds every process it starts: four in its preflight (node behind a .cmd shim), then one per slot. 5 s was too tight for
+  # a cold hosted Windows runner, where the first test failed with bounded_local_auth_preflight_failed after 14.94 s (develop run
+  # 36817815543) and 25.45 s (pull request run 37007819371); on a quiet host each preflight process takes about 0.5 s and the test about 4 s.
+  # 30 s is the runner's own production default for the preflight. Only a test whose subject is a timeout keeps a small bound and a
+  # deliberately hanging fake.
+  $script:PreflightTimeoutSeconds = 30
+  $script:DispatchTimeoutSeconds = 30
+  # A wait for something the runner does after its preflight must outlast the whole preflight (four bounded processes), plus a margin.
+  $script:AfterPreflightWaitSeconds = 4 * $script:PreflightTimeoutSeconds + 30
 
   function New-FakeRuntimeSet([string]$Root, [switch]$HangingClaude) {
     [void](New-Item -ItemType Directory -Force -Path $Root)
@@ -105,7 +114,7 @@ process.stdin.on('end', () => {
   }
 
   function Invoke-FakeDualCanary([string]$Root, [string]$OperationId, $Fakes, [int]$FaultAfterSlot = 0,
-    [int]$PreflightTimeoutSeconds = 5) {
+    [int]$PreflightTimeoutSeconds = $script:PreflightTimeoutSeconds) {
     $readiness = Join-Path $Root 'READINESS.json'
     if (-not (Test-Path -LiteralPath $readiness)) {
       [IO.File]::WriteAllText($readiness, '{"generated_at_utc":"2026-09-11T10:00:00.000Z"}', [Text.UTF8Encoding]::new($false))
@@ -119,7 +128,7 @@ process.stdin.on('end', () => {
       -HostReadinessGeneratedAtUtc '2026-09-11T10:00:00.000Z' -AuthorizationPhrase $script:Phrase `
       -ExpectedVMName $script:VMName -ExpectedVMId $script:VMId `
       -ClaudeCommand $Fakes.Claude -CodexCommand $Fakes.Codex -TestMode `
-      -PreflightTimeoutSeconds $PreflightTimeoutSeconds -DispatchTimeoutSeconds 5 -TestFaultAfterSlot $FaultAfterSlot
+      -PreflightTimeoutSeconds $PreflightTimeoutSeconds -DispatchTimeoutSeconds $script:DispatchTimeoutSeconds -TestFaultAfterSlot $FaultAfterSlot
     if ($null -eq $wire) { return $null }
     return ([string]$wire | ConvertFrom-Json -ErrorAction Stop)
   }
@@ -207,6 +216,7 @@ Describe 'Evidence1 durable dual-auth operation' {
     $fakes = New-FakeRuntimeSet (Join-Path $root 'fakes') -HangingClaude
     $operation = '33333333-3333-4333-8333-333333333333'
     try {
+      # The subject here is the preflight timeout: a 1 s bound and a fake that hangs on purpose.
       { Invoke-FakeDualCanary $root $operation $fakes 0 1 } | Should -Throw '*bounded_local_auth_preflight_failed*'
       $pids = @(Get-Content -LiteralPath $fakes.ChildPids | ForEach-Object { [int]$_ })
       $pids.Count | Should -BeGreaterThan 0
@@ -313,22 +323,23 @@ Describe 'Evidence1 durable dual-auth operation' {
     $env:E1_FAKE_CHILD_PIDS = $fakes.ChildPids
     $env:E1_FAKE_CLAUDE_DISPATCH_HANG = '1'
     $job = Start-Job -ScriptBlock {
-      param($Runner, $Operation, $Root, $Readiness, $Phrase, $VMName, $VMId, $Claude, $Codex, $ClaudeCount, $CodexCount, $StdinProof, $ChildPids)
+      param($Runner, $Operation, $Root, $Readiness, $Phrase, $VMName, $VMId, $Claude, $Codex, $ClaudeCount, $CodexCount, $StdinProof, $ChildPids, $PreflightSeconds)
       $env:E1_FAKE_CLAUDE_COUNT = $ClaudeCount
       $env:E1_FAKE_CODEX_COUNT = $CodexCount
       $env:E1_FAKE_STDIN_PROOF = $StdinProof
       $env:E1_FAKE_CHILD_PIDS = $ChildPids
       $env:E1_FAKE_CLAUDE_DISPATCH_HANG = '1'
+      # The subject here is the dispatch timeout racing the abort, so its 3 s bound stays; the preflight is not the subject.
       & $Runner -OperationId $Operation -OperationRoot (Join-Path $Root 'operations') `
         -GuestReadinessPath $Readiness -HostReadinessSha256 ('a' * 64) `
         -HostReadinessGeneratedAtUtc '2026-09-11T10:00:00.000Z' -AuthorizationPhrase $Phrase `
         -ExpectedVMName $VMName -ExpectedVMId $VMId `
-        -ClaudeCommand $Claude -CodexCommand $Codex -TestMode -PreflightTimeoutSeconds 5 -DispatchTimeoutSeconds 3
+        -ClaudeCommand $Claude -CodexCommand $Codex -TestMode -PreflightTimeoutSeconds $PreflightSeconds -DispatchTimeoutSeconds 3
     } -ArgumentList $script:GuestRunner, $operation, $root, $readiness, $script:Phrase, $script:VMName, $script:VMId, $fakes.Claude, $fakes.Codex,
-      $fakes.ClaudeCount, $fakes.CodexCount, $fakes.StdinProof, $fakes.ChildPids
+      $fakes.ClaudeCount, $fakes.CodexCount, $fakes.StdinProof, $fakes.ChildPids, $script:PreflightTimeoutSeconds
     try {
       $processPath = Join-Path (Join-Path (Join-Path $root 'operations') $operation) 'slot-1.process.json'
-      $deadline = [DateTime]::UtcNow.AddSeconds(15)
+      $deadline = [DateTime]::UtcNow.AddSeconds($script:AfterPreflightWaitSeconds)
       while ((-not (Test-Path -LiteralPath $processPath) -or -not (Test-Path -LiteralPath $fakes.ChildPids)) -and
         [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100 }
       Test-Path -LiteralPath $processPath | Should -BeTrue
@@ -373,7 +384,7 @@ Describe 'Evidence1 durable dual-auth operation' {
     $readiness = Join-Path $root 'READINESS.json'
     [IO.File]::WriteAllText($readiness, '{"generated_at_utc":"2026-09-11T10:00:00.000Z"}', [Text.UTF8Encoding]::new($false))
     $job = Start-Job -ScriptBlock {
-      param($Runner, $Operation, $Root, $Readiness, $Phrase, $VMName, $VMId, $Claude, $Codex, $ClaudeCount, $CodexCount, $StdinProof, $ChildPids)
+      param($Runner, $Operation, $Root, $Readiness, $Phrase, $VMName, $VMId, $Claude, $Codex, $ClaudeCount, $CodexCount, $StdinProof, $ChildPids, $PreflightSeconds)
       $env:E1_FAKE_CLAUDE_COUNT = $ClaudeCount; $env:E1_FAKE_CODEX_COUNT = $CodexCount
       $env:E1_FAKE_STDIN_PROOF = $StdinProof; $env:E1_FAKE_CHILD_PIDS = $ChildPids
       $env:E1_FAKE_CLAUDE_DISPATCH_HANG = '1'
@@ -381,11 +392,11 @@ Describe 'Evidence1 durable dual-auth operation' {
         -GuestReadinessPath $Readiness -HostReadinessSha256 ('a' * 64) `
         -HostReadinessGeneratedAtUtc '2026-09-11T10:00:00.000Z' -AuthorizationPhrase $Phrase `
         -ExpectedVMName $VMName -ExpectedVMId $VMId `
-        -ClaudeCommand $Claude -CodexCommand $Codex -TestMode -PreflightTimeoutSeconds 5 -DispatchTimeoutSeconds 30
+        -ClaudeCommand $Claude -CodexCommand $Codex -TestMode -PreflightTimeoutSeconds $PreflightSeconds -DispatchTimeoutSeconds 30
     } -ArgumentList $script:GuestRunner, $operation, $root, $readiness, $script:Phrase, $script:VMName, $script:VMId, $fakes.Claude, $fakes.Codex,
-      $fakes.ClaudeCount, $fakes.CodexCount, $fakes.StdinProof, $fakes.ChildPids
+      $fakes.ClaudeCount, $fakes.CodexCount, $fakes.StdinProof, $fakes.ChildPids, $script:PreflightTimeoutSeconds
     try {
-      $deadline = [DateTime]::UtcNow.AddSeconds(15)
+      $deadline = [DateTime]::UtcNow.AddSeconds($script:AfterPreflightWaitSeconds)
       while (-not (Test-Path -LiteralPath $fakes.ChildPids) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100 }
       Test-Path -LiteralPath $fakes.ChildPids | Should -BeTrue
       Stop-Job -Job $job -ErrorAction SilentlyContinue
