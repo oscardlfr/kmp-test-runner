@@ -576,6 +576,109 @@ describe('summarizeCampaign -- rejected cells', () => {
   });
 });
 
+// A cell that left neither a record nor a rejection (a session lost to a failed guest call, say) has no condition to take an arm from. When the
+// manifest says what the design put at that position (`round_order`), the cell is declared in that arm and not counted; a manifest without a
+// round_order, which every earlier campaign has, keeps the old grouping (arm null) byte for byte.
+describe('summarizeCampaign -- a cell with neither a record nor a rejection takes its arm from the manifest\'s round_order', () => {
+  const ORDER = ['product', 'free', 'free', 'product'];
+  const conditionOf = (arm) => (arm === 'product' ? 'current-skill' : 'no-skill');
+  const writeOrderedManifest = (dir, roundOrder) => {
+    const runtimes = [
+      { runtime_id: 'claude-code', model_id: 'claude-sonnet-5', campaign_design_id: 'claude-product-vs-free-baseline-v1', campaign_cell_indices: [0, 1, 2, 3], max_budget_usd: 2.0 },
+      { runtime_id: 'codex-cli', model_id: 'gpt-5.6-terra', campaign_design_id: 'codex-product-vs-free-baseline-v2', campaign_cell_indices: [0, 1, 2, 3], max_budget_usd: null },
+    ];
+    const manifest = { schema: 1, campaign_id: 'campaign-under-test', scenario_id: SCENARIO_ID, seed: 42, provider_mode: 'live', runtimes, ...(roundOrder ? { round_order: roundOrder } : {}) };
+    writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2));
+  };
+  // every cell has a record, except the keys in `absent` (no directory at all) and the keys in `rejected` (a rejection of the arm in `rejectedArm`)
+  const writeCampaignDir = (dir, { roundOrder = ORDER, absent = [], rejected = [], rejectedArm = 'free' } = {}) => {
+    writeOrderedManifest(dir, roundOrder);
+    for (const runtimeId of ['claude-code', 'codex-cli']) {
+      ORDER.forEach((arm, i) => {
+        const key = `${runtimeId}-${i}`;
+        if (absent.includes(key)) return;
+        if (rejected.includes(key)) {
+          writeRejectedCell(dir, key, { runtimeId, condition: conditionOf(rejectedArm), roundIndex: i });
+          return;
+        }
+        writeAcceptedCell(dir, key, { runtimeId, condition: conditionOf(arm), roundIndex: i });
+      });
+    }
+  };
+  const group = (summary, runtimeId, arm) => summary.by_runtime_arm.find((g) => g.runtime_id === runtimeId && g.arm === arm);
+
+  it('declares the absent cell in its design arm, counts the arm without it, names the reason, and leaves no group of unknown arm', () => {
+    withTempDir((dir) => {
+      writeCampaignDir(dir, { absent: ['codex-cli-1'] });
+      const summary = summarizeCampaign(dir);
+      expect(summary.by_runtime_arm.map((g) => `${g.runtime_id}/${g.arm}`)).toEqual(['claude-code/free', 'claude-code/product', 'codex-cli/free', 'codex-cli/product']);
+      expect(group(summary, 'codex-cli', 'free')).toMatchObject({ declared: 2, accepted: 1, counted: 1, missing: 1, missing_reasons: [{ cell_key: 'codex-cli-1', reason: 'cell_directory_absent' }] });
+      expect(group(summary, 'codex-cli', 'product')).toMatchObject({ declared: 2, accepted: 2, counted: 2, missing: 0 });
+      expect(group(summary, 'claude-code', 'free')).toMatchObject({ declared: 2, accepted: 2, counted: 2, missing: 0 });
+      expect(summary.cells.find((c) => c.cell_key === 'codex-cli-1')).toMatchObject({ runtime_id: 'codex-cli', arm: 'free', round_index: 1, status: 'missing', reason: 'cell_directory_absent' });
+    });
+  });
+
+  it('puts the absent cell\'s row among its arm\'s cells in round order', () => {
+    withTempDir((dir) => {
+      writeCampaignDir(dir, { absent: ['codex-cli-1'] });
+      const keys = summarizeCampaign(dir).cells.filter((c) => c.runtime_id === 'codex-cli').map((c) => c.cell_key);
+      expect(keys).toEqual(['codex-cli-1', 'codex-cli-2', 'codex-cli-0', 'codex-cli-3']);
+    });
+  });
+
+  it('a manifest without a round_order keeps the old grouping: the absent cell has no arm and sits in a group of arm null', () => {
+    withTempDir((dir) => {
+      writeCampaignDir(dir, { roundOrder: null, absent: ['codex-cli-1'] });
+      const summary = summarizeCampaign(dir);
+      expect(group(summary, 'codex-cli', null)).toMatchObject({ declared: 1, accepted: 0, counted: 0, missing: 1 });
+      expect(group(summary, 'codex-cli', 'free')).toMatchObject({ declared: 1, counted: 1 });
+      expect(summary.cells.find((c) => c.cell_key === 'codex-cli-1').arm).toBeNull();
+    });
+  });
+
+  it('a cell that has a record or a rejection keeps the arm its own condition gives, whatever the round_order says', () => {
+    withTempDir((dir) => {
+      // the manifest says product at position 1, the rejection of codex-cli-1 says no-skill (free)
+      writeCampaignDir(dir, { roundOrder: ['product', 'product', 'free', 'product'], rejected: ['codex-cli-1'], rejectedArm: 'free' });
+      const summary = summarizeCampaign(dir);
+      expect(summary.cells.find((c) => c.cell_key === 'codex-cli-1')).toMatchObject({ arm: 'free', status: 'missing', reason: 'rejected_not_reclassifiable' });
+      expect(group(summary, 'codex-cli', 'free')).toMatchObject({ declared: 2, missing: 1 });
+      expect(summary.cells.find((c) => c.cell_key === 'claude-code-1').arm).toBe('free'); // its record says no-skill
+    });
+  });
+
+  it('changes nothing when every cell has evidence: the summary is the same with and without a round_order', () => {
+    withTempDir((withOrder) => {
+      withTempDir((withoutOrder) => {
+        writeCampaignDir(withOrder);
+        writeCampaignDir(withoutOrder, { roundOrder: null });
+        expect(JSON.stringify(summarizeCampaign(withOrder))).toBe(JSON.stringify(summarizeCampaign(withoutOrder)));
+      });
+    });
+  });
+
+  it('a rejected cell and an absent cell of the same arm are both declared there, and neither is counted', () => {
+    withTempDir((dir) => {
+      writeCampaignDir(dir, { rejected: ['claude-code-2'], absent: ['codex-cli-2'] });
+      const summary = summarizeCampaign(dir);
+      expect(group(summary, 'claude-code', 'free')).toMatchObject({ declared: 2, counted: 1, missing: 1 });
+      expect(group(summary, 'codex-cli', 'free')).toMatchObject({ declared: 2, counted: 1, missing: 1 });
+      expect(summary.by_runtime_arm).toHaveLength(4);
+    });
+  });
+
+  it('the sensitivity summary keeps the absent cell in its design arm too', () => {
+    withTempDir((dir) => {
+      writeCampaignDir(dir, { absent: ['codex-cli-1'] });
+      const summary = summarizeCampaign(dir, new Set(['claude-code-0']));
+      expect(group(summary, 'claude-code', 'product')).toMatchObject({ declared: 1, counted: 1 });
+      expect(group(summary, 'codex-cli', 'free')).toMatchObject({ declared: 2, counted: 1, missing: 1 });
+      expect(summary.by_runtime_arm.every((g) => g.arm !== null)).toBe(true);
+    });
+  });
+});
+
 describe('summarizeCampaign -- determinism and privacy', () => {
   it('two summarizations of the identical campaign directory produce byte-identical JSON output', () => {
     withTempDir((dir) => {

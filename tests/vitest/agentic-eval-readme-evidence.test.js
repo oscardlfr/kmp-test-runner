@@ -3,7 +3,7 @@
 // No network calls; reads only what's committed under tools/runs/ and README.md.
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import { readFileSync, existsSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -25,6 +25,8 @@ import {
   computeMetricsGridLayout,
   README_EVIDENCE,
   README_NOTES,
+  README_WORDING,
+  loadScenarioFacts,
   ownsReadmeBlock,
   resultsHeadingAnchor,
   countPhrase,
@@ -44,6 +46,12 @@ const README_PATH = join(REPO_ROOT, 'README.md');
 const CAMPAIGN_DATE_V2 = '2026-09-30';
 const RUNS_DIR_NAME_V2 = `evidence2-agentic-benchmark-${CAMPAIGN_DATE_V2}`;
 const RUNS_DIR_V2 = join(REPO_ROOT, 'tools', 'runs', RUNS_DIR_NAME_V2);
+
+// Evidence3 (schema 2) -- the multi-module campaign the root README shows (via `--evidence=3 --date=2026-10-02`) in place of
+// Evidence2's above.
+const CAMPAIGN_DATE_V3 = '2026-10-02';
+const RUNS_DIR_NAME_V3 = `evidence3-agentic-benchmark-${CAMPAIGN_DATE_V3}`;
+const RUNS_DIR_V3 = join(REPO_ROOT, 'tools', 'runs', RUNS_DIR_NAME_V3);
 
 function crlfNormalize(s) {
   return s.replace(/\r\n/g, '\n');
@@ -684,7 +692,10 @@ describe('the committed evidence1-agentic-benchmark-2026-09-28 campaign', () => 
 // re-pointed at Evidence2 -- they were always about whichever campaign the root README shows, never
 // about Evidence1's bundle specifically (that bundle's own files are untouched and still valid).
 
-describe('the committed evidence2-agentic-benchmark-2026-09-30 campaign (published in the root README)', () => {
+// The two tests of this block that pinned the root README to Evidence2 ("regenerating the README block ... matches what is committed
+// in root README.md" and "every relative link/image path in the README block resolves inside this one (Evidence2) campaign
+// directory") moved to the Evidence3 block below: the root README now shows Evidence3.
+describe('the committed evidence2-agentic-benchmark-2026-09-30 campaign (no longer the one published in the root README)', () => {
   let summary, costEstimate;
 
   beforeAll(() => {
@@ -712,29 +723,6 @@ describe('the committed evidence2-agentic-benchmark-2026-09-30 campaign (publish
     const committed = crlfNormalize(readFileSync(join(RUNS_DIR_V2, 'metrics-grid.svg'), 'utf8'));
     const regenerated = crlfNormalize(renderMetricsGridSvg(summary, costEstimate));
     expect(regenerated).toBe(committed);
-  });
-
-  it('regenerating the README block (--evidence=2 --date=2026-09-30) matches what is committed in root README.md, byte for byte (CRLF-normalized)', () => {
-    const readme = crlfNormalize(readFileSync(README_PATH, 'utf8'));
-    const start = readme.indexOf('<!-- agentic-benchmark:start');
-    const end = readme.indexOf('<!-- agentic-benchmark:end -->') + '<!-- agentic-benchmark:end -->'.length;
-    expect(start).toBeGreaterThan(-1);
-    const committedBlock = readme.slice(start, end);
-    // 'results' is the anchor main() computes from the Evidence2 record README's own heading, and
-    // README_NOTES[2] the note main() passes for Evidence2.
-    const regenerated = crlfNormalize(renderReadmeBlock(summary, CAMPAIGN_DATE_V2, costEstimate, RUNS_DIR_NAME_V2, 'results', README_NOTES[2]));
-    expect(regenerated).toBe(committedBlock);
-  });
-
-  it('every relative link/image path in the README block resolves inside this one (Evidence2) campaign directory, except the one link to docs/agentic-benchmark.md', () => {
-    const readme = readFileSync(README_PATH, 'utf8');
-    const start = readme.indexOf('<!-- agentic-benchmark:start');
-    const end = readme.indexOf('<!-- agentic-benchmark:end -->') + '<!-- agentic-benchmark:end -->'.length;
-    const block = readme.slice(start, end);
-    const paths = [...block.matchAll(/\]\(([^)]+)\)/g)].map(m => m[1]);
-    expect(paths.length).toBeGreaterThan(0);
-    const outside = paths.filter(p => !p.startsWith(`tools/runs/${RUNS_DIR_NAME_V2}`));
-    expect(outside).toEqual(['docs/agentic-benchmark.md']);
   });
 
   it('the README block links to the evidence doc, controls audit, and pre-registration inside the Evidence2 directory', () => {
@@ -820,20 +808,21 @@ const breakdownFragments = (block) => [...block.matchAll(/README\.md#([^)\s]+)\)
 const gridAltOf = (block) => block.match(/!\[([^\]]*)\]\([^)]*metrics-grid\.svg\)/)[1];
 
 describe('the README block breakdown links reach a real heading in the evidence doc', () => {
-  it('every #fragment in the committed root README block is a heading of the Evidence2 doc', () => {
+  it('every #fragment in the committed root README block is a heading of the Evidence3 doc', () => {
     const readme = readFileSync(README_PATH, 'utf8');
     const block = readme.slice(readme.indexOf('<!-- agentic-benchmark:start'), readme.indexOf('<!-- agentic-benchmark:end -->'));
     const fragments = breakdownFragments(block);
     expect(fragments.length).toBeGreaterThan(0);
-    const slugs = headingSlugs(readFileSync(join(RUNS_DIR_V2, 'README.md'), 'utf8'));
+    const slugs = headingSlugs(readFileSync(join(RUNS_DIR_V3, 'README.md'), 'utf8'));
     for (const fragment of fragments) {
-      expect(slugs.has(fragment), `#${fragment} is not a heading of the Evidence2 README`).toBe(true);
+      expect(slugs.has(fragment), `#${fragment} is not a heading of the Evidence3 README`).toBe(true);
     }
   });
 
   it.each([
     ['Evidence1', RUNS_DIR, CAMPAIGN_DATE, `evidence1-agentic-benchmark-${CAMPAIGN_DATE}`, 'results--campaign-16-sessions'],
     ['Evidence2', RUNS_DIR_V2, CAMPAIGN_DATE_V2, RUNS_DIR_NAME_V2, 'results'],
+    ['Evidence3', RUNS_DIR_V3, CAMPAIGN_DATE_V3, RUNS_DIR_NAME_V3, 'results'],
   ])('%s: the anchor computed from the record README is one of its heading slugs and is the one every breakdown link carries', (_name, dir, date, dirName, expected) => {
     const doc = readFileSync(join(dir, 'README.md'), 'utf8');
     const anchor = resultsHeadingAnchor(doc);
@@ -910,15 +899,17 @@ describe('the grid image alt text', () => {
 
 describe('which evidence owns the root README block', () => {
   it('README_EVIDENCE names the evidence the root README shows, and that evidence owns the block', () => {
-    expect(README_EVIDENCE).toBe(2);
-    expect(ownsReadmeBlock(2)).toBe(true);
-    expect(ownsReadmeBlock('2')).toBe(true); // main() passes the raw --evidence= value, a string
+    expect(README_EVIDENCE).toBe(3);
+    expect(ownsReadmeBlock(3)).toBe(true);
+    expect(ownsReadmeBlock('3')).toBe(true); // main() passes the raw --evidence= value, a string
   });
 
-  it('every other evidence, --evidence=1 included, checks and writes its own SVGs only, never the README block', () => {
+  it('every other evidence, --evidence=1 and --evidence=2 included, checks and writes its own SVGs only, never the README block', () => {
     expect(ownsReadmeBlock('1')).toBe(false);
     expect(ownsReadmeBlock(1)).toBe(false);
-    expect(ownsReadmeBlock('3')).toBe(false);
+    expect(ownsReadmeBlock('2')).toBe(false);
+    expect(ownsReadmeBlock(2)).toBe(false);
+    expect(ownsReadmeBlock('4')).toBe(false);
   });
 });
 
@@ -1984,5 +1975,380 @@ describe('docs/token-cost-measurement.md: coverage-row origin wording', () => {
     expect(doc).toContain('chunked counting (23 chunks');
     expect(doc).toContain('gradle-mode capture streamed during the run itself');
     expect(doc).not.toContain('chunked counting recovered the value');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Evidence3: the README block names its task and its key facts through a per-evidence wording map, and the note
+// reads the scenario's two corpus files at generation time. Evidence2 keeps its exact strings.
+
+const SCENARIO_ID_V3 = 'multi-module-test-failures';
+const CORPUS_DIR = join(REPO_ROOT, 'tools', 'agentic-eval', 'corpus');
+
+describe('loadScenarioFacts', () => {
+  it('reads the committed multi-module scenario: 11 modules (the distinct "<module>:tasks" entries) and 6 failing test methods', () => {
+    expect(loadScenarioFacts(SCENARIO_ID_V3)).toEqual({ moduleCount: 11, failedCount: 6 });
+    // Independently, straight from the two corpus files.
+    const scenario = JSON.parse(readFileSync(join(CORPUS_DIR, 'scenarios', `${SCENARIO_ID_V3}.json`), 'utf8'));
+    const expected = JSON.parse(readFileSync(join(CORPUS_DIR, 'expected', `${SCENARIO_ID_V3}.json`), 'utf8'));
+    const modules = new Set(scenario.policy.allowed_gradle_tasks.filter((task) => task.endsWith(':tasks')).map((task) => task.slice(0, -':tasks'.length)));
+    expect(modules.size).toBe(11);
+    expect(expected.expected.failed_count).toBe(6);
+  });
+
+  function withCorpus(scenarioDoc, expectedDoc, fn) {
+    const dir = mkdtempSync(join(tmpdir(), 'aere-corpus-'));
+    try {
+      mkdirSync(join(dir, 'scenarios'));
+      mkdirSync(join(dir, 'expected'));
+      writeFileSync(join(dir, 'scenarios', 's.json'), JSON.stringify(scenarioDoc));
+      writeFileSync(join(dir, 'expected', 's.json'), JSON.stringify(expectedDoc));
+      return fn(dir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('counts each module once however many of its tasks the policy allows, and ignores entries that are not "<module>:tasks"', () => {
+    const tasks = [':a:tasks', ':a:test', ':a:testDemoDebugUnitTest', ':b:c:tasks', ':b:c:test', ':d:tasks-report:test'];
+    withCorpus({ policy: { allowed_gradle_tasks: tasks } }, { expected: { failed_count: 3 } }, (dir) => {
+      expect(loadScenarioFacts('s', dir)).toEqual({ moduleCount: 2, failedCount: 3 });
+    });
+  });
+
+  it('throws when the scenario names no module or the expected failed_count is not an integer, never inventing a number', () => {
+    withCorpus({ policy: { allowed_gradle_tasks: [':a:test'] } }, { expected: { failed_count: 3 } }, (dir) => {
+      expect(() => loadScenarioFacts('s', dir)).toThrow(/names no module/);
+    });
+    withCorpus({ policy: {} }, { expected: { failed_count: 3 } }, (dir) => {
+      expect(() => loadScenarioFacts('s', dir)).toThrow(/names no module/);
+    });
+    withCorpus({ policy: { allowed_gradle_tasks: [':a:tasks'] } }, { expected: { failed_count: '6' } }, (dir) => {
+      expect(() => loadScenarioFacts('s', dir)).toThrow(/failed_count is not an integer/);
+    });
+    withCorpus({ policy: { allowed_gradle_tasks: [':a:tasks'] } }, {}, (dir) => {
+      expect(() => loadScenarioFacts('s', dir)).toThrow(/failed_count is not an integer/);
+    });
+  });
+});
+
+describe('README_WORDING: the evidence-specific intro and Scope text', () => {
+  const FACTS_V3 = { moduleCount: 11, failedCount: 6 };
+  let summary, costEstimate;
+
+  beforeAll(() => {
+    summary = loadSummary(join(RUNS_DIR_V2, 'campaign-summary.json'));
+    costEstimate = loadCostEstimate(join(RUNS_DIR_V2, 'cost-estimate.json'));
+  });
+
+  it('has an entry for Evidence2 and Evidence3 only, and only Evidence3 needs the scenario facts', () => {
+    expect(Object.keys(README_WORDING).map(Number)).toEqual([2, 3]);
+    expect(README_WORDING[2].needsScenarioFacts).toBe(false);
+    expect(README_WORDING[3].needsScenarioFacts).toBe(true);
+  });
+
+  it('Evidence2 keeps its exact intro paragraph and Scope sentence', () => {
+    const block = renderReadmeBlock(summary, CAMPAIGN_DATE_V2, costEstimate, RUNS_DIR_NAME_V2, 'results', README_NOTES[2]);
+    expect(block).toContain('kmp-test hands an agent the test and coverage verdict as one JSON envelope instead of Gradle logs and report files. To check that this helps end to end, Claude Code and Codex CLI each ran the same pre-registered coverage-gate task on a pinned NowInAndroid commit: 4 sessions with the kmp-test skill and CLI, 4 without. Every session is shown; none was re-run or replaced.');
+    expect(block).toContain('**Scope:** one scenario, tagged `train` (the skill was tuned on this task family); n=4 sessions per arm per agent in counterbalanced order; Windows 11 in an isolated VM with a restricted network (provider APIs only); design and metrics fixed before any live session. kmp-test 0.16.0. Claude Code 2.1.238 · claude-sonnet-5 · reasoning effort high. Codex CLI 0.154.0 · gpt-5.6-terra · reasoning effort high. Key facts = module, outcome, coverage numbers. [Evidence, per-session detail and limitations](tools/runs/evidence2-agentic-benchmark-2026-09-30/README.md)');
+  });
+
+  it('Evidence3 names the task and the key facts as the plan words them, and none of Evidence2\'s task wording is left', () => {
+    const block = renderReadmeBlock(summary, CAMPAIGN_DATE_V2, costEstimate, RUNS_DIR_NAME_V2, 'results', null, 3, FACTS_V3);
+    expect(block).toContain('An agent gets one realistic task on NowInAndroid: run the unit tests of 11 modules after a production-code change and report which tests fail. Sessions counted per arm and agent: 4. Every session is shown; none was re-run or replaced. An earlier attempt of this campaign failed on infrastructure and is not analyzed (see the record).');
+    expect(block).toContain('**Scope:** one scenario, tagged held-out; sessions counted per arm and agent: 4; key facts = outcome, failing modules, failing test classes and the failing-test count; Windows 11 in an isolated VM with a restricted network (provider APIs only); design and metrics fixed before any live session. kmp-test 0.16.0.');
+    for (const gone of ['coverage-gate', 'tagged `train`', 'Key facts = module, outcome, coverage numbers', 'with the kmp-test skill and CLI,']) {
+      expect(block).not.toContain(gone);
+    }
+    // The evidence-neutral lead and the shared tail stay.
+    expect(block).toContain('kmp-test hands an agent the test and coverage verdict as one JSON envelope instead of Gradle logs and report files. An agent gets');
+    expect(block).toContain('[controls audit](tools/runs/evidence2-agentic-benchmark-2026-09-30/controls-audit.md)');
+  });
+
+  it('Evidence3 says how many shown sessions are missing data, and Evidence2 never does', () => {
+    const twoMissing = JSON.parse(JSON.stringify(summary));
+    twoMissing.cells[0] = { ...twoMissing.cells[0], status: 'missing', reason: 'rejected_not_reclassifiable' };
+    twoMissing.cells[1] = { ...twoMissing.cells[1], status: 'missing', reason: 'cell_directory_absent' };
+    expect(README_WORDING[3].shown({ summary: twoMissing })).toBe('Every session is shown, 2 of them as missing data; none was re-run or replaced. An earlier attempt of this campaign failed on infrastructure and is not analyzed (see the record).');
+    expect(README_WORDING[3].shown({ summary })).not.toContain('missing data');
+    expect(README_WORDING[2].shown({ summary: twoMissing })).toBe('Every session is shown; none was re-run or replaced.');
+  });
+
+  it('Evidence3 always states the phrase countPhrase(summary) gives, a single number when every group counted the same and the per-group phrase otherwise', () => {
+    expect(renderReadmeBlock(summary, CAMPAIGN_DATE_V2, costEstimate, RUNS_DIR_NAME_V2, 'results', null, 3, FACTS_V3)).toContain(`Sessions counted per arm and agent: ${countPhrase(summary)}.`);
+    const unequal = JSON.parse(JSON.stringify(summary));
+    unequal.by_runtime_arm.find((g) => g.runtime_id === 'codex-cli' && g.arm === 'free').counted = 3;
+    expect(countPhrase(unequal)).not.toBe(countPhrase(summary));
+    const block = renderReadmeBlock(unequal, CAMPAIGN_DATE_V2, costEstimate, RUNS_DIR_NAME_V2, 'results', null, 3, FACTS_V3);
+    expect(block).toContain(`Sessions counted per arm and agent: ${countPhrase(unequal)}.`);
+    expect(block).toContain(`sessions counted per arm and agent: ${countPhrase(unequal)}; key facts = outcome`);
+  });
+
+  it('Evidence3 wording without the scenario facts throws, and an evidence with no wording is refused', () => {
+    expect(() => renderReadmeBlock(summary, CAMPAIGN_DATE_V2, costEstimate, RUNS_DIR_NAME_V2, 'results', null, 3)).toThrow(/needs the scenario's facts/);
+    expect(() => renderReadmeBlock(summary, CAMPAIGN_DATE_V2, costEstimate, RUNS_DIR_NAME_V2, 'results', null, 4, FACTS_V3)).toThrow(/no README wording for evidence 4/);
+  });
+});
+
+describe('README_NOTES[3]: the larger-task note, recomputed independently of the generator', () => {
+  const FACTS_V3 = { moduleCount: 11, failedCount: 6 };
+  const median = (xs) => { const s = [...xs].sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+  let summary, costEstimate;
+
+  beforeAll(() => {
+    // Any valid schema-2 campaign serves as input data: the sentence is a function of its cells and its cost estimate.
+    summary = loadSummary(join(RUNS_DIR_V2, 'campaign-summary.json'));
+    costEstimate = loadCostEstimate(join(RUNS_DIR_V2, 'cost-estimate.json'));
+  });
+
+  // Decimal KB, like the metrics grid and the detailed document's tables: the same median must read the same number everywhere.
+  const kb = (cells, runtime, arm) => (median(cells.filter((c) => c.runtime_id === runtime && c.arm === arm && c.status !== 'missing').map((c) => c.output_bytes)) / 1000).toFixed(1);
+  // The midpoint of the low and the high estimate of each session, then the median over the arm's sessions.
+  function cost(runtime, arm) {
+    const entry = costEstimate.runtimes[runtime];
+    const price = entry.per_million_tokens;
+    const highInput = entry.uncached_input_may_be_cache_writes === true ? Math.max(price.cache_write_5m, price.cache_write_1h) : price.input;
+    const at = (t, cacheWrite, input) => (t.input * input + t.cache_creation * cacheWrite + t.cache_read * price.cache_read + t.output * price.output) / 1e6;
+    return median(entry.cells.filter((c) => c.arm === arm).map((c) => (at(c.tokens, price.cache_write_5m, price.input) + at(c.tokens, price.cache_write_1h, highInput)) / 2)).toFixed(3);
+  }
+
+  it('is a function of the campaign data (Evidence2\'s note stays a string)', () => {
+    expect(typeof README_NOTES[2]).toBe('string');
+    expect(typeof README_NOTES[3]).toBe('function');
+  });
+
+  it('states the plan\'s sentence with every number recomputed from the summary cells, the cost estimate and the scenario facts', () => {
+    // The sentence is only meaningful when no counted cell carries a provider-reported cost (the estimate path); say so.
+    expect(summary.cells.every((c) => !(typeof c.total_cost_usd === 'number'))).toBe(true);
+    const note = README_NOTES[3]({ summary, costEstimate, scenarioFacts: FACTS_V3 });
+    const cells = summary.cells;
+    const expected = `On a larger task (11 modules, 6 failing test methods), the median tool output returned to the model was ${kb(cells, 'claude-code', 'product')} KB with kmp-test and ${kb(cells, 'claude-code', 'free')} KB without for Claude Code; for Codex CLI, the median command output its commands produced (as logged) was ${kb(cells, 'codex-cli', 'product')} KB and ${kb(cells, 'codex-cli', 'free')} KB. The median estimated cost per session was $${cost('claude-code', 'product')} vs $${cost('claude-code', 'free')} for Claude Code and $${cost('codex-cli', 'product')} vs $${cost('codex-cli', 'free')} for Codex CLI. A smaller single-module task (Evidence2) and the full breakdown are in [docs/agentic-benchmark.md](docs/agentic-benchmark.md).`;
+    expect(note).toBe(expected);
+  });
+
+  it('takes the module and failing-method counts from the scenario facts, not from a literal', () => {
+    const note = README_NOTES[3]({ summary, costEstimate, scenarioFacts: { moduleCount: 7, failedCount: 2 } });
+    expect(note).toContain('On a larger task (7 modules, 2 failing test methods),');
+  });
+
+  it('throws instead of quoting a median over a partial set when a counted cell has no output_bytes', () => {
+    const partial = JSON.parse(JSON.stringify(summary));
+    delete partial.cells.find((c) => c.runtime_id === 'codex-cli' && c.arm === 'free' && c.status !== 'missing').output_bytes;
+    expect(() => README_NOTES[3]({ summary: partial, costEstimate, scenarioFacts: FACTS_V3 })).toThrow(/output_bytes of codex-cli free is not recorded/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The committed Evidence3 campaign, published in the root README. The two README-block tests that pinned Evidence2
+// ("regenerating the README block ... matches what is committed in root README.md" and "every relative link/image path in
+// the README block resolves inside this one campaign directory") moved here from the Evidence2 block.
+
+describe('the committed evidence3-agentic-benchmark-2026-10-02 campaign (published in the root README)', () => {
+  const median = (xs) => { const s = [...xs].sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+  let summary, costEstimate, scenarioFacts;
+
+  beforeAll(() => {
+    summary = loadSummary(join(RUNS_DIR_V3, 'campaign-summary.json'));
+    costEstimate = loadCostEstimate(join(RUNS_DIR_V3, 'cost-estimate.json'));
+    scenarioFacts = loadScenarioFacts(summary.scenario_id);
+  });
+
+  const rootBlock = () => {
+    const readme = crlfNormalize(readFileSync(README_PATH, 'utf8'));
+    const start = readme.indexOf('<!-- agentic-benchmark:start');
+    const end = readme.indexOf('<!-- agentic-benchmark:end -->') + '<!-- agentic-benchmark:end -->'.length;
+    expect(start).toBeGreaterThan(-1);
+    return readme.slice(start, end);
+  };
+  const renderBlock = (anchor = 'results') => renderReadmeBlock(summary, CAMPAIGN_DATE_V3, costEstimate, RUNS_DIR_NAME_V3, anchor, README_NOTES[3]({ summary, costEstimate, scenarioFacts }), 3, scenarioFacts);
+
+  it('is a valid, complete, live schema-2 summary of the multi-module scenario: 32 sessions, 8 declared per runtime and arm', () => {
+    expect(validateSummary(summary)).toEqual([]);
+    expect(summary.schema).toBe(2);
+    expect(summary.scenario_id).toBe('multi-module-test-failures');
+    expect(summary.by_runtime_arm.map((g) => g.declared)).toEqual([8, 8, 8, 8]);
+    expect(summary.cells).toHaveLength(32);
+  });
+
+  it('is a valid, complete schema-2 cost estimate, consistent with the summary', () => {
+    expect(validateCostEstimate(costEstimate)).toEqual([]);
+    expect(validatePairing(summary, costEstimate)).toEqual([]);
+  });
+
+  it('every accepted cell says what its tool output measures: tool_results for Claude Code, command_output for Codex CLI (a missing cell has no record, so no label)', () => {
+    const accepted = summary.cells.filter((c) => c.status === 'accepted');
+    expect(accepted).toHaveLength(30);
+    for (const cell of accepted) {
+      expect(cell.output_bytes_kind, cell.cell_key).toBe(cell.runtime_id === 'codex-cli' ? 'command_output' : 'tool_results');
+    }
+    for (const cell of summary.cells.filter((c) => c.status === 'missing')) expect(cell.output_bytes_kind, cell.cell_key).toBeNull();
+  });
+
+  it('regenerating scorecard.svg matches the committed file byte for byte (CRLF-normalized)', () => {
+    const committed = crlfNormalize(readFileSync(join(RUNS_DIR_V3, 'scorecard.svg'), 'utf8'));
+    expect(crlfNormalize(renderScorecardSvg(summary, costEstimate))).toBe(committed);
+  });
+
+  it('regenerating metrics-grid.svg matches the committed file byte for byte (CRLF-normalized)', () => {
+    const committed = crlfNormalize(readFileSync(join(RUNS_DIR_V3, 'metrics-grid.svg'), 'utf8'));
+    expect(crlfNormalize(renderMetricsGridSvg(summary, costEstimate))).toBe(committed);
+  });
+
+  it('regenerating the README block (--evidence=3 --date=2026-10-02) matches what is committed in root README.md, byte for byte (CRLF-normalized)', () => {
+    // 'results' is the anchor main() computes from the Evidence3 record README's own heading, README_NOTES[3] the note main()
+    // passes for Evidence3, and the scenario facts come from the two corpus files.
+    expect(crlfNormalize(renderBlock())).toBe(rootBlock());
+  });
+
+  it('every relative link/image path in the README block resolves inside this one (Evidence3) campaign directory, except the one link to docs/agentic-benchmark.md', () => {
+    const paths = [...rootBlock().matchAll(/\]\(([^)]+)\)/g)].map((m) => m[1]);
+    expect(paths.length).toBeGreaterThan(0);
+    expect(paths.filter((p) => !p.startsWith(`tools/runs/${RUNS_DIR_NAME_V3}`))).toEqual(['docs/agentic-benchmark.md']);
+  });
+
+  it('the README block links to the record, the controls audit and the preregistration inside the Evidence3 directory, and every file the record publishes exists', () => {
+    const dir = `tools/runs/${RUNS_DIR_NAME_V3}`;
+    const block = renderBlock();
+    expect(block).toContain(`(${dir}/README.md)`);
+    expect(block).toContain(`(${dir}/controls-audit.md)`);
+    expect(block).toContain(`(${dir}/preregistration.md)`);
+    for (const name of ['README.md', 'controls-audit.md', 'preregistration.md', 'campaign-summary.json', 'campaign-summary-sensitivity.json', 'cost-estimate.json', 'scorecard.svg', 'metrics-grid.svg']) {
+      expect(existsSync(join(RUNS_DIR_V3, name)), `${name} should exist in ${RUNS_DIR_V3}`).toBe(true);
+    }
+  });
+
+  it('the README block contains no unresolved {{placeholder}} markers', () => {
+    expect(renderBlock()).not.toMatch(/\{\{/);
+  });
+
+  it('the Scope line reads the CLI version, model and reasoning effort of both runtimes from provenance', () => {
+    const block = renderBlock();
+    expect(block).toContain('Claude Code 2.1.238 · claude-sonnet-5 · reasoning effort high.');
+    expect(block).toContain('Codex CLI 0.154.0 · gpt-5.6-terra · reasoning effort high.');
+  });
+
+  it('names the task from the scenario files (11 modules) and counts the sessions with countPhrase, as the plan words them', () => {
+    const block = renderBlock();
+    expect(block).toContain(`run the unit tests of ${scenarioFacts.moduleCount} modules after a production-code change and report which tests fail. Sessions counted per arm and agent: ${countPhrase(summary)}.`);
+    expect(block).toContain(`tagged held-out; sessions counted per arm and agent: ${countPhrase(summary)}; key facts = outcome, failing modules, failing test classes and the failing-test count`);
+    expect(scenarioFacts).toEqual({ moduleCount: 11, failedCount: 6 });
+  });
+
+  it('the note\'s medians are recomputed independently from the committed summary and cost estimate', () => {
+    const kb = (runtime, arm) => (median(summary.cells.filter((c) => c.runtime_id === runtime && c.arm === arm && c.status !== 'missing').map((c) => c.output_bytes)) / 1000).toFixed(1);
+    const cost = (runtime, arm) => {
+      const entry = costEstimate.runtimes[runtime];
+      const price = entry.per_million_tokens;
+      const highInput = entry.uncached_input_may_be_cache_writes === true ? Math.max(price.cache_write_5m, price.cache_write_1h) : price.input;
+      const at = (t, cacheWrite, input) => (t.input * input + t.cache_creation * cacheWrite + t.cache_read * price.cache_read + t.output * price.output) / 1e6;
+      return median(entry.cells.filter((c) => c.arm === arm).map((c) => (at(c.tokens, price.cache_write_5m, price.input) + at(c.tokens, price.cache_write_1h, highInput)) / 2)).toFixed(3);
+    };
+    expect(summary.cells.every((c) => !(typeof c.total_cost_usd === 'number'))).toBe(true); // the estimate path
+    expect(README_NOTES[3]({ summary, costEstimate, scenarioFacts })).toBe(
+      `On a larger task (11 modules, 6 failing test methods), the median tool output returned to the model was ${kb('claude-code', 'product')} KB with kmp-test and ${kb('claude-code', 'free')} KB without for Claude Code; for Codex CLI, the median command output its commands produced (as logged) was ${kb('codex-cli', 'product')} KB and ${kb('codex-cli', 'free')} KB. The median estimated cost per session was $${cost('claude-code', 'product')} vs $${cost('claude-code', 'free')} for Claude Code and $${cost('codex-cli', 'product')} vs $${cost('codex-cli', 'free')} for Codex CLI. A smaller single-module task (Evidence2) and the full breakdown are in [docs/agentic-benchmark.md](docs/agentic-benchmark.md).`,
+    );
+    // The committed root README carries it exactly once.
+    expect(rootBlock().split(README_NOTES[3]({ summary, costEstimate, scenarioFacts })).length - 1).toBe(1);
+  });
+
+  it('the note\'s tool-output medians are the very numbers the metrics grid prints for the same four groups, in the same unit (decimal KB)', () => {
+    const grid = readFileSync(join(RUNS_DIR_V3, 'metrics-grid.svg'), 'utf8');
+    const printed = [...grid.matchAll(/>(\d+(?:\.\d+)? KB)</g)].map((m) => m[1]);
+    expect(printed).toHaveLength(4);
+    const note = README_NOTES[3]({ summary, costEstimate, scenarioFacts });
+    expect(note).toContain(`${printed[0]} with kmp-test and ${printed[1]} without for Claude Code`);
+    expect(note).toContain(`(as logged) was ${printed[2]} and ${printed[3]}. The median estimated cost`);
+  });
+
+  it('never names the scenario\'s ground truth (module paths, failing test classes) in generated text', () => {
+    const block = renderBlock();
+    expect(block).not.toMatch(/:core:|:feature:|:lint\b|BookmarksViewModelTest|CompositeUserNewsResourceRepositoryTest|GetFollowableTopicsUseCaseTest/);
+  });
+
+  it('never uses the word "baseline" to label an arm, and states no ratio or pooled cross-runtime row', () => {
+    const block = renderBlock();
+    expect(block.toLowerCase()).not.toContain('baseline');
+    expect(block).not.toMatch(/\d+(\.\d+)?x\s*(faster|slower|cheaper)/i);
+    expect(block).not.toMatch(/all agents/i);
+  });
+
+  it('the published preregistration is byte for byte the pre-registered file, amendments A1 to A5 included (sha256 pinned)', () => {
+    // The pre-registered bytes are the LF ones (the file is LF and ASCII only). A checkout with core.autocrlf=true, which is what a Windows
+    // runner does, turns every LF into CRLF on disk, so the hash is taken after the same CRLF normalization the other tests of this file use.
+    const text = crlfNormalize(readFileSync(join(RUNS_DIR_V3, 'preregistration.md'), 'utf8'));
+    expect(createHash('sha256').update(text, 'utf8').digest('hex')).toBe('b088c7aee6612107ed3f314286385f5a34a289c63aca0dcedf410bcbb225fdde');
+    expect(text.startsWith('# Evidence3 preregistration:')).toBe(true);
+    for (const heading of ['### A1 (', '### A2 (', '### A3 (', '### A4 (', '### A5 (']) expect(text).toContain(heading);
+  });
+
+  // The sensitivity summary drops the cells the infra-flake classifier flagged as if they had never been expected, so its groups do not all declare the
+  // design's count and it is not a summary loadSummary accepts; it is compared with the primary one cell by cell instead.
+  it('the sensitivity summary published next to the primary one is the same campaign minus exactly the flagged cells, and says which', () => {
+    const sensitivity = JSON.parse(readFileSync(join(RUNS_DIR_V3, 'campaign-summary-sensitivity.json'), 'utf8'));
+    const flagged = ['claude-code-14', 'codex-cli-4', 'codex-cli-14'];
+    expect(sensitivity.campaign_id).toBe(summary.campaign_id);
+    expect(sensitivity.by_runtime_arm.map((g) => [g.runtime_id, g.arm])).toEqual(summary.by_runtime_arm.map((g) => [g.runtime_id, g.arm]));
+    expect(sensitivity.cells.map((c) => c.cell_key)).toEqual(summary.cells.map((c) => c.cell_key).filter((key) => !flagged.includes(key)));
+    for (const cell of sensitivity.cells) expect(cell).toEqual(summary.cells.find((c) => c.cell_key === cell.cell_key));
+    expect(sensitivity.by_runtime_arm.reduce((n, g) => n + g.declared, 0)).toBe(summary.by_runtime_arm.reduce((n, g) => n + g.declared, 0) - flagged.length);
+  });
+
+  // The figure rules of the plan: only <text> and <rect> marks (plus the svg, title and desc elements that make it an accessible
+  // image), blue for with kmp-test and orange for without on the lane labels, and nothing outside the card or overlapping.
+  describe('the two committed SVGs follow the figure rules', () => {
+    const svgOf = (name) => readFileSync(join(RUNS_DIR_V3, name), 'utf8');
+
+    it.each(['scorecard.svg', 'metrics-grid.svg'])('%s uses only svg, title, desc, rect and text elements and no decoration', (name) => {
+      const svg = svgOf(name);
+      const tags = new Set([...svg.matchAll(/<([a-zA-Z][\w:-]*)/g)].map((m) => m[1]));
+      expect([...tags].sort()).toEqual(['desc', 'rect', 'svg', 'text', 'title']);
+      expect(svg).not.toMatch(/<(line|circle|path|polyline|polygon|ellipse|style|script|foreignObject|image|use|filter)\b/);
+      expect(svg).toMatch(/^<svg [^>]*role="img"/);
+    });
+
+    it('the metrics grid\'s lane labels carry the arm colors: blue (#0969da) for "with kmp-test", orange (#bc4c00) for "without"', () => {
+      const svg = svgOf('metrics-grid.svg');
+      const labels = [...svg.matchAll(/<text [^>]*fill="(#[0-9a-f]{6})"[^>]*>(with kmp-test|without)<\/text>/g)].map((m) => [m[2], m[1]]);
+      expect(labels.length).toBeGreaterThan(0);
+      for (const [text, fill] of labels) expect(fill, text).toBe(text === 'with kmp-test' ? '#0969da' : '#bc4c00');
+    });
+
+    it('in the scorecard layout no two text boxes, and no text box and bar, overlap within a column, and nothing leaves the card', () => {
+      const textBox = (i) => { const w = i.text.length * i.fontSize * 0.6; const x0 = i.anchor === 'end' ? i.x - w : i.x; return { x0, x1: x0 + w, y0: i.y - i.fontSize * 0.8, y1: i.y + i.fontSize * 0.25, label: i.text }; };
+      const barBox = (i) => ({ x0: i.x, x1: i.x + i.w, y0: i.y, y1: i.y + i.h, label: `bar@${i.y}` });
+      const overlap = (a, b) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
+      const layout = computeScorecardLayout(summary, costEstimate);
+      for (const column of ['claude-code', 'codex-cli']) {
+        const boxes = [
+          ...layout.items.filter((i) => i.kind === 'text' && i.column === column).map(textBox),
+          ...layout.items.filter((i) => i.kind === 'bar' && i.column === column).map(barBox),
+        ];
+        expect(boxes.length).toBeGreaterThan(0);
+        for (let i = 0; i < boxes.length; i++) {
+          for (let j = i + 1; j < boxes.length; j++) expect(overlap(boxes[i], boxes[j]), `${column}: "${boxes[i].label}" overlaps "${boxes[j].label}"`).toBe(false);
+        }
+      }
+      const maxY = Math.max(...layout.items.filter((i) => i.kind === 'text').map((i) => i.y));
+      expect(layout.height).toBeGreaterThan(maxY);
+    });
+
+    it('in the metrics grid layout no two text boxes overlap within a column, and every text stays inside the card', () => {
+      const textBox = (i) => { const w = i.text.length * i.fontSize * 0.6; const x0 = i.anchor === 'end' ? i.x - w : i.x; return { x0, x1: x0 + w, y0: i.y - i.fontSize * 0.8, y1: i.y + i.fontSize * 0.25, label: i.text }; };
+      const overlap = (a, b) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
+      const layout = computeMetricsGridLayout(summary, costEstimate);
+      const secondColumnX = PAD + 396 + 32;
+      const texts = layout.items.filter((i) => i.kind === 'text').map(textBox);
+      for (const [lo, hi] of [[-Infinity, secondColumnX - 1], [secondColumnX - 1, Infinity]]) {
+        const column = texts.filter((b) => b.x0 >= lo && b.x0 < hi);
+        for (let i = 0; i < column.length; i++) {
+          for (let j = i + 1; j < column.length; j++) expect(overlap(column[i], column[j]), `"${column[i].label}" overlaps "${column[j].label}"`).toBe(false);
+        }
+      }
+      for (const box of texts) {
+        expect(box.x0, box.label).toBeGreaterThanOrEqual(-0.5);
+        expect(box.x1, box.label).toBeLessThanOrEqual(layout.width + 0.5);
+        expect(box.y1, box.label).toBeLessThanOrEqual(layout.height);
+      }
+    });
   });
 });
