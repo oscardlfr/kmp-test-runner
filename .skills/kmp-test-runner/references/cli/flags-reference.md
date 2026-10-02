@@ -55,7 +55,7 @@ The `kmp-test` CLI shares a common flag surface across subcommands, with per-sub
 
 | Flag | Default | parallel | benchmark | changed | android | Notes |
 |------|---------|:--------:|:---------:|:-------:|:-------:|-------|
-| `--variant` / `--android-variant <val>` | `auto` | ✓ | ✓ | ✓ | ✓ | `auto` (respects `testBuildType="release"`) / `debug` / `release` / `all`. JVM benchmarks ignore. |
+| `--variant` / `--android-variant <val>` | `auto` | ✓ | ✓ | ✓ | ✓ | `auto` (respects `testBuildType="release"`) / `debug` / `release` / `all`. JVM benchmarks ignore. Any other value is treated as `auto` and raises the `variant_unrecognized` warning (flavored: `--flavor demo --variant debug`). |
 | `--device <serial>` | auto | ✓ (`androidInstrumented`) | — | — | ✓ | Pin ADB device. Validated against `adb devices`; pins `ANDROID_SERIAL`. Mismatched serial → `instrumented_setup_failed` (exit 3). |
 | `--device-task <name>` | auto | ✓ (`androidInstrumented`) | — | — | ✓ | Force gradle task name (e.g. `androidConnectedCheck` for `androidLibrary { }` DSL). Preempts auto-resolution. |
 | `--auto-retry` | off | ✓ (`androidInstrumented`) | — | — | ✓ | Re-dispatch instrumented tasks that ran but failed. One retry per task. Surfaces `parallel.legs[i].retries[]`. |
