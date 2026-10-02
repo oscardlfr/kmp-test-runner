@@ -971,10 +971,14 @@ function presentCompositionTypes(...compositions) {
   for (const c of compositions) if (c) for (const s of c.segments) set.add(s.type);
   return set;
 }
+// A legend entry's value: what the segment says it is worth in the legend (`display`) when its caller set one, else the value that sizes
+// the segment. The metrics grid sets no `display`, so its legend is the segment values, as before; the cost-breakdown figure sizes a
+// segment in dollars and shows its share of the group's cost.
 function compositionValueFor(composition, type) {
   if (!composition) return null;
   const seg = composition.segments.find((s) => s.type === type);
-  return seg ? seg.value : null;
+  if (!seg) return null;
+  return seg.display !== undefined ? seg.display : seg.value;
 }
 
 // One STRIP row (scalar metric) for one runtime column: header (metric/unit) -> the diff% line ->

@@ -3,7 +3,7 @@
 //
 // tools/agentic-eval/benchmark-doc.mjs -- deterministic generator behind docs/agentic-benchmark.md.
 // From one campaign's committed campaign-summary.json + cost-estimate.json it writes
-//   - tools/runs/evidence<n>-agentic-benchmark-<date>/cost-breakdown.svg, and
+//   - tools/runs/evidence<n>-agentic-benchmark-<date>/cost-breakdown.svg (bars as long as the median session cost, split by component), and
 //   - the generated blocks of docs/agentic-benchmark.md for that evidence:
 //       <!-- agentic-benchmark-doc:e<n>-cost-components:start (...) --> ... :end -->
 //       <!-- agentic-benchmark-doc:e<n>-sessions:start (...) -->        ... :end -->
@@ -48,7 +48,7 @@ const ARM_LABEL = { product: 'with kmp-test', free: 'without' };
 const NUMBER_WORD = ['No', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten'];
 
 const FIGURE_TITLE = 'Where a session\'s API cost goes';
-const FIGURE_SUBTITLE = 'Share of the estimated cost by component, pooled over each group\'s sessions; the value is the median session cost. Blue: with kmp-test; orange: without.';
+const FIGURE_SUBTITLE = 'Bar length is the median session cost, on one scale for both agents; the colors split it by each group\'s share of its total cost (percentages below). Blue: with kmp-test; orange: without.';
 
 // ---------------------------------------------------------------------------
 // Cost components -- the same midpoint convention as costMetric / costEstimateCellMidpoint: the
@@ -103,8 +103,9 @@ export function costGroups(costEstimate) {
 }
 
 // ---------------------------------------------------------------------------
-// Figure: cost-breakdown.svg -- the metrics grid's frame, lanes and legend (renderCompositionRow),
-// with every bar 100% stacked by pooled share.
+// Figure: cost-breakdown.svg -- the metrics grid's frame, lanes and legend (renderCompositionRow). A bar is as long as its group's
+// median session cost, on one dollar scale for the whole figure, and its colored segments split that length by the group's pooled share
+// of each cost component; the legend prints the shares and the median is printed at the end of the bar.
 
 const fmtUsd3 = (v) => `$${v.toFixed(3)}`;
 function fmtShare(v) {
@@ -127,12 +128,16 @@ export function computeCostBreakdownLayout(summary, costEstimate) {
   });
   const headerBottom = subtitleY + ROW_GAP + 8;
 
-  // The renderer prints fmtValue(total) at the end of each bar and fmtValue(segment value) in the
-  // legend. Segment values here are shares and the printed total is the median session cost, already
-  // formatted, so the one formatter passes a string through and formats a number as a share.
+  // One dollar scale for the whole figure: a bar is as long as its group's median session cost, and the group with the largest median fills
+  // the lane, so any two bars can be compared. A segment is the group's pooled share of that cost in dollars (share x median), so it is not
+  // the component's own median (the table's column); the legend keeps printing the share (`display`).
+  const compMax = Math.max(...groups.map((g) => g.medianTotal), 1e-9);
+  // The renderer prints fmtValue(total) at the end of each bar and fmtValue(the legend value) in the legend. The printed total is the median
+  // session cost, already formatted, and the legend value is a share, so the one formatter passes a string through and formats a number as a share.
   const fmtValue = (v) => (typeof v === 'string' ? v : fmtShare(v));
   const composition = (group) => ({
-    segments: COST_COMPONENTS.filter((k) => group.pooledShare[k] > 0).map((k) => ({ type: k, value: group.pooledShare[k] })),
+    segments: COST_COMPONENTS.filter((k) => group.pooledShare[k] > 0)
+      .map((k) => ({ type: k, value: group.pooledShare[k] * group.medianTotal, display: group.pooledShare[k] })),
     stat: 'median',
     total: fmtUsd3(group.medianTotal),
     totalIsComplete: true,
@@ -145,7 +150,7 @@ export function computeCostBreakdownLayout(summary, costEstimate) {
     const withoutGroup = groups.find((g) => g.runtimeId === runtimeId && g.arm === 'free');
     const label = runtimeModelLabel(summary, runtimeId);
     const rendered = renderCompositionRow(
-      colX, headerBottom, label, label, composition(withGroup), composition(withoutGroup), 1,
+      colX, headerBottom, label, label, composition(withGroup), composition(withoutGroup), compMax,
       COST_COMPONENTS, TOKEN_COMPONENT_COLORS, TOKEN_COMPONENT_LABEL, fmtValue, undefined,
     );
     items.push(...rendered.items);
@@ -168,7 +173,7 @@ export function renderCostBreakdownSvg(summary, costEstimate) {
     }
   }
   const componentLegend = COST_COMPONENTS.map((k) => `${TOKEN_COMPONENT_LABEL[k]} (${TOKEN_COMPONENT_COLORS[k]})`).join(', ');
-  const desc = `Color legend. With kmp-test (${COLOR_WITH}), without (${COLOR_WITHOUT}). Cost component: ${componentLegend}.`;
+  const desc = `Each bar is as long as its group's median session cost, on one scale for the whole figure, and its colored segments split that cost by each component's share. Color legend. With kmp-test (${COLOR_WITH}), without (${COLOR_WITHOUT}). Cost component: ${componentLegend}.`;
   return `<svg viewBox="0 0 ${layout.width} ${layout.height}" width="${layout.width}" height="${layout.height}" xmlns="http://www.w3.org/2000/svg" role="img" font-family="${FONT_STACK}">
   <title>${escapeXml(FIGURE_TITLE)}</title>
   <desc>${escapeXml(desc)}</desc>

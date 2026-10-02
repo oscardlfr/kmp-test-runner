@@ -1,22 +1,22 @@
 <svg viewBox="0 0 880 249" width="880" height="249" xmlns="http://www.w3.org/2000/svg" role="img" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif">
   <title>Where a session's API cost goes</title>
-  <desc>Color legend. With kmp-test (#0969da), without (#bc4c00). Cost component: cache write (#1a7f37), cache read (#1b7c83), output (#bf3989), uncached input (#8250df).</desc>
+  <desc>Each bar is as long as its group's median session cost, on one scale for the whole figure, and its colored segments split that cost by each component's share. Color legend. With kmp-test (#0969da), without (#bc4c00). Cost component: cache write (#1a7f37), cache read (#1b7c83), output (#bf3989), uncached input (#8250df).</desc>
   <rect x="1" y="1" width="878" height="247" rx="12" fill="#ffffff" stroke="#d0d7de" stroke-width="1"/>
   <text x="28.0" y="48.0" font-size="20" font-weight="600" fill="#1f2328">Where a session's API cost goes</text>
-  <text x="28.0" y="75.0" font-size="13" font-weight="400" fill="#59636e">Share of the estimated cost by component, pooled over each group's sessions; the value is the median</text>
-  <text x="28.0" y="92.0" font-size="13" font-weight="400" fill="#59636e">session cost. Blue: with kmp-test; orange: without.</text>
+  <text x="28.0" y="75.0" font-size="13" font-weight="400" fill="#59636e">Bar length is the median session cost, on one scale for both agents; the colors split it by each group's</text>
+  <text x="28.0" y="92.0" font-size="13" font-weight="400" fill="#59636e">share of its total cost (percentages below). Blue: with kmp-test; orange: without.</text>
   <text x="28.0" y="127.0" font-size="13" font-weight="500" fill="#1f2328">Claude Code · claude-sonnet-5</text>
   <text x="28.0" y="143.0" font-size="11" font-weight="400" fill="#0969da">with kmp-test</text>
-  <rect x="120.0" y="132.0" width="137.3" height="14.0" rx="1" fill="#1a7f37"/>
-  <rect x="257.3" y="132.0" width="64.7" height="14.0" rx="1" fill="#1b7c83"/>
-  <rect x="322.1" y="132.0" width="39.9" height="14.0" rx="1" fill="#bf3989"/>
-  <rect x="361.9" y="132.0" width="0.1" height="14.0" rx="1" fill="#8250df"/>
+  <rect x="120.0" y="132.0" width="72.4" height="14.0" rx="1" fill="#1a7f37"/>
+  <rect x="192.4" y="132.0" width="34.1" height="14.0" rx="1" fill="#1b7c83"/>
+  <rect x="226.6" y="132.0" width="21.0" height="14.0" rx="1" fill="#bf3989"/>
+  <rect x="247.6" y="132.0" width="0.0" height="14.0" rx="1" fill="#8250df"/>
   <text x="370.0" y="143.0" font-size="11" font-weight="400" fill="#1f2328">$0.112</text>
   <text x="28.0" y="161.0" font-size="11" font-weight="400" fill="#bc4c00">without</text>
-  <rect x="120.0" y="150.0" width="113.6" height="14.0" rx="1" fill="#1a7f37"/>
-  <rect x="233.6" y="150.0" width="80.2" height="14.0" rx="1" fill="#1b7c83"/>
-  <rect x="313.8" y="150.0" width="48.2" height="14.0" rx="1" fill="#bf3989"/>
-  <rect x="361.9" y="150.0" width="0.1" height="14.0" rx="1" fill="#8250df"/>
+  <rect x="120.0" y="150.0" width="98.5" height="14.0" rx="1" fill="#1a7f37"/>
+  <rect x="218.5" y="150.0" width="69.5" height="14.0" rx="1" fill="#1b7c83"/>
+  <rect x="288.0" y="150.0" width="41.8" height="14.0" rx="1" fill="#bf3989"/>
+  <rect x="329.8" y="150.0" width="0.1" height="14.0" rx="1" fill="#8250df"/>
   <text x="370.0" y="161.0" font-size="11" font-weight="400" fill="#1f2328">$0.183</text>
   <rect x="28.0" y="172.0" width="8" height="8" fill="#1a7f37"/>
   <text x="40.0" y="179.0" font-size="9" font-weight="400" fill="#59636e">cache write 57% vs 47%</text>
@@ -30,9 +30,9 @@
   <text x="40.0" y="192.0" font-size="9" font-weight="400" fill="#59636e">uncached input &lt;1% vs &lt;1%</text>
   <text x="456.0" y="127.0" font-size="13" font-weight="500" fill="#1f2328">Codex CLI · gpt-5.6-terra</text>
   <text x="456.0" y="143.0" font-size="11" font-weight="400" fill="#0969da">with kmp-test</text>
-  <rect x="548.0" y="132.0" width="78.8" height="14.0" rx="1" fill="#1b7c83"/>
-  <rect x="626.8" y="132.0" width="65.7" height="14.0" rx="1" fill="#bf3989"/>
-  <rect x="692.4" y="132.0" width="97.6" height="14.0" rx="1" fill="#8250df"/>
+  <rect x="548.0" y="132.0" width="40.4" height="14.0" rx="1" fill="#1b7c83"/>
+  <rect x="588.4" y="132.0" width="33.6" height="14.0" rx="1" fill="#bf3989"/>
+  <rect x="622.0" y="132.0" width="50.0" height="14.0" rx="1" fill="#8250df"/>
   <text x="798.0" y="143.0" font-size="11" font-weight="400" fill="#1f2328">$0.108</text>
   <text x="456.0" y="161.0" font-size="11" font-weight="400" fill="#bc4c00">without</text>
   <rect x="548.0" y="150.0" width="88.8" height="14.0" rx="1" fill="#1b7c83"/>

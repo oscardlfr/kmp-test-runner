@@ -58,6 +58,71 @@ function rawComponents(entry, tokens) {
 }
 const rawTotal = (components) => sum(COMPONENTS.map((k) => components[k]));
 
+// The cost-breakdown figure draws a bar as long as its group's median session cost, on one dollar scale for the whole figure, and splits
+// it by the group's pooled shares of its cost. The numbers below are written out here, independently of the generator.
+const BAR_W = 242; // the grid's composition-row bar width, typed out so that a change in the renderer fails this file
+const COST_FIGURE_SUBTITLE = 'Bar length is the median session cost, on one scale for both agents; the colors split it by each group\'s share of its total cost (percentages below). Blue: with kmp-test; orange: without.';
+const COLUMN_GROUPS = [['claude-code', 'product'], ['claude-code', 'free'], ['codex-cli', 'product'], ['codex-cli', 'free']];
+const COMPONENT_LABEL = { cache_write: 'cache write', cache_read: 'cache read', output: 'output', uncached_input: 'uncached input' };
+
+/** One group's median session cost and pooled share of each component, from the price table and the tokens. */
+function groupFacts(costEstimate, runtimeId, arm) {
+  const entry = costEstimate.runtimes[runtimeId];
+  const sessions = entry.cells.filter((c) => c.arm === arm).map((c) => rawComponents(entry, c.tokens));
+  const total = sum(sessions.map(rawTotal));
+  return { medianTotal: median(sessions.map(rawTotal)), share: Object.fromEntries(COMPONENTS.map((k) => [k, sum(sessions.map((s) => s[k])) / total])) };
+}
+
+/** The four lanes of a figure's layout in drawing order (column by column, "with kmp-test" above "without"), each its bars left to right. */
+function lanesOf(layout) {
+  const bars = layout.items.filter((i) => i.kind === 'bar');
+  return [0, 1].flatMap((c) => {
+    const inColumn = bars.filter((b) => (c === 0 ? b.x < SECOND_COLUMN_X : b.x >= SECOND_COLUMN_X));
+    const laneYs = [...new Set(inColumn.map((b) => b.y))].sort((p, q) => p - q);
+    return laneYs.map((y) => inColumn.filter((b) => b.y === y).sort((p, q) => p.x - q.x));
+  });
+}
+
+/** Bar length is the group's median session cost over the largest median of the four groups, times the lane width; the longest bar fills the
+ * lane; each bar splits into segments proportional to the pooled shares, in the order cache write, cache read, output, uncached input. */
+function expectBarsAtTheMedianCost(layout, costEstimate) {
+  const lanes = lanesOf(layout);
+  expect(lanes).toHaveLength(4);
+  const facts = COLUMN_GROUPS.map(([runtimeId, arm]) => groupFacts(costEstimate, runtimeId, arm));
+  const largest = Math.max(...facts.map((f) => f.medianTotal));
+  const colorToComponent = Object.fromEntries(Object.entries(COMPONENT_COLORS).map(([k, v]) => [v, k]));
+  const lengths = lanes.map((lane) => sum(lane.map((b) => b.w)));
+  lanes.forEach((lane, i) => {
+    const label = COLUMN_GROUPS[i].join('/');
+    expect(Math.abs(lengths[i] - (facts[i].medianTotal / largest) * BAR_W), `${label} bar length`).toBeLessThan(0.1);
+    const expectedSegments = COMPONENTS.map((k) => ({ component: k, share: facts[i].share[k] })).filter((s) => s.share > 0);
+    expect(lane.map((b) => colorToComponent[b.fill]), `${label} segment order and colors`).toEqual(expectedSegments.map((s) => s.component));
+    lane.forEach((b, j) => expect(b.w / lengths[i], `${label} ${expectedSegments[j].component}`).toBeCloseTo(expectedSegments[j].share, 9));
+    lane.slice(1).forEach((b, j) => expect(b.x).toBeCloseTo(lane[j].x + lane[j].w, 9));
+  });
+  const longest = lengths.indexOf(Math.max(...lengths));
+  expect(facts[longest].medianTotal).toBe(largest);
+  expect(lengths[longest]).toBeCloseTo(BAR_W, 6);
+  // Two groups with different medians have bars of different lengths, in the same order as their medians.
+  const byMedian = [0, 1, 2, 3].sort((a, b) => facts[a].medianTotal - facts[b].medianTotal);
+  byMedian.slice(1).forEach((g, k) => expect(lengths[g]).toBeGreaterThan(lengths[byMedian[k]]));
+}
+
+/** The legend still prints each component's pooled share with and without kmp-test ("cache write 62% vs 44%"), not the dollars of a segment. */
+function expectLegendToPrintTheShares(layout, costEstimate) {
+  const pct = (v) => (v > 0 && v < 0.005 ? '<1%' : `${Math.round(v * 100)}%`);
+  const tokens = layout.items.filter((i) => i.role === 'gridLegendLine' && / vs /.test(i.text));
+  AGENTS.forEach((runtimeId, column) => {
+    const withShare = groupFacts(costEstimate, runtimeId, 'product').share;
+    const withoutShare = groupFacts(costEstimate, runtimeId, 'free').share;
+    const expected = COMPONENTS.filter((k) => withShare[k] > 0 || withoutShare[k] > 0)
+      .map((k) => `${COMPONENT_LABEL[k]} ${withShare[k] > 0 ? pct(withShare[k]) : 'n/a'} vs ${withoutShare[k] > 0 ? pct(withoutShare[k]) : 'n/a'}`);
+    const shown = tokens.filter((t) => (column === 0 ? t.x < SECOND_COLUMN_X : t.x >= SECOND_COLUMN_X)).sort((a, b) => a.y - b.y || a.x - b.x).map((t) => t.text);
+    expect(shown, runtimeId).toEqual(expected);
+    for (const text of shown) expect(text).not.toMatch(/\$|\d\.\d{3}/);
+  });
+}
+
 describe('the committed Evidence2 cost breakdown', () => {
   let summary, costEstimate;
   beforeAll(() => {
@@ -154,11 +219,11 @@ describe('the committed Evidence2 cost breakdown', () => {
       expect(columnXs).toEqual([28, 28 + 396 + 32]);
     });
 
-    it('says what it shows: the title, and a subtitle that names the share, the value and both arm colors', () => {
+    it('says what it shows: the title, and a subtitle that says the bar length is the median session cost on one scale, the colors are the shares of it, and names both arm colors', () => {
       const texts = layout.items.filter((i) => i.kind === 'text');
       expect(texts.find((i) => i.role === 'gridTitle').text).toBe('Where a session\'s API cost goes');
       const subtitle = texts.filter((i) => i.role === 'gridSubtitle').map((i) => i.text).join(' ');
-      expect(subtitle).toBe('Share of the estimated cost by component, pooled over each group\'s sessions; the value is the median session cost. Blue: with kmp-test; orange: without.');
+      expect(subtitle).toBe(COST_FIGURE_SUBTITLE);
     });
 
     it('labels the columns with each agent and its model, Claude Code first', () => {
@@ -176,38 +241,12 @@ describe('the committed Evidence2 cost breakdown', () => {
       expect(b.y).toBeGreaterThan(a.y);
     });
 
-    it('draws every bar 100% stacked, each segment as wide as its pooled share, in the order cache write, cache read, output, uncached input', () => {
-      const bars = layout.items.filter((i) => i.kind === 'bar');
-      // Both columns share their lanes' y values, so split by column first (the second column starts
-      // at x = 456), then by lane: per column, the "with" lane is above the "without" lane.
-      const byColumn = [0, 1].map((c) => {
-        const inColumn = bars.filter((b) => (c === 0 ? b.x < SECOND_COLUMN_X : b.x >= SECOND_COLUMN_X));
-        const laneYs = [...new Set(inColumn.map((b) => b.y))].sort((p, q) => p - q);
-        return laneYs.map((y) => inColumn.filter((b) => b.y === y).sort((p, q) => p.x - q.x));
-      });
-      expect(byColumn.map((lanes) => lanes.length)).toEqual([2, 2]);
-      const colorToComponent = Object.fromEntries(Object.entries(COMPONENT_COLORS).map(([k, v]) => [v, k]));
-      const expectedGroups = [
-        ['claude-code', 'product'], ['claude-code', 'free'], ['codex-cli', 'product'], ['codex-cli', 'free'],
-      ];
-      let groupIndex = 0;
-      for (const column of byColumn) {
-        for (const lane of column) {
-          const [runtimeId, arm] = expectedGroups[groupIndex++];
-          const entry = costEstimate.runtimes[runtimeId];
-          const sessions = entry.cells.filter((c) => c.arm === arm).map((c) => rawComponents(entry, c.tokens));
-          const total = sum(sessions.map(rawTotal));
-          const expectedSegments = COMPONENTS
-            .map((k) => ({ component: k, share: sum(sessions.map((s) => s[k])) / total }))
-            .filter((s) => s.share > 0);
-          expect(lane.map((b) => colorToComponent[b.fill])).toEqual(expectedSegments.map((s) => s.component));
-          const laneWidth = sum(lane.map((b) => b.w));
-          expect(laneWidth).toBeCloseTo(242, 6); // the grid's composition-row bar width
-          lane.forEach((b, i) => expect(b.w / laneWidth).toBeCloseTo(expectedSegments[i].share, 9));
-          // Segments touch: each starts where the previous one ends.
-          lane.slice(1).forEach((b, i) => expect(b.x).toBeCloseTo(lane[i].x + lane[i].w, 9));
-        }
-      }
+    it('draws each bar as long as its group\'s median session cost on one scale (the largest median fills the lane), split into segments proportional to the pooled shares in the order cache write, cache read, output, uncached input', () => {
+      expectBarsAtTheMedianCost(layout, costEstimate);
+    });
+
+    it('still prints the pooled shares in the legend, not the dollars a segment stands for', () => {
+      expectLegendToPrintTheShares(layout, costEstimate);
     });
 
     it('prints the median session cost, to 3 decimals, at the end of each bar', () => {
@@ -697,31 +736,17 @@ describe('Evidence3: the cost breakdown and the generated blocks of docs/agentic
       ]);
     });
 
-    it('draws every bar 100% stacked, each segment as wide as its pooled share recomputed here, in the order cache write, cache read, output, uncached input', () => {
-      const bars = layout.items.filter((i) => i.kind === 'bar');
-      const byColumn = [0, 1].map((c) => {
-        const inColumn = bars.filter((b) => (c === 0 ? b.x < SECOND_COLUMN_X : b.x >= SECOND_COLUMN_X));
-        const laneYs = [...new Set(inColumn.map((b) => b.y))].sort((p, q) => p - q);
-        return laneYs.map((y) => inColumn.filter((b) => b.y === y).sort((p, q) => p.x - q.x));
-      });
-      expect(byColumn.map((lanes) => lanes.length)).toEqual([2, 2]);
-      const colorToComponent = Object.fromEntries(Object.entries(COMPONENT_COLORS).map(([k, v]) => [v, k]));
-      const expectedGroups = AGENTS.flatMap((runtimeId) => ARMS.map((arm) => [runtimeId, arm]));
-      let groupIndex = 0;
-      for (const column of byColumn) {
-        for (const lane of column) {
-          const [runtimeId, arm] = expectedGroups[groupIndex++];
-          const entry = costEstimate.runtimes[runtimeId];
-          const sessions = entry.cells.filter((c) => c.arm === arm).map((c) => rawComponents(entry, c.tokens));
-          const total = sum(sessions.map(rawTotal));
-          const expectedSegments = COMPONENTS.map((k) => ({ component: k, share: sum(sessions.map((s) => s[k])) / total })).filter((s) => s.share > 0);
-          expect(lane.map((b) => colorToComponent[b.fill]), `${runtimeId}/${arm}`).toEqual(expectedSegments.map((s) => s.component));
-          const laneWidth = sum(lane.map((b) => b.w));
-          expect(laneWidth).toBeCloseTo(242, 6);
-          lane.forEach((b, i) => expect(b.w / laneWidth).toBeCloseTo(expectedSegments[i].share, 9));
-          lane.slice(1).forEach((b, i) => expect(b.x).toBeCloseTo(lane[i].x + lane[i].w, 9));
-        }
-      }
+    it('says what it shows: a subtitle that says the bar length is the median session cost on one scale and the colors are the shares of it', () => {
+      const subtitle = layout.items.filter((i) => i.role === 'gridSubtitle').map((i) => i.text).join(' ');
+      expect(subtitle).toBe(COST_FIGURE_SUBTITLE);
+    });
+
+    it('draws each bar as long as its group\'s median session cost on one scale (the largest median fills the lane), split into segments proportional to the pooled shares recomputed here, in the order cache write, cache read, output, uncached input', () => {
+      expectBarsAtTheMedianCost(layout, costEstimate);
+    });
+
+    it('still prints the pooled shares in the legend, not the dollars a segment stands for', () => {
+      expectLegendToPrintTheShares(layout, costEstimate);
     });
 
     it('prints the median session cost, to 3 decimals, at the end of each bar, and leaves out the cache write that Codex CLI has none of', () => {
@@ -985,6 +1010,12 @@ describe('the fixed prose of the Evidence3 section is backed by the committed da
     expect(targets.length).toBeGreaterThanOrEqual(4);
     for (const target of targets) expect(existsSync(join(REPO_ROOT, 'docs', target)), target).toBe(true);
     for (const figure of ['scorecard.svg', 'metrics-grid.svg', 'cost-breakdown.svg']) expect(targets).toContain(`../tools/runs/${E3_DIR_NAME}/${figure}`);
+  });
+
+  it('the alt text of both cost-breakdown figures says what they show: the median estimated cost per session, split by cost component', () => {
+    const figures = [...doc.matchAll(/!\[([^\]]*)\]\(([^)]*cost-breakdown\.svg)\)/g)].map((m) => ({ alt: m[1], url: m[2] }));
+    expect(figures.map((f) => f.url)).toEqual(['../tools/runs/evidence2-agentic-benchmark-2026-09-30/cost-breakdown.svg', `../tools/runs/${E3_DIR_NAME}/cost-breakdown.svg`]);
+    for (const { alt } of figures) expect(alt).toBe('Stacked bars: median estimated API cost per session for Claude Code and Codex CLI, with and without kmp-test, split by cost component.');
   });
 
   it('"No session changed a file that a later session would load": the Claude Code sessions are all agent_state_clean, and the only ones that are not are the Codex CLI sessions whose config.toml the record names', () => {

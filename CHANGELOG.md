@@ -32,6 +32,9 @@ with and without kmp-test" section and the detailed
   record, a README block and the detailed benchmark document (#556). Its first attempt failed on
   infrastructure and is not analyzed; the record states how the second attempt came to stand,
   including the sessions that are missing data and the amendments to the preregistration.
+- The cost-breakdown figures of the detailed benchmark document now draw each bar at the median
+  session cost, on one scale for both agents, with the colors still splitting it by component
+  share; Evidence2's figure is regenerated.
 
 ## [0.16.0] — 2026-09-30
 
