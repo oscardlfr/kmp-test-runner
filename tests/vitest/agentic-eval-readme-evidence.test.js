@@ -2273,9 +2273,10 @@ describe('the committed evidence3-agentic-benchmark-2026-10-02 campaign (publish
   });
 
   it('the published preregistration is byte for byte the pre-registered file, amendments A1 to A5 included (sha256 pinned)', () => {
-    const bytes = readFileSync(join(RUNS_DIR_V3, 'preregistration.md'));
-    expect(createHash('sha256').update(bytes).digest('hex')).toBe('b088c7aee6612107ed3f314286385f5a34a289c63aca0dcedf410bcbb225fdde');
-    const text = bytes.toString('utf8');
+    // The pre-registered bytes are the LF ones (the file is LF and ASCII only). A checkout with core.autocrlf=true, which is what a Windows
+    // runner does, turns every LF into CRLF on disk, so the hash is taken after the same CRLF normalization the other tests of this file use.
+    const text = crlfNormalize(readFileSync(join(RUNS_DIR_V3, 'preregistration.md'), 'utf8'));
+    expect(createHash('sha256').update(text, 'utf8').digest('hex')).toBe('b088c7aee6612107ed3f314286385f5a34a289c63aca0dcedf410bcbb225fdde');
     expect(text.startsWith('# Evidence3 preregistration:')).toBe(true);
     for (const heading of ['### A1 (', '### A2 (', '### A3 (', '### A4 (', '### A5 (']) expect(text).toContain(heading);
   });
