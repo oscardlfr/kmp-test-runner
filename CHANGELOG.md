@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `flavor_defaulted_umbrella` is now also emitted under the default test type, where a flavored Android module run without `--flavor` already ran the umbrella task, and so every flavor, without saying so (#560).
 - Documentation that contradicted the code: the `module_failed` and `setup_failed` shapes, what `coverage` emits and ignores, the exact module names of `--coverage-modules`, and the README rows of `--variant` and `--exclude-coverage` (#560).
+- Unit-test counts no longer include instrumented results left on disk by earlier device runs: AGP's `build/outputs/androidTest-results/connected/` directory is read only for instrumented tasks, so `tests.individual_total` is no longer inflated and the new `tests.individual_failed` no longer reports failures in a green run (#562).
 
 ### Internal — agentic evaluation harness (Evidence3)
 
