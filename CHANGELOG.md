@@ -35,6 +35,9 @@ with and without kmp-test" section and the detailed
 - The cost-breakdown figures of the detailed benchmark document now draw each bar at the median
   session cost, on one scale for both agents, with the colors still splitting it by component
   share; Evidence2's figure is regenerated.
+- The README's benchmark section now summarizes every published scenario in one generated
+  figure, with one generated bullet per scenario and a link to its record, and the detailed
+  benchmark document shows the same figure at its top.
 
 ## [0.16.0] — 2026-09-30
 

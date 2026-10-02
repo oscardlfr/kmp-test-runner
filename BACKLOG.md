@@ -3455,6 +3455,24 @@ All five gaps shipped in v0.5.2 (PRs #63 / #64 / #65 / #66 / #67). One scope red
 
 ## QUEUED — post-v0.3.4 ideas (newest first)
 
+### 💡 IDEA — Reuse or remove the per-evidence README block renderer
+
+**Status: IDEA, no CLI milestone.** Since the README's benchmark block became the overview of every
+published scenario (`node tools/agentic-eval/readme-evidence.mjs --overview`), the per-evidence
+renderer `renderReadmeBlock` in `tools/agentic-eval/readme-evidence.mjs`, with its wording, notes
+and bullets (`README_WORDING`, `README_NOTES`, `buildBullets`), no longer writes the root README:
+`--evidence=<n>` checks and writes only that campaign's own `scorecard.svg` and `metrics-grid.svg`.
+It is still exported and covered by its own tests, and nothing else calls it.
+
+**Proposal:** in a dedicated refactor, either reuse its bullets in the detailed document
+(`docs/agentic-benchmark.md`), which already shows each campaign's figures, or remove the renderer
+together with its tests.
+
+**Why captured here:** the code is live and tested but unused by any published output; leaving it
+costs maintenance, and removing it is a decision about the detailed document's content.
+
+---
+
 ### 🐛 BUG — The umbrella-flavor warning is skipped for the default test type
 
 **Status: BUG, no CLI milestone.** Surfaced 2026-10-02 by the Evidence3 benchmark. With the default

@@ -23,7 +23,7 @@ import {
   validatePairing,
   fmtToolCallsMedian,
   computeMetricsGridLayout,
-  README_EVIDENCE,
+  README_BLOCK_OWNER,
   README_NOTES,
   README_WORDING,
   loadScenarioFacts,
@@ -808,14 +808,17 @@ const breakdownFragments = (block) => [...block.matchAll(/README\.md#([^)\s]+)\)
 const gridAltOf = (block) => block.match(/!\[([^\]]*)\]\([^)]*metrics-grid\.svg\)/)[1];
 
 describe('the README block breakdown links reach a real heading in the evidence doc', () => {
-  it('every #fragment in the committed root README block is a heading of the Evidence3 doc', () => {
+  // The root README block is the overview now (WO-16): it links each scenario's record, not breakdown anchors, so this checks every record
+  // link of the committed block (and any #fragment one carries) against the record it points at. The per-evidence renderer's own anchors
+  // are still pinned by the it.each below.
+  it('every record link in the committed root README block reaches a real record README, and any #fragment it carries is a heading of it', () => {
     const readme = readFileSync(README_PATH, 'utf8');
     const block = readme.slice(readme.indexOf('<!-- agentic-benchmark:start'), readme.indexOf('<!-- agentic-benchmark:end -->'));
-    const fragments = breakdownFragments(block);
-    expect(fragments.length).toBeGreaterThan(0);
-    const slugs = headingSlugs(readFileSync(join(RUNS_DIR_V3, 'README.md'), 'utf8'));
-    for (const fragment of fragments) {
-      expect(slugs.has(fragment), `#${fragment} is not a heading of the Evidence3 README`).toBe(true);
+    const records = [...block.matchAll(/\[Record\]\((tools\/runs\/[^)#\s]+\/README\.md)(?:#([^)\s]+))?\)/g)].map((m) => ({ path: m[1], fragment: m[2] }));
+    expect(records.length).toBeGreaterThan(0);
+    for (const { path: recordPath, fragment } of records) {
+      expect(existsSync(join(REPO_ROOT, recordPath)), recordPath).toBe(true);
+      if (fragment) expect(headingSlugs(readFileSync(join(REPO_ROOT, recordPath), 'utf8')).has(fragment), `#${fragment} is not a heading of ${recordPath}`).toBe(true);
     }
   });
 
@@ -897,14 +900,15 @@ describe('the grid image alt text', () => {
   });
 });
 
+// The root README block is owned by the overview (WO-16, `readme-evidence.mjs --overview`, tested in agentic-eval-overview.test.js), not by any one evidence.
 describe('which evidence owns the root README block', () => {
-  it('README_EVIDENCE names the evidence the root README shows, and that evidence owns the block', () => {
-    expect(README_EVIDENCE).toBe(3);
-    expect(ownsReadmeBlock(3)).toBe(true);
-    expect(ownsReadmeBlock('3')).toBe(true); // main() passes the raw --evidence= value, a string
+  it('README_BLOCK_OWNER says the overview owns the root README block, and no evidence does', () => {
+    expect(README_BLOCK_OWNER).toBe('overview');
+    expect(ownsReadmeBlock(3)).toBe(false);
+    expect(ownsReadmeBlock('3')).toBe(false); // main() passes the raw --evidence= value, a string
   });
 
-  it('every other evidence, --evidence=1 and --evidence=2 included, checks and writes its own SVGs only, never the README block', () => {
+  it('every evidence, --evidence=1, --evidence=2 and --evidence=3 included, checks and writes its own SVGs only, never the README block', () => {
     expect(ownsReadmeBlock('1')).toBe(false);
     expect(ownsReadmeBlock(1)).toBe(false);
     expect(ownsReadmeBlock('2')).toBe(false);
@@ -2139,11 +2143,11 @@ describe('README_NOTES[3]: the larger-task note, recomputed independently of the
 });
 
 // ---------------------------------------------------------------------------
-// The committed Evidence3 campaign, published in the root README. The two README-block tests that pinned Evidence2
-// ("regenerating the README block ... matches what is committed in root README.md" and "every relative link/image path in
-// the README block resolves inside this one campaign directory") moved here from the Evidence2 block.
+// The committed Evidence3 campaign. It was the one the root README showed (the two README-block tests that pinned Evidence2 moved here
+// from the Evidence2 block); the overview (WO-16) owns that block now, so, like Evidence2's block above, its tests render its own
+// per-evidence block instead of comparing it with the root README.
 
-describe('the committed evidence3-agentic-benchmark-2026-10-02 campaign (published in the root README)', () => {
+describe('the committed evidence3-agentic-benchmark-2026-10-02 campaign (no longer the one published in the root README)', () => {
   const median = (xs) => { const s = [...xs].sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
   let summary, costEstimate, scenarioFacts;
 
@@ -2153,13 +2157,6 @@ describe('the committed evidence3-agentic-benchmark-2026-10-02 campaign (publish
     scenarioFacts = loadScenarioFacts(summary.scenario_id);
   });
 
-  const rootBlock = () => {
-    const readme = crlfNormalize(readFileSync(README_PATH, 'utf8'));
-    const start = readme.indexOf('<!-- agentic-benchmark:start');
-    const end = readme.indexOf('<!-- agentic-benchmark:end -->') + '<!-- agentic-benchmark:end -->'.length;
-    expect(start).toBeGreaterThan(-1);
-    return readme.slice(start, end);
-  };
   const renderBlock = (anchor = 'results') => renderReadmeBlock(summary, CAMPAIGN_DATE_V3, costEstimate, RUNS_DIR_NAME_V3, anchor, README_NOTES[3]({ summary, costEstimate, scenarioFacts }), 3, scenarioFacts);
 
   it('is a valid, complete, live schema-2 summary of the multi-module scenario: 32 sessions, 8 declared per runtime and arm', () => {
@@ -2194,14 +2191,21 @@ describe('the committed evidence3-agentic-benchmark-2026-10-02 campaign (publish
     expect(crlfNormalize(renderMetricsGridSvg(summary, costEstimate))).toBe(committed);
   });
 
-  it('regenerating the README block (--evidence=3 --date=2026-10-02) matches what is committed in root README.md, byte for byte (CRLF-normalized)', () => {
-    // 'results' is the anchor main() computes from the Evidence3 record README's own heading, README_NOTES[3] the note main()
-    // passes for Evidence3, and the scenario facts come from the two corpus files.
-    expect(crlfNormalize(renderBlock())).toBe(rootBlock());
+  it('renders its own block: the markers, the intro, both figures, the bullets, the note once and the Scope line, the same text on every render', () => {
+    // 'results' is the anchor main() used to compute from the Evidence3 record README's own heading, README_NOTES[3] the note, and the scenario
+    // facts come from the two corpus files.
+    const block = renderBlock();
+    expect(renderBlock()).toBe(block);
+    expect(block.startsWith('<!-- agentic-benchmark:start (generated by tools/agentic-eval/readme-evidence.mjs from tools/runs/evidence3-agentic-benchmark-2026-10-02/campaign-summary.json')).toBe(true);
+    expect(block.endsWith('<!-- agentic-benchmark:end -->')).toBe(true);
+    expect(block).toContain(`](tools/runs/${RUNS_DIR_NAME_V3}/scorecard.svg)`);
+    expect(block).toContain(`](tools/runs/${RUNS_DIR_NAME_V3}/metrics-grid.svg)`);
+    expect(block).toContain('**Scope:** one scenario, tagged held-out;');
+    expect(block.split(README_NOTES[3]({ summary, costEstimate, scenarioFacts })).length - 1).toBe(1);
   });
 
-  it('every relative link/image path in the README block resolves inside this one (Evidence3) campaign directory, except the one link to docs/agentic-benchmark.md', () => {
-    const paths = [...rootBlock().matchAll(/\]\(([^)]+)\)/g)].map((m) => m[1]);
+  it('every relative link/image path in the block it renders resolves inside this one (Evidence3) campaign directory, except the one link to docs/agentic-benchmark.md', () => {
+    const paths = [...renderBlock().matchAll(/\]\(([^)]+)\)/g)].map((m) => m[1]);
     expect(paths.length).toBeGreaterThan(0);
     expect(paths.filter((p) => !p.startsWith(`tools/runs/${RUNS_DIR_NAME_V3}`))).toEqual(['docs/agentic-benchmark.md']);
   });
@@ -2247,8 +2251,8 @@ describe('the committed evidence3-agentic-benchmark-2026-10-02 campaign (publish
     expect(README_NOTES[3]({ summary, costEstimate, scenarioFacts })).toBe(
       `On a larger task (11 modules, 6 failing test methods), the median tool output returned to the model was ${kb('claude-code', 'product')} KB with kmp-test and ${kb('claude-code', 'free')} KB without for Claude Code; for Codex CLI, the median command output its commands produced (as logged) was ${kb('codex-cli', 'product')} KB and ${kb('codex-cli', 'free')} KB. The median estimated cost per session was $${cost('claude-code', 'product')} vs $${cost('claude-code', 'free')} for Claude Code and $${cost('codex-cli', 'product')} vs $${cost('codex-cli', 'free')} for Codex CLI. A smaller single-module task (Evidence2) and the full breakdown are in [docs/agentic-benchmark.md](docs/agentic-benchmark.md).`,
     );
-    // The committed root README carries it exactly once.
-    expect(rootBlock().split(README_NOTES[3]({ summary, costEstimate, scenarioFacts })).length - 1).toBe(1);
+    // The block this evidence renders carries it exactly once.
+    expect(renderBlock().split(README_NOTES[3]({ summary, costEstimate, scenarioFacts })).length - 1).toBe(1);
   });
 
   it('the note\'s tool-output medians are the very numbers the metrics grid prints for the same four groups, in the same unit (decimal KB)', () => {

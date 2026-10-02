@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "campaigns": [
+    { "dir": "evidence2-agentic-benchmark-2026-09-30", "label": "1 module · run its tests, check a coverage budget" },
+    { "dir": "evidence3-agentic-benchmark-2026-10-02", "label": "11 modules · find the 6 failing tests" }
+  ]
+}
