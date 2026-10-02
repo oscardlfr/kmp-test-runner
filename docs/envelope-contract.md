@@ -57,7 +57,9 @@ Every subcommand emits the same canonical envelope on `--json`. Subcommand-speci
     "passed": 0,
     "failed": 0,
     "skipped": 0,
-    "individual_total": 0          // testcase-level (parallel only — derived from JUnit XML)
+    "individual_total": 0,         // testcase-level (parallel only — derived from JUnit XML)
+    "individual_failed": 0,        // testcases with a <failure> or <error> child (parallel only)
+    "individual_skipped": 0        // testcases with a <skipped> child (parallel only)
   },
   "modules": [
     {
@@ -112,6 +114,24 @@ Every subcommand emits the same canonical envelope on `--json`. Subcommand-speci
   //                "modules": [...] }
 }
 ```
+
+### `tests`: module-level and testcase-level counts
+
+`total`, `passed`, `failed` and `skipped` are module-level: one unit per dispatched Gradle task (for `parallel`,
+`skipped` is not incremented). `individual_total`, `individual_failed` and `individual_skipped` are the
+testcase-level view of the same run, and only `parallel` (and `changed`, which copies its delegate) carries them:
+
+- They are counted from the same JUnit XML files, with the same freshness and size guards, whatever the task's status:
+  `individual_total` is every `<testcase>`, `individual_failed` those with a `<failure>` or `<error>` child,
+  `individual_skipped` those with a `<skipped>` child. A passing task can carry skipped testcases.
+- Under the umbrella `test` task of a flavored module (no `--flavor`, see `flavor_defaulted_umbrella`) every flavor's
+  run counts, so a test that exists in two flavors is counted twice. `modules[].test_failures[]` lists one entry per
+  failing execution in the same way, and `individual_failed` equals the number of those entries for a failed task.
+  Pass `--flavor <name>` to count one flavor.
+- Envelopes built without JUnit XML (`--dry-run`, error envelopes, `changed --show-modules-only`) omit the three keys
+  rather than report zeros: a consumer treats an absent key as unknown, like the coverage keys below. A real run that
+  found no XML reports zeros.
+- `tests.skipped` keeps its meaning and is not a testcase count.
 
 ### `covered_lines` / `total_lines` scope
 

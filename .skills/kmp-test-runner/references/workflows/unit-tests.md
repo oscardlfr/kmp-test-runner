@@ -131,7 +131,7 @@ The `parallel` subcommand emits the standard top-level envelope (see [`../cli/en
   "contracts": { "coverage_evidence": 1 },
   "subcommand": "parallel",
   "exit_code": 0,
-  "tests": { "total": 42, "passed": 42, "failed": 0, "skipped": 0, "individual_total": 58 },
+  "tests": { "total": 42, "passed": 42, "failed": 0, "skipped": 0, "individual_total": 58, "individual_failed": 0, "individual_skipped": 2 },
   "modules": [
     {
       "name": ":core:network",

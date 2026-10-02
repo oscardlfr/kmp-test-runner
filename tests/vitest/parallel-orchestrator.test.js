@@ -5650,7 +5650,7 @@ describe('runParallel legit-skip exit semantics (drift #1)', () => {
     expect(envelope.skipped[0].module).toBe('androidonly');
     expect(envelope.skipped[0].reason).toMatch(/common/);
     expect(envelope.tests).toEqual({
-      total: 0, passed: 0, failed: 0, skipped: 0, individual_total: 0,
+      total: 0, passed: 0, failed: 0, skipped: 0, individual_total: 0, individual_failed: 0, individual_skipped: 0,
     });
   });
 
@@ -6862,5 +6862,93 @@ describe('--variant: variant_unrecognized warning (parallel)', () => {
       projectRoot: dir, args: ['--variant', value], spawn: makeSpawnStub(), log: () => {}, runCoverageInjection: makeRunCoverageStub(),
     });
     expect(variantWarnings(envelope)).toEqual([]);
+  });
+});
+
+// ===========================================================================
+// tests.individual_failed / tests.individual_skipped (test-level counts)
+// ===========================================================================
+// The task-level counters (total, passed, failed) count Gradle tasks; individual_total counts testcase
+// executions. individual_failed and individual_skipped complete that view from the same JUnit XML files,
+// whatever the task's status. Under the umbrella `test` task every flavor's run counts, like
+// individual_total, and test_failures[] lists one entry per failing execution.
+describe('tests.individual_failed / tests.individual_skipped', () => {
+  const MIXED_FLAVOR_XML = '<testsuite>'
+    + '<testcase name="passes" classname="contract.MixedTest"/>'
+    + '<testcase name="fails" classname="contract.MixedTest"><failure type="java.lang.AssertionError" message="boom"/></testcase>'
+    + '<testcase name="skipped" classname="contract.MixedTest"><skipped/></testcase>'
+    + '</testsuite>';
+  const SKIPPED_ONLY_XML = '<testsuite>'
+    + '<testcase name="passes" classname="contract.MixedTest"/>'
+    + '<testcase name="skipped one" classname="contract.MixedTest"><skipped/></testcase>'
+    + '<testcase name="skipped two" classname="contract.MixedTest"><skipped message="later"/></testcase>'
+    + '</testsuite>';
+
+  // The convention-flavored fixture (core-foo, flavors demo and prod): the stub writes `xml` for every flavor
+  // task it is asked to run (the umbrella `test` runs both) and fails the task when `failing` is set.
+  function makeFlavorSpawn(projectRoot, { xml, failing }) {
+    const calls = [];
+    const fn = (cmd, args, opts) => {
+      const call = { cmd, args: [...args], cwd: opts?.cwd ?? null, env: opts?.env ?? null };
+      calls.push(call);
+      const taskArgs = effectiveGradleArgs(call).filter((arg) => arg.startsWith(':'));
+      const testTask = taskArgs.find((task) => /:test(?:DemoDebugUnitTest)?$/.test(task));
+      if (!testTask) return { status: 0, stdout: 'BUILD SUCCESSFUL in 1s\n', stderr: '', signal: null, error: null };
+      const variants = testTask.endsWith(':test') ? ['testDemoDebugUnitTest', 'testProdDebugUnitTest'] : ['testDemoDebugUnitTest'];
+      for (const variant of variants) {
+        const junitPath = path.join(projectRoot, 'core-foo', 'build', 'test-results', variant, 'TEST-contract.MixedTest.xml');
+        writeFixtureFile(junitPath, xml);
+        const fresh = new Date(Date.now() + 1_000);
+        utimesSync(junitPath, fresh, fresh);
+      }
+      return {
+        status: failing ? 1 : 0,
+        stdout: `> Task ${testTask}${failing ? ' FAILED' : ''}\nBUILD ${failing ? 'FAILED' : 'SUCCESSFUL'} in 1s\n`,
+        stderr: '', signal: null, error: null,
+      };
+    };
+    fn.calls = calls;
+    return fn;
+  }
+  const run = async (args, spawnOptions) => {
+    const dir = makeConventionFlavorCoverageContractProject();
+    const spawn = makeFlavorSpawn(dir, spawnOptions);
+    return runParallel({ projectRoot: dir, args: ['--module-filter', ':core-foo', ...args], spawn, log: () => {}, runCoverageInjection: makeRunCoverageStub() });
+  };
+
+  it('umbrella task, 3 testcases x 2 flavors with 1 failing and 1 skipped each → individual_total 6, individual_failed 2, individual_skipped 2', async () => {
+    const { envelope, exitCode } = await run([], { xml: MIXED_FLAVOR_XML, failing: true });
+    expect(exitCode).toBe(1);
+    expect(envelope.tests).toEqual({
+      total: 1, passed: 0, failed: 1, skipped: 0,
+      individual_total: 6, individual_failed: 2, individual_skipped: 2,
+    });
+    // One entry per failing execution: the failing testcase of each flavor.
+    expect(envelope.modules[0].test_failures).toHaveLength(2);
+  });
+
+  it('--flavor demo narrows the run to one flavor: 3, 1 and 1', async () => {
+    const { envelope } = await run(['--flavor', 'demo'], { xml: MIXED_FLAVOR_XML, failing: true });
+    expect(envelope.tests).toMatchObject({ individual_total: 3, individual_failed: 1, individual_skipped: 1 });
+    expect(envelope.modules[0].test_failures).toHaveLength(1);
+  });
+
+  it('a passing task with skipped testcases is counted too: skipped yes, failed none, tests.skipped untouched', async () => {
+    const { envelope, exitCode } = await run([], { xml: SKIPPED_ONLY_XML, failing: false });
+    expect(exitCode).toBe(0);
+    expect(envelope.tests).toEqual({
+      total: 1, passed: 1, failed: 0, skipped: 0,
+      individual_total: 6, individual_failed: 0, individual_skipped: 4,
+    });
+  });
+
+  it('a run with no JUnit XML on disk reports zeros, and the dry-run envelope keeps its four-key tests block', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const { envelope } = await runParallel({
+      projectRoot: dir, args: ['--test-type', 'desktop'], spawn: makeSpawnStub(), log: () => {}, runCoverageInjection: makeRunCoverageStub(),
+    });
+    expect(envelope.tests).toMatchObject({ individual_total: 0, individual_failed: 0, individual_skipped: 0 });
+    const dry = await runParallel({ projectRoot: dir, args: ['--dry-run'], spawn: makeSpawnStub(), log: () => {} });
+    expect(Object.keys(dry.envelope.tests)).toEqual(['total', 'passed', 'failed', 'skipped']);
   });
 });

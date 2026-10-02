@@ -538,7 +538,7 @@ Google's [`android` CLI for agents](https://developer.android.com/tools/agents/a
 ### What the JSON guarantees
 
 - **Always valid JSON**, even if parsing the script output partially fails. Parse gaps are surfaced in the `errors[]` array rather than crashing the CLI.
-- **Stable schema**: `tool`, `subcommand`, `version`, `project_root`, `exit_code`, `duration_ms`, `tests {total/passed/failed/skipped}`, `modules[]`, `coverage {tool, missed_lines}`, `errors[]`, `warnings[]`.
+- **Stable schema**: `tool`, `subcommand`, `version`, `project_root`, `exit_code`, `duration_ms`, `tests {total/passed/failed/skipped}` (module-level; `parallel` adds the testcase-level `individual_total/individual_failed/individual_skipped`), `modules[]`, `coverage {tool, missed_lines}`, `errors[]`, `warnings[]`.
 - **`errors` vs `warnings`**: `errors[]` carries fatal signals an agent must act on (`code: "lock_held"`, `"jdk_mismatch"`, BUILD FAILED, parse gaps). `warnings[]` carries non-fatal signals an agent can branch on differently — e.g. `code: "gradle_deprecation"` (gradle exit 1 caused solely by Gradle 9+ deprecation warnings while every task passed) or `code: "instrumented_only_skipped"` (the unit leg skipped a module whose only tests are instrumented — run it with `--test-type androidInstrumented`). The corresponding `BUILD FAILED` line is not duplicated to `errors[]` when paired with a deprecation notice. The full warning-code catalogue lives in [`docs/envelope-contract.md`](docs/envelope-contract.md#warning-codes-warningscode).
 - **Single line on stdout** — no surrounding noise, suitable for `JSON.parse()` directly.
 - **Exit code matches `exit_code` field**, so an agent can branch on either.

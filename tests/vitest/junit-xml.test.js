@@ -14,6 +14,7 @@ import path from 'node:path';
 
 import {
   junitTestCountFor,
+  junitTestStatsFor,
   junitTestFailuresFor,
   forEachJunitXml,
   extractTestcaseFailures,
@@ -228,5 +229,73 @@ describe('resolveJunitXmlMaxBytes (KMP_JUNIT_XML_MAX_MB knob)', () => {
     // Warn-once latch: two bad resolutions, one stderr line.
     const warnCalls = spy.mock.calls.filter(c => String(c[0]).includes('KMP_JUNIT_XML_MAX_MB'));
     expect(warnCalls).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// junitTestStatsFor: total, failed and skipped testcase executions from the same files junitTestCountFor walks
+// ---------------------------------------------------------------------------
+const MIXED_XML = [
+  '<testsuite name="S" tests="5">',
+  '  <testcase name="ok" classname="com.x.S" time="0.1"/>',
+  '  <testcase name="boom" classname="com.x.S" time="0.1"><failure type="T" message="m">stack</failure></testcase>',
+  '  <testcase name="err" classname="com.x.S" time="0.1"><error type="E" message="m"/></testcase>',
+  '  <testcase name="skip" classname="com.x.S" time="0.0"><skipped/></testcase>',
+  '  <testcase name="skip2" classname="com.x.S" time="0.0"><skipped message="not now"></skipped></testcase>',
+  '  <system-out><![CDATA[plain text]]></system-out>',
+  '</testsuite>',
+].join('\n');
+
+describe('junitTestStatsFor', () => {
+  it('counts every testcase, those with a <failure> or <error> child and those with a <skipped> child', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-junit-'));
+    writeXml(workDir, 'core', 'jvmTest', 'A', MIXED_XML);
+    expect(junitTestStatsFor(workDir, ':core:jvmTest')).toEqual({ total: 5, failed: 2, skipped: 2 });
+  });
+
+  it('its total is junitTestCountFor and its failed is the number of junitTestFailuresFor entries', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-junit-'));
+    writeXml(workDir, 'core', 'jvmTest', 'A', MIXED_XML);
+    writeXml(workDir, 'core', 'jvmTest', 'B', FAILING_XML);
+    writeXml(workDir, 'core', 'jvmTest', 'C');
+    const stats = junitTestStatsFor(workDir, ':core:jvmTest');
+    expect(stats.total).toBe(junitTestCountFor(workDir, ':core:jvmTest'));
+    expect(stats.failed).toBe(junitTestFailuresFor(workDir, ':core:jvmTest').length);
+    expect(stats).toEqual({ total: 9, failed: 3, skipped: 2 });
+  });
+
+  it('counts a passing report with skipped testcases (no failure) and a missing directory as zeros', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-junit-'));
+    writeXml(workDir, 'core', 'jvmTest', 'A', '<testsuite><testcase name="a"/><testcase name="b"><skipped/></testcase></testsuite>');
+    expect(junitTestStatsFor(workDir, ':core:jvmTest')).toEqual({ total: 2, failed: 0, skipped: 1 });
+    expect(junitTestStatsFor(workDir, ':missing:test')).toEqual({ total: 0, failed: 0, skipped: 0 });
+    expect(junitTestStatsFor('/nonexistent', ':jvmTest')).toEqual({ total: 0, failed: 0, skipped: 0 });
+  });
+
+  it('walks the same directories as the count: the umbrella test task aggregates every *UnitTest dir, each flavor run counts', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-junit-'));
+    for (const variant of ['testDemoDebugUnitTest', 'testProdDebugUnitTest']) {
+      writeXml(workDir, 'core', variant, 'S', [
+        '<testsuite>',
+        '<testcase name="a"/>',
+        '<testcase name="b"><failure message="x"/></testcase>',
+        '<testcase name="c"><skipped/></testcase>',
+        '</testsuite>',
+      ].join('\n'));
+    }
+    expect(junitTestStatsFor(workDir, ':core:test')).toEqual({ total: 6, failed: 2, skipped: 2 });
+  });
+
+  it('keeps the stale-XML guard and reports oversized files through the collector like the count does', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-junit-'));
+    const file = writeXml(workDir, 'core', 'jvmTest', 'A', MIXED_XML);
+    const old = new Date(Date.now() - 3_600_000);
+    utimesSync(file, old, old);
+    expect(junitTestStatsFor(workDir, ':core:jvmTest', Date.now() - 60_000)).toEqual({ total: 0, failed: 0, skipped: 0 });
+    process.env.KMP_JUNIT_XML_MAX_MB = '1';
+    writeXml(workDir, 'core', 'jvmTest', 'Big', `<testsuite><testcase name="a"/><system-out>${'x'.repeat(1_100_000)}</system-out></testsuite>`);
+    const anomalies = [];
+    expect(junitTestStatsFor(workDir, ':core:jvmTest', 0, anomalies).total).toBe(5);
+    expect(anomalies).toHaveLength(1);
   });
 });

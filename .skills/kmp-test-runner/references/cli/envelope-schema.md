@@ -14,7 +14,7 @@ The `kmp-test` CLI emits a JSON envelope to stdout when invoked with `--json`. T
 | `project_root` | string | Absolute path to the gradle project root. |
 | `exit_code` | number | `0` SUCCESS / `1` TEST_FAIL / `2` CONFIG_ERROR / `3` ENV_ERROR. See [`exit-codes.md`](exit-codes.md). |
 | `duration_ms` | number | Wall-clock duration of the run. |
-| `tests` | object | `{ total, passed, failed, skipped, individual_total? }` — see [`tests` shape](#tests-shape). |
+| `tests` | object | `{ total, passed, failed, skipped, individual_total?, individual_failed?, individual_skipped? }` — see [`tests` shape](#tests-shape). |
 | `modules` | array | Per-module results — see [`modules[]` shape](#modules-shape). |
 | `skipped` | array | `[{ module, reason }]` — modules the dispatcher legitimately skipped. |
 | `coverage` | object | `{ tool, missed_lines, covered_lines, total_lines, modules_contributing, modules_with_kover_plugin, modules_with_jacoco_plugin, module_buckets }` — see [`coverage` shape](#coverage-shape). `missed_lines` / `covered_lines` / `total_lines` / `modules_contributing` are the aggregate across the modules `--coverage-modules` / `--exclude-coverage` selected for this run, never further narrowed by `--min-missed-lines`. `covered_lines` / `total_lines` are `null` whenever `modules_contributing` is `0` (same null-semantics as `missed_lines`). |
@@ -42,11 +42,13 @@ Plus the orthogonal `dry_run: true` flag (with a `plan{}` block) on any subcomma
 ## `tests` shape
 
 ```json
-{ "total": 42, "passed": 40, "failed": 1, "skipped": 1, "individual_total": 58 }
+{ "total": 42, "passed": 40, "failed": 1, "skipped": 0, "individual_total": 58, "individual_failed": 3, "individual_skipped": 2 }
 ```
 
 - `total` / `passed` / `failed` / `skipped` — module-level counts (count of dispatched gradle tasks for `parallel`).
-- `individual_total` — testcase-level count derived from JUnit XML. Populated by `parallel` only; omitted for other subcommands.
+- `individual_total` / `individual_failed` / `individual_skipped` — testcase-level counts derived from the same JUnit XML files: every testcase, those with a `<failure>` or `<error>` child, those with a `<skipped>` child, whatever the task's status. Populated by `parallel` (and `changed`, which copies it) only; omitted for other subcommands and for dry-run and error envelopes.
+- Under the umbrella `test` task of a flavored module (no `--flavor`) every flavor's run counts, so a test present in two flavors counts twice, and `modules[].test_failures[]` has one entry per failing execution (`individual_failed` equals their number for a failed task). Pass `--flavor <name>` to count one flavor.
+- `skipped` is module-level and is not incremented by `parallel`; use `individual_skipped` for skipped testcases.
 
 ## `modules[]` shape
 
