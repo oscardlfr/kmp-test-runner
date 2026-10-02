@@ -124,6 +124,10 @@ testcase-level view of the same run, and only `parallel` (and `changed`, which c
 - They are counted from the same JUnit XML files, with the same freshness and size guards, whatever the task's status:
   `individual_total` is every `<testcase>`, `individual_failed` those with a `<failure>` or `<error>` child,
   `individual_skipped` those with a `<skipped>` child. A passing task can carry skipped testcases.
+- The files are the task's own Gradle result directory and, for an instrumented task (`connected…AndroidTest`,
+  `connectedCheck`, `androidConnectedCheck`, or any task of the `androidInstrumented` leg), AGP's
+  `build/outputs/androidTest-results/connected/` directory. A unit-test task never reads that directory, so results
+  that an earlier device run left there are not counted for it.
 - Under the umbrella `test` task of a flavored module (no `--flavor`, see `flavor_defaulted_umbrella`) every flavor's
   run counts, so a test that exists in two flavors is counted twice. `modules[].test_failures[]` lists one entry per
   failing execution in the same way, and `individual_failed` equals the number of those entries for a failed task.
