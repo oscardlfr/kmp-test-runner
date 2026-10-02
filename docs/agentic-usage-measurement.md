@@ -16,8 +16,9 @@ pre-registered scenario has cleared the acceptance criteria below except
 one partial: model identity is recorded as the requested alias, not the
 served snapshot — see the [controls audit](../tools/runs/evidence1-agentic-benchmark-2026-09-28/controls-audit.md)
 — and been promoted to the README's "Agent sessions with and without
-kmp-test" section; it is one scenario at n=4 per arm per runtime, not the
-full methodology this document describes. Treat this document as the
+kmp-test" section; it is one scenario with a small sample per arm and runtime
+(the campaigns and their sample sizes are listed under Current status), not
+the full methodology this document describes. Treat this document as the
 methodology of record for a harness that runs, not as a sketch for one that
 might.
 
@@ -847,8 +848,9 @@ and the raw evidence has been checked for privacy.
 - **One pre-registered scenario, run under the instrumented harness (not
   the pilot or v2 benchmark above), has been promoted.** The README's "Why
   this exists" section carries "Agent sessions with and without kmp-test"
-  (`claude-code` and `codex-cli`, n=4 per arm per runtime), generated from
-  the committed campaign summary under `tools/runs/`. This is the harness
+  (`claude-code` and `codex-cli`, with the shown campaign's own sample size
+  stated in the block), generated from the committed campaign summary under
+  `tools/runs/`. This is the harness
   described above, not a third measurement round layered on the pilot/v2
   history — the acceptance criteria section below is what gated it.
 - **Evidence2 (2026-09-30) ran 16 sessions under that harness.** Claude Code
@@ -857,6 +859,20 @@ and the raw evidence has been checked for privacy.
   [`android/nowinandroid`](https://github.com/android/nowinandroid), a task
   with a coverage threshold. Its record, limitations and dated errata are in
   [`tools/runs/evidence2-agentic-benchmark-2026-09-30/README.md`](../tools/runs/evidence2-agentic-benchmark-2026-09-30/README.md).
+- **Evidence3 (2026-10-02) ran 32 sessions under that harness; 30 are
+  counted.** Claude Code and Codex CLI each had 8 planned sessions with and 8
+  without the kmp-test skill and CLI, on a multi-module task in
+  [`android/nowinandroid`](https://github.com/android/nowinandroid): run the
+  unit tests of every module except those whose Robolectric tests need network
+  access, then report which modules and test classes fail and how many tests.
+  The first attempt of the campaign failed on infrastructure and is not
+  analyzed; two sessions of the second attempt, both without kmp-test, are
+  missing data (preregistration amendments A4 and A5), so each agent's
+  without-kmp-test arm counts 7 sessions. Its record, preregistration, controls
+  audit and limitations are in
+  [`tools/runs/evidence3-agentic-benchmark-2026-10-02/README.md`](../tools/runs/evidence3-agentic-benchmark-2026-10-02/README.md);
+  per-session values and the cost breakdown of both campaigns are in
+  [agentic-benchmark.md](agentic-benchmark.md).
 - Future docs-alignment or measurement work should reference this document
   rather than re-deriving the methodology inline. If the methodology
   changes, update it here first, then update whatever links to it.

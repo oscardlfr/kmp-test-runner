@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Internal — agentic evaluation harness (Evidence3)
+
+Internal `tools/agentic-eval/` tooling, evidence and documents behind the README's "Agent sessions
+with and without kmp-test" section and the detailed
+[benchmark document](docs/agentic-benchmark.md). Not part of the public CLI/Gradle surface.
+
+- Evidence2 errata, including the correction of Codex CLI's tool-output figures (#540, #555), and a
+  detailed benchmark document with a generated cost breakdown (#541).
+- The shell-command classifier handles compound, redirected and wrapped commands (#542).
+- Eval sessions: Claude Code's auto memory is off, the launcher variables pass through the
+  environment allowlist, and Bash timeouts are 30 minutes (#543).
+- Each session records a listing of the agents' configuration directories before and after it, and
+  its session id; every transcript is scanned for the ground-truth, preregistration and private
+  paths (#544).
+- The cost and README tools accept any equal sample size, and a count of sessions that is not the
+  design's is always stated (#545).
+- Codex CLI's tool output is measured from the output of the commands it ran, as logged (#546).
+- A multi-module-tests scenario family, an `apply_patch` fixture operation and two 8-pair designs
+  (#547, #549); the VM run path is driven by the scenario (#548, #550, #551, #553); the family's
+  first scenario joins the corpus (#552); promoted answers of the family are validated by family
+  (#554).
+- Evidence3, a second pre-registered campaign (many modules, failing tests), is published with its
+  record, a README block and the detailed benchmark document (#556). Its first attempt failed on
+  infrastructure and is not analyzed; the record states how the second attempt came to stand,
+  including the sessions that are missing data and the amendments to the preregistration.
+
 ## [0.16.0] — 2026-09-30
 
 ### Upgrade notes

@@ -3455,6 +3455,41 @@ All five gaps shipped in v0.5.2 (PRs #63 / #64 / #65 / #66 / #67). One scope red
 
 ## QUEUED — post-v0.3.4 ideas (newest first)
 
+### 💡 IDEA — Grader: accept a kmp-test envelope that reached the model through a file read (coverage family)
+
+**Status: IDEA, no CLI milestone.** Surfaced 2026-09-30 in Evidence2's erratum E4
+([record](tools/runs/evidence2-agentic-benchmark-2026-09-30/README.md#errata)): a session sent its
+first `kmp-test parallel` result to a file and read the file back later, so the envelope reached the
+model only through the file read. The grader found no terminal kmp-test attempt in the session
+(`success` false, evidence `claim-only`) although the answer's key facts matched. The command
+classifier part of that case was fixed in PR #542 (compound, redirected and wrapped commands); the
+grader's own evidence check is unchanged.
+
+**Proposal:** for the coverage family, accept a kmp-test envelope that reached the model through a
+file read when the file was written by a recorded kmp-test command and the later read returned the
+envelope, instead of requiring the envelope in the kmp-test command's own tool result. Add the
+cases to the grader's tests (a redirect followed by a read, a read of a file no recorded command
+wrote, a read of a different file) before changing it.
+
+**Why captured here:** a correct session was graded as having no terminal evidence because of how it
+chose to read its own output; the same pattern can recur in any campaign of that family.
+
+---
+
+### 💡 IDEA — Scenario B: multi-module coverage (NowInAndroid), same protocol as Evidence3
+
+**Status: IDEA, no CLI milestone.** Evidence3 ran scenario A (tests fail in several modules) on
+NowInAndroid; scenario B, a multi-module coverage task on the same project, was deferred by the
+plan of that cycle. It would run under the same protocol: a preregistration written before any
+session, the 8-pair counterbalanced designs for both agents, the same stop rules, a controls audit
+and a generated record, and a scenario and ground-truth file of its own in the corpus.
+
+**Why captured here:** so the next measurement cycle starts from a written scope instead of from
+this cycle's chat history. The grader item above is the known issue that affects the coverage
+family.
+
+---
+
 ### ✅ DONE 2026-09-30 (PR #537) — Evidence1 Pester files read sources through a hardcoded main-checkout path
 
 Surfaced and fixed in the same closing pass: the first hosted CI run on the published harness
@@ -3468,9 +3503,15 @@ test's synthetic manifest, is input data naming the harness's canonical path, no
 
 ---
 
-### 💡 IDEA — Define count-field ground truth independently of the product's own counting convention
+### ✅ DONE 2026-10-02 (PR #547, #552) — Define count-field ground truth independently of the product's own counting convention
 
-**Status: IDEA, no CLI milestone.** Surfaced 2026-09-30 auditing Evidence2's campaign
+**Status: DONE for the multi-module-tests family (PR #547) and its first scenario (PR #552).** The
+count field of that family is `failed_count`. The scenario's prompt defines it as the number of
+distinct failing test methods and fixes the build variant, so neither reading of "test count" below
+is open, and the grader compares the answer with the scenario's ground-truth file, never with
+kmp-test's own counters. A future scenario with a count field follows the same rule.
+
+**Original IDEA below (preserved for context):** surfaced 2026-09-30 auditing Evidence2's campaign
 `48458826-2386-4e4d-a93f-01641f44253c`: the `coverage-threshold-failure-v2` scenario's target module
 (`:core:domain`) has exactly 2 `@Test` methods, which run in 2 Gradle build variants
 (`testDemoDebugUnitTest`, `testProdDebugUnitTest`), for 4 total test executions. D5's grading checks
