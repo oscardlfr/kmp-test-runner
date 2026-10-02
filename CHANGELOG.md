@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The soft warning `variant_unrecognized`: `--variant` (or `--android-variant`) with a value outside `auto|debug|release|all` is still treated as `auto`, but the envelope now says so, with the value as typed and the way to pass a flavored build variant (#560).
+- `tests.individual_failed` and `tests.individual_skipped` in the `parallel` and `changed` envelopes: testcase-level counts of failed and skipped tests, from the same JUnit XML as `tests.individual_total` (#560).
+
+### Fixed
+
+- `flavor_defaulted_umbrella` is now also emitted under the default test type, where a flavored Android module run without `--flavor` already ran the umbrella task, and so every flavor, without saying so (#560).
+- Documentation that contradicted the code: the `module_failed` and `setup_failed` shapes, what `coverage` emits and ignores, the exact module names of `--coverage-modules`, and the README rows of `--variant` and `--exclude-coverage` (#560).
+
 ### Internal — agentic evaluation harness (Evidence3)
 
 Internal `tools/agentic-eval/` tooling, evidence and documents behind the README's "Agent sessions
