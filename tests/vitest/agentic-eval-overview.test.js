@@ -14,6 +14,7 @@ import {
   loadCampaignRegistry, computeOverviewLayout, renderOverviewSvg, buildOverviewAlt, renderOverviewBlock, renderOverviewDocBlock,
   checkOverview, writeOverview, OVERVIEW_REGISTRY_PATH, OVERVIEW_SVG_PATH,
   loadSummary, loadCostEstimate, renderScorecardSvg, renderMetricsGridSvg, checkEvidenceCharts,
+  missingSessionsOf, missingSessionsClause,
   README_BLOCK_OWNER, ownsReadmeBlock, COLOR_WITH, COLOR_WITHOUT, COLOR_TEXT, COLOR_SECONDARY, FONT_STACK,
 } from '../../tools/agentic-eval/readme-evidence.mjs';
 
@@ -26,6 +27,7 @@ const SCRIPT = join(REPO_ROOT, 'tools', 'agentic-eval', 'readme-evidence.mjs');
 const E2 = 'evidence2-agentic-benchmark-2026-09-30';
 const E3 = 'evidence3-agentic-benchmark-2026-10-02';
 const LABELS = ['1 module · run its tests, check a coverage budget', '11 modules · find the 6 failing tests'];
+const NOTES = [undefined, 'An earlier attempt failed on infrastructure and is not analyzed.'];
 const RUNTIMES = ['claude-code', 'codex-cli'];
 const ARMS = ['product', 'free'];
 const AGENT_NAME = { 'claude-code': 'Claude Code', 'codex-cli': 'Codex CLI' };
@@ -101,9 +103,10 @@ describe('the campaign registry', () => {
   it('the committed registry lists Evidence2 and Evidence3, in that order, with their labels, and not Evidence1', () => {
     const registry = loadJson(OVERVIEW_REGISTRY_PATH);
     expect(registry.schema).toBe(1);
-    expect(registry.campaigns).toEqual([{ dir: E2, label: LABELS[0] }, { dir: E3, label: LABELS[1] }]);
+    expect(registry.campaigns).toEqual([{ dir: E2, label: LABELS[0] }, { dir: E3, label: LABELS[1], note: NOTES[1] }]);
     const campaigns = loadCampaignRegistry();
-    expect(campaigns.map((c) => [c.dir, c.label, c.evidenceN])).toEqual([[E2, LABELS[0], 2], [E3, LABELS[1], 3]]);
+    expect(campaigns.map((c) => [c.dir, c.label, c.evidenceN, c.note])).toEqual([[E2, LABELS[0], 2, undefined], [E3, LABELS[1], 3, NOTES[1]]]);
+    expect(Object.keys(campaigns[0])).not.toContain('note');
     for (const c of campaigns) {
       expect(c.summary.by_runtime_arm).toHaveLength(4);
       expect(c.costEstimate.schema).toBe(2);
@@ -171,6 +174,18 @@ describe('the campaign registry', () => {
       expect(load).toThrow(new RegExp(`${E2}: label must be a non-empty string`));
       scratch.writeRegistry({ schema: 1, campaigns: [{ dir: E2 }] });
       expect(load).toThrow(new RegExp(`${E2}: label must be a non-empty string`));
+    });
+
+    it('accepts a missing note and a non-empty one, and passes the note through unchanged', () => {
+      scratch.writeRegistry(good());
+      expect(Object.keys(load()[0])).not.toContain('note');
+      scratch.writeRegistry({ schema: 1, campaigns: [{ dir: E2, label: LABELS[0], note: 'A note.' }] });
+      expect(load()[0].note).toBe('A note.');
+    });
+
+    it.each([['a number', 5], ['an empty string', ''], ['only spaces', '   '], ['null', null], ['an object', { text: 'x' }]])('rejects a note that is %s', (_, note) => {
+      scratch.writeRegistry({ schema: 1, campaigns: [{ dir: E2, label: LABELS[0], note }] });
+      expect(load).toThrow(new RegExp(`${E2}: note must be a non-empty string when present`));
     });
 
     it('rejects a summary that fails validateSummary', () => {
@@ -400,9 +415,19 @@ describe('the root README block', () => {
       const [claude, codex] = e.groups;
       const counts = countsOf(e, [claude[0].counted, claude[1].counted]);
       const evidence = `Evidence${i + 2}`;
-      const line = `- **${LABELS[i]}** (${evidence}, ${counts}): median tool calls ${fmtCalls(claude[0].calls)} vs ${fmtCalls(claude[1].calls)} (Claude Code) and ${fmtCalls(codex[0].calls)} vs ${fmtCalls(codex[1].calls)} (Codex CLI); median estimated cost ${fmtCost(claude[0].cost)} vs ${fmtCost(claude[1].cost)} and ${fmtCost(codex[0].cost)} vs ${fmtCost(codex[1].cost)}; key facts ${claude[0].kf} vs ${claude[1].kf} and ${codex[0].kf} vs ${codex[1].kf}. kmp-test ${e.versions.kmpTest} · Claude Code ${e.versions.runtimes['claude-code']} · Codex CLI ${e.versions.runtimes['codex-cli']}. [Record](tools/runs/${dir}/README.md)`;
+      const missing = e.groups.flat().reduce((sum, g) => sum + g.declared - g.counted, 0);
+      const missingClause = missing > 0 ? ` ${missing} session${missing === 1 ? '' : 's'} missing data (not counted, not replaced).` : '';
+      const noteClause = NOTES[i] ? ` ${NOTES[i]}` : '';
+      const line = `- **${LABELS[i]}** (${evidence}, ${counts}): median tool calls ${fmtCalls(claude[0].calls)} vs ${fmtCalls(claude[1].calls)} (Claude Code) and ${fmtCalls(codex[0].calls)} vs ${fmtCalls(codex[1].calls)} (Codex CLI); median estimated cost ${fmtCost(claude[0].cost)} vs ${fmtCost(claude[1].cost)} and ${fmtCost(codex[0].cost)} vs ${fmtCost(codex[1].cost)}; key facts ${claude[0].kf} vs ${claude[1].kf} and ${codex[0].kf} vs ${codex[1].kf}. kmp-test ${e.versions.kmpTest} · Claude Code ${e.versions.runtimes['claude-code']} · Codex CLI ${e.versions.runtimes['codex-cli']}.${missingClause}${noteClause} [Record](tools/runs/${dir}/README.md)`;
       expect(bullets[i]).toBe(line);
     });
+  });
+
+  it('Evidence3\'s bullet discloses its 2 missing sessions and the unanalyzed earlier attempt after its versions, before the record link; Evidence2\'s says neither', () => {
+    const [bullet2, bullet3] = block.split('\n').filter((l) => l.startsWith('- '));
+    expect(bullet3).toMatch(/Codex CLI 0\.154\.0\. 2 sessions missing data \(not counted, not replaced\)\. An earlier attempt failed on infrastructure and is not analyzed\. \[Record\]\(tools\/runs\/evidence3-agentic-benchmark-2026-10-02\/README\.md\)$/);
+    expect(bullet2).not.toMatch(/missing data|earlier attempt|not analyzed/);
+    expect(bullet2).toMatch(/Codex CLI 0\.154\.0\. \[Record\]\(tools\/runs\/evidence2-agentic-benchmark-2026-09-30\/README\.md\)$/);
   });
 
   it('links and shows only files that exist on disk', () => {
@@ -548,5 +573,31 @@ describe('--overview', () => {
   it('no evidence owns the root README block any more: the overview does', () => {
     expect(README_BLOCK_OWNER).toBe('overview');
     for (const n of [1, 2, 3, 4, '1', '2', '3', '4']) expect(ownsReadmeBlock(n), String(n)).toBe(false);
+  });
+});
+
+describe('the missing-sessions clause of an overview bullet', () => {
+  const group = (declared, counted) => ({ declared, ...(counted === undefined ? {} : { counted }) });
+  const summaryOf = (...groups) => ({
+    by_runtime_arm: RUNTIMES.flatMap((runtime_id) => ARMS.map((arm) => ({ runtime_id, arm, ...groups.shift() }))),
+  });
+
+  it('is the sum of declared minus counted over the four groups; a group without a counted value counts all its declared sessions', () => {
+    expect(missingSessionsOf(summaryOf(group(8), group(8), group(8), group(8)))).toBe(0);
+    expect(missingSessionsOf(summaryOf(group(8, 8), group(8, 7), group(8, 8), group(8, 7)))).toBe(2);
+    expect(missingSessionsOf(summaryOf(group(4, 4), group(4, 4), group(4, 3), group(4, 4)))).toBe(1);
+    expect(missingSessionsOf(summaryOf(group(8, 6), group(8, 5), group(8, 8), group(8, 8)))).toBe(5);
+  });
+
+  it('reads "<n> session(s) missing data (not counted, not replaced)." with the singular for one and nothing for none', () => {
+    expect(missingSessionsClause(0)).toBe('');
+    expect(missingSessionsClause(1)).toBe('1 session missing data (not counted, not replaced).');
+    expect(missingSessionsClause(2)).toBe('2 sessions missing data (not counted, not replaced).');
+    expect(missingSessionsClause(5)).toBe('5 sessions missing data (not counted, not replaced).');
+  });
+
+  it('agrees with the committed summaries: Evidence2 none, Evidence3 two', () => {
+    expect(missingSessionsOf(loadJson(join(RUNS, E2, 'campaign-summary.json')))).toBe(0);
+    expect(missingSessionsOf(loadJson(join(RUNS, E3, 'campaign-summary.json')))).toBe(2);
   });
 });

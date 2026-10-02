@@ -1715,6 +1715,8 @@ const OVERVIEW_COLUMNS = Object.freeze([
  * directory it concerns: schema 1; at least one campaign; unique dirs; a directory name evidence<N>-agentic-benchmark-<date> (the figure names the
  * evidence from it); the directory and its campaign-summary.json, cost-estimate.json and README.md exist; a non-empty label; the summary passes
  * validateSummary and pairs with its cost estimate (validatePairing). `runsRoot` is where the directories are (the registry's own folder).
+ * An entry may carry an optional `note` (a non-empty string), printed after the last sentence of its bullet: what a reader needs to know that the
+ * campaign's own data cannot say, such as an earlier attempt that failed and is not analyzed.
  */
 export function loadCampaignRegistry(registryPath = OVERVIEW_REGISTRY_PATH, runsRoot = dirname(registryPath)) {
   let registry;
@@ -1741,6 +1743,7 @@ export function loadCampaignRegistry(registryPath = OVERVIEW_REGISTRY_PATH, runs
       if (!existsSync(join(runDir, name))) throw new Error(`${dir}: ${name} not found`);
     }
     if (typeof entry.label !== 'string' || entry.label.trim() === '') throw new Error(`${dir}: label must be a non-empty string`);
+    if (entry.note !== undefined && (typeof entry.note !== 'string' || entry.note.trim() === '')) throw new Error(`${dir}: note must be a non-empty string when present`);
     let summary;
     let costEstimate;
     try {
@@ -1751,7 +1754,7 @@ export function loadCampaignRegistry(registryPath = OVERVIEW_REGISTRY_PATH, runs
     }
     const pairingErrors = validatePairing(summary, costEstimate);
     if (pairingErrors.length > 0) throw new Error(`${dir}: campaign-summary.json / cost-estimate.json mismatch:\n  ${pairingErrors.join('\n  ')}`);
-    return { dir, label: entry.label, evidenceN: Number(match[1]), summary, costEstimate };
+    return { dir, label: entry.label, ...(entry.note !== undefined ? { note: entry.note } : {}), evidenceN: Number(match[1]), summary, costEstimate };
   });
 }
 
@@ -1782,6 +1785,17 @@ function overviewCounts(summary) {
     return `${counted[0][0]} + ${counted[0][1]} sessions${allCounted ? '' : ' counted'} per agent`;
   }
   return `sessions counted: ${RUNTIME_ORDER.map((runtimeId, i) => `${RUNTIME_DISPLAY_NAME[runtimeId]} ${counted[i][0]} + ${counted[i][1]}`).join(' · ')}`;
+}
+
+/** How many sessions a campaign declared and could not count (a rejected session, or one lost to a failed guest call): declared minus counted over the four groups. */
+export function missingSessionsOf(summary) {
+  return RUNTIME_ORDER.flatMap((runtimeId) => ARM_ORDER.map((arm) => findGroup(summary, runtimeId, arm)))
+    .reduce((sum, group) => sum + (group.declared - countedOf(group)), 0);
+}
+
+/** The bullet's clause for those sessions, or nothing when none is missing. */
+export function missingSessionsClause(missing) {
+  return missing > 0 ? `${missing} session${missing === 1 ? '' : 's'} missing data (not counted, not replaced).` : '';
 }
 
 /** The figure's layout, as the items every test and the SVG renderer read: { width, height, items }. */
@@ -1879,14 +1893,16 @@ export function renderOverviewSvg(campaigns) {
 }
 
 // One scenario's bullet: the label, its evidence and counts, the medians with kmp-test vs without for each agent, the versions its provenance
-// records and the link to its record. Values only: no ratio, no word that ranks.
+// records, the sessions that are missing data (when some are), the registry's note (when there is one) and the link to its record. Values only:
+// no ratio, no word that ranks.
 function overviewBullet(campaign) {
   const { summary } = campaign;
   const [claude, codex] = RUNTIME_ORDER.map((runtimeId) => ARM_ORDER.map((arm) => overviewGroupValues(campaign, runtimeId, arm)));
   const pair = (lanes, key, fmt) => `${fmt(lanes[0][key])} vs ${fmt(lanes[1][key])}`;
   const same = (v) => v;
+  const disclosure = [missingSessionsClause(missingSessionsOf(summary)), campaign.note ?? ''].filter(Boolean).map((sentence) => ` ${sentence}`).join('');
   const versions = [`kmp-test ${kmpTestVersionOf(summary)}`, ...RUNTIME_ORDER.map((runtimeId) => `${RUNTIME_DISPLAY_NAME[runtimeId]} ${provenanceValue(summary, 'runtime_cli_version', runtimeId)}`)].join(' · ');
-  return `**${campaign.label}** (Evidence${campaign.evidenceN}, ${overviewCounts(summary)}): median tool calls ${pair(claude, 'calls', fmtToolCallsMedian)} (Claude Code) and ${pair(codex, 'calls', fmtToolCallsMedian)} (Codex CLI); median estimated cost ${pair(claude, 'cost', fmtUsd3)} and ${pair(codex, 'cost', fmtUsd3)}; key facts ${pair(claude, 'keyFacts', same)} and ${pair(codex, 'keyFacts', same)}. ${versions}. [Record](tools/runs/${campaign.dir}/README.md)`;
+  return `**${campaign.label}** (Evidence${campaign.evidenceN}, ${overviewCounts(summary)}): median tool calls ${pair(claude, 'calls', fmtToolCallsMedian)} (Claude Code) and ${pair(codex, 'calls', fmtToolCallsMedian)} (Codex CLI); median estimated cost ${pair(claude, 'cost', fmtUsd3)} and ${pair(codex, 'cost', fmtUsd3)}; key facts ${pair(claude, 'keyFacts', same)} and ${pair(codex, 'keyFacts', same)}. ${versions}.${disclosure} [Record](tools/runs/${campaign.dir}/README.md)`;
 }
 
 /** The root README block: the intro sentence, the figure, one bullet per scenario and the closing line, between the agentic-benchmark markers. */
