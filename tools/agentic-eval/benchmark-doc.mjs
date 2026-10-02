@@ -47,6 +47,7 @@ const AGENT_LABEL = { 'claude-code': 'Claude Code', 'codex-cli': 'Codex CLI' };
 const ARM_LABEL = { product: 'with kmp-test', free: 'without' };
 const NUMBER_WORD = ['No', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten'];
 
+const LEGEND_DESCENT = 0.25; // the part of a text line's font size that hangs below its baseline, for the room under the last legend line
 const FIGURE_TITLE = 'Where a session\'s API cost goes';
 const FIGURE_SUBTITLE = 'Bar length is the median session cost, on one scale for both agents; the colors split it by each group\'s share of its total cost (percentages below). Blue: with kmp-test; orange: without.';
 
@@ -151,12 +152,17 @@ export function computeCostBreakdownLayout(summary, costEstimate) {
     const label = runtimeModelLabel(summary, runtimeId);
     const rendered = renderCompositionRow(
       colX, headerBottom, label, label, composition(withGroup), composition(withoutGroup), compMax,
-      COST_COMPONENTS, TOKEN_COMPONENT_COLORS, TOKEN_COMPONENT_LABEL, fmtValue, undefined,
+      COST_COMPONENTS, TOKEN_COMPONENT_COLORS, TOKEN_COMPONENT_LABEL, fmtValue, undefined, true,
     );
     items.push(...rendered.items);
     bottoms.push(headerBottom + rendered.rowHeight);
   });
-  return { width: GRID_W, height: Math.round(Math.max(...bottoms) + PAD), items };
+  // The card ends one PAD below the last legend line (its baseline plus the glyph descent), so the room under the legend equals the room at
+  // the sides; the shared renderer's trailing row gap is for a row that another row follows, and this figure has one row.
+  const legendLines = items.filter((item) => item.role === 'gridLegendLine');
+  const lastLegend = legendLines.length > 0 ? legendLines.reduce((a, b) => (b.y > a.y ? b : a)) : null;
+  const height = lastLegend ? lastLegend.y + lastLegend.fontSize * LEGEND_DESCENT + PAD : Math.max(...bottoms) + PAD;
+  return { width: GRID_W, height: Math.round(height), items };
 }
 
 export function renderCostBreakdownSvg(summary, costEstimate) {

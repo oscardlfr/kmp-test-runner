@@ -108,6 +108,27 @@ function expectBarsAtTheMedianCost(layout, costEstimate) {
   byMedian.slice(1).forEach((g, k) => expect(lengths[g]).toBeGreaterThan(lengths[byMedian[k]]));
 }
 
+/** Each lane prints its median right after its own bar (the bar's end plus the grid's 8 px clearance), not in a fixed column at the right edge. */
+function expectValuesAtTheBarEnds(layout) {
+  const GAP = 8; // the grid's clearance between a bar and its value label, typed out so that a change in the renderer fails this file
+  const lanes = lanesOf(layout);
+  const labels = layout.items.filter((i) => i.role === 'gridCompTotal');
+  expect(labels).toHaveLength(4);
+  lanes.forEach((lane, i) => {
+    const barEnd = Math.max(...lane.map((b) => b.x + b.w));
+    expect(labels[i].x, `${COLUMN_GROUPS[i].join('/')} value label`).toBeCloseTo(barEnd + GAP, 6);
+  });
+  // The label of the longest bar sits where the fixed column used to be: the end of a full-width bar.
+  expect(Math.max(...labels.map((l, i) => l.x - (i < 2 ? 28 : SECOND_COLUMN_X)))).toBeCloseTo(92 + BAR_W + GAP, 6);
+}
+
+/** The card ends as far below the last legend line as the figure's side padding (28 px, plus the glyph descent of the legend text), within 2 px. */
+function expectPaddingBelowTheLegend(layout) {
+  const legend = layout.items.filter((i) => i.role === 'gridLegendLine');
+  const last = legend.reduce((a, b) => (b.y > a.y ? b : a));
+  expect(Math.abs(layout.height - last.y - (28 + last.fontSize * 0.25))).toBeLessThanOrEqual(2);
+}
+
 /** The legend still prints each component's pooled share with and without kmp-test ("cache write 62% vs 44%"), not the dollars of a segment. */
 function expectLegendToPrintTheShares(layout, costEstimate) {
   const pct = (v) => (v > 0 && v < 0.005 ? '<1%' : `${Math.round(v * 100)}%`);
@@ -247,6 +268,14 @@ describe('the committed Evidence2 cost breakdown', () => {
 
     it('still prints the pooled shares in the legend, not the dollars a segment stands for', () => {
       expectLegendToPrintTheShares(layout, costEstimate);
+    });
+
+    it('prints each median right after its own bar, not in a fixed column at the right edge', () => {
+      expectValuesAtTheBarEnds(layout);
+    });
+
+    it('leaves the card as much room under the legend as at its sides', () => {
+      expectPaddingBelowTheLegend(layout);
     });
 
     it('prints the median session cost, to 3 decimals, at the end of each bar', () => {
@@ -747,6 +776,14 @@ describe('Evidence3: the cost breakdown and the generated blocks of docs/agentic
 
     it('still prints the pooled shares in the legend, not the dollars a segment stands for', () => {
       expectLegendToPrintTheShares(layout, costEstimate);
+    });
+
+    it('prints each median right after its own bar, not in a fixed column at the right edge', () => {
+      expectValuesAtTheBarEnds(layout);
+    });
+
+    it('leaves the card as much room under the legend as at its sides', () => {
+      expectPaddingBelowTheLegend(layout);
     });
 
     it('prints the median session cost, to 3 decimals, at the end of each bar, and leaves out the cache write that Codex CLI has none of', () => {
