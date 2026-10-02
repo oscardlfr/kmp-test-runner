@@ -90,15 +90,23 @@ function armFor(condition) {
   return null;
 }
 
+/** The arm the design put at a position of the manifest's round_order ('product' or 'free'), or null when the manifest names none. */
+function designArmAt(manifest, position) {
+  const arm = Array.isArray(manifest.round_order) ? manifest.round_order[position] : undefined;
+  return arm === 'product' || arm === 'free' ? arm : null;
+}
+
 function expectedCellsFromManifest(manifest) {
   const cells = [];
   for (const runtime of manifest.runtimes ?? []) {
-    for (const roundIndex of runtime.campaign_cell_indices ?? []) {
+    (runtime.campaign_cell_indices ?? []).forEach((roundIndex, position) => {
       cells.push({
         runtimeId: String(runtime.runtime_id), modelId: String(runtime.model_id),
         roundIndex: Number(roundIndex), cellKey: `${runtime.runtime_id}-${roundIndex}`,
+        // What the design puts at this position, for a cell that leaves no record and no rejection to take an arm from.
+        designArm: designArmAt(manifest, position),
       });
-    }
+    });
   }
   return cells;
 }
@@ -538,9 +546,12 @@ export function summarizeCampaign(campaignDir, excludeCellKeys = new Set(), { ac
 
   const loadedCells = expected.map((cell) => {
     const loaded = loadCell(privateRoot, cell.cellKey);
+    // A cell with a record or a rejection takes its arm from its own condition. One with neither (a session lost before it produced
+    // anything) takes the arm the design put at its position, so it is declared in that arm and not counted; with no round_order in the
+    // manifest it has no arm, as it always had not.
     const arm = loaded.status === 'accepted' ? armFor(loaded.record.condition)
       : loaded.status === 'rejected' ? armFor(loaded.rejectionCell.condition)
-        : null;
+        : cell.designArm;
     return { ...cell, loaded, arm };
   });
 

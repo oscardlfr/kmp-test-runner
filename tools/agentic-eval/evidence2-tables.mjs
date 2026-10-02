@@ -12,6 +12,11 @@
 // and controls, cost) and inserts them between <!-- evidence2-tables:start/end --> markers in a
 // target doc, in --write/--check modes mirroring readme-evidence.mjs's own CLI convention.
 //
+// The block's heading names the evidence of the target doc (tools/runs/evidence<N>-agentic-benchmark-
+// <date>/README.md gets "Evidence<N> results"; any other path keeps "Evidence2 results"). A campaign
+// whose cells all belong to a scenario family with several answer fields (multi-module-tests) shows
+// those fields as per-cell columns; every other campaign keeps its table byte-identical.
+//
 // Usage:
 //   node tools/agentic-eval/evidence2-tables.mjs <campaign-dir> [target-doc] [options]
 //     [target-doc]              default: tools/runs/evidence2-agentic-benchmark-<date>/README.md
@@ -28,6 +33,7 @@ import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { summarizeCampaign, fmtRate, fmtStats, fmtProvenanceLine } from './campaign-summary.mjs';
+import { analyzeRunRecord } from './analysis.mjs';
 import {
   disjointTokens, sessionCost, armCostRange, scalarMetric, compositionMedians,
   tokenCompositionMedians, commandKindAggregate, TOKEN_COMPONENT_TYPES, TOKEN_COMPONENT_LABEL,
@@ -117,18 +123,72 @@ function fmtInfraFlake(cellKey, infraFlakeByCellKey) {
 }
 
 // ---------------------------------------------------------------------------
+// Scenario families whose key facts are several answer fields. Their per-cell table shows one column per
+// field in place of the single "full answer" column; a family without an entry keeps the table exactly as
+// it always was.
+
+const FAMILY_FIELD_COLUMNS = Object.freeze({
+  'multi-module-tests': Object.freeze([
+    Object.freeze(['failing_modules', 'failing modules']),
+    Object.freeze(['failed_test_classes', 'failing classes']),
+    Object.freeze(['failed_count', 'count']),
+  ]),
+});
+
+function fmtFieldStatus(status) {
+  if (status === 'matched') return 'yes';
+  if (status === 'mismatched') return 'no';
+  if (status === 'not-observed') return 'not given';
+  return 'n/a';
+}
+
+/** The per-cell answer-field statuses of a campaign whose accepted cells all belong to one family with
+ * answer-field columns, read from the closure's own cell files with the analysis the summary itself uses
+ * (analyzeRunRecord), so the columns can never disagree with the key-facts column. Null for every other
+ * campaign, and when a cell file cannot be read: the table then keeps its generic columns. */
+export function loadFamilyFields(campaignDir, summary) {
+  const families = new Set();
+  const byCell = new Map();
+  for (const cell of summary.cells.filter((c) => c.status === 'accepted')) {
+    const cellDir = join(campaignDir, 'private', cell.cell_key);
+    let record;
+    let audit;
+    try {
+      record = JSON.parse(readFileSync(join(cellDir, 'record.json'), 'utf8'));
+      audit = JSON.parse(readFileSync(join(cellDir, 'audit.json'), 'utf8'));
+    } catch {
+      return null;
+    }
+    const analyzed = analyzeRunRecord(record, audit);
+    if (!analyzed.ok) return null;
+    families.add(record.family);
+    byCell.set(cell.cell_key, analyzed.entry.task_field_correctness);
+  }
+  if (families.size !== 1) return null;
+  const [family] = families;
+  const columns = FAMILY_FIELD_COLUMNS[family];
+  return columns ? { family, columns, byCell } : null;
+}
+
+// ---------------------------------------------------------------------------
 // (a) Per-cell table
 
-export function buildPerCellTableLines(summary, costEstimate, infraFlakeResult) {
+export function buildPerCellTableLines(summary, costEstimate, infraFlakeResult, familyFields = null) {
   const infraFlakeByCellKey = infraFlakeResult ? new Map(infraFlakeResult.cells.map((c) => [c.cell_key, c.infra_flake_suspected])) : null;
+  const answerColumns = familyFields ? familyFields.columns.map(([, label]) => label) : ['full answer'];
+  const columnCount = 13 + answerColumns.length;
   const lines = [
-    '| runtime | arm | round | status | key facts | full answer | success | duration ms | tool calls | shell commands | tokens | turns | cost | infra-flake |',
-    '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|',
+    `| ${['runtime', 'arm', 'round', 'status', 'key facts', ...answerColumns, 'success', 'duration ms', 'tool calls', 'shell commands', 'tokens', 'turns', 'cost', 'infra-flake'].join(' | ')} |`,
+    `|${'---|'.repeat(columnCount)}`,
   ];
   for (const c of summary.cells) {
+    const fieldStatuses = familyFields ? familyFields.byCell.get(c.cell_key) : null;
+    const answerCells = familyFields
+      ? familyFields.columns.map(([field]) => (fieldStatuses ? fmtFieldStatus(fieldStatuses[field]) : 'n/a'))
+      : [fmtYesNo(c.full_answer_match)];
     lines.push(`| ${[
       c.runtime_id, c.arm ?? 'unknown', c.round_index, fmtStatus(c),
-      fmtYesNo(c.key_facts_match), fmtYesNo(c.full_answer_match),
+      fmtYesNo(c.key_facts_match), ...answerCells,
       c.arm === 'product' ? fmtYesNo(c.success) : 'n/a',
       c.duration_ms ?? 'n/a', c.tool_calls_total ?? 'n/a',
       fmtCommandKindCounts(c.command_kind_counts),
@@ -263,9 +323,19 @@ export function buildCostLines(costEstimate) {
 // ---------------------------------------------------------------------------
 // Assembly
 
-export function renderEvidence2TablesBlock(summary, costEstimate, infraFlakeResult, sensitivitySummary, excludedCellKeys) {
+// The evidence number of a target doc: tools/runs/evidence<N>-agentic-benchmark-<date>/<doc>.md names it; any
+// other path (a scratch file, a test fixture) keeps 2, which is what this generator wrote before it knew about
+// any other evidence.
+export function evidenceNumberOfTargetDoc(targetDoc) {
+  const match = /(?:^|[\\/])evidence(\d+)-agentic-benchmark-[^\\/]+[\\/][^\\/]+$/.exec(String(targetDoc));
+  return match ? Number(match[1]) : 2;
+}
+
+// options.evidenceN: the number in the block's heading (default 2). options.familyFields: loadFamilyFields' result
+// (default null: the generic per-cell columns).
+export function renderEvidence2TablesBlock(summary, costEstimate, infraFlakeResult, sensitivitySummary, excludedCellKeys, { evidenceN = 2, familyFields = null } = {}) {
   const lines = [EVIDENCE2_TABLES_START, ''];
-  lines.push('## Evidence2 results (mechanically generated -- do not hand-edit; see evidence2-tables.mjs)');
+  lines.push(`## Evidence${evidenceN} results (mechanically generated -- do not hand-edit; see evidence2-tables.mjs)`);
   lines.push('');
   if (summary.summary_status !== 'ok') {
     lines.push(`Refused: \`${summary.reason_code}\`.`);
@@ -275,7 +345,7 @@ export function renderEvidence2TablesBlock(summary, costEstimate, infraFlakeResu
   lines.push(`Campaign: \`${summary.campaign_id}\`. Scenario: \`${summary.scenario_id}\`.`);
   lines.push('');
   lines.push('### Per-cell detail', '');
-  lines.push(...buildPerCellTableLines(summary, costEstimate, infraFlakeResult));
+  lines.push(...buildPerCellTableLines(summary, costEstimate, infraFlakeResult, familyFields));
   lines.push('');
   lines.push('### Runtime × arm aggregates', '');
   lines.push(...buildAggregateTableLines(summary));
@@ -294,13 +364,14 @@ export function renderEvidence2TablesBlock(summary, costEstimate, infraFlakeResu
 // fabricated figure) -> the full block. Runs summarizeCampaign TWICE (primary, then sensitivity with
 // the infra-flake-suspected cells excluded) so the sensitivity table is the real thing, not a
 // filtered copy of the primary one's rows.
-export function buildEvidence2TablesFromCampaign(campaignDir, costEstimate, infraFlakeResult) {
+export function buildEvidence2TablesFromCampaign(campaignDir, costEstimate, infraFlakeResult, { evidenceN = 2 } = {}) {
   const summary = summarizeCampaign(campaignDir);
   const excludedCellKeys = infraFlakeResult
     ? infraFlakeResult.cells.filter((c) => c.infra_flake_suspected === true).map((c) => c.cell_key)
     : [];
   const sensitivitySummary = summarizeCampaign(campaignDir, new Set(excludedCellKeys));
-  return renderEvidence2TablesBlock(summary, costEstimate, infraFlakeResult, sensitivitySummary, excludedCellKeys);
+  const familyFields = summary.summary_status === 'ok' ? loadFamilyFields(campaignDir, summary) : null;
+  return renderEvidence2TablesBlock(summary, costEstimate, infraFlakeResult, sensitivitySummary, excludedCellKeys, { evidenceN, familyFields });
 }
 
 export function insertBetweenMarkers(docText, block) {
@@ -353,7 +424,7 @@ function main(argv) {
   const costEstimate = costEstimatePath && existsSync(costEstimatePath) ? JSON.parse(readFileSync(costEstimatePath, 'utf8')) : null;
   const infraFlakeResult = infraFlakePath && existsSync(infraFlakePath) ? JSON.parse(readFileSync(infraFlakePath, 'utf8')) : null;
 
-  const block = buildEvidence2TablesFromCampaign(campaignDir, costEstimate, infraFlakeResult);
+  const block = buildEvidence2TablesFromCampaign(campaignDir, costEstimate, infraFlakeResult, { evidenceN: evidenceNumberOfTargetDoc(targetDoc) });
 
   if (mode === 'write') {
     if (!existsSync(targetDoc)) {
@@ -379,7 +450,7 @@ function main(argv) {
     console.error(`::error::out of date, run with --write: ${targetDoc}`);
     return 1;
   }
-  console.log('Evidence2 tables are up to date.');
+  console.log(`Evidence${evidenceNumberOfTargetDoc(targetDoc)} tables are up to date.`);
   return 0;
 }
 

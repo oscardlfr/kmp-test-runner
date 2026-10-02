@@ -23,7 +23,7 @@ import { computeRunProvenanceSha256 } from '../../tools/agentic-eval/accepted-ru
 import {
   buildPerCellTableLines, buildAggregateTableLines, buildSensitivityLines, buildProvenanceLines,
   buildCostLines, renderEvidence2TablesBlock, buildEvidence2TablesFromCampaign, insertBetweenMarkers,
-  EVIDENCE2_TABLES_START, EVIDENCE2_TABLES_END,
+  loadFamilyFields, evidenceNumberOfTargetDoc, EVIDENCE2_TABLES_START, EVIDENCE2_TABLES_END,
 } from '../../tools/agentic-eval/evidence2-tables.mjs';
 
 const EVIDENCE2_TABLES_SCRIPT = fileURLToPath(new URL('../../tools/agentic-eval/evidence2-tables.mjs', import.meta.url));
@@ -38,6 +38,7 @@ const EXECUTION_PROFILE = Object.freeze({
   isolation_attestation_sha256: 'e'.repeat(64),
 });
 const SCENARIO_ID = 'coverage-threshold-failure-v2';
+const MULTI_MODULE_SCENARIO_ID = 'multi-module-test-failures';
 
 function withTempDir(fn) {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'aeet-'));
@@ -59,11 +60,13 @@ function gradingChecks() {
 // per-cell overrides (usage/duration/tool-calls/turns/cost) this file's own fixture needs to produce
 // non-degenerate medians and ranges (the shared sibling helpers this pattern is adapted from always
 // use one fixed value per field; WO-C16's golden tables need real variation to be a meaningful test).
-function acceptedRecordV9({ runId, runtimeId, condition, roundIndex, matched, success, usage, durationMs, toolCallsValue, numTurns, reasoningEffortRequested, reasoningEffortSource, totalCostUsd = null }) {
+// multiModule: the record of a multi-module-tests campaign (the family's own scenario id, family label and claim-only
+// outcome assessment); mismatchFields: the answer fields the grader found mismatched (default: the coverage family's one).
+function acceptedRecordV9({ runId, runtimeId, condition, roundIndex, matched, success, usage, durationMs, toolCallsValue, numTurns, reasoningEffortRequested, reasoningEffortSource, totalCostUsd = null, multiModule = false, mismatchFields = null }) {
   const productAccessMode = condition === 'current-skill' ? 'product-assisted' : 'free-baseline-no-product';
   return {
     schema: 9, run_id: runId, run_kind: 'scenario', benchmark_eligible: true,
-    scenario_id: SCENARIO_ID, query_id: null, condition,
+    scenario_id: multiModule ? MULTI_MODULE_SCENARIO_ID : SCENARIO_ID, query_id: null, condition,
     skill_source_sha: condition === 'current-skill' ? '2112aed96686ee159f851e00c2efa553e58473fc' : null,
     kmp_test_cli_version: '0.16.0', kmp_test_cli_source_sha: 'c1cd93898b810601e1494e84c75d9ef354927afd',
     resolved_kmp_test_executable_path: 'ignored-in-tests',
@@ -74,7 +77,7 @@ function acceptedRecordV9({ runId, runtimeId, condition, roundIndex, matched, su
     repo_commit: 'c1cd93898b810601e1494e84c75d9ef354927afd',
     project_alias: 'nowinandroid', project_commit: '7d45eae4f8720a0c77f507712ba2437ff974b6ed',
     project_url: 'https://github.com/android/nowinandroid', platform: 'windows',
-    family: 'coverage', cache_state: 'cold', daemon_policy: 'disabled-via-gradle-user-home-properties',
+    family: multiModule ? 'multi-module-tests' : 'coverage', cache_state: 'cold', daemon_policy: 'disabled-via-gradle-user-home-properties',
     env_allowlist_profile: 'narrow', seed: 20260929, order_index: roundIndex,
     started_at: '2026-09-29T09:00:00.000Z', ended_at: '2026-09-29T09:02:00.000Z', wall_clock_ms: durationMs,
     skill_available: { value: condition === 'current-skill', reason: null },
@@ -142,9 +145,11 @@ function acceptedRecordV9({ runId, runtimeId, condition, roundIndex, matched, su
     outcome_assessment: {
       schema: 2, task_outcome_matched: matched, task_outcome_reason: matched ? 'matched' : 'mismatched',
       answer_protocol_matched: true,
-      provider_evidence_kind: 'kmp-test-envelope', provider_evidence_status: matched ? 'matched' : 'mismatched',
-      product_e2e_success: condition === 'current-skill' ? success : null,
-      task_outcome_mismatch_fields: matched ? [] : ['module'],
+      // The multi-module family binds no provider evidence to the answer: claim only.
+      provider_evidence_kind: multiModule ? 'claim-only' : 'kmp-test-envelope',
+      provider_evidence_status: multiModule ? 'unavailable' : matched ? 'matched' : 'mismatched',
+      product_e2e_success: multiModule ? null : condition === 'current-skill' ? success : null,
+      task_outcome_mismatch_fields: mismatchFields ?? (matched ? [] : ['module']),
       task_outcome_unexpected_key_count: 0,
     },
     product_access_mode: productAccessMode,
@@ -616,6 +621,209 @@ describe('evidence2-tables.mjs (WO-C17, Amendment A9): turns is never compared a
           throw new Error(`line compares turns across runtimes: "${line}"`);
         }
       }
+    });
+  });
+});
+
+// A session that left no record and no rejection (lost to a failed guest call) takes the arm the manifest's round_order gives its position
+// (campaign-summary.mjs), so the tables show it as one declared, missing cell of that arm and no row of unknown arm.
+describe('evidence2-tables.mjs: a session without a record is shown under its design arm', () => {
+  const aggregateRows = (block) => block.slice(block.indexOf('### Runtime × arm aggregates'), block.indexOf('### Sensitivity'))
+    .split('\n').filter((l) => /^\| (claude-code|codex-cli) \|/.test(l));
+
+  it('a cell directory that does not exist gives four aggregate rows, no row of unknown arm, and a per-cell row with its design arm', () => {
+    withTempDir((dir) => {
+      writeGoldenCampaign(dir);
+      const manifestPath = path.join(dir, 'manifest.json');
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+      writeFileSync(manifestPath, JSON.stringify({ ...manifest, round_order: ['product', 'free', 'product', 'free', 'product', 'free', 'product', 'free'] }, null, 2));
+      rmSync(path.join(dir, 'private', 'codex-cli-3'), { recursive: true });
+      const costResult = buildCostEstimate(dir);
+      const block = buildEvidence2TablesFromCampaign(dir, costResult.doc, classifyCampaign(dir));
+      expect(aggregateRows(block).map((l) => l.split(' | ').slice(0, 2).join(' | '))).toEqual(['| claude-code | free', '| claude-code | product', '| codex-cli | free', '| codex-cli | product']);
+      expect(block).not.toMatch(/\| codex-cli \| (null|unknown) \|/);
+      expect(block).toMatch(/\| codex-cli \| free \| 3 \| missing: cell_directory_absent \|/);
+    });
+  });
+});
+
+// Evidence3: the block's heading names the evidence of the target doc, and a multi-module-tests campaign shows its
+// answer fields as per-cell columns. A coverage-family campaign at an Evidence2 path keeps its output byte for byte.
+describe('evidence2-tables.mjs (Evidence3): the heading names the evidence of the target doc', () => {
+  it('evidenceNumberOfTargetDoc reads the number from tools/runs/evidence<N>-agentic-benchmark-<date>/<doc>, with either slash, and defaults to 2', () => {
+    expect(evidenceNumberOfTargetDoc('tools/runs/evidence3-agentic-benchmark-2026-10-02/README.md')).toBe(3);
+    expect(evidenceNumberOfTargetDoc('C:\\work\\tools\\runs\\evidence3-agentic-benchmark-2026-10-02\\README.md')).toBe(3);
+    expect(evidenceNumberOfTargetDoc('/repo/tools/runs/evidence2-agentic-benchmark-2026-09-30/README.md')).toBe(2);
+    expect(evidenceNumberOfTargetDoc('/repo/tools/runs/evidence12-agentic-benchmark-2027-01-01/README.md')).toBe(12);
+    // Anything else keeps the number this generator always wrote.
+    expect(evidenceNumberOfTargetDoc('/tmp/scratch/evidence-results.md')).toBe(2);
+    expect(evidenceNumberOfTargetDoc('/repo/tools/runs/evidence3-notes/README.md')).toBe(2);
+    expect(evidenceNumberOfTargetDoc('README.md')).toBe(2);
+  });
+
+  it('renderEvidence2TablesBlock: the heading carries the evidence number, and without an option the block is byte-identical to evidenceN 2', () => {
+    withTempDir((dir) => {
+      writeGoldenCampaign(dir);
+      const summary = summarizeCampaign(dir);
+      const costResult = buildCostEstimate(dir);
+      const infraFlake = classifyCampaign(dir);
+      const sensitivitySummary = summarizeCampaign(dir, new Set());
+      const defaultBlock = renderEvidence2TablesBlock(summary, costResult.doc, infraFlake, sensitivitySummary, []);
+      const evidence2Block = renderEvidence2TablesBlock(summary, costResult.doc, infraFlake, sensitivitySummary, [], { evidenceN: 2 });
+      const evidence3Block = renderEvidence2TablesBlock(summary, costResult.doc, infraFlake, sensitivitySummary, [], { evidenceN: 3 });
+      expect(defaultBlock).toBe(evidence2Block);
+      expect(defaultBlock).toContain('## Evidence2 results (mechanically generated -- do not hand-edit; see evidence2-tables.mjs)');
+      expect(evidence3Block).toContain('## Evidence3 results (mechanically generated -- do not hand-edit; see evidence2-tables.mjs)');
+      expect(evidence3Block).not.toContain('## Evidence2 results');
+      // The heading is the only difference.
+      expect(evidence3Block.replace('## Evidence3 results', '## Evidence2 results')).toBe(evidence2Block);
+    });
+  });
+
+  it('the CLI writes "Evidence3 results" under an evidence3 run directory, keeps "Evidence2 results" elsewhere, and --check agrees with each', () => {
+    withTempDir((dir) => {
+      writeGoldenCampaign(dir);
+      const skeleton = `# Record\n\n## Results\n\n${EVIDENCE2_TABLES_START}\n${EVIDENCE2_TABLES_END}\n`;
+      const evidence3Doc = path.join(dir, 'tools', 'runs', 'evidence3-agentic-benchmark-2026-10-02', 'README.md');
+      const otherDoc = path.join(dir, 'scratch-record.md');
+      mkdirSync(path.dirname(evidence3Doc), { recursive: true });
+      writeFileSync(evidence3Doc, skeleton);
+      writeFileSync(otherDoc, skeleton);
+
+      for (const [doc, heading, message] of [
+        [evidence3Doc, '## Evidence3 results (mechanically generated', 'Evidence3 tables are up to date.'],
+        [otherDoc, '## Evidence2 results (mechanically generated', 'Evidence2 tables are up to date.'],
+      ]) {
+        const write = spawnSync(process.execPath, [EVIDENCE2_TABLES_SCRIPT, dir, doc, '--write'], { encoding: 'utf8' });
+        expect(write.status, `stderr: ${write.stderr}`).toBe(0);
+        const written = readFileSync(doc, 'utf8');
+        expect(written).toContain(heading);
+        expect(written).toContain('## Results\n'); // the doc's own heading is untouched
+        const check = spawnSync(process.execPath, [EVIDENCE2_TABLES_SCRIPT, dir, doc], { encoding: 'utf8' });
+        expect(check.status, `stderr: ${check.stderr}`).toBe(0);
+        expect(check.stdout).toContain(message);
+      }
+    });
+  });
+});
+
+// A real, on-disk multi-module-tests campaign: 4 cells per runtime on the n8 designs (the product arm at order indices 0
+// and 3, the free arm at 1 and 2). The wrong answers are chosen so each answer field is told apart: Claude's round 1 is
+// wrong in the count only, Claude's round 2 in the outcome kind only (all three answer-field columns match, key facts
+// does not), Codex's round 1 in the failing modules and the failing classes.
+const MULTI_MODULE_MISMATCHES = Object.freeze({
+  'claude-code': Object.freeze({ 1: ['failed_count'], 2: ['outcome_kind'] }),
+  'codex-cli': Object.freeze({ 1: ['failing_modules', 'failed_test_classes'] }),
+});
+
+function writeMultiModuleCampaign(dir) {
+  writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({
+    schema: 1, campaign_id: 'evidence3-tables-multi-module', scenario_id: MULTI_MODULE_SCENARIO_ID, seed: 20260929, provider_mode: 'live',
+    runtimes: [
+      { runtime_id: 'claude-code', model_id: 'claude-sonnet-5', campaign_design_id: 'claude-product-vs-free-n8-v1', campaign_cell_indices: [0, 1, 2, 3], max_budget_usd: 6 },
+      { runtime_id: 'codex-cli', model_id: 'gpt-5.6-terra', campaign_design_id: 'codex-product-vs-free-n8-v1', campaign_cell_indices: [0, 1, 2, 3], max_budget_usd: null },
+    ],
+  }, null, 2));
+  for (let i = 0; i < 4; i++) {
+    const condition = i === 0 || i === 3 ? 'current-skill' : 'no-skill';
+    for (const runtimeId of ['claude-code', 'codex-cli']) {
+      const mismatchFields = MULTI_MODULE_MISMATCHES[runtimeId][i] ?? [];
+      const codex = runtimeId === 'codex-cli';
+      writeAcceptedCellV9(dir, `${runtimeId}-${i}`, {
+        runtimeId, condition, roundIndex: i, matched: mismatchFields.length === 0, mismatchFields, multiModule: true,
+        success: condition === 'current-skill' && mismatchFields.length === 0,
+        usage: codex ? { input: 4000 + i * 100, cached_input: 3000, cache_write: 0, output: 300, reasoning_output: 40 } : { input: 1000 + i * 50, cached_input: 200, cache_write: 50, output: 500 },
+        durationMs: (codex ? 150000 : 100000) + i * 5000, toolCallsValue: 3, numTurns: codex ? 1 : 3 + i,
+        reasoningEffortRequested: 'high', reasoningEffortSource: codex ? 'model-registry-default-reasoning-mode' : 'harness-pinned-cli-flag',
+      });
+    }
+  }
+}
+
+describe('evidence2-tables.mjs (Evidence3): the multi-module-tests family shows its answer fields', () => {
+  const MULTI_MODULE_HEADER = '| runtime | arm | round | status | key facts | failing modules | failing classes | count | success | duration ms | tool calls | shell commands | tokens | turns | cost | infra-flake |';
+  const COVERAGE_HEADER = '| runtime | arm | round | status | key facts | full answer | success | duration ms | tool calls | shell commands | tokens | turns | cost | infra-flake |';
+
+  it('loadFamilyFields reads each answer field from the closure with the summary\'s own analysis; it is null for the coverage family', () => {
+    withTempDir((dir) => {
+      writeMultiModuleCampaign(dir);
+      const summary = summarizeCampaign(dir);
+      expect(summary.summary_status).toBe('ok');
+      expect(summary.cells.every((c) => c.status === 'accepted')).toBe(true);
+      const fields = loadFamilyFields(dir, summary);
+      expect(fields.family).toBe('multi-module-tests');
+      expect(fields.columns.map(([field]) => field)).toEqual(['failing_modules', 'failed_test_classes', 'failed_count']);
+      expect(fields.byCell.get('claude-code-1')).toEqual({ outcome_kind: 'matched', failing_modules: 'matched', failed_test_classes: 'matched', failed_count: 'mismatched' });
+      expect(fields.byCell.get('codex-cli-1')).toEqual({ outcome_kind: 'matched', failing_modules: 'mismatched', failed_test_classes: 'mismatched', failed_count: 'matched' });
+      expect(fields.byCell.get('claude-code-0')).toEqual({ outcome_kind: 'matched', failing_modules: 'matched', failed_test_classes: 'matched', failed_count: 'matched' });
+    });
+    withTempDir((dir) => {
+      writeGoldenCampaign(dir);
+      expect(loadFamilyFields(dir, summarizeCampaign(dir))).toBeNull();
+    });
+  });
+
+  it('the per-cell table swaps "full answer" for failing modules, failing classes and count, and each cell says which field failed', () => {
+    withTempDir((dir) => {
+      writeMultiModuleCampaign(dir);
+      const summary = summarizeCampaign(dir);
+      const lines = buildPerCellTableLines(summary, null, null, loadFamilyFields(dir, summary));
+      expect(lines[0]).toBe(MULTI_MODULE_HEADER);
+      expect(lines[1]).toBe(`|${'---|'.repeat(16)}`);
+      expect(lines).toHaveLength(2 + 8);
+      const row = (runtime, arm, round) => lines.find((l) => l.startsWith(`| ${runtime} | ${arm} | ${round} |`));
+      // key facts | failing modules | failing classes | count | success
+      expect(row('claude-code', 'product', 0)).toContain('| accepted | yes | yes | yes | yes | yes |');
+      expect(row('claude-code', 'free', 1)).toContain('| accepted | no | yes | yes | no | n/a |'); // the count only
+      expect(row('claude-code', 'free', 2)).toContain('| accepted | no | yes | yes | yes | n/a |'); // the outcome kind only: key facts fails, the three columns do not
+      expect(row('claude-code', 'product', 3)).toContain('| accepted | yes | yes | yes | yes | yes |');
+      expect(row('codex-cli', 'free', 1)).toContain('| accepted | no | no | no | yes | n/a |'); // modules and classes
+      expect(row('codex-cli', 'free', 2)).toContain('| accepted | yes | yes | yes | yes | n/a |');
+      // Every data row has as many cells as the header.
+      for (const line of lines.slice(2)) expect(line.split(' | ').length).toBe(MULTI_MODULE_HEADER.split(' | ').length);
+    });
+  });
+
+  it('a cell with no record shows n/a in every answer field, and an unobserved answer shows "not given"', () => {
+    withTempDir((dir) => {
+      writeMultiModuleCampaign(dir);
+      const summary = summarizeCampaign(dir);
+      const fields = loadFamilyFields(dir, summary);
+      const unobserved = { ...fields, byCell: new Map([...fields.byCell, ['claude-code-2', { outcome_kind: 'not-observed', failing_modules: 'not-observed', failed_test_classes: 'not-observed', failed_count: 'not-observed' }]]) };
+      unobserved.byCell.delete('codex-cli-3');
+      const lines = buildPerCellTableLines(summary, null, null, unobserved);
+      expect(lines.find((l) => l.startsWith('| claude-code | free | 2 |'))).toContain('| accepted | no | not given | not given | not given | n/a |');
+      expect(lines.find((l) => l.startsWith('| codex-cli | product | 3 |'))).toContain('| accepted | yes | n/a | n/a | n/a | yes |');
+    });
+  });
+
+  it('the whole generated block (the Evidence3 heading, the family columns, then the same sections as Evidence2) comes out of the campaign directory', () => {
+    withTempDir((dir) => {
+      writeMultiModuleCampaign(dir);
+      const costResult = buildCostEstimate(dir);
+      expect(costResult.ok, costResult.reason).toBe(true);
+      const block = buildEvidence2TablesFromCampaign(dir, costResult.doc, classifyCampaign(dir), { evidenceN: 3 });
+      expect(block).toContain('## Evidence3 results (mechanically generated');
+      expect(block).toContain(MULTI_MODULE_HEADER);
+      expect(block).not.toContain(COVERAGE_HEADER);
+      for (const heading of ['### Per-cell detail', '### Runtime × arm aggregates', '### Sensitivity', '### Provenance and controls', '### Cost']) {
+        expect(block).toContain(heading);
+      }
+      expect(block).toContain('Scenario: `multi-module-test-failures`.');
+    });
+  });
+
+  it('coverage-family output stays byte-identical: the old header, no family columns, whatever the evidence number', () => {
+    withTempDir((dir) => {
+      writeGoldenCampaign(dir);
+      const costResult = buildCostEstimate(dir);
+      const infraFlake = classifyCampaign(dir);
+      const lines = buildPerCellTableLines(summarizeCampaign(dir), costResult.doc, infraFlake);
+      expect(lines[0]).toBe(COVERAGE_HEADER);
+      expect(lines[1]).toBe(`|${'---|'.repeat(14)}`);
+      const block = buildEvidence2TablesFromCampaign(dir, costResult.doc, infraFlake, { evidenceN: 3 });
+      expect(block).toContain(COVERAGE_HEADER);
+      expect(block).not.toContain('failing modules');
     });
   });
 });

@@ -37,7 +37,7 @@ const REPO_ROOT = join(__dirname, '..', '..');
 
 // The one evidence the root README block shows. A run for any other evidence never compares or
 // writes that block.
-export const README_EVIDENCE = 2;
+export const README_EVIDENCE = 3;
 
 // `evidenceN` is the raw --evidence= value, a string.
 export function ownsReadmeBlock(evidenceN) {
@@ -1535,11 +1535,75 @@ function buildGridAlt(summary) {
   return toolOutputMeasured(summary, 'codex-cli') ? alt : `${alt} Codex CLI tool output was not measured in this campaign.`;
 }
 
-// A short paragraph the README block shows between its bullets and its Scope line, keyed by evidence
-// number. An evidence without an entry gets no note.
+// The facts about a scenario that the README wording and notes name, read from its two corpus files at generation time:
+// the number of in-scope modules (the distinct modules among the `<module>:tasks` entries of the scenario's
+// policy.allowed_gradle_tasks) and the number of failing test methods (expected.failed_count). Throws when either is
+// missing, so a sentence can never state a number the corpus does not hold.
+export function loadScenarioFacts(scenarioId, corpusDir = join(REPO_ROOT, 'tools', 'agentic-eval', 'corpus')) {
+  const scenario = JSON.parse(readFileSync(join(corpusDir, 'scenarios', `${scenarioId}.json`), 'utf8'));
+  const expected = JSON.parse(readFileSync(join(corpusDir, 'expected', `${scenarioId}.json`), 'utf8'));
+  const tasks = Array.isArray(scenario.policy?.allowed_gradle_tasks) ? scenario.policy.allowed_gradle_tasks : [];
+  const modules = new Set(tasks.filter((task) => typeof task === 'string' && task.endsWith(':tasks')).map((task) => task.slice(0, -':tasks'.length)));
+  const failedCount = expected.expected?.failed_count;
+  if (modules.size === 0) throw new Error(`scenario ${scenarioId}: allowed_gradle_tasks names no module (no "<module>:tasks" entry)`);
+  if (!Number.isInteger(failedCount)) throw new Error(`scenario ${scenarioId}: expected.failed_count is not an integer`);
+  return { moduleCount: modules.size, failedCount };
+}
+
+// The median of one per-session metric, formatted; throws when a counted cell lacks it (a note must not quote a median of a
+// partial set).
+function noteMedian(value, digits, what) {
+  if (typeof value !== 'number') throw new Error(`README note: ${what} is not recorded for every counted session`);
+  return value.toFixed(digits);
+}
+
+function noteOutputKb(summary, runtimeId, arm) {
+  const metric = scalarMetric(summary, findGroup(summary, runtimeId, arm), runtimeId, arm, 'output_bytes', () => null);
+  return noteMedian(metric.kind === 'per-session' ? metric.median / 1024 : null, 1, `output_bytes of ${runtimeId} ${arm}`);
+}
+
+function noteCost(summary, costEstimate, runtimeId, arm) {
+  const metric = costMetric(summary, findGroup(summary, runtimeId, arm), runtimeId, arm, costEstimate);
+  return noteMedian(metric.kind === 'per-session' ? metric.median : null, 3, `the cost estimate of ${runtimeId} ${arm}`);
+}
+
+// A short paragraph the README block shows between its bullets and its Scope line, keyed by evidence number: a string, or a
+// function of the campaign's data ({ summary, costEstimate, scenarioFacts }) that returns one. An evidence without an entry
+// gets no note.
 export const README_NOTES = {
   2: `Why the difference is modest here: the task is deliberately small (one module, two test methods), and most of a session's tokens are the agent's own context going through the prompt cache, in both arms. The saving comes mostly from fewer cache re-reads and fewer output tokens, and kmp-test's advantage in output volume grows with project size. [Full breakdown](docs/agentic-benchmark.md).`,
+  3: ({ summary, costEstimate, scenarioFacts }) => {
+    const kb = (runtimeId, arm) => noteOutputKb(summary, runtimeId, arm);
+    const cost = (runtimeId, arm) => noteCost(summary, costEstimate, runtimeId, arm);
+    return `On a larger task (${scenarioFacts.moduleCount} modules, ${scenarioFacts.failedCount} failing test methods), the median tool output returned to the model was ${kb('claude-code', 'product')} KB with kmp-test and ${kb('claude-code', 'free')} KB without for Claude Code; for Codex CLI, the median command output its commands produced (as logged) was ${kb('codex-cli', 'product')} KB and ${kb('codex-cli', 'free')} KB. The median estimated cost per session was $${cost('claude-code', 'product')} vs $${cost('claude-code', 'free')} for Claude Code and $${cost('codex-cli', 'product')} vs $${cost('codex-cli', 'free')} for Codex CLI. A smaller single-module task (Evidence2) and the full breakdown are in [docs/agentic-benchmark.md](docs/agentic-benchmark.md).`;
+  },
 };
+
+// The evidence-specific wording of the README block, keyed by evidence number: what the intro says the task was and how many
+// sessions were counted, and what the Scope line says about the scenario and its key facts. Everything else in the block is
+// shared. Evidence2 keeps its exact strings. `scopeLead` is the part of the Scope line before "Windows 11 ..."; `scopeTail`
+// follows the runtime clause. Evidence3's intro and Scope name the task through the scenario's corpus files (needsScenarioFacts).
+export const README_WORDING = Object.freeze({
+  2: Object.freeze({
+    needsScenarioFacts: false,
+    shown: () => 'Every session is shown; none was re-run or replaced.',
+    intro: ({ introCount }) => `To check that this helps end to end, Claude Code and Codex CLI each ran the same pre-registered coverage-gate task on a pinned NowInAndroid commit${introCount}`,
+    scopeLead: ({ scopeCount }) => `one scenario, tagged \`train\` (the skill was tuned on this task family); ${scopeCount}`,
+    scopeTail: ' Key facts = module, outcome, coverage numbers.',
+  }),
+  3: Object.freeze({
+    needsScenarioFacts: true,
+    // Every session is shown, a missing one as missing data (a rejected session, or one lost to a failed guest call), and none was re-run or
+    // replaced; the campaign's own first attempt, which failed on infrastructure and is not analyzed, is named so the sentence stays true.
+    shown: ({ summary }) => {
+      const missing = (summary.cells ?? []).filter((c) => c.status === 'missing').length;
+      return `Every session is shown${missing > 0 ? `, ${missing} of them as missing data` : ''}; none was re-run or replaced. An earlier attempt of this campaign failed on infrastructure and is not analyzed (see the record).`;
+    },
+    intro: ({ phrase, scenarioFacts }) => `An agent gets one realistic task on NowInAndroid: run the unit tests of ${scenarioFacts.moduleCount} modules after a production-code change and report which tests fail. Sessions counted per arm and agent: ${phrase}.`,
+    scopeLead: ({ phrase }) => `one scenario, tagged held-out; sessions counted per arm and agent: ${phrase}; key facts = outcome, failing modules, failing test classes and the failing-test count`,
+    scopeTail: '',
+  }),
+});
 
 // runsDirName (optional): the exact tools/runs/<...> directory to link/read from, e.g.
 // "evidence2-agentic-benchmark-2026-09-30". Falls back to the historical
@@ -1549,7 +1613,12 @@ export const README_NOTES = {
 // anchor (optional): the heading anchor of the record README's results section, which the
 // wall-clock breakdown links point at -- see buildBullets.
 // note (optional): a paragraph shown between the bullets and the Scope line (README_NOTES).
-export function renderReadmeBlock(summary, campaignDate, costEstimate, runsDirName, anchor, note) {
+// evidenceN (optional, default 2): the evidence whose wording the intro and the Scope line use (README_WORDING). scenarioFacts:
+// loadScenarioFacts' result, required by a wording that names the task (Evidence3's).
+export function renderReadmeBlock(summary, campaignDate, costEstimate, runsDirName, anchor, note, evidenceN = 2, scenarioFacts = null) {
+  const wording = README_WORDING[evidenceN];
+  if (!wording) throw new Error(`no README wording for evidence ${evidenceN}`);
+  if (wording.needsScenarioFacts && !scenarioFacts) throw new Error(`the README wording of evidence ${evidenceN} needs the scenario's facts (loadScenarioFacts)`);
   const runsPath = `tools/runs/${runsDirName || `evidence1-agentic-benchmark-${campaignDate}`}`;
   const bulletsText = buildBullets(summary, costEstimate, runsPath, anchor).map((b) => `- ${b}`).join('\n');
   const noteText = note ? `${note}\n\n` : '';
@@ -1575,7 +1644,7 @@ export function renderReadmeBlock(summary, campaignDate, costEstimate, runsDirNa
   return `<!-- agentic-benchmark:start (generated by tools/agentic-eval/readme-evidence.mjs from ${runsPath}/campaign-summary.json; edit the generator, not this block) -->
 ### Agent sessions with and without kmp-test
 
-kmp-test hands an agent the test and coverage verdict as one JSON envelope instead of Gradle logs and report files. To check that this helps end to end, Claude Code and Codex CLI each ran the same pre-registered coverage-gate task on a pinned NowInAndroid commit${introCount} Every session is shown; none was re-run or replaced.
+kmp-test hands an agent the test and coverage verdict as one JSON envelope instead of Gradle logs and report files. ${wording.intro({ introCount, phrase: sessionPhrase, scenarioFacts })} ${wording.shown({ summary })}
 
 ![${buildScorecardAlt(summary, costEstimate)}](${runsPath}/scorecard.svg)
 
@@ -1583,7 +1652,7 @@ kmp-test hands an agent the test and coverage verdict as one JSON envelope inste
 
 ${bulletsText}
 
-${noteText}**Scope:** one scenario, tagged \`train\` (the skill was tuned on this task family); ${scopeCount}; Windows 11 in an isolated VM with a restricted network (provider APIs only); design and metrics fixed before any live session. kmp-test ${kmpTestVersion}. ${runtimeScopeText} Key facts = module, outcome, coverage numbers. ${evidenceLinks}
+${noteText}**Scope:** ${wording.scopeLead({ scopeCount, phrase: sessionPhrase })}; Windows 11 in an isolated VM with a restricted network (provider APIs only); design and metrics fixed before any live session. kmp-test ${kmpTestVersion}. ${runtimeScopeText}${wording.scopeTail} ${evidenceLinks}
 <!-- agentic-benchmark:end -->`;
 }
 
@@ -1641,7 +1710,23 @@ function main(argv) {
       console.error(`::error::${recordReadmePath}: ${err.message}`);
       process.exit(1);
     }
-    block = renderReadmeBlock(summary, campaignDate, costEstimate, runsDirName, anchor, README_NOTES[evidenceN]);
+    const evidenceNumber = Number(evidenceN);
+    let scenarioFacts = null;
+    try {
+      if (README_WORDING[evidenceNumber]?.needsScenarioFacts) scenarioFacts = loadScenarioFacts(summary.scenario_id);
+    } catch (err) {
+      console.error(`::error::${err.message}`);
+      process.exit(1);
+    }
+    let note;
+    try {
+      const noteSource = README_NOTES[evidenceN];
+      note = typeof noteSource === 'function' ? noteSource({ summary, costEstimate, scenarioFacts }) : noteSource;
+      block = renderReadmeBlock(summary, campaignDate, costEstimate, runsDirName, anchor, note, evidenceNumber, scenarioFacts);
+    } catch (err) {
+      console.error(`::error::${err.message}`);
+      process.exit(1);
+    }
   }
 
   const scorecardPath = join(runsDir, 'scorecard.svg');

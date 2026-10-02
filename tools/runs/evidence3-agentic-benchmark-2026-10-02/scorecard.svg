@@ -1,0 +1,54 @@
+<svg viewBox="0 0 880 429" width="880" height="429" xmlns="http://www.w3.org/2000/svg" role="img" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif">
+  <title>Results at a glance</title>
+  <desc>Claude Code · claude-sonnet-5 — key facts 7/8 with kmp-test, 7/7 without; tool calls per session (median): 3 with kmp-test, 12 without; wall-clock per session (median): 4.0 min with kmp-test, 3.8 min without; estimated API cost per session: $0.08–$0.19 with kmp-test, $0.15–$0.29 without. Codex CLI · gpt-5.6-terra — key facts 7/8 with kmp-test, 7/7 without; tool calls per session (median): 4 with kmp-test, 20 without; wall-clock per session (median): 4.0 min with kmp-test, 5.0 min without; estimated API cost per session: $0.12–$0.22 with kmp-test, $0.22–$0.42 without.</desc>
+  <rect x="1" y="1" width="878" height="427" rx="12" fill="#ffffff" stroke="#d0d7de" stroke-width="1"/>
+  <text x="28" y="48.0" font-size="20" font-weight="600" fill="#1f2328">Results at a glance</text>
+  <text x="28" y="75.0" font-size="13" font-weight="400" fill="#59636e">1 pre-registered scenario · Windows 11 · details in the evidence doc</text>
+  <text x="28" y="92.0" font-size="13" font-weight="400" fill="#59636e">Counted per arm and agent: 8 with kmp-test and 7 without for Claude Code; 8 and 7 for Codex CLI</text>
+  <text x="28" y="121.0" font-size="15" font-weight="600" fill="#1f2328">Claude Code · claude-sonnet-5</text>
+  <text x="28" y="148.0" font-size="13" font-weight="400" fill="#1f2328">Key facts correct: 7/8 with kmp-test · 7/7 without</text>
+  <text x="28" y="183.0" font-size="13" font-weight="500" fill="#1f2328">Tool calls per session (median)</text>
+  <text x="82" y="208.0" font-size="11" font-weight="400" fill="#59636e" text-anchor="end">with</text>
+  <rect x="88" y="197.0" width="36.0" height="14" rx="3" fill="#0969da"/>
+  <text x="340" y="208.0" font-size="13" font-weight="600" fill="#1f2328">3</text>
+  <text x="82" y="228.0" font-size="11" font-weight="400" fill="#59636e" text-anchor="end">without</text>
+  <rect x="88" y="217.0" width="144.0" height="14" rx="3" fill="#bc4c00"/>
+  <text x="340" y="228.0" font-size="13" font-weight="600" fill="#1f2328">12</text>
+  <text x="28" y="268.0" font-size="13" font-weight="500" fill="#1f2328">Wall-clock per session (median)</text>
+  <text x="82" y="293.0" font-size="11" font-weight="400" fill="#59636e" text-anchor="end">with</text>
+  <rect x="88" y="282.0" width="189.8" height="14" rx="3" fill="#0969da"/>
+  <text x="340" y="293.0" font-size="13" font-weight="600" fill="#1f2328">4.0 min</text>
+  <text x="82" y="313.0" font-size="11" font-weight="400" fill="#59636e" text-anchor="end">without</text>
+  <rect x="88" y="302.0" width="183.9" height="14" rx="3" fill="#bc4c00"/>
+  <text x="340" y="313.0" font-size="13" font-weight="600" fill="#1f2328">3.8 min</text>
+  <text x="28" y="353.0" font-size="13" font-weight="500" fill="#1f2328">Estimated API cost per session</text>
+  <text x="82" y="378.0" font-size="11" font-weight="400" fill="#59636e" text-anchor="end">with</text>
+  <rect x="88" y="367.0" width="106.4" height="14" rx="3" fill="#0969da"/>
+  <text x="340" y="378.0" font-size="13" font-weight="600" fill="#1f2328">$0.08–$0.19</text>
+  <text x="82" y="398.0" font-size="11" font-weight="400" fill="#59636e" text-anchor="end">without</text>
+  <rect x="88" y="387.0" width="164.6" height="14" rx="3" fill="#bc4c00"/>
+  <text x="340" y="398.0" font-size="13" font-weight="600" fill="#1f2328">$0.15–$0.29</text>
+  <text x="456" y="121.0" font-size="15" font-weight="600" fill="#1f2328">Codex CLI · gpt-5.6-terra</text>
+  <text x="456" y="148.0" font-size="13" font-weight="400" fill="#1f2328">Key facts correct: 7/8 with kmp-test · 7/7 without</text>
+  <text x="456" y="183.0" font-size="13" font-weight="500" fill="#1f2328">Tool calls per session (median)</text>
+  <text x="510" y="208.0" font-size="11" font-weight="400" fill="#59636e" text-anchor="end">with</text>
+  <rect x="516" y="197.0" width="48.0" height="14" rx="3" fill="#0969da"/>
+  <text x="768" y="208.0" font-size="13" font-weight="600" fill="#1f2328">4</text>
+  <text x="510" y="228.0" font-size="11" font-weight="400" fill="#59636e" text-anchor="end">without</text>
+  <rect x="516" y="217.0" width="240.0" height="14" rx="3" fill="#bc4c00"/>
+  <text x="768" y="228.0" font-size="13" font-weight="600" fill="#1f2328">20</text>
+  <text x="456" y="268.0" font-size="13" font-weight="500" fill="#1f2328">Wall-clock per session (median)</text>
+  <text x="510" y="293.0" font-size="11" font-weight="400" fill="#59636e" text-anchor="end">with</text>
+  <rect x="516" y="282.0" width="190.4" height="14" rx="3" fill="#0969da"/>
+  <text x="768" y="293.0" font-size="13" font-weight="600" fill="#1f2328">4.0 min</text>
+  <text x="510" y="313.0" font-size="11" font-weight="400" fill="#59636e" text-anchor="end">without</text>
+  <rect x="516" y="302.0" width="240.0" height="14" rx="3" fill="#bc4c00"/>
+  <text x="768" y="313.0" font-size="13" font-weight="600" fill="#1f2328">5.0 min</text>
+  <text x="456" y="353.0" font-size="13" font-weight="500" fill="#1f2328">Estimated API cost per session</text>
+  <text x="510" y="378.0" font-size="11" font-weight="400" fill="#59636e" text-anchor="end">with</text>
+  <rect x="516" y="367.0" width="125.6" height="14" rx="3" fill="#0969da"/>
+  <text x="768" y="378.0" font-size="13" font-weight="600" fill="#1f2328">$0.12–$0.22</text>
+  <text x="510" y="398.0" font-size="11" font-weight="400" fill="#59636e" text-anchor="end">without</text>
+  <rect x="516" y="387.0" width="240.0" height="14" rx="3" fill="#bc4c00"/>
+  <text x="768" y="398.0" font-size="13" font-weight="600" fill="#1f2328">$0.22–$0.42</text>
+</svg>

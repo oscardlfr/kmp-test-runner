@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  loadSummary, loadCostEstimate, costMetric, renderReadmeBlock, README_NOTES,
+  loadSummary, loadCostEstimate, costMetric, renderReadmeBlock, README_NOTES, loadScenarioFacts,
   TOKEN_COMPONENT_TYPES, disjointTokens, validateSummary, validateCostEstimate, validatePairing,
 } from '../../tools/agentic-eval/readme-evidence.mjs';
 import { costEstimateCellEntry, costEstimateCellMidpoint } from '../../tools/agentic-eval/evidence2-tables.mjs';
@@ -415,8 +415,8 @@ describe('the README note and link to the detailed document', () => {
     costEstimate = loadCostEstimate(join(RUNS_DIR, 'cost-estimate.json'));
   });
 
-  it('README_NOTES has an entry for Evidence2 only', () => {
-    expect(Object.keys(README_NOTES)).toEqual(['2']);
+  it('README_NOTES has an entry for Evidence2 and Evidence3 only', () => {
+    expect(Object.keys(README_NOTES)).toEqual(['2', '3']);
   });
 
   it('the Evidence2 block contains the note once, and exactly one link that leaves the evidence folder: docs/agentic-benchmark.md', () => {
@@ -441,12 +441,18 @@ describe('the README note and link to the detailed document', () => {
     const block = renderReadmeBlock(summary, '2026-09-30', costEstimate, RUNS_DIR_NAME, 'results');
     expect(block).not.toContain('Why the difference is modest here');
     expect(block).not.toContain('agentic-benchmark.md');
-    expect(README_NOTES[3]).toBeUndefined();
+    expect(README_NOTES[4]).toBeUndefined();
   });
 
-  it('the committed root README carries the note once', () => {
+  // Moved from Evidence2 to Evidence3 with the root README block: the README now shows the Evidence3 campaign and its note.
+  it('the committed root README carries the Evidence3 note once, and Evidence2\'s note no longer', () => {
     const readme = crlfNormalize(readFileSync(join(REPO_ROOT, 'README.md'), 'utf8'));
-    expect(readme.split(README_NOTES[2]).length - 1).toBe(1);
+    const dir3 = join(REPO_ROOT, 'tools', 'runs', 'evidence3-agentic-benchmark-2026-10-02');
+    const summary3 = loadSummary(join(dir3, 'campaign-summary.json'));
+    const costEstimate3 = loadCostEstimate(join(dir3, 'cost-estimate.json'));
+    const note3 = README_NOTES[3]({ summary: summary3, costEstimate: costEstimate3, scenarioFacts: loadScenarioFacts(summary3.scenario_id) });
+    expect(readme.split(note3).length - 1).toBe(1);
+    expect(readme.split(README_NOTES[2]).length - 1).toBe(0);
   });
 });
 
