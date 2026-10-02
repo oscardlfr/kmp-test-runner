@@ -59,7 +59,7 @@ Defaults grounded in `lib/cli.js` SUBCOMMAND_HELP. Full matrix in [`../cli/flags
 | `--json` | off | Single JSON envelope on stdout. |
 | `--color <mode>` | `auto` | `always` / `never` / `auto`. Controls `--console=plain` injection. |
 
-Note that `coverage` is the **only** non-instrumented subcommand that does NOT accept `--module-filter`, `--test-type`, `--variant`, or `--test-filter`. Use `--coverage-modules` / `--exclude-coverage` for module-level narrowing instead.
+Note that `coverage` accepts `--module-filter`, `--test-type`, `--variant` and `--test-filter` but ignores them: it never dispatches Gradle, and the report it reads is always the Debug one. Use `--coverage-modules` / `--exclude-coverage` (exact module names, no leading `:`) for module-level narrowing instead.
 
 ## Behaviors únicos
 
@@ -70,7 +70,7 @@ Note that `coverage` is the **only** non-instrumented subcommand that does NOT a
 - **Direct apply**: `plugins { id("org.jetbrains.kotlinx.kover") }` or `plugins { jacoco }` in `build.gradle.kts` (or `kotlin("kover")`, alias.libs.plugins, etc.).
 - **Convention plugin inheritance** (v0.6.1+): per-module — if a module applies a `build-logic/<X>/` convention plugin whose registered class name matches `/Jacoco|Kover/i`, it inherits the coverage flavor. Otherwise it does NOT (closes the v0.6.0 broad-inheritance bug where all 35 nowinandroid modules reported jacoco when only 13 actually applied it).
 
-Modules without any coverage plugin land in `skipped[]` with `reason: "no coverage plugin"`.
+A module without any coverage plugin is simply not part of the aggregation: it appears in none of `modules_with_kover_plugin`, `modules_with_jacoco_plugin` and `module_buckets`. The `coverage` subcommand always emits `modules: []` and `skipped: []`.
 
 ### Heterogeneous projects
 
@@ -78,7 +78,7 @@ When a project has a mix of Kover modules, JaCoCo modules, and zero-coverage mod
 
 - Kover modules → looks for `build/reports/kover/report*.xml`.
 - JaCoCo modules → looks for `build/reports/jacoco/test/jacocoTestReport.xml`.
-- Zero-coverage modules → `[SKIP coverage]` line on stderr; module appears in `skipped[]`.
+- Zero-coverage modules → not part of the aggregation (no `[SKIP coverage]` line, no `skipped[]` entry).
 
 Pure path selection — `coverage` never dispatches either task; see "Report XML location discovery" below.
 
@@ -95,7 +95,7 @@ If the XML doesn't exist (tests never ran, or `--skip-tests` was passed without 
 
 ## Edge cases
 
-- **No modules have a coverage plugin**: emits `errors[].code: no_test_modules` (loose match — same code as the test-side variant) with `caused_by_filter: false` and `exit 3`. Suggest the user check whether the project actually uses Kover or JaCoCo at all.
+- **No module contributes coverage data** (no module has a coverage plugin, or no coverage XML is on disk): without `--min-missed-lines` the envelope has `coverage.modules_contributing: 0`, `missed_lines: null`, the warning `no_coverage_data` and exit 0; with `--min-missed-lines N` (N > 0) it is `errors[].code: coverage_data_unavailable` with `reason: "no-contributing-data"` and exit 3. Suggest the user check whether the project actually uses Kover or JaCoCo at all.
 - **`--coverage-tool kover` but the project has only JaCoCo modules**: forces every included module's XML lookup to use Kover-shaped paths regardless of its real plugin — those modules find nothing there and land in `module_buckets.no_xml` (never a gradle failure; `coverage` cannot produce `task_not_found`, since it never dispatches a named task). Recovery: use `--coverage-tool auto` (or `jacoco`).
 - **`--min-missed-lines 0` with any missed lines**: exit 0 — `0` disables the gate entirely (`coverage-orchestrator.js`'s `gateThreshold > 0` check is false for `0`), no matter how many lines are missed. `errors[].code: coverage_threshold_exceeded` never fires for a `0` threshold; that code's realistic trigger is a low-but-positive `N` — see [`coverage-threshold-exceeded.md`](../troubleshooting/coverage-threshold-exceeded.md).
 - **74 MB Kover XML / HTML on a 70-module project**: the underlying tasks succeed cleanly but the markdown report can be ~10 K LOC. The `--json` envelope stays compact regardless — the heavy raw artefacts only matter if the agent reads `build/reports/**` directly (which it should NOT — defeats the whole reduction promise). See README "token cost" section for the 77,114× reduction headline. (The parser's own size cap defaults to 128 MB — comfortably above this real-world case; see the next bullet for what happens past that cap.)
@@ -114,19 +114,18 @@ If the XML doesn't exist (tests never ran, or `--skip-tests` was passed without 
   "subcommand": "coverage",
   "exit_code": 0,
   "tests": { "total": 0, "passed": 0, "failed": 0, "skipped": 0 },
-  "modules": [
-    { "name": ":core:network", "type": "kmp", "coverage_plugin": "kover", "test_failures": [] }
-  ],
+  "modules": [],
   "coverage": {
     "tool": "kover",
     "missed_lines": 16,
+    "covered_lines": 84,
+    "total_lines": 100,
     "modules_contributing": 2,
-    "modules_with_kover_plugin": [":core:network", ":feature:auth"],
-    "modules_with_jacoco_plugin": []
+    "modules_with_kover_plugin": ["core:network", "feature:auth"],
+    "modules_with_jacoco_plugin": [],
+    "module_buckets": { "with_data": ["core:network", "feature:auth"], "no_xml": [], "parse_errored": [], "skipped_by_user": [] }
   },
-  "skipped": [
-    { "module": ":sample:demo", "reason": "no coverage plugin" }
-  ],
+  "skipped": [],
   "errors": [],
   "warnings": []
 }
@@ -138,14 +137,14 @@ If the XML doesn't exist (tests never ran, or `--skip-tests` was passed without 
 
 - `1` — `--min-missed-lines` gate fired (`errors[].code: coverage_threshold_exceeded`).
 - `2` — invalid args (`--coverage-tool xyzzy`).
-- `3` — environment problem (no `gradlew`, JDK mismatch, no modules have a coverage plugin).
+- `3` — environment problem (no `gradlew`, JDK mismatch, `--min-missed-lines` with no contributing coverage data: `coverage_data_unavailable`).
 
 ## Troubleshooting
 
 Branch on `errors[].code`:
 
 - `coverage_threshold_exceeded` → [`../troubleshooting/coverage-threshold-exceeded.md`](../troubleshooting/coverage-threshold-exceeded.md)
-- `no_test_modules` → [`../troubleshooting/no-test-modules.md`](../troubleshooting/no-test-modules.md) (rare on `coverage` — only when no module has a coverage plugin)
+- `coverage_data_unavailable` → [`../cli/envelope-schema.md`](../cli/envelope-schema.md#errors-discriminated-codes) (`reason` says why; `no-contributing-data` when no module has coverage data). `no_test_modules` is a test-side code and does not occur on `coverage`.
 - `unsupported_class_version` → [`../troubleshooting/unsupported-class-version.md`](../troubleshooting/unsupported-class-version.md)
 
 ## See also

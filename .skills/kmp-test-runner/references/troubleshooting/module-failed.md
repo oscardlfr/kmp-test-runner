@@ -1,21 +1,22 @@
 # `module_failed` — a gradle task failed on a specific module
 
-A module's test task exited non-zero. The `setup_failed:bool` discriminator splits "tests ran and one failed" from "compile / setup failed before any test ran".
+A module's test task exited non-zero. The `setup_failed` key splits "tests ran and one failed" from "compile / setup failed before any test ran": it is `true` only for the second case and absent in the first (it is never `false`).
 
 ## Symptom
 
-Test-failure shape (`setup_failed: false`):
+Test-failure shape (no `setup_failed` key):
 
 ```json
 {
   "exit_code": 1,
   "errors": [{
     "code": "module_failed",
-    "setup_failed": false,
-    "module": ":feature:auth:impl"
+    "module": "feature:auth:impl",
+    "task": ":feature:auth:impl:testDebugUnitTest",
+    "message": "[FAIL] feature:auth:impl"
   }],
   "modules": [{
-    "name": ":feature:auth:impl",
+    "name": "feature:auth:impl",
     "test_failures": [
       { "test": "com.example.AuthRepositoryTest.fetchUserHandlesTimeout", "cause": "expected:<200> but was:<504>", "type": "java.lang.AssertionError" }
     ]
@@ -30,27 +31,29 @@ Setup-failure shape (`setup_failed: true`):
   "exit_code": 1,
   "errors": [{
     "code": "module_failed",
-    "setup_failed": true,
-    "module": ":feature:auth:impl",
-    "message": "Compilation failed: unresolved reference 'AuthApi'"
+    "module": "feature:auth:impl",
+    "task": ":feature:auth:impl:testDebugUnitTest",
+    "message": "[FAIL] feature:auth:impl",
+    "setup_failed": true
   }],
   "modules": [{
-    "name": ":feature:auth:impl",
-    "test_failures": []
+    "name": "feature:auth:impl"
   }]
 }
 ```
 
-Applies to `parallel`, `changed`, `android`, `benchmark` — anywhere a per-module gradle task can fail.
+(`modules[]` entries are abbreviated; the setup-failure entry has no `test_failures` key.) In both shapes `message` is only `[FAIL] <module>` and `task` is the dispatched **test** task, not the compile task that failed: the compiler message is not part of the envelope.
+
+`setup_failed` is emitted by `parallel` and `changed` (which copies its delegate). `kmp-test android` also emits `module_failed`, without the key.
 
 ## `setup_failed` discriminator
 
-| Value | Meaning | Where to look |
-|-------|---------|---------------|
-| `false` | Tests ran, at least one failed. JUnit XML evidence exists. | `modules[<n>].test_failures[]` carries `{ test, cause, type }`. The agent should surface failing test names verbatim. |
-| `true` | The task aborted before producing JUnit XML — compile error, missing test dependency, configuration phase exception, OutOfMemoryError during configuration, etc. | `errors[].message` carries the truncated gradle error. The user must read full stdout / stderr for the real cause. |
+| `setup_failed` | Meaning | Where to look |
+|----------------|---------|---------------|
+| absent | Tests ran, at least one failed. JUnit XML evidence exists. | `modules[<n>].test_failures[]` carries `{ test, cause, type }`. The agent should surface failing test names verbatim. |
+| `true` | The task failed and there is no JUnit XML evidence (no testcase and no failure was found): compile error, missing test dependency, configuration phase exception, OutOfMemoryError during configuration, etc. | The envelope does not carry the compiler message. With `--json`, the filtered Gradle lines of a failed run are forwarded to stderr (the tail, at most about 32 KB): they name the failing task (`> Task :x:compileDemoDebugKotlin FAILED`, `Execution failed for task ':x:compileDemoDebugKotlin'`) but not the `e: file://...` diagnostics. Re-run the failing module's Gradle compile task to read the compiler message. |
 
-This discriminator was added in v0.9.0 (schema:2). Pre-v0.9, agents couldn't tell whether `module_failed` meant "test broke" or "couldn't even build".
+The key was added in v0.9.0 (schema:2). Pre-v0.9, agents couldn't tell whether `module_failed` meant "test broke" or "couldn't even build".
 
 ## Capture artifacts (instrumented + `--capture-on-fail`)
 
@@ -69,7 +72,7 @@ Surface these to the user — the screenshot + view hierarchy are the fastest tr
 
 ## Root causes
 
-For `setup_failed: false` (tests ran, failed):
+When `setup_failed` is absent (tests ran, failed):
 
 1. **Real test failure** — surface the test name + cause to the user. They wrote the test; they fix it.
 2. **Flaky tests** — non-deterministic timing, ordering, or external dependency. Recovery: re-run; if it passes intermittently, file a flake fix at the test level. `--auto-retry` only retries instrumented tasks at runtime, not unit tests.
@@ -77,7 +80,7 @@ For `setup_failed: false` (tests ran, failed):
 
 For `setup_failed: true` (no test ran):
 
-1. **Compilation failure** — typo in test code, deleted production code that tests still reference. The `message` field carries the truncated gradle error; agent should suggest re-reading stdout / stderr.
+1. **Compilation failure** — typo in test code, deleted production code that tests still reference. The envelope does not name the failing compile task or carry the compiler message: read the failing-task line on stderr and re-run that Gradle compile task.
 2. **Missing test dependency** — `commonTest` imports a library not in `dependencies { commonTestImplementation(...) }`. Recovery: add the dependency.
 3. **Configuration-time exception** — a `tasks.named("...") { ... }` block throws during configuration (not execution). Often AGP / KMP version mismatch.
 4. **OutOfMemoryError during configuration** — common on monorepos with many modules. Recovery: bump `gradle.properties` `org.gradle.jvmargs=-Xmx4g` or higher. `--fresh-daemon` may help when a stale daemon accumulates heap pressure.
@@ -85,7 +88,7 @@ For `setup_failed: true` (no test ran):
 
 ## Recovery path
 
-For `setup_failed: false`:
+When `setup_failed` is absent:
 
 1. Surface `modules[].test_failures[]` entries verbatim to the user. `test` is `Class.method`, `cause` is the assertion / exception message.
 2. If a test failure type indicates flakiness (`SocketTimeoutException`, ordering issue), recommend a single retry: re-run `kmp-test parallel --module-filter "<failed-module>"`.
@@ -93,7 +96,7 @@ For `setup_failed: false`:
 
 For `setup_failed: true`:
 
-1. Read the gradle error from `errors[].message` (truncated) plus full stdout / stderr.
+1. Read the stderr of the run (its Gradle lines name the failing task; `errors[].message` is only `[FAIL] <module>`), then re-run the failing module's Gradle compile task for the compiler message.
 2. Distinguish compile-time (unresolved reference, type mismatch) from configuration-time (plugin not applied, task name collision).
 3. For compile errors: the user (or the agent) needs to read the production code change; the test file may not be the locus of the bug.
 4. For configuration errors: try `kmp-test parallel --gradle-args "--no-configuration-cache"` to bypass a stale config cache. Try `--fresh-daemon` for daemon-state issues.
@@ -104,6 +107,9 @@ For `setup_failed: true`:
 ```bash
 # Re-run just the failed module with verbose gradle output
 kmp-test parallel --module-filter ":feature:auth:impl" --gradle-args "--info --stacktrace" --json
+
+# Read the compiler message: re-run the failing module's compile task (the task name is on stderr)
+./gradlew :feature:auth:impl:compileDebugUnitTestKotlin --console=plain
 
 # Bypass configuration cache (common setup-failure recovery)
 kmp-test parallel --gradle-args "--no-configuration-cache" --json
