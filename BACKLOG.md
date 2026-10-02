@@ -3455,6 +3455,62 @@ All five gaps shipped in v0.5.2 (PRs #63 / #64 / #65 / #66 / #67). One scope red
 
 ## QUEUED — post-v0.3.4 ideas (newest first)
 
+### 🐛 BUG — The umbrella-flavor warning is skipped for the default test type
+
+**Status: BUG, no CLI milestone.** Surfaced 2026-10-02 by the Evidence3 benchmark. With the default
+`--test-type auto`, a flavored Android module run without `--flavor` gets the umbrella `test` task,
+which runs every flavor, but `flavor_defaulted_umbrella` is emitted only for the test types
+`androidUnit`, `androidInstrumented` and `all` (`lib/orchestrators/parallel-orchestrator.js`, gated on
+`flavorAffectsLeg`). The envelope's `warnings` then say nothing about it, and each failing test shows
+up once per flavor in the output.
+
+**Proposal:** emit the warning whenever the umbrella fallback is used, whatever the test type, with a
+test that fails on the current gate.
+
+**Evidence:** in Evidence3, Claude Code made the same call (`--variant demoDebug`, no `--flavor`) in
+rounds 3, 6, 10 and 12 of the kmp-test arm. In rounds 3 and 10 it saw the doubled output and answered
+the right count; in round 6 it ran again with `--flavor demo --variant debug`; in round 12 it answered
+a failing-test count of 7 instead of 6 and missed the key facts (see
+[the detailed document](docs/agentic-benchmark.md)).
+
+---
+
+### 💡 IDEA — `--variant` silently accepts values outside `auto|debug|release|all`
+
+**Status: IDEA, no CLI milestone.** Surfaced 2026-10-02 by the Evidence3 benchmark. The README
+documents `--variant <auto|debug|release|all>`, but `androidUnitTask` in
+`lib/orchestrators/parallel/dispatch.js` lowercases the value and matches only `debug`, `release` and
+`all`; any other value takes the `auto` branch. A Gradle variant name such as `demoDebug` is therefore
+ignored without a message: without `--flavor` the umbrella `test` task runs (every flavor), and with
+`--flavor` the `auto` build type is used.
+
+**Options:** (1) accept `<flavor><BuildType>` by splitting it once the module's flavors are
+discovered; (2) warn on unrecognized values, listing the valid set, and reject them only in a later
+breaking release.
+
+**Compatibility:** the flag is public API. Prefer the additive path (accept or warn); rejecting an
+unrecognized value needs an intentional breaking-release note.
+
+**Evidence:** the same Evidence3 sessions as the umbrella-warning item above.
+
+---
+
+### 💡 IDEA — The envelope has no test-level failed count
+
+**Status: IDEA, no CLI milestone.** Surfaced 2026-10-02 by the Evidence3 benchmark. In the `--json`
+envelope, `tests.failed` counts failing test tasks, and only `tests.individual_total` is test-level.
+There is no count of failing tests, so an agent has to count the `test_failures` entries or the failure
+lines of the console output.
+
+**Option:** consider an additive `tests.individual_failed` (and `individual_skipped`), derived from the
+same JUnit XML and documented in `docs/envelope-contract.md`. With an umbrella task it would count each
+flavor's run.
+
+**Evidence:** both key-fact misses of Evidence3 were failing-test miscounts (see
+[the detailed document](docs/agentic-benchmark.md)).
+
+---
+
 ### 💡 IDEA — Grader: accept a kmp-test envelope that reached the model through a file read (coverage family)
 
 **Status: IDEA, no CLI milestone.** Surfaced 2026-09-30 in Evidence2's erratum E4

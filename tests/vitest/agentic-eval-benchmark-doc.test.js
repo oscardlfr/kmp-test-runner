@@ -1019,8 +1019,91 @@ describe('the fixed prose of the Evidence3 section is backed by the committed da
     expect(doc.replace(/\s+/g, ' ')).toContain('small samples (4 sessions per agent and arm in Evidence2; 8 planned per agent and arm in Evidence3, of which 7 or 8 were counted)');
   });
 
-  it('names no module, test class or other ground-truth detail of the scenario beyond the two counts the scenario paragraph states', () => {
-    expect(section).not.toMatch(GROUND_TRUTH_NAMES);
+  // The one place of the section that names the failing modules is the subsection on the key-fact misses (the architect's amendment,
+  // after the results were published); everywhere else the section keeps the scenario's ground truth out, as before.
+  it('names no module, test class or other ground-truth detail of the scenario beyond the two counts the scenario paragraph states, outside the subsection on the key-fact misses', () => {
+    const start = section.indexOf('### Why two sessions missed the key facts');
+    const end = section.indexOf('\n### ', start + 1);
+    expect(start).toBeGreaterThan(-1);
+    const outside = section.slice(0, start) + section.slice(end);
+    expect(outside).not.toMatch(GROUND_TRUTH_NAMES);
     expect(section.toLowerCase()).not.toContain('baseline');
+  });
+
+  // "Why two sessions missed the key facts" (the architect's amendment). What the committed data can back is checked here. The calls and
+  // outputs the text describes (the exact kmp-test calls, the doubled output, the truncated tool result, the envelope's summary fields)
+  // come from the architect's reading of the private records and transcripts of the cells, which are not in the repository.
+  describe('the subsection on the two key-fact misses', () => {
+    let misses, recordReadme, expectedFile;
+    beforeAll(() => {
+      const start = section.indexOf('### Why two sessions missed the key facts');
+      const end = section.indexOf('\n### ', start + 1);
+      misses = section.slice(start, end);
+      recordReadme = crlfNormalize(readFileSync(join(E3_DIR, 'README.md'), 'utf8'));
+      expectedFile = JSON.parse(readFileSync(join(CORPUS_DIR, 'expected', `${summary.scenario_id}.json`), 'utf8'));
+    });
+
+    it('is there once, right after the sessions block (and the note on the missing sessions) and before the session conditions, and points at the backlog', () => {
+      const heading = '### Why two sessions missed the key facts';
+      expect(section.split(heading).length - 1).toBe(1);
+      expect(section).toContain(`${docBlockMarkers('e3-sessions').end}\n\n${heading}\n`);
+      expect(section.indexOf('### Session conditions')).toBeGreaterThan(section.indexOf(heading));
+      expect(misses.replace(/\s+/g, ' ')).toContain('The follow-ups are in the [backlog](../BACKLOG.md).');
+    });
+
+    it('both misses are round 12 of the kmp-test arm, one per agent, and the record shows the failing-test count as the only field that did not match', () => {
+      const missed = summary.cells.filter((c) => c.status !== 'missing' && c.key_facts_match === false).map((c) => c.cell_key).sort();
+      expect(missed).toEqual(['claude-code-12', 'codex-cli-12']);
+      for (const key of missed) {
+        const cell = summary.cells.find((c) => c.cell_key === key);
+        expect([cell.arm, cell.round_index], key).toEqual(['product', 12]);
+      }
+      const lines = recordReadme.split('\n');
+      const header = lines.find((l) => l.startsWith('| runtime | arm | round | status | key facts |')).split('|').map((x) => x.trim());
+      for (const runtime of ['claude-code', 'codex-cli']) {
+        const row = lines.find((l) => l.startsWith(`| ${runtime} | product | 12 |`)).split('|').map((x) => x.trim());
+        expect(['key facts', 'failing modules', 'failing classes', 'count'].map((name) => row[header.indexOf(name)]), runtime).toEqual(['no', 'yes', 'yes', 'no']);
+      }
+      expect(misses.replace(/\s+/g, ' ')).toContain('Each named the right modules and test classes and got the failing-test count wrong.');
+    });
+
+    it('Claude Code matched the key facts in rounds 3, 6 and 10 of the kmp-test arm, which the text says answered the ground truth\'s 6', () => {
+      for (const round of [3, 6, 10]) {
+        const cell = summary.cells.find((c) => c.runtime_id === 'claude-code' && c.round_index === round);
+        expect([cell.arm, cell.key_facts_match], `claude-code-${round}`).toEqual(['product', true]);
+      }
+      expect(expectedFile.expected.failed_count).toBe(6);
+      const flat = misses.replace(/\s+/g, ' ');
+      expect(flat).toContain('saw the same doubled output and answered 6');
+      expect(flat).toContain('each of the 6 failing tests appeared twice in the output');
+    });
+
+    it('the modules and the failing tests per module it names are the corpus ground truth: 1 in :core:data, 2 in :core:domain and 3 in :feature:bookmarks:impl', () => {
+      expect(expectedFile.expected_outcome).toContain('2 failing tests in GetFollowableTopicsUseCaseTest, :core:domain');
+      expect(expectedFile.expected_outcome).toContain('1 failing test in CompositeUserNewsResourceRepositoryTest, :core:data, and 3 in BookmarksViewModelTest, :feature:bookmarks:impl');
+      const named = [...new Set([...misses.matchAll(/`(:[a-z-]+(?::[a-z-]+)*)`/g)].map((m) => m[1]))].sort();
+      expect(named).toEqual([...expectedFile.expected.failing_modules].sort());
+      expect(misses.replace(/\s+/g, ' ')).toContain('one in `:core:data`, two in `:core:domain` and three in `:feature:bookmarks:impl`');
+      expect(misses).not.toMatch(/BookmarksViewModelTest|CompositeUserNewsResourceRepositoryTest|GetFollowableTopicsUseCaseTest/);
+    });
+
+    it('the flag it says takes auto, debug, release or all is documented that way in the README, and the three product findings are at the top of the queued backlog', () => {
+      const readme = crlfNormalize(readFileSync(join(REPO_ROOT, 'README.md'), 'utf8'));
+      expect(readme).toContain('`--variant` / `--android-variant <auto\\|debug\\|release\\|all>`');
+      expect(misses).toContain('`--variant` takes `auto`, `debug`, `release` or `all`');
+      const backlog = crlfNormalize(readFileSync(join(REPO_ROOT, 'BACKLOG.md'), 'utf8'));
+      const queued = backlog.slice(backlog.indexOf('## QUEUED — post-v0.3.4 ideas (newest first)'));
+      const headings = [...queued.matchAll(/^### (.+)$/gm)].map((m) => m[1]).slice(0, 5);
+      expect(headings).toEqual([
+        '🐛 BUG — The umbrella-flavor warning is skipped for the default test type',
+        '💡 IDEA — `--variant` silently accepts values outside `auto|debug|release|all`',
+        '💡 IDEA — The envelope has no test-level failed count',
+        '💡 IDEA — Grader: accept a kmp-test envelope that reached the model through a file read (coverage family)',
+        '💡 IDEA — Scenario B: multi-module coverage (NowInAndroid), same protocol as Evidence3',
+      ]);
+      const findings = queued.slice(0, queued.indexOf('### 💡 IDEA — Grader: accept a kmp-test envelope'));
+      expect(findings.match(/Evidence3/g).length).toBeGreaterThanOrEqual(3);
+      expect(findings).not.toMatch(GROUND_TRUTH_NAMES);
+    });
   });
 });

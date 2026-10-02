@@ -187,6 +187,27 @@ Component medians are taken separately, so they need not add up to the median to
 Two sessions are not in the table because they are missing data: Claude Code without, round 8 (`rejected_not_reclassifiable`: the harness rejected the session); Codex CLI without, round 7 (`cell_directory_absent`: no session evidence was recorded). The record's controls audit has the details.
 <!-- agentic-benchmark-doc:e3-sessions:end -->
 
+### Why two sessions missed the key facts
+
+Both misses are in round 12 of the kmp-test arm, one per agent. Each named the right modules and test
+classes and got the failing-test count wrong.
+
+- **Claude Code answered 7.** It ran `kmp-test parallel --variant demoDebug` without `--flavor`.
+  `--variant` takes `auto`, `debug`, `release` or `all`, so `demoDebug` was not recognized. On this
+  project, whose modules declare the demo and prod flavors, kmp-test then runs each module's umbrella
+  `test` task, which runs the unit tests of both flavors, so each of the 6 failing tests appeared twice
+  in the output. kmp-test gave no warning: its warning for this fallback is not emitted for the default
+  test type. Claude Code also shortened the long output it returned to the model. In rounds 3 and 10
+  Claude Code made the same call, saw the same doubled output and answered 6; in round 6 it made the
+  same call and then ran again with `--flavor demo --variant debug`.
+- **Codex CLI answered 5.** It ran `kmp-test parallel --flavor demo --variant debug`, and kmp-test's
+  output listed exactly the 6 failing tests: one in `:core:data`, two in `:core:domain` and three in
+  `:feature:bookmarks:impl`.
+
+kmp-test's summary gives the number of failing test tasks (3) and the total number of tests (93), but
+not the number of failing tests, so an agent has to count the listed failures. The follow-ups are in
+the [backlog](../BACKLOG.md).
+
 ### Session conditions
 
 Same as in Evidence2, with these additions:
