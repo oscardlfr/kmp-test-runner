@@ -3455,6 +3455,97 @@ All five gaps shipped in v0.5.2 (PRs #63 / #64 / #65 / #66 / #67). One scope red
 
 ## QUEUED — post-v0.3.4 ideas (newest first)
 
+### 🐛 BUG — The umbrella-flavor warning is skipped for the default test type
+
+**Status: BUG, no CLI milestone.** Surfaced 2026-10-02 by the Evidence3 benchmark. With the default
+`--test-type auto`, a flavored Android module run without `--flavor` gets the umbrella `test` task,
+which runs every flavor, but `flavor_defaulted_umbrella` is emitted only for the test types
+`androidUnit`, `androidInstrumented` and `all` (`lib/orchestrators/parallel-orchestrator.js`, gated on
+`flavorAffectsLeg`). The envelope's `warnings` then say nothing about it, and each failing test shows
+up once per flavor in the output.
+
+**Proposal:** emit the warning whenever the umbrella fallback is used, whatever the test type, with a
+test that fails on the current gate.
+
+**Evidence:** in Evidence3, Claude Code made the same call (`--variant demoDebug`, no `--flavor`) in
+rounds 3, 6, 10 and 12 of the kmp-test arm. In rounds 3 and 10 it saw the doubled output and answered
+the right count; in round 6 it ran again with `--flavor demo --variant debug`; in round 12 it answered
+a failing-test count of 7 instead of 6 and missed the key facts (see
+[the detailed document](docs/agentic-benchmark.md)).
+
+---
+
+### 💡 IDEA — `--variant` silently accepts values outside `auto|debug|release|all`
+
+**Status: IDEA, no CLI milestone.** Surfaced 2026-10-02 by the Evidence3 benchmark. The README
+documents `--variant <auto|debug|release|all>`, but `androidUnitTask` in
+`lib/orchestrators/parallel/dispatch.js` lowercases the value and matches only `debug`, `release` and
+`all`; any other value takes the `auto` branch. A Gradle variant name such as `demoDebug` is therefore
+ignored without a message: without `--flavor` the umbrella `test` task runs (every flavor), and with
+`--flavor` the `auto` build type is used.
+
+**Options:** (1) accept `<flavor><BuildType>` by splitting it once the module's flavors are
+discovered; (2) warn on unrecognized values, listing the valid set, and reject them only in a later
+breaking release.
+
+**Compatibility:** the flag is public API. Prefer the additive path (accept or warn); rejecting an
+unrecognized value needs an intentional breaking-release note.
+
+**Evidence:** the same Evidence3 sessions as the umbrella-warning item above.
+
+---
+
+### 💡 IDEA — The envelope has no test-level failed count
+
+**Status: IDEA, no CLI milestone.** Surfaced 2026-10-02 by the Evidence3 benchmark. In the `--json`
+envelope, `tests.failed` counts failing test tasks, and only `tests.individual_total` is test-level.
+There is no count of failing tests, so an agent has to count the `test_failures` entries or the failure
+lines of the console output.
+
+**Option:** consider an additive `tests.individual_failed` (and `individual_skipped`), derived from the
+same JUnit XML and documented in `docs/envelope-contract.md`. With an umbrella task it would count each
+flavor's run.
+
+**Evidence:** both key-fact misses of Evidence3 were failing-test miscounts (see
+[the detailed document](docs/agentic-benchmark.md)).
+
+---
+
+### 💡 IDEA — Grader: accept a kmp-test envelope that reached the model through a file read (coverage family)
+
+**Status: IDEA, no CLI milestone.** Surfaced 2026-09-30 in Evidence2's erratum E4
+([record](tools/runs/evidence2-agentic-benchmark-2026-09-30/README.md#errata)): a session sent its
+first `kmp-test parallel` result to a file and read the file back later, so the envelope reached the
+model only through the file read. The grader found no terminal kmp-test attempt in the session
+(`success` false, evidence `claim-only`) although the answer's key facts matched. The command
+classifier part of that case was fixed in PR #542 (compound, redirected and wrapped commands); the
+grader's own evidence check is unchanged.
+
+**Proposal:** for the coverage family, accept a kmp-test envelope that reached the model through a
+file read when the file was written by a recorded kmp-test command and the later read returned the
+envelope, instead of requiring the envelope in the kmp-test command's own tool result. Add the
+cases to the grader's tests (a redirect followed by a read, a read of a file no recorded command
+wrote, a read of a different file) before changing it.
+
+**Why captured here:** a correct session was graded as having no terminal evidence because of how it
+chose to read its own output; the same pattern can recur in any campaign of that family.
+
+---
+
+### 💡 IDEA — Scenario B: multi-module coverage (NowInAndroid), same protocol as Evidence3
+
+**Status: IDEA, no CLI milestone.** Evidence3 ran scenario A (tests fail in several modules) on
+NowInAndroid; scenario B, a multi-module coverage task on the same project, was deferred by the
+plan of that cycle. It would run under the same protocol: a preregistration written before any
+session, the 8-pair counterbalanced designs for both agents, the same stop rules, a controls audit
+and a generated record, and a scenario and ground-truth file of its own in the corpus.
+
+**Why captured here:** so the next measurement cycle starts from a written scope instead of from
+this cycle's chat history. The grader item above is the known issue that affects the coverage
+family.
+
+---
+
 ### ✅ DONE 2026-09-30 (PR #537) — Evidence1 Pester files read sources through a hardcoded main-checkout path
 
 Surfaced and fixed in the same closing pass: the first hosted CI run on the published harness
@@ -3468,9 +3559,15 @@ test's synthetic manifest, is input data naming the harness's canonical path, no
 
 ---
 
-### 💡 IDEA — Define count-field ground truth independently of the product's own counting convention
+### ✅ DONE 2026-10-02 (PR #547, #552) — Define count-field ground truth independently of the product's own counting convention
 
-**Status: IDEA, no CLI milestone.** Surfaced 2026-09-30 auditing Evidence2's campaign
+**Status: DONE for the multi-module-tests family (PR #547) and its first scenario (PR #552).** The
+count field of that family is `failed_count`. The scenario's prompt defines it as the number of
+distinct failing test methods and fixes the build variant, so neither reading of "test count" below
+is open, and the grader compares the answer with the scenario's ground-truth file, never with
+kmp-test's own counters. A future scenario with a count field follows the same rule.
+
+**Original IDEA below (preserved for context):** surfaced 2026-09-30 auditing Evidence2's campaign
 `48458826-2386-4e4d-a93f-01641f44253c`: the `coverage-threshold-failure-v2` scenario's target module
 (`:core:domain`) has exactly 2 `@Test` methods, which run in 2 Gradle build variants
 (`testDemoDebugUnitTest`, `testProdDebugUnitTest`), for 4 total test executions. D5's grading checks

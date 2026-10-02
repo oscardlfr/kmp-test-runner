@@ -3,16 +3,21 @@
 //
 // tools/agentic-eval/benchmark-doc.mjs -- deterministic generator behind docs/agentic-benchmark.md.
 // From one campaign's committed campaign-summary.json + cost-estimate.json it writes
-//   - tools/runs/evidence<n>-agentic-benchmark-<date>/cost-breakdown.svg, and
+//   - tools/runs/evidence<n>-agentic-benchmark-<date>/cost-breakdown.svg (bars as long as the median session cost, split by component), and
 //   - the generated blocks of docs/agentic-benchmark.md for that evidence:
 //       <!-- agentic-benchmark-doc:e<n>-cost-components:start (...) --> ... :end -->
 //       <!-- agentic-benchmark-doc:e<n>-sessions:start (...) -->        ... :end -->
+//   An evidence whose section also states its task and its session counts from data (Evidence3) generates two more
+//   blocks, e<n>-scenario (the module and failing-method counts, read from the scenario's corpus files) and e<n>-run
+//   (sessions run and counted, the count phrase, the record link), and the table that puts the campaigns side by side:
+//       <!-- agentic-benchmark-doc:campaigns:start (...) -->                ... :end -->
 //
 // Usage:
 //   node tools/agentic-eval/benchmark-doc.mjs [--write] --evidence=<n> --date=<yyyy-mm-dd>
-// Without --write it runs in check mode: it regenerates, byte-compares with the committed files and
-// exits 1 on any difference. Fails closed on an invalid summary, a summary that does not pair with
-// its cost estimate, a cost estimate that is not schema 2, or missing block markers.
+// Without --write it runs in check mode: it regenerates, compares with the committed files (line
+// endings ignored, so a Windows autocrlf checkout checks the same as a Linux one) and exits 1 on any
+// difference. Fails closed on an invalid summary, a summary that does not pair with its cost
+// estimate, a cost estimate that is not schema 2, or missing block markers.
 //
 // Everything is reused from readme-evidence.mjs (validators, pricing helpers, palettes, the
 // composition-row renderer) and evidence2-tables.mjs (the per-session midpoint); nothing about a
@@ -24,6 +29,7 @@ import { dirname, join } from 'node:path';
 
 import {
   loadSummary, loadCostEstimate, validatePairing, disjointTokens, medianOf,
+  countPhrase, fmtToolCallsMedian, loadScenarioFacts,
   textItem, wrapWords, escapeXml, renderCompositionRow, runtimeModelLabel, toolOutputMeasured,
   TOKEN_COMPONENT_TYPES, TOKEN_COMPONENT_LABEL, TOKEN_COMPONENT_COLORS,
   RUNTIME_ORDER, ARM_ORDER, GRID_W, PAD, ROW_GAP, COLUMN_W, COLUMN_GAP,
@@ -39,9 +45,11 @@ const DOC_PATH = join(REPO_ROOT, 'docs', 'agentic-benchmark.md');
 const COST_COMPONENTS = ['cache_write', 'cache_read', 'output', 'uncached_input'];
 const AGENT_LABEL = { 'claude-code': 'Claude Code', 'codex-cli': 'Codex CLI' };
 const ARM_LABEL = { product: 'with kmp-test', free: 'without' };
+const NUMBER_WORD = ['No', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten'];
 
+const LEGEND_DESCENT = 0.25; // the part of a text line's font size that hangs below its baseline, for the room under the last legend line
 const FIGURE_TITLE = 'Where a session\'s API cost goes';
-const FIGURE_SUBTITLE = 'Share of the estimated cost by component, pooled over each group\'s sessions; the value is the median session cost. Blue: with kmp-test; orange: without.';
+const FIGURE_SUBTITLE = 'Bar length is the median session cost, on one scale for both agents; the colors split it by each group\'s share of its total cost (percentages below). Blue: with kmp-test; orange: without.';
 
 // ---------------------------------------------------------------------------
 // Cost components -- the same midpoint convention as costMetric / costEstimateCellMidpoint: the
@@ -96,8 +104,9 @@ export function costGroups(costEstimate) {
 }
 
 // ---------------------------------------------------------------------------
-// Figure: cost-breakdown.svg -- the metrics grid's frame, lanes and legend (renderCompositionRow),
-// with every bar 100% stacked by pooled share.
+// Figure: cost-breakdown.svg -- the metrics grid's frame, lanes and legend (renderCompositionRow). A bar is as long as its group's
+// median session cost, on one dollar scale for the whole figure, and its colored segments split that length by the group's pooled share
+// of each cost component; the legend prints the shares and the median is printed at the end of the bar.
 
 const fmtUsd3 = (v) => `$${v.toFixed(3)}`;
 function fmtShare(v) {
@@ -120,12 +129,16 @@ export function computeCostBreakdownLayout(summary, costEstimate) {
   });
   const headerBottom = subtitleY + ROW_GAP + 8;
 
-  // The renderer prints fmtValue(total) at the end of each bar and fmtValue(segment value) in the
-  // legend. Segment values here are shares and the printed total is the median session cost, already
-  // formatted, so the one formatter passes a string through and formats a number as a share.
+  // One dollar scale for the whole figure: a bar is as long as its group's median session cost, and the group with the largest median fills
+  // the lane, so any two bars can be compared. A segment is the group's pooled share of that cost in dollars (share x median), so it is not
+  // the component's own median (the table's column); the legend keeps printing the share (`display`).
+  const compMax = Math.max(...groups.map((g) => g.medianTotal), 1e-9);
+  // The renderer prints fmtValue(total) at the end of each bar and fmtValue(the legend value) in the legend. The printed total is the median
+  // session cost, already formatted, and the legend value is a share, so the one formatter passes a string through and formats a number as a share.
   const fmtValue = (v) => (typeof v === 'string' ? v : fmtShare(v));
   const composition = (group) => ({
-    segments: COST_COMPONENTS.filter((k) => group.pooledShare[k] > 0).map((k) => ({ type: k, value: group.pooledShare[k] })),
+    segments: COST_COMPONENTS.filter((k) => group.pooledShare[k] > 0)
+      .map((k) => ({ type: k, value: group.pooledShare[k] * group.medianTotal, display: group.pooledShare[k] })),
     stat: 'median',
     total: fmtUsd3(group.medianTotal),
     totalIsComplete: true,
@@ -138,13 +151,18 @@ export function computeCostBreakdownLayout(summary, costEstimate) {
     const withoutGroup = groups.find((g) => g.runtimeId === runtimeId && g.arm === 'free');
     const label = runtimeModelLabel(summary, runtimeId);
     const rendered = renderCompositionRow(
-      colX, headerBottom, label, label, composition(withGroup), composition(withoutGroup), 1,
-      COST_COMPONENTS, TOKEN_COMPONENT_COLORS, TOKEN_COMPONENT_LABEL, fmtValue, undefined,
+      colX, headerBottom, label, label, composition(withGroup), composition(withoutGroup), compMax,
+      COST_COMPONENTS, TOKEN_COMPONENT_COLORS, TOKEN_COMPONENT_LABEL, fmtValue, undefined, true,
     );
     items.push(...rendered.items);
     bottoms.push(headerBottom + rendered.rowHeight);
   });
-  return { width: GRID_W, height: Math.round(Math.max(...bottoms) + PAD), items };
+  // The card ends one PAD below the last legend line (its baseline plus the glyph descent), so the room under the legend equals the room at
+  // the sides; the shared renderer's trailing row gap is for a row that another row follows, and this figure has one row.
+  const legendLines = items.filter((item) => item.role === 'gridLegendLine');
+  const lastLegend = legendLines.length > 0 ? legendLines.reduce((a, b) => (b.y > a.y ? b : a)) : null;
+  const height = lastLegend ? lastLegend.y + lastLegend.fontSize * LEGEND_DESCENT + PAD : Math.max(...bottoms) + PAD;
+  return { width: GRID_W, height: Math.round(height), items };
 }
 
 export function renderCostBreakdownSvg(summary, costEstimate) {
@@ -161,7 +179,7 @@ export function renderCostBreakdownSvg(summary, costEstimate) {
     }
   }
   const componentLegend = COST_COMPONENTS.map((k) => `${TOKEN_COMPONENT_LABEL[k]} (${TOKEN_COMPONENT_COLORS[k]})`).join(', ');
-  const desc = `Color legend. With kmp-test (${COLOR_WITH}), without (${COLOR_WITHOUT}). Cost component: ${componentLegend}.`;
+  const desc = `Each bar is as long as its group's median session cost, on one scale for the whole figure, and its colored segments split that cost by each component's share. Color legend. With kmp-test (${COLOR_WITH}), without (${COLOR_WITHOUT}). Cost component: ${componentLegend}.`;
   return `<svg viewBox="0 0 ${layout.width} ${layout.height}" width="${layout.width}" height="${layout.height}" xmlns="http://www.w3.org/2000/svg" role="img" font-family="${FONT_STACK}">
   <title>${escapeXml(FIGURE_TITLE)}</title>
   <desc>${escapeXml(desc)}</desc>
@@ -232,6 +250,129 @@ export function buildSessionsBlock(summary, costEstimate) {
     ];
     lines.push(`| ${row.join(' | ')} |`);
   }
+  const note = missingSessionsNote(summary);
+  if (note) lines.push('', note);
+  return lines.join('\n');
+}
+
+// What the summary's reason code for a session without evidence means, for the two codes the closure produces for a
+// session that is not counted; any other code is shown as it is, with no gloss.
+const MISSING_REASON_GLOSS = Object.freeze({
+  rejected_not_reclassifiable: 'the harness rejected the session',
+  cell_directory_absent: 'no session evidence was recorded',
+});
+
+/** The sentence under the sessions table naming every session that is missing data and so has no row, or null when none
+ * is. The campaign tables count counted sessions only; this keeps "every session" honest. */
+export function missingSessionsNote(summary) {
+  const missing = summary.cells.filter((c) => c.status === 'missing')
+    .sort((a, b) => RUNTIME_ORDER.indexOf(a.runtime_id) - RUNTIME_ORDER.indexOf(b.runtime_id) || ARM_ORDER.indexOf(a.arm) - ARM_ORDER.indexOf(b.arm) || a.round_index - b.round_index);
+  if (missing.length === 0) return null;
+  const items = missing.map((c) => {
+    const gloss = MISSING_REASON_GLOSS[c.reason];
+    return `${AGENT_LABEL[c.runtime_id]} ${ARM_LABEL[c.arm]}, round ${c.round_index} (\`${c.reason}\`${gloss ? `: ${gloss}` : ''})`;
+  });
+  const lead = NUMBER_WORD[missing.length] ?? String(missing.length);
+  return `${lead} ${missing.length === 1 ? 'session is' : 'sessions are'} not in the table because ${missing.length === 1 ? 'it is' : 'they are'} missing data: ${items.join('; ')}. The record's controls audit has the details.`;
+}
+
+// ---------------------------------------------------------------------------
+// An evidence section's task and session paragraphs, and the table of both campaigns. Every number comes from the
+// committed summary, the scenario's corpus files or the run directory's name.
+
+/** The scenario paragraph: the module count and the failing-method count come from the scenario's corpus files
+ * (loadScenarioFacts), never from a literal. */
+export function buildScenarioBlock(scenarioFacts) {
+  return `**Scenario:** in NowInAndroid, a small production-code change breaks tests in several modules. The agent runs the unit tests of every module except those whose Robolectric tests need network access, then reports which modules and test classes fail and how many tests. ${scenarioFacts.moduleCount} modules are in scope, with ${scenarioFacts.failedCount} failing test methods.`;
+}
+
+function resolvedModel(summary, runtimeId) {
+  const entry = summary.provenance?.model_resolved?.[runtimeId];
+  const model = entry && Array.isArray(entry.values) && entry.values.length === 1 ? entry.values[0] : null;
+  if (typeof model !== 'string' || model.length === 0) throw new Error(`campaign-summary.json provenance.model_resolved.${runtimeId} is not a single model`);
+  return model;
+}
+
+// What an evidence's own record says about how its campaign came to be, keyed by evidence number; the preregistration and the record
+// README of the run directory carry the same facts (a test reads both). Evidence3 is the campaign's second attempt: the first failed
+// on infrastructure and is not analyzed (amendment A4). Its two sessions missing data are one rejected by the harness and one with no
+// evidence at all, which the record explains as a failed call into the guest VM (amendment A5 treats such a loss like a rejection):
+// `missingReasons` are the summary's reason codes for them, and the sentence is refused for a summary that differs.
+const CAMPAIGN_HISTORY = Object.freeze({
+  3: Object.freeze({
+    attempt: 'This is the campaign\'s second attempt; the first failed on infrastructure and is not analyzed (preregistration amendment A4).',
+    missingReasons: Object.freeze(['cell_directory_absent', 'rejected_not_reclassifiable']),
+    missing: 'Two sessions are missing data and are not counted: one was rejected by the harness, one was lost to a failed call into the guest VM (amendment A5 treats such a loss like a rejection); none of them was re-run or replaced.',
+  }),
+});
+
+// Sessions that are declared but not counted, for an evidence that has no history of its own: they are missing data, not replaced.
+function notCountedSentence(count) {
+  const lead = NUMBER_WORD[count] ?? String(count);
+  return count === 1 ? `${lead} session is missing data and is not counted; it was not replaced.` : `${lead} sessions are missing data and are not counted; none of them was replaced.`;
+}
+
+/** The sessions paragraph: sessions run (the declared total) and counted, the per-agent-and-arm phrase (countPhrase),
+ * the evidence's own history where its record has one, and the link to the record. `date` is the run directory's date. */
+export function buildRunBlock({ evidenceN, date, summary }) {
+  const groups = summary.by_runtime_arm;
+  const run = sum(groups.map((g) => g.declared));
+  const counted = sum(groups.map((g) => (typeof g.counted === 'number' ? g.counted : g.declared)));
+  const own = CAMPAIGN_HISTORY[evidenceN];
+  const missingReasons = summary.cells.filter((c) => c.status === 'missing').map((c) => c.reason).sort();
+  if (own && JSON.stringify(missingReasons) !== JSON.stringify(own.missingReasons)) {
+    throw new Error(`Evidence${evidenceN}: the history sentence describes sessions missing for ${own.missingReasons.join(' and ')}, but the summary's are ${missingReasons.join(', ') || 'none'}`);
+  }
+  const history = own ? [own.attempt, own.missing] : (run > counted ? [notCountedSentence(run - counted)] : []);
+  return `**Sessions:** ${run} run, ${counted} counted; per agent and arm: ${countPhrase(summary)}. Claude Code (${resolvedModel(summary, 'claude-code')}) and Codex CLI (${resolvedModel(summary, 'codex-cli')}), in a counterbalanced order.${history.map((s) => ` ${s}`).join('')} Record: [Evidence${evidenceN}](../tools/runs/evidence${evidenceN}-agentic-benchmark-${date}/README.md).`;
+}
+
+// One row per campaign x agent x arm, each cell a median over the group's counted sessions.
+const CAMPAIGNS_CAPTION = 'Median per session, by campaign (each campaign compares its own arms; the tasks differ)';
+const CAMPAIGNS_HEADER = ['Campaign', 'Agent', 'Arm', 'Tool calls', 'Tool output (KB)', 'Total tokens', 'Est. cost (USD)', 'Wall-clock (min)', 'Key facts matched'];
+
+function countedSessions(summary, runtimeId, arm) {
+  return summary.cells.filter((c) => c.runtime_id === runtimeId && c.arm === arm && c.status !== 'missing');
+}
+
+/** The both-campaigns table. `campaigns`: [{ evidenceN, summary, costEstimate }] in the order to show. Tool output is a
+ * dash where the campaign did not measure it for that agent (Codex CLI in Evidence2, erratum E6); where Codex CLI's
+ * is measured, a footnote says it is the output of its commands as logged. */
+export function buildCampaignsBlock(campaigns) {
+  const lines = [CAMPAIGNS_CAPTION, '', `| ${CAMPAIGNS_HEADER.join(' | ')} |`, `|---|---|---|---:|---:|---:|---:|---:|---:|`];
+  const notMeasured = [];
+  let codexMeasured = false;
+  for (const { evidenceN, summary, costEstimate } of campaigns) {
+    for (const runtimeId of RUNTIME_ORDER) {
+      const measured = toolOutputMeasured(summary, runtimeId);
+      if (!measured) notMeasured.push(`Evidence${evidenceN}: tool output was not measured for ${AGENT_LABEL[runtimeId]}, shown as —.`);
+      else if (runtimeId === 'codex-cli') codexMeasured = true;
+      for (const arm of ARM_ORDER) {
+        const group = summary.by_runtime_arm.find((g) => g.runtime_id === runtimeId && g.arm === arm);
+        const sessions = countedSessions(summary, runtimeId, arm);
+        if (!group || sessions.length === 0) throw new Error(`Evidence${evidenceN}: no counted sessions for ${runtimeId} ${arm}`);
+        const toolCalls = medianOf(sessions.map((c) => c.tool_calls_total));
+        const toolOutputKb = measured ? medianOf(sessions.map((c) => c.output_bytes)) / 1000 : null;
+        const totalTokens = medianOf(sessions.map((c) => sum(Object.values(disjointTokens(c.tokens, runtimeId)))));
+        const costs = sessions.map((c) => {
+          const entry = costEstimateCellEntry(costEstimate, c.runtime_id, c.arm, c.round_index);
+          if (!entry) throw new Error(`Evidence${evidenceN}: no cost-estimate cell for ${c.cell_key}`);
+          return costEstimateCellMidpoint(costEstimate, c.runtime_id, entry);
+        });
+        const row = [
+          `Evidence${evidenceN}`, AGENT_LABEL[runtimeId], ARM_LABEL[arm],
+          fmtToolCallsMedian(toolCalls), fmtFixed(toolOutputKb, 1), fmtThousands(Math.round(totalTokens)),
+          fmtFixed(medianOf(costs), 3), fmtFixed(medianOf(sessions.map((c) => c.duration_ms)) / 60000, 1),
+          `${group.key_facts_match.matched}/${group.key_facts_match.of}`,
+        ];
+        lines.push(`| ${row.join(' | ')} |`);
+      }
+    }
+  }
+  const notes = ['Key facts matched: counted sessions whose final answer matched the key facts of that campaign\'s task, out of the counted sessions; the key facts differ between the two tasks.'];
+  if (codexMeasured) notes.push('Tool output is the tool results returned to the model for Claude Code and, for Codex CLI, command output as logged; Codex may shorten what the model reads.');
+  notes.push(...notMeasured);
+  if (notes.length > 0) lines.push('', ...notes.map((n) => `- ${n}`));
   return lines.join('\n');
 }
 
@@ -245,12 +386,19 @@ export function docBlockMarkers(blockId) {
   };
 }
 
-/** The generated blocks of one evidence, keyed by block id. */
-export function docBlocks(evidenceN, summary, costEstimate) {
-  return {
+/** The generated blocks of one evidence, keyed by block id. `context` (optional) adds the blocks of an evidence whose
+ * section generates its task and session paragraphs and the both-campaigns table: { date, scenarioFacts, campaigns }. */
+export function docBlocks(evidenceN, summary, costEstimate, context = null) {
+  const blocks = {
     [`e${evidenceN}-cost-components`]: buildCostComponentsBlock(costEstimate),
     [`e${evidenceN}-sessions`]: buildSessionsBlock(summary, costEstimate),
   };
+  if (context) {
+    blocks[`e${evidenceN}-scenario`] = buildScenarioBlock(context.scenarioFacts);
+    blocks[`e${evidenceN}-run`] = buildRunBlock({ evidenceN, date: context.date, summary });
+    blocks.campaigns = buildCampaignsBlock(context.campaigns);
+  }
+  return blocks;
 }
 
 /** The text between a block's markers, or null when the markers are absent or out of order. */
@@ -278,6 +426,39 @@ export function fillDocBlocks(doc, blocks) {
 // ---------------------------------------------------------------------------
 // CLI
 
+// The earlier campaigns the both-campaigns table shows next to the current one: evidence number -> the date of its run
+// directory. The evidences whose section generates its task and session paragraphs and that table.
+const EARLIER_CAMPAIGNS = Object.freeze({ 2: '2026-09-30' });
+const DOC_CONTEXT_EVIDENCES = Object.freeze([3]);
+
+function loadCampaign(evidenceN, date) {
+  const dir = join(REPO_ROOT, 'tools', 'runs', `evidence${evidenceN}-agentic-benchmark-${date}`);
+  const summary = loadSummary(join(dir, 'campaign-summary.json'));
+  const costEstimate = loadCostEstimate(join(dir, 'cost-estimate.json'));
+  const pairingErrors = validatePairing(summary, costEstimate);
+  if (pairingErrors.length > 0) throw new Error(`Evidence${evidenceN}: campaign-summary.json / cost-estimate.json mismatch:\n  ${pairingErrors.join('\n  ')}`);
+  return { evidenceN, summary, costEstimate };
+}
+
+/** The extra input of an evidence that generates its paragraphs and the both-campaigns table; null for the others. */
+export function docContext(evidenceN, date, summary, costEstimate) {
+  if (!DOC_CONTEXT_EVIDENCES.includes(Number(evidenceN))) return null;
+  const earlier = Object.entries(EARLIER_CAMPAIGNS).filter(([n]) => Number(n) < Number(evidenceN)).map(([n, d]) => loadCampaign(Number(n), d));
+  return { date, scenarioFacts: loadScenarioFacts(summary.scenario_id), campaigns: [...earlier, { evidenceN: Number(evidenceN), summary, costEstimate }] };
+}
+
+const lf = (text) => text.replace(/\r\n/g, '\n');
+
+/** The generated files whose committed text differs from the generated one. Line endings are ignored: a checkout with core.autocrlf
+ * (a Windows runner) holds CRLF on disk, and the generator writes LF. `doc` is the committed document, `filled` the document with the
+ * blocks regenerated, `svg` the generated figure. */
+export function staleOutputs({ svgPath, svg, docPath, doc, filled }) {
+  const stale = [];
+  if (!existsSync(svgPath) || lf(readFileSync(svgPath, 'utf8')) !== svg) stale.push(svgPath);
+  if (lf(doc) !== lf(filled)) stale.push(docPath);
+  return stale;
+}
+
 function main(argv) {
   const mode = argv.includes('--write') ? 'write' : 'check';
   const evidenceN = (argv.find((a) => a.startsWith('--evidence=')) || '').split('=')[1];
@@ -304,7 +485,7 @@ function main(argv) {
     const pairingErrors = validatePairing(summary, costEstimate);
     if (pairingErrors.length > 0) throw new Error(`campaign-summary.json / cost-estimate.json mismatch:\n  ${pairingErrors.join('\n  ')}`);
     svg = renderCostBreakdownSvg(summary, costEstimate);
-    filled = fillDocBlocks(doc, docBlocks(evidenceN, summary, costEstimate));
+    filled = fillDocBlocks(lf(doc), docBlocks(evidenceN, summary, costEstimate, docContext(evidenceN, campaignDate, summary, costEstimate)));
   } catch (err) {
     console.error(`::error::${err.message}`);
     process.exit(1);
@@ -318,9 +499,7 @@ function main(argv) {
     return;
   }
 
-  const mismatches = [];
-  if (!existsSync(svgPath) || readFileSync(svgPath, 'utf8') !== svg) mismatches.push(svgPath);
-  if (doc !== filled) mismatches.push(DOC_PATH);
+  const mismatches = staleOutputs({ svgPath, svg, docPath: DOC_PATH, doc, filled });
   if (mismatches.length > 0) {
     console.error(`::error::out of date, run with --write: ${mismatches.join(', ')}`);
     process.exit(1);

@@ -971,10 +971,14 @@ function presentCompositionTypes(...compositions) {
   for (const c of compositions) if (c) for (const s of c.segments) set.add(s.type);
   return set;
 }
+// A legend entry's value: what the segment says it is worth in the legend (`display`) when its caller set one, else the value that sizes
+// the segment. The metrics grid sets no `display`, so its legend is the segment values, as before; the cost-breakdown figure sizes a
+// segment in dollars and shows its share of the group's cost.
 function compositionValueFor(composition, type) {
   if (!composition) return null;
   const seg = composition.segments.find((s) => s.type === type);
-  return seg ? seg.value : null;
+  if (!seg) return null;
+  return seg.display !== undefined ? seg.display : seg.value;
 }
 
 // One STRIP row (scalar metric) for one runtime column: header (metric/unit) -> the diff% line ->
@@ -1034,7 +1038,9 @@ function renderStripRow(colX, rowY, mainHeaderText, diffText, agentLabel, withMe
 // One COMPOSITION row (tool calls by kind / tokens by type) for one runtime column: header ->
 // two lanes, each ONE horizontal stacked bar of per-component MEDIANS with the total printed at
 // the end -> one shared legend line giving each present component's with-vs-without value -> gap.
-export function renderCompositionRow(colX, rowY, headerText, agentLabel, withComp, withoutComp, compMax, types, typeColors, typeLabels, fmtValue, partialTotalNote) {
+// `valueAtBarEnd` (default false, which is what the metrics grid uses) prints each lane's total right after its own bar instead of in the
+// fixed column at the right of a full-width bar; with bars of different lengths on one scale, that keeps a number next to what it measures.
+export function renderCompositionRow(colX, rowY, headerText, agentLabel, withComp, withoutComp, compMax, types, typeColors, typeLabels, fmtValue, partialTotalNote, valueAtBarEnd = false) {
   const items = [];
   let cursor = rowY;
   items.push(textItem('gridRowHeader', null, colX, cursor + GRID_HEADER_FS, GRID_HEADER_FS, 500, COLOR_TEXT, headerText));
@@ -1067,7 +1073,8 @@ export function renderCompositionRow(colX, rowY, headerText, agentLabel, withCom
       // an unknown whole" (e.g. 0 kmp-test/gradle calls next to the scorecard's own ~12 tool calls
       // for the same lane). Omitted here; the legend's partialTotalNote explains why below.
       if (lane.c.totalIsComplete !== false) {
-        items.push(textItem('gridCompTotal', null, barX + GRID_COMP_BAR_W + GRID_VALUE_GAP, barCenterY + 4, GRID_VALUE_LABEL_FS, 400, COLOR_TEXT, fmtValue(lane.c.total)));
+        const valueX = (valueAtBarEnd ? xCursor : barX + GRID_COMP_BAR_W) + GRID_VALUE_GAP;
+        items.push(textItem('gridCompTotal', null, valueX, barCenterY + 4, GRID_VALUE_LABEL_FS, 400, COLOR_TEXT, fmtValue(lane.c.total)));
       }
     }
     cursor += GRID_COMP_BAR_H + GRID_COMP_BAR_GAP;
