@@ -3,22 +3,27 @@
 //
 // tools/agentic-eval/readme-evidence.mjs — deterministic generator that turns a
 // committed campaign-summary.json + cost-estimate.json into one scorecard SVG
+// and a metrics grid per campaign, and, from the campaign registry, the overview figure
 // and the README block between <!-- agentic-benchmark:start/end -->.
 //
 // Usage:
 //   node tools/agentic-eval/readme-evidence.mjs --check   (default) exits 1 if
-//     regenerating would change any committed file
+//     regenerating would change any committed file (line endings ignored)
 //   node tools/agentic-eval/readme-evidence.mjs --write   writes scorecard.svg
-//     and the README block in place
+//     and metrics-grid.svg of one campaign in place
 //   --evidence=<n>    which evidenceN-agentic-benchmark-<date> run dir to read/write
 //                      (default: 1, i.e. evidence1-agentic-benchmark-<date> -- back-compat)
 //   --date=<yyyy-mm-dd>  campaign date for that run dir (default: 2026-09-28, back-compat)
+//   node tools/agentic-eval/readme-evidence.mjs --overview          writes the overview figure
+//     (tools/runs/agentic-benchmark-overview.svg), the root README block and the overview block of
+//     docs/agentic-benchmark.md from tools/runs/agentic-benchmark-campaigns.json
+//   node tools/agentic-eval/readme-evidence.mjs --overview --check  exits 1 if any of the three differs
 //
-// The root README shows ONE campaign, README_EVIDENCE. Only a run for that evidence checks or writes
-// the README block; any other --evidence=<n> checks or writes just its own two SVGs.
+// The root README block is owned by the overview, which shows every campaign of the registry. A run
+// for an evidence (--evidence=<n>) checks or writes just that campaign's own two SVGs.
 //
-// Never edit scorecard.svg or the README block between the markers by hand --
-// edit this generator (or the campaign-summary.json / cost-estimate.json it
+// Never edit scorecard.svg, the overview figure or the README block between the markers by hand --
+// edit this generator (or the campaign-summary.json / cost-estimate.json / registry it
 // reads) and regenerate. Fails closed unless the summary is summary_status:"ok",
 // provider_mode:"live", schema 1 or 2, with all 4 (runtime x arm) groups declaring
 // the same number of cells (at least 1) and each counting between 1 and that
@@ -35,13 +40,11 @@ import { dirname, join } from 'node:path';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..');
 
-// The one evidence the root README block shows. A run for any other evidence never compares or
-// writes that block.
-export const README_EVIDENCE = 3;
-
-// `evidenceN` is the raw --evidence= value, a string.
-export function ownsReadmeBlock(evidenceN) {
-  return Number(evidenceN) === README_EVIDENCE;
+// Who owns the root README block: the overview (--overview), which shows every campaign of the registry, and no one evidence. A run
+// for an evidence never compares or writes that block, so this is false for every evidence number (a number or the raw --evidence= string).
+export const README_BLOCK_OWNER = 'overview';
+export function ownsReadmeBlock() {
+  return false;
 }
 
 // GitHub-palette colors, chosen to render identically on GitHub's and npm's
@@ -1666,9 +1669,325 @@ ${noteText}**Scope:** ${wording.scopeLead({ scopeCount, phrase: sessionPhrase })
 }
 
 // ---------------------------------------------------------------------------
+// Overview -- ONE figure and ONE README block for every published scenario.
+//
+// The registry (tools/runs/agentic-benchmark-campaigns.json) lists the campaigns in the order they are drawn; each entry's directory
+// holds the committed summary and cost estimate that every value comes from, so nothing in the figure or the block is typed by hand.
+// The figure has one block per scenario and one row per agent: tool calls, estimated API cost and wall-clock as bars with one scale per
+// column (the largest value over every scenario, agent and arm) and the value at the end of each bar, and the key facts as matched/counted.
+// The block is the intro sentence, the figure, one bullet per scenario and a closing line; the same figure is shown at the top of
+// docs/agentic-benchmark.md. Never a ratio, a comparison across scenarios, or a full-answer number.
+
+export const OVERVIEW_REGISTRY_PATH = join(REPO_ROOT, 'tools', 'runs', 'agentic-benchmark-campaigns.json');
+export const OVERVIEW_SVG_PATH = join(REPO_ROOT, 'tools', 'runs', 'agentic-benchmark-overview.svg');
+const OVERVIEW_SVG_REL = 'tools/runs/agentic-benchmark-overview.svg';
+const OVERVIEW_DEFAULT_PATHS = Object.freeze({
+  svgPath: OVERVIEW_SVG_PATH,
+  readmePath: join(REPO_ROOT, 'README.md'),
+  docPath: join(REPO_ROOT, 'docs', 'agentic-benchmark.md'),
+});
+const CAMPAIGN_DIR_RE = /^evidence(\d+)-agentic-benchmark-\d{4}-\d{2}-\d{2}$/;
+const OVERVIEW_TITLE = 'Agent sessions with and without kmp-test';
+const OVERVIEW_SUBTITLE = 'Median per session. Each scenario is its own pre-registered campaign on NowInAndroid and compares only its own two arms; bars share one scale per column.';
+const OVERVIEW_INTRO = 'kmp-test hands an agent the test and coverage verdict as one JSON envelope instead of Gradle logs and report files.';
+const OVERVIEW_CLOSING = 'Each scenario is a separate pre-registered campaign and compares only its own two arms. Method, per-scenario charts, every session and limitations: [docs/agentic-benchmark.md](docs/agentic-benchmark.md).';
+const README_START = '<!-- agentic-benchmark:start';
+const README_END = '<!-- agentic-benchmark:end -->';
+const DOC_START = '<!-- agentic-benchmark-overview:start';
+const DOC_END = '<!-- agentic-benchmark-overview:end -->';
+
+// Geometry of the figure (the design the user approved): bars of up to BAR_MAX px in three columns, the key facts in a fourth.
+const OVERVIEW_BAR_MAX = 118;
+const OVERVIEW_BAR_H = 11;
+const OVERVIEW_LANE_GAP = 5;
+const OVERVIEW_VALUE_GAP = 6;
+const OVERVIEW_KEY_FACTS_X = 744;
+const fmtUsd3 = (v) => `$${v.toFixed(3)}`;
+const fmtMinutes1 = (v) => `${v.toFixed(1)} min`;
+const OVERVIEW_COLUMNS = Object.freeze([
+  Object.freeze({ key: 'calls', head: 'Tool calls', x: 196, fmt: (v) => fmtToolCallsMedian(v) }),
+  Object.freeze({ key: 'cost', head: 'Est. API cost', x: 376, fmt: fmtUsd3 }),
+  Object.freeze({ key: 'wall', head: 'Wall-clock', x: 556, fmt: fmtMinutes1 }),
+]);
+
+/**
+ * Loads and validates the registry: every campaign directory with its summary and cost estimate. One failure reason per check, each naming the
+ * directory it concerns: schema 1; at least one campaign; unique dirs; a directory name evidence<N>-agentic-benchmark-<date> (the figure names the
+ * evidence from it); the directory and its campaign-summary.json, cost-estimate.json and README.md exist; a non-empty label; the summary passes
+ * validateSummary and pairs with its cost estimate (validatePairing). `runsRoot` is where the directories are (the registry's own folder).
+ */
+export function loadCampaignRegistry(registryPath = OVERVIEW_REGISTRY_PATH, runsRoot = dirname(registryPath)) {
+  let registry;
+  try {
+    registry = JSON.parse(readFileSync(registryPath, 'utf8'));
+  } catch (err) {
+    throw new Error(`campaign registry ${registryPath} is not valid JSON: ${err.message}`);
+  }
+  if (!registry || registry.schema !== 1) throw new Error('campaign registry: schema must be 1');
+  if (!Array.isArray(registry.campaigns) || registry.campaigns.length === 0) throw new Error('campaign registry: it must list at least one campaign');
+  const seen = new Set();
+  for (const entry of registry.campaigns) {
+    const dir = entry && entry.dir;
+    if (seen.has(dir)) throw new Error(`campaign registry: duplicate dir ${dir}`);
+    seen.add(dir);
+  }
+  return registry.campaigns.map((entry) => {
+    const dir = entry.dir;
+    const match = typeof dir === 'string' ? CAMPAIGN_DIR_RE.exec(dir) : null;
+    if (!match) throw new Error(`${dir}: the directory name must be evidence<N>-agentic-benchmark-<yyyy-mm-dd>`);
+    const runDir = join(runsRoot, dir);
+    if (!existsSync(runDir)) throw new Error(`${dir}: directory not found`);
+    for (const name of ['campaign-summary.json', 'cost-estimate.json', 'README.md']) {
+      if (!existsSync(join(runDir, name))) throw new Error(`${dir}: ${name} not found`);
+    }
+    if (typeof entry.label !== 'string' || entry.label.trim() === '') throw new Error(`${dir}: label must be a non-empty string`);
+    let summary;
+    let costEstimate;
+    try {
+      summary = loadSummary(join(runDir, 'campaign-summary.json'));
+      costEstimate = loadCostEstimate(join(runDir, 'cost-estimate.json'));
+    } catch (err) {
+      throw new Error(`${dir}: ${err.message}`);
+    }
+    const pairingErrors = validatePairing(summary, costEstimate);
+    if (pairingErrors.length > 0) throw new Error(`${dir}: campaign-summary.json / cost-estimate.json mismatch:\n  ${pairingErrors.join('\n  ')}`);
+    return { dir, label: entry.label, evidenceN: Number(match[1]), summary, costEstimate };
+  });
+}
+
+/** One group's medians as the figure prints them: tool calls and wall-clock from the summary's group aggregate (the scorecard's source), cost
+ * as the median per-session list-price estimate, key facts as matched/counted. Throws when a value is not recorded. */
+function overviewGroupValues(campaign, runtimeId, arm) {
+  const group = findGroup(campaign.summary, runtimeId, arm);
+  const need = (value, what) => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`${campaign.dir}: ${runtimeId} ${arm} has no ${what}`);
+    return value;
+  };
+  const cost = costMetric(campaign.summary, group, runtimeId, arm, campaign.costEstimate);
+  return {
+    calls: need(group.tool_calls_total && group.tool_calls_total.median, 'tool-call median'),
+    cost: need(cost.kind === 'per-session' ? cost.median : null, 'cost median'),
+    wall: need(group.duration_ms && group.duration_ms.median, 'wall-clock median') / 60000,
+    keyFacts: `${group.key_facts_match.matched}/${group.key_facts_match.of}`,
+  };
+}
+
+// The session counts of a scenario, as "<with> + <without> sessions per agent" ("counted" when some session is missing, because a rejected or
+// lost session is never replaced), or each agent's own when the agents counted differently.
+function overviewCounts(summary) {
+  const groups = RUNTIME_ORDER.map((runtimeId) => ARM_ORDER.map((arm) => findGroup(summary, runtimeId, arm)));
+  const counted = groups.map((pair) => pair.map(countedOf));
+  const allCounted = groups.every((pair) => pair.every((g) => countedOf(g) === g.declared));
+  if (counted.every((pair) => pair[0] === counted[0][0] && pair[1] === counted[0][1])) {
+    return `${counted[0][0]} + ${counted[0][1]} sessions${allCounted ? '' : ' counted'} per agent`;
+  }
+  return `sessions counted: ${RUNTIME_ORDER.map((runtimeId, i) => `${RUNTIME_DISPLAY_NAME[runtimeId]} ${counted[i][0]} + ${counted[i][1]}`).join(' · ')}`;
+}
+
+/** The figure's layout, as the items every test and the SVG renderer read: { width, height, items }. */
+export function computeOverviewLayout(campaigns) {
+  const data = campaigns.map((campaign) => ({
+    campaign,
+    meta: `Evidence${campaign.evidenceN} · ${overviewCounts(campaign.summary)}`,
+    rows: RUNTIME_ORDER.map((runtimeId) => ({
+      runtimeId,
+      model: provenanceValue(campaign.summary, 'model_resolved', runtimeId),
+      lanes: ARM_ORDER.map((arm) => overviewGroupValues(campaign, runtimeId, arm)),
+    })),
+  }));
+  // One scale per column: the largest value of that column over every scenario, agent and arm.
+  const columnMax = Object.fromEntries(OVERVIEW_COLUMNS.map((col) => [col.key, Math.max(...data.flatMap((d) => d.rows.flatMap((row) => row.lanes.map((lane) => lane[col.key]))), 1e-9)]));
+
+  const items = [];
+  let y = PAD + 20;
+  items.push(textItem('overviewTitle', null, PAD, y, 20, 600, COLOR_TEXT, OVERVIEW_TITLE));
+  y += 26;
+  wrapWords(OVERVIEW_SUBTITLE, 13, GRID_W - 2 * PAD).forEach((line, i) => {
+    if (i > 0) y += 17;
+    items.push(textItem('overviewSubtitle', null, PAD, y, 13, 400, COLOR_SECONDARY, line));
+  });
+  y += 26;
+  items.push({ kind: 'legendSwatch', column: null, x: PAD, y: y - 9.5, w: 10, h: 10, rx: 0, fill: COLOR_WITH });
+  items.push(textItem('overviewLegend', null, PAD + 15, y, 12, 400, COLOR_SECONDARY, 'with kmp-test'));
+  items.push({ kind: 'legendSwatch', column: null, x: PAD + 112, y: y - 9.5, w: 10, h: 10, rx: 0, fill: COLOR_WITHOUT });
+  items.push(textItem('overviewLegend', null, PAD + 127, y, 12, 400, COLOR_SECONDARY, 'without'));
+  y += 30;
+  for (const col of OVERVIEW_COLUMNS) items.push(textItem('overviewColumnHead', col.key, col.x, y, 13, 600, COLOR_TEXT, col.head));
+  items.push(textItem('overviewColumnHead', 'kf', OVERVIEW_KEY_FACTS_X, y, 13, 600, COLOR_TEXT, 'Key facts correct'));
+  y += 8;
+
+  const laneY = (top, i) => top + i * (OVERVIEW_BAR_H + OVERVIEW_LANE_GAP);
+  for (const d of data) {
+    y += 26;
+    items.push(textItem('overviewScenarioTitle', null, PAD, y, 14, 600, COLOR_TEXT, d.campaign.label));
+    y += 17;
+    items.push(textItem('overviewScenarioMeta', null, PAD, y, 12, 400, COLOR_SECONDARY, d.meta));
+    y += 10;
+    for (const row of d.rows) {
+      const top = y + 6;
+      items.push(textItem('overviewAgent', null, PAD, top + 11, 13, 500, COLOR_TEXT, RUNTIME_DISPLAY_NAME[row.runtimeId]));
+      items.push(textItem('overviewModel', null, PAD, top + 26, 11.5, 400, COLOR_SECONDARY, row.model));
+      for (const col of OVERVIEW_COLUMNS) {
+        row.lanes.forEach((lane, i) => {
+          const barY = laneY(top, i);
+          const w = (lane[col.key] / columnMax[col.key]) * OVERVIEW_BAR_MAX;
+          items.push({ kind: 'bar', role: 'overviewBar', column: col.key, x: col.x, y: barY, w, h: OVERVIEW_BAR_H, rx: 1, fill: i === 0 ? COLOR_WITH : COLOR_WITHOUT });
+          items.push(textItem('overviewValue', col.key, col.x + w + OVERVIEW_VALUE_GAP, barY + OVERVIEW_BAR_H - 1.5, 12, 400, COLOR_TEXT, col.fmt(lane[col.key])));
+        });
+      }
+      row.lanes.forEach((lane, i) => {
+        items.push(textItem('overviewKeyFacts', 'kf', OVERVIEW_KEY_FACTS_X, laneY(top, i) + OVERVIEW_BAR_H - 1.5, 12, 600, i === 0 ? COLOR_WITH : COLOR_WITHOUT, lane.keyFacts));
+      });
+      y = top + 2 * OVERVIEW_BAR_H + OVERVIEW_LANE_GAP + 8;
+    }
+    y += 6;
+  }
+  // The card ends one PAD below its lowest item (a text's baseline plus its glyph descent, or a bar's bottom).
+  const bottoms = items.map((item) => (item.kind === 'text' ? item.y + item.fontSize * 0.25 : item.y + item.h));
+  return { width: GRID_W, height: Math.round(Math.max(...bottoms) + PAD), items };
+}
+
+/** The figure's alt text: one clause per scenario and agent, with the values it prints (with kmp-test vs without). */
+export function buildOverviewAlt(campaigns) {
+  const clauses = campaigns.map((campaign) => {
+    const rows = RUNTIME_ORDER.map((runtimeId) => {
+      const [w, wo] = ARM_ORDER.map((arm) => overviewGroupValues(campaign, runtimeId, arm));
+      return `${RUNTIME_DISPLAY_NAME[runtimeId]}: ${fmtToolCallsMedian(w.calls)} vs ${fmtToolCallsMedian(wo.calls)} tool calls, ${fmtUsd3(w.cost)} vs ${fmtUsd3(wo.cost)}, ${fmtMinutes1(w.wall)} vs ${fmtMinutes1(wo.wall)}, key facts ${w.keyFacts} vs ${wo.keyFacts}`;
+    });
+    return `${campaign.label} (Evidence${campaign.evidenceN}): ${rows.join('; ')}.`;
+  });
+  return `Median per session with kmp-test vs without, one block per scenario, bars on one scale per column. ${clauses.join(' ')}`;
+}
+
+export function renderOverviewSvg(campaigns) {
+  const layout = computeOverviewLayout(campaigns);
+  const parts = layout.items.map((item) => {
+    if (item.kind === 'text') {
+      const anchorAttr = item.anchor !== 'start' ? ` text-anchor="${item.anchor}"` : '';
+      return `<text x="${item.x.toFixed(1)}" y="${item.y.toFixed(1)}" font-size="${item.fontSize}" font-weight="${item.fontWeight}" fill="${item.fill}"${anchorAttr}>${escapeXml(item.text)}</text>`;
+    }
+    return `<rect x="${item.x.toFixed(1)}" y="${item.y.toFixed(1)}" width="${item.w.toFixed(1)}" height="${item.h}" rx="${item.rx}" fill="${item.fill}"/>`;
+  });
+  const desc = `Median per session for Claude Code and Codex CLI, with kmp-test (${COLOR_WITH}) and without (${COLOR_WITHOUT}), one block per published scenario. Bars share one scale per column: tool calls, estimated API cost and wall-clock. The last column is the sessions whose key facts were all correct out of the sessions counted.`;
+  return `<svg viewBox="0 0 ${layout.width} ${layout.height}" width="${layout.width}" height="${layout.height}" xmlns="http://www.w3.org/2000/svg" role="img" font-family="${FONT_STACK}">
+  <title>${escapeXml(OVERVIEW_TITLE)}</title>
+  <desc>${escapeXml(desc)}</desc>
+  <rect x="1" y="1" width="${layout.width - 2}" height="${layout.height - 2}" rx="12" fill="${COLOR_CARD_FILL}" stroke="${COLOR_CARD_STROKE}" stroke-width="1"/>
+  ${parts.join('\n  ')}
+</svg>
+`;
+}
+
+// One scenario's bullet: the label, its evidence and counts, the medians with kmp-test vs without for each agent, the versions its provenance
+// records and the link to its record. Values only: no ratio, no word that ranks.
+function overviewBullet(campaign) {
+  const { summary } = campaign;
+  const [claude, codex] = RUNTIME_ORDER.map((runtimeId) => ARM_ORDER.map((arm) => overviewGroupValues(campaign, runtimeId, arm)));
+  const pair = (lanes, key, fmt) => `${fmt(lanes[0][key])} vs ${fmt(lanes[1][key])}`;
+  const same = (v) => v;
+  const versions = [`kmp-test ${kmpTestVersionOf(summary)}`, ...RUNTIME_ORDER.map((runtimeId) => `${RUNTIME_DISPLAY_NAME[runtimeId]} ${provenanceValue(summary, 'runtime_cli_version', runtimeId)}`)].join(' · ');
+  return `**${campaign.label}** (Evidence${campaign.evidenceN}, ${overviewCounts(summary)}): median tool calls ${pair(claude, 'calls', fmtToolCallsMedian)} (Claude Code) and ${pair(codex, 'calls', fmtToolCallsMedian)} (Codex CLI); median estimated cost ${pair(claude, 'cost', fmtUsd3)} and ${pair(codex, 'cost', fmtUsd3)}; key facts ${pair(claude, 'keyFacts', same)} and ${pair(codex, 'keyFacts', same)}. ${versions}. [Record](tools/runs/${campaign.dir}/README.md)`;
+}
+
+/** The root README block: the intro sentence, the figure, one bullet per scenario and the closing line, between the agentic-benchmark markers. */
+export function renderOverviewBlock(campaigns) {
+  const bullets = campaigns.map((campaign) => `- ${overviewBullet(campaign)}`).join('\n');
+  return `${README_START} (generated by tools/agentic-eval/readme-evidence.mjs --overview from tools/runs/agentic-benchmark-campaigns.json; edit the generator or the registry, not this block) -->
+### ${OVERVIEW_TITLE}
+
+${OVERVIEW_INTRO}
+
+![${buildOverviewAlt(campaigns)}](${OVERVIEW_SVG_REL})
+
+${bullets}
+
+${OVERVIEW_CLOSING}
+${README_END}`;
+}
+
+/** The detailed document's block: the same figure with the same alt text, one directory up from the document. */
+export function renderOverviewDocBlock(campaigns) {
+  return `${DOC_START} (generated by tools/agentic-eval/readme-evidence.mjs --overview from tools/runs/agentic-benchmark-campaigns.json; do not edit) -->
+![${buildOverviewAlt(campaigns)}](../${OVERVIEW_SVG_REL})
+${DOC_END}`;
+}
+
+const lf = (text) => text.replace(/\r\n/g, '\n');
+
+function blockBetween(text, start, end) {
+  const s = text.indexOf(start);
+  const e = text.indexOf(end);
+  return s === -1 || e === -1 || e < s ? null : text.slice(s, e + end.length);
+}
+
+function spliceBlock(text, start, end, block, fileLabel, markerLabel) {
+  const s = text.indexOf(start);
+  const e = text.indexOf(end);
+  if (s === -1 || e === -1 || e < s) throw new Error(`${fileLabel} is missing the ${markerLabel} markers`);
+  return text.slice(0, s) + block + text.slice(e + end.length);
+}
+
+/** The files whose committed text differs from what the registry generates, line endings ignored (a Windows autocrlf checkout holds CRLF). */
+export function checkOverview(campaigns, paths = {}) {
+  const { svgPath, readmePath, docPath } = { ...OVERVIEW_DEFAULT_PATHS, ...paths };
+  const stale = [];
+  if (!existsSync(svgPath) || lf(readFileSync(svgPath, 'utf8')) !== renderOverviewSvg(campaigns)) stale.push(svgPath);
+  const readme = existsSync(readmePath) ? lf(readFileSync(readmePath, 'utf8')) : '';
+  if (blockBetween(readme, README_START, README_END) !== renderOverviewBlock(campaigns)) stale.push(readmePath);
+  const doc = existsSync(docPath) ? lf(readFileSync(docPath, 'utf8')) : '';
+  if (blockBetween(doc, DOC_START, DOC_END) !== renderOverviewDocBlock(campaigns)) stale.push(docPath);
+  return stale;
+}
+
+/** Writes the figure and both blocks. Both marker pairs are checked before anything is written; a file without its markers is an error, never an append. */
+export function writeOverview(campaigns, paths = {}) {
+  const { svgPath, readmePath, docPath } = { ...OVERVIEW_DEFAULT_PATHS, ...paths };
+  const readme = spliceBlock(readFileSync(readmePath, 'utf8'), README_START, README_END, renderOverviewBlock(campaigns), 'README.md', 'agentic-benchmark:start/end');
+  const doc = spliceBlock(readFileSync(docPath, 'utf8'), DOC_START, DOC_END, renderOverviewDocBlock(campaigns), 'docs/agentic-benchmark.md', 'agentic-benchmark-overview:start/end');
+  writeFileSync(svgPath, renderOverviewSvg(campaigns));
+  writeFileSync(readmePath, readme);
+  writeFileSync(docPath, doc);
+  return [svgPath, readmePath, docPath];
+}
+
+/** An evidence's own charts whose committed text differs from what its summary generates, line endings ignored (a Windows autocrlf checkout holds CRLF). */
+export function checkEvidenceCharts(summary, costEstimate, { scorecardPath, metricsGridPath }) {
+  const stale = [];
+  if (!existsSync(scorecardPath) || lf(readFileSync(scorecardPath, 'utf8')) !== renderScorecardSvg(summary, costEstimate)) stale.push(scorecardPath);
+  if (!existsSync(metricsGridPath) || lf(readFileSync(metricsGridPath, 'utf8')) !== renderMetricsGridSvg(summary, costEstimate)) stale.push(metricsGridPath);
+  return stale;
+}
+
+// ---------------------------------------------------------------------------
 // CLI
 
+function mainOverview(argv) {
+  let campaigns;
+  try {
+    campaigns = loadCampaignRegistry();
+  } catch (err) {
+    console.error(`::error::${err.message}`);
+    process.exit(1);
+  }
+  if (argv.includes('--check')) {
+    const stale = checkOverview(campaigns);
+    if (stale.length > 0) {
+      console.error(`::error::out of date, run with --overview: ${stale.join(', ')}`);
+      process.exit(1);
+    }
+    console.log('Overview figure, README block and document block are up to date.');
+    return;
+  }
+  try {
+    console.log(writeOverview(campaigns).map((path) => `Wrote ${path}`).join('\n'));
+  } catch (err) {
+    console.error(`::error::${err.message}`);
+    process.exit(1);
+  }
+}
+
 function main(argv) {
+  if (argv.includes('--overview')) return mainOverview(argv);
   const mode = argv.includes('--write') ? 'write' : 'check';
   const campaignDate = (argv.find(a => a.startsWith('--date=')) || '--date=2026-09-28').split('=')[1];
   // --evidence=<n> selects which evidenceN-agentic-benchmark-<date> run dir to read/write; default
@@ -1704,86 +2023,24 @@ function main(argv) {
     process.exit(1);
   }
 
-  const scorecardSvg = renderScorecardSvg(summary, costEstimate);
-  const metricsGridSvg = renderMetricsGridSvg(summary, costEstimate);
-
-  // Only the evidence the root README shows builds (and so checks or writes) its README block.
-  const ownsReadme = ownsReadmeBlock(evidenceN);
-  let block = null;
-  if (ownsReadme) {
-    const recordReadmePath = join(runsDir, 'README.md');
-    let anchor;
-    try {
-      anchor = resultsHeadingAnchor(readFileSync(recordReadmePath, 'utf8'));
-    } catch (err) {
-      console.error(`::error::${recordReadmePath}: ${err.message}`);
-      process.exit(1);
-    }
-    const evidenceNumber = Number(evidenceN);
-    let scenarioFacts = null;
-    try {
-      if (README_WORDING[evidenceNumber]?.needsScenarioFacts) scenarioFacts = loadScenarioFacts(summary.scenario_id);
-    } catch (err) {
-      console.error(`::error::${err.message}`);
-      process.exit(1);
-    }
-    let note;
-    try {
-      const noteSource = README_NOTES[evidenceN];
-      note = typeof noteSource === 'function' ? noteSource({ summary, costEstimate, scenarioFacts }) : noteSource;
-      block = renderReadmeBlock(summary, campaignDate, costEstimate, runsDirName, anchor, note, evidenceNumber, scenarioFacts);
-    } catch (err) {
-      console.error(`::error::${err.message}`);
-      process.exit(1);
-    }
-  }
-
   const scorecardPath = join(runsDir, 'scorecard.svg');
   const metricsGridPath = join(runsDir, 'metrics-grid.svg');
-  const readmePath = join(REPO_ROOT, 'README.md');
 
+  // An evidence checks and writes its own two SVGs only: the root README block belongs to the overview (--overview).
   if (mode === 'write') {
-    writeFileSync(scorecardPath, scorecardSvg);
-    writeFileSync(metricsGridPath, metricsGridSvg);
-    if (!ownsReadme) {
-      console.log(`Wrote ${scorecardPath}\nWrote ${metricsGridPath}`);
-      return;
-    }
-    const readme = readFileSync(readmePath, 'utf8');
-    const startMarker = '<!-- agentic-benchmark:start';
-    const endMarker = '<!-- agentic-benchmark:end -->';
-    const startIdx = readme.indexOf(startMarker);
-    const endIdx = readme.indexOf(endMarker);
-    if (startIdx === -1 || endIdx === -1) {
-      console.error('::error::README.md is missing the agentic-benchmark:start/end markers');
-      process.exit(1);
-    }
-    const before = readme.slice(0, startIdx);
-    const after = readme.slice(endIdx + endMarker.length);
-    writeFileSync(readmePath, before + block + after);
-    console.log(`Wrote ${scorecardPath}\nWrote ${metricsGridPath}\nUpdated README.md block`);
+    writeFileSync(scorecardPath, renderScorecardSvg(summary, costEstimate));
+    writeFileSync(metricsGridPath, renderMetricsGridSvg(summary, costEstimate));
+    console.log(`Wrote ${scorecardPath}\nWrote ${metricsGridPath}`);
     return;
   }
 
   // check mode: regenerate and diff against what's committed
-  let mismatches = [];
-  if (!existsSync(scorecardPath) || readFileSync(scorecardPath, 'utf8') !== scorecardSvg) mismatches.push(scorecardPath);
-  if (!existsSync(metricsGridPath) || readFileSync(metricsGridPath, 'utf8') !== metricsGridSvg) mismatches.push(metricsGridPath);
-  if (ownsReadme) {
-    const readme = existsSync(readmePath) ? readFileSync(readmePath, 'utf8') : '';
-    const startMarker = '<!-- agentic-benchmark:start';
-    const endMarker = '<!-- agentic-benchmark:end -->';
-    const startIdx = readme.indexOf(startMarker);
-    const endIdx = readme.indexOf(endMarker);
-    if (startIdx === -1 || endIdx === -1 || readme.slice(startIdx, endIdx + endMarker.length) !== block) {
-      mismatches.push(readmePath);
-    }
-  }
+  const mismatches = checkEvidenceCharts(summary, costEstimate, { scorecardPath, metricsGridPath });
   if (mismatches.length > 0) {
     console.error(`::error::out of date, run with --write: ${mismatches.join(', ')}`);
     process.exit(1);
   }
-  console.log(ownsReadme ? 'README evidence block and chart are up to date.' : `Evidence ${evidenceN} charts are up to date (the README block shows evidence ${README_EVIDENCE}).`);
+  console.log(`Evidence ${evidenceN} charts are up to date.`);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

@@ -515,14 +515,15 @@ describe('the README note and link to the detailed document', () => {
     expect(README_NOTES[4]).toBeUndefined();
   });
 
-  // Moved from Evidence2 to Evidence3 with the root README block: the README now shows the Evidence3 campaign and its note.
-  it('the committed root README carries the Evidence3 note once, and Evidence2\'s note no longer', () => {
+  // The root README block is the overview now (WO-16): it shows every scenario's figure and bullet, no per-evidence note, so neither
+  // note is in it; the notes stay available to the per-evidence renderer.
+  it('the committed root README carries neither the Evidence3 note nor Evidence2\'s any more: the overview block replaced them', () => {
     const readme = crlfNormalize(readFileSync(join(REPO_ROOT, 'README.md'), 'utf8'));
     const dir3 = join(REPO_ROOT, 'tools', 'runs', 'evidence3-agentic-benchmark-2026-10-02');
     const summary3 = loadSummary(join(dir3, 'campaign-summary.json'));
     const costEstimate3 = loadCostEstimate(join(dir3, 'cost-estimate.json'));
     const note3 = README_NOTES[3]({ summary: summary3, costEstimate: costEstimate3, scenarioFacts: loadScenarioFacts(summary3.scenario_id) });
-    expect(readme.split(note3).length - 1).toBe(1);
+    expect(readme.split(note3).length - 1).toBe(0);
     expect(readme.split(README_NOTES[2]).length - 1).toBe(0);
   });
 });
@@ -1006,12 +1007,20 @@ describe('Evidence3: the cost breakdown and the generated blocks of docs/agentic
       expect(block).not.toContain('Evidence3: tool output was not measured');
     });
 
-    it('the root README\'s note states the same tool-output medians as this table, in the same unit (decimal KB)', () => {
+    // Re-pointed with the root README block (WO-16): the README bullets give each scenario's tool calls, cost and key facts, so those three
+    // are what the table must agree with, row by row (the per-evidence note that used to carry the tool-output medians left the README).
+    it('the root README bullets state the same tool-call medians, costs and key facts as this table, for both scenarios', () => {
       const readme = crlfNormalize(readFileSync(join(REPO_ROOT, 'README.md'), 'utf8'));
-      const kb = readDocBlock(doc, 'campaigns').split('\n').filter((l) => l.startsWith('| Evidence3')).map((r) => r.split('|')[5].trim());
-      expect(kb).toHaveLength(4); // Claude Code with kmp-test, Claude Code without, Codex CLI with kmp-test, Codex CLI without
-      expect(readme).toContain(`${kb[0]} KB with kmp-test and ${kb[1]} KB without for Claude Code`);
-      expect(readme).toContain(`(as logged) was ${kb[2]} KB and ${kb[3]} KB.`);
+      const rows = readDocBlock(doc, 'campaigns').split('\n').filter((l) => l.startsWith('| Evidence')).map((r) => r.split('|').map((x) => x.trim()));
+      expect(rows).toHaveLength(8);
+      for (const [evidence, bulletStart] of [['Evidence2', '- **1 module'], ['Evidence3', '- **11 modules']]) {
+        const bullet = readme.split('\n').find((l) => l.startsWith(bulletStart));
+        expect(bullet, evidence).toBeDefined();
+        const [claudeWith, claudeWithout, codexWith, codexWithout] = ['Claude Code', 'Codex CLI'].flatMap((agent) => ['with kmp-test', 'without'].map((arm) => rows.find((r) => r[1] === evidence && r[2] === agent && r[3] === arm)));
+        expect(bullet, evidence).toContain(`median tool calls ${claudeWith[4]} vs ${claudeWithout[4]} (Claude Code) and ${codexWith[4]} vs ${codexWithout[4]} (Codex CLI)`);
+        expect(bullet, evidence).toContain(`median estimated cost $${claudeWith[7]} vs $${claudeWithout[7]} and $${codexWith[7]} vs $${codexWithout[7]}`);
+        expect(bullet, evidence).toContain(`key facts ${claudeWith[9]} vs ${claudeWithout[9]} and ${codexWith[9]} vs ${codexWithout[9]}`);
+      }
     });
 
     it('refuses a campaign in which a group has no counted session, instead of printing an empty row', () => {
@@ -1161,15 +1170,19 @@ describe('the fixed prose of the Evidence3 section is backed by the committed da
       expect(misses).toContain('`--variant` takes `auto`, `debug`, `release` or `all`');
       const backlog = crlfNormalize(readFileSync(join(REPO_ROOT, 'BACKLOG.md'), 'utf8'));
       const queued = backlog.slice(backlog.indexOf('## QUEUED — post-v0.3.4 ideas (newest first)'));
-      const headings = [...queued.matchAll(/^### (.+)$/gm)].map((m) => m[1]).slice(0, 5);
-      expect(headings).toEqual([
+      const allHeadings = [...queued.matchAll(/^### (.+)$/gm)].map((m) => m[1]);
+      // They head the queue, in this order, followed by the two items of the same cycle; a newer item (the README overview's, WO-16) may sit above them.
+      const first = allHeadings.indexOf('🐛 BUG — The umbrella-flavor warning is skipped for the default test type');
+      expect(first).toBeGreaterThan(-1);
+      expect(first).toBeLessThanOrEqual(1);
+      expect(allHeadings.slice(first, first + 5)).toEqual([
         '🐛 BUG — The umbrella-flavor warning is skipped for the default test type',
         '💡 IDEA — `--variant` silently accepts values outside `auto|debug|release|all`',
         '💡 IDEA — The envelope has no test-level failed count',
         '💡 IDEA — Grader: accept a kmp-test envelope that reached the model through a file read (coverage family)',
         '💡 IDEA — Scenario B: multi-module coverage (NowInAndroid), same protocol as Evidence3',
       ]);
-      const findings = queued.slice(0, queued.indexOf('### 💡 IDEA — Grader: accept a kmp-test envelope'));
+      const findings = queued.slice(queued.indexOf('### 🐛 BUG — The umbrella-flavor warning'), queued.indexOf('### 💡 IDEA — Grader: accept a kmp-test envelope'));
       expect(findings.match(/Evidence3/g).length).toBeGreaterThanOrEqual(3);
       expect(findings).not.toMatch(GROUND_TRUTH_NAMES);
     });
