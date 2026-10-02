@@ -22,7 +22,10 @@ import {
   resolveJunitXmlMaxBytes,
   DEFAULT_JUNIT_XML_MAX_MB,
   _resetJunitXmlWarnLatch,
+  isInstrumentedTask,
 } from '../../lib/parsers/junit-xml.js';
+import { pickGradleTaskFor } from '../../lib/orchestrators/parallel/dispatch.js';
+import { TEST_TYPE_VALUES } from '../../lib/parsers/argv-constants.js';
 
 let workDir;
 const savedMaxMb = process.env.KMP_JUNIT_XML_MAX_MB;
@@ -297,5 +300,132 @@ describe('junitTestStatsFor', () => {
     const anomalies = [];
     expect(junitTestStatsFor(workDir, ':core:jvmTest', 0, anomalies).total).toBe(5);
     expect(anomalies).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AGP's connected-test results belong to instrumented tasks only
+// ---------------------------------------------------------------------------
+// forEachJunitXml used to add build/outputs/androidTest-results/connected/ for EVERY task of a module. Results that an
+// earlier device run left there were then counted for unit-test tasks, and for an UP-TO-DATE or FROM-CACHE task (sinceMs 0,
+// no freshness cutoff) for good: individual_total was inflated and a green run could report individual_failed > 0 (a real
+// project showed 4039 against 4036 test cases, and 3 failures next to tests.failed 0).
+const DEVICE_FAILURE_XML = [
+  '<testsuite name="com.x.Dev" tests="1" failures="1">',
+  '  <testcase name="fails" classname="com.x.Dev" time="1.0">',
+  '    <failure type="java.lang.AssertionError" message="device only">stack</failure>',
+  '  </testcase>',
+  '</testsuite>',
+].join('\n');
+
+// A result of a device run a month ago, in AGP's <sourceSet> subdirectory.
+function writeStaleConnectedXml(root, mod, sourceSet = 'androidMain') {
+  const dir = path.join(root, mod, 'build', 'outputs', 'androidTest-results', 'connected', sourceSet);
+  mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, 'TEST-device.xml');
+  writeFileSync(file, DEVICE_FAILURE_XML, 'utf8');
+  const old = new Date(Date.now() - 30 * 86_400_000);
+  utimesSync(file, old, old);
+  return file;
+}
+
+describe('AGP connected results are read for instrumented tasks only', () => {
+  const INSTRUMENTED_TASKS = [
+    'connectedDebugAndroidTest', 'connectedReleaseAndroidTest', 'connectedFreeDebugAndroidTest', 'connectedAndroidTest',
+    'connectedCheck', 'connectedAndroidDeviceTest', 'androidConnectedCheck',
+  ];
+  const UNIT_TASKS = [
+    'testDebugUnitTest', 'testFreeDebugUnitTest', 'jvmTest', 'desktopTest', 'testAndroidHostTest', 'iosSimulatorArm64Test',
+  ];
+
+  it.each(UNIT_TASKS)('%s ignores a stale connected result with a failure, even with no freshness cutoff', (task) => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-junit-'));
+    writeXml(workDir, 'app', task, 'Unit');
+    writeStaleConnectedXml(workDir, 'app');
+    expect(junitTestCountFor(workDir, `:app:${task}`, 0)).toBe(2);
+    expect(junitTestStatsFor(workDir, `:app:${task}`, 0)).toEqual({ total: 2, failed: 0, skipped: 0 });
+    expect(junitTestFailuresFor(workDir, `:app:${task}`, 0)).toEqual([]);
+  });
+
+  it('the umbrella test task (every flavor run) ignores it too', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-junit-'));
+    writeXml(workDir, 'app', 'testDemoDebugUnitTest', 'D');
+    writeXml(workDir, 'app', 'testProdDebugUnitTest', 'P');
+    writeStaleConnectedXml(workDir, 'app');
+    expect(junitTestStatsFor(workDir, ':app:test', 0)).toEqual({ total: 4, failed: 0, skipped: 0 });
+    expect(junitTestFailuresFor(workDir, ':app:test', 0)).toEqual([]);
+  });
+
+  it.each(INSTRUMENTED_TASKS)('%s still counts it: total, failed and the test_failures entry', (task) => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-junit-'));
+    writeStaleConnectedXml(workDir, 'app');
+    expect(junitTestCountFor(workDir, `:app:${task}`, 0)).toBe(1);
+    expect(junitTestStatsFor(workDir, `:app:${task}`, 0)).toEqual({ total: 1, failed: 1, skipped: 0 });
+    const failures = junitTestFailuresFor(workDir, `:app:${task}`, 0);
+    expect(failures).toHaveLength(1);
+    expect(failures[0].test).toBe('com.x.Dev.fails');
+  });
+
+  it('opts.instrumented reads it under any task name, as the androidInstrumented leg does for a --device-task name', () => {
+    workDir = mkdtempSync(path.join(tmpdir(), 'kmp-junit-'));
+    writeStaleConnectedXml(workDir, 'app');
+    expect(junitTestCountFor(workDir, ':app:runDeviceSuite', 0)).toBe(0);
+    expect(junitTestCountFor(workDir, ':app:runDeviceSuite', 0, null, { instrumented: true })).toBe(1);
+    expect(junitTestStatsFor(workDir, ':app:runDeviceSuite', 0, null, { instrumented: true }))
+      .toEqual({ total: 1, failed: 1, skipped: 0 });
+    expect(junitTestFailuresFor(workDir, ':app:runDeviceSuite', 0, null, { instrumented: true })).toHaveLength(1);
+  });
+
+  it('isInstrumentedTask names the connected family and no unit, desktop or native test task', () => {
+    for (const task of INSTRUMENTED_TASKS) expect(isInstrumentedTask(task), task).toBe(true);
+    const others = [...UNIT_TASKS, 'test', 'check', 'macosArm64Test', 'jsTest', 'wasmJsTest', 'allTests', 'deviceCheck', 'connect'];
+    for (const task of others) expect(isInstrumentedTask(task), task).toBe(false);
+  });
+
+  it('follows the dispatchers: a task pickGradleTaskFor gives the androidInstrumented leg is instrumented and no other leg is', () => {
+    const agp = {
+      name: 'app', type: 'android', androidDsl: true,
+      sourceSets: { androidInstrumentedTest: true, test: true },
+      resolved: { deviceTestTask: null, unitTestTask: null },
+    };
+    const modules = [
+      agp,
+      { ...agp, hasFlavor: true },
+      { ...agp, testBuildType: 'release' },
+      {
+        name: 'feat', type: 'kmp', androidDsl: true, androidDslVariant: 'kmpAndroidLibrary',
+        sourceSets: { androidDeviceTest: true, androidUnitTest: true, commonTest: true },
+        resolved: { deviceTestTask: null, unitTestTask: 'testAndroidHostTest' },
+      },
+      {
+        name: 'shared', type: 'kmp', sourceSets: { commonTest: true, iosMain: true },
+        resolved: {
+          unitTestTask: 'jvmTest', iosTestTask: 'iosSimulatorArm64Test', macosTestTask: 'macosArm64Test',
+          webTestTask: 'wasmJsTest', deviceTestTask: 'connectedDebugAndroidTest',
+        },
+      },
+    ];
+    // Every device-test task the project probe can resolve (lib/project/analyze-module.js deviceCandidates).
+    for (const probed of ['connectedAndroidDeviceTest', 'connectedDebugAndroidTest', 'connectedAndroidTest', 'androidConnectedCheck']) {
+      modules.push({ name: 'probed', type: 'kmp', sourceSets: {}, resolved: { deviceTestTask: probed } });
+    }
+    const optionSets = [
+      {}, { androidVariant: 'debug' }, { androidVariant: 'release' }, { androidVariant: 'all' },
+      { androidVariant: 'debug', flavor: 'free' },
+    ];
+    let instrumentedPicks = 0;
+    for (const mod of modules) {
+      for (const opts of optionSets) {
+        for (const testType of TEST_TYPE_VALUES) {
+          if (testType === 'all') continue; // expands to the other legs before dispatch
+          const { task } = pickGradleTaskFor(mod, testType, opts);
+          if (!task) continue;
+          const instrumented = testType === 'androidInstrumented';
+          if (instrumented) instrumentedPicks += 1;
+          expect(isInstrumentedTask(task.split(':').pop()), `--test-type ${testType} -> ${task}`).toBe(instrumented);
+        }
+      }
+    }
+    expect(instrumentedPicks).toBeGreaterThan(20);
   });
 });

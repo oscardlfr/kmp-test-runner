@@ -3325,16 +3325,17 @@ describe('runParallel', () => {
   // PR-28c (2026-07-14, M10 closure) — AGP-directory analogue of the F3 fix
   // above. forEachJunitXml unions the legacy build/test-results/<task>/ dir
   // AND AGP's build/outputs/androidTest-results/connected/<sourceSet>/ dir
-  // under the SAME sinceMs gate (junit-xml.js:93-159) — nothing branches on
-  // test type. These tests prove that shape-agnostic claim through a real
+  // under the SAME sinceMs gate (junit-xml.js:93-159) — the gate itself does
+  // not branch on test type. These tests prove that shape-agnostic claim through a real
   // androidInstrumented dispatch, closing the untested intersection
   // BACKLOG.md flagged (AGP dir x stale mtime x cacheRespected x real
   // dispatch).
   // ---------------------------------------------------------------------------
   // AGP's connected-test output isn't keyed by task short-name —
   // forEachJunitXml walks every subdirectory of
-  // build/outputs/androidTest-results/connected/ regardless of which task
-  // dispatched it (junit-xml.js:124-133), unlike the legacy
+  // build/outputs/androidTest-results/connected/ whichever instrumented task
+  // dispatched it (junit-xml.js isInstrumentedTask; unit-test tasks never read
+  // it, see the WO-18a tests below), unlike the legacy
   // build/test-results/<taskShort>/ path — so this helper takes a sourceSet
   // dir name instead of a taskShort.
   function writeStaleAgpJunitXml(projectRoot, modName, sourceSetDir, fileBase, testcaseCount, ageSec = 60) {
@@ -3411,6 +3412,64 @@ describe('runParallel', () => {
     });
     expect(envelope.parallel.legs[0].execution.fresh).toBe(1);
     expect(envelope.tests.individual_total).toBe(0);
+  });
+
+  // WO-18a (found by the 0.17.0 pre-release smoke on a real project): the connected directory used to be added for
+  // every task of the module, so a device run's results left on disk were counted by the module's UP-TO-DATE
+  // unit-test task (sinceMs 0): individual_total was inflated and the new individual_failed reported failures in a green run.
+  function writeStaleAgpFailureXml(projectRoot, modName, sourceSetDir, fileBase, ageSec = 30 * 86400) {
+    const agpDir = path.join(
+      projectRoot, modName, 'build', 'outputs', 'androidTest-results', 'connected', sourceSetDir,
+    );
+    mkdirSync(agpDir, { recursive: true });
+    const filePath = path.join(agpDir, `TEST-${fileBase}.xml`);
+    writeFileSync(filePath,
+      '<testsuite name="com.foo.DeviceTest" tests="1" failures="1">'
+      + '<testcase name="needsDevice" classname="com.foo.DeviceTest" time="1.0">'
+      + '<failure type="java.lang.AssertionError" message="device only"/>'
+      + '</testcase></testsuite>');
+    const past = Math.floor(Date.now() / 1000) - ageSec;
+    utimesSync(filePath, past, past);
+  }
+
+  it('WO-18a: an UP-TO-DATE unit-test task ignores a stale AGP connected result with a failure', async () => {
+    const dir = makeProject([{ ...androidInstrumentedApp(), sourceSets: ['test', 'androidInstrumentedTest'] }]);
+    writeStaleJunitXml(dir, 'app', 'testDebugUnitTest', 'com.foo.UnitTest', 4);
+    writeStaleAgpFailureXml(dir, 'app', 'androidMain', 'com.foo.DeviceTest');
+    const spawn = makeSpawnStub({ stdout: '> Task :app:testDebugUnitTest UP-TO-DATE\nBUILD SUCCESSFUL in 1s\n' });
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidUnit'],
+      spawn,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    expect(coverageContractTaskCalls(spawn).flat()).toContain(':app:testDebugUnitTest');
+    expect(envelope.parallel.legs[0].execution.up_to_date).toBe(1);
+    expect(exitCode).toBe(0);
+    expect(envelope.tests.failed).toBe(0);
+    expect(envelope.tests.individual_total).toBe(4);
+    expect(envelope.tests.individual_failed).toBe(0);
+    expect(envelope.modules.flatMap(m => m.test_failures || [])).toEqual([]);
+  });
+
+  it('WO-18a: a --device-task name outside the connected family still reads the AGP results of the androidInstrumented leg', async () => {
+    // Keeps what the connected walk did for any task name, now through the leg instead of the name.
+    const dir = makeProject([androidInstrumentedApp()]);
+    writeStaleAgpJunitXml(dir, 'app', 'androidMain', 'com.foo.Bar', 5);
+    const spawn = makeSpawnStub({ stdout: '> Task :app:runDeviceSuite UP-TO-DATE\nBUILD SUCCESSFUL in 1s\n' });
+    const adbProbe = () => [{ serial: 'PROBED-X1', type: 'physical', model: 'TestDevice' }];
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--test-type', 'androidInstrumented', '--device-task', 'runDeviceSuite'],
+      spawn,
+      adbProbe,
+      log: () => {},
+      runCoverageInjection: makeRunCoverageStub(),
+    });
+    expect(coverageContractTaskCalls(spawn).flat()).toContain(':app:runDeviceSuite');
+    expect(envelope.parallel.legs[0].execution.up_to_date).toBe(1);
+    expect(envelope.tests.individual_total).toBe(5);
   });
 
   it('androidInstrumented fresh failure populates modules[].test_failures[] from the AGP directory end-to-end', async () => {
