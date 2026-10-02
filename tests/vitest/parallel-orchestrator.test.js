@@ -6674,3 +6674,122 @@ describe('coverage aggregation against a project with no coverage plugin anywher
     expect(envelope.coverage.total_lines).toBeNull();
   });
 });
+
+// ===========================================================================
+// flavor_defaulted_umbrella under the DEFAULT test type (Evidence3 finding)
+// ===========================================================================
+// A flavored Android module run WITHOUT --flavor gets the flavor-agnostic umbrella
+// `test` task under every test type, so the "this runs every flavor" warning has to
+// follow the dispatch, not the test type. The warning comes from the task picker's
+// hint path (pickGradleTaskFor -> executeLeg) and does NOT widen flavorAffectsLeg,
+// which also gates the exit-2 flavor_unused error.
+describe('pickGradleTaskFor — flavor_umbrella hint', () => {
+  const flavoredApp = {
+    name: 'app', type: 'android',
+    sourceSets: { test: true },
+    flavors: ['demo', 'prod'], effectiveHasFlavor: true,
+    resolved: { unitTestTask: 'test', flavors: ['demo', 'prod'] },
+  };
+
+  it('the default leg and androidUnit pick the umbrella with the hint when no --flavor was supplied', () => {
+    for (const testType of ['', 'androidUnit']) {
+      expect(pickGradleTaskFor(flavoredApp, testType), testType || 'default').toEqual({
+        task: ':app:test', reason: '', hint: 'flavor_umbrella',
+      });
+    }
+  });
+
+  it('no hint when a flavor was supplied, when the user asked for --variant all, or when the module has no flavors', () => {
+    for (const testType of ['', 'androidUnit']) {
+      expect(pickGradleTaskFor(flavoredApp, testType, { flavor: 'demo' }).hint, `${testType || 'default'} --flavor`).toBeUndefined();
+      expect(pickGradleTaskFor(flavoredApp, testType, { androidVariant: 'all' }).hint, `${testType || 'default'} --variant all`).toBeUndefined();
+      const plain = { name: 'plain', type: 'android', sourceSets: { test: true }, flavors: [], resolved: { unitTestTask: 'test' } };
+      expect(pickGradleTaskFor(plain, testType), `${testType || 'default'} plain`).toEqual({ task: ':plain:testDebugUnitTest', reason: '' });
+    }
+  });
+
+  it('a flavored module that is not android never reaches the umbrella on the default leg, so it carries no hint', () => {
+    const kmpWithFlavors = {
+      name: 'shared', type: 'kmp', sourceSets: { commonTest: true },
+      flavors: ['demo'], effectiveHasFlavor: true,
+      resolved: { unitTestTask: 'jvmTest' },
+    };
+    expect(pickGradleTaskFor(kmpWithFlavors, '')).toEqual({ task: ':shared:jvmTest', reason: '' });
+  });
+});
+
+describe('runParallel — flavor_defaulted_umbrella under the default test type', () => {
+  const flavoredBuild = 'plugins { id("com.android.application") }\nandroid { productFlavors { create("demo") {}\ncreate("prod") {} } }\n';
+  const flavoredProject = () => makeProject([{ name: 'app', sourceSets: ['test'], build: flavoredBuild }]);
+  const umbrellaWarnings = (envelope) => envelope.warnings.filter(w => w.code === 'flavor_defaulted_umbrella');
+  const run = async (dir, args, extra = {}) => {
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const result = await runParallel({
+      projectRoot: dir, args, spawn, log: () => {}, runCoverageInjection: makeRunCoverageStub(), ...extra,
+    });
+    return { ...result, spawn };
+  };
+
+  it('flavored module + no --flavor + default test type → the umbrella is dispatched and the warning is present once, with the usual payload', async () => {
+    // The real fixture: its flavors (demo, prod) come from the gradle-tasks probe, like a convention-applied project.
+    const { envelope, exitCode, spawn } = await run(path.resolve('tests/fixtures/flavored-unit-only'), ['--module-filter', ':app']);
+    expect(exitCode).toBe(0);
+    expect(spawn.calls.filter(isGradleCall).map(effectiveGradleArgs).flat()).toContain(':app:test');
+    const warnings = umbrellaWarnings(envelope);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatchObject({ code: 'flavor_defaulted_umbrella', candidates: ['demo', 'prod'], test_type: '' });
+    expect(warnings[0].message).toBe(
+      'project declares product flavors and no --flavor was supplied; running the flavor-agnostic umbrella task across all flavors (slower). '
+      + 'Pass --flavor <name> (one of: demo, prod) to target a single flavor.',
+    );
+  });
+
+  it('several flavored modules without --flavor under the default test type give exactly one warning, listing the flavors of all of them', async () => {
+    const dir = makeProject([
+      { name: 'app', sourceSets: ['test'], build: flavoredBuild },
+      { name: 'wear', sourceSets: ['test'], build: flavoredBuild },
+      { name: 'tv', sourceSets: ['test'], build: flavoredBuild },
+    ]);
+    const { envelope, spawn } = await run(dir, []);
+    const tasks = spawn.calls.filter(isGradleCall).map(effectiveGradleArgs).flat();
+    expect(tasks).toEqual(expect.arrayContaining([':app:test', ':tv:test', ':wear:test']));
+    expect(umbrellaWarnings(envelope)).toHaveLength(1);
+  });
+
+  it('an explicit androidUnit leg still warns exactly once (the leg-level hint does not duplicate the existing warning)', async () => {
+    const { envelope } = await run(flavoredProject(), ['--test-type', 'androidUnit']);
+    expect(umbrellaWarnings(envelope)).toHaveLength(1);
+  });
+
+  it('--test-type all warns exactly once across its legs', async () => {
+    const { envelope } = await run(flavoredProject(), ['--test-type', 'all'], { env: { ...process.env, KMP_TEST_SKIP_ADB: '1' } });
+    expect(umbrellaWarnings(envelope)).toHaveLength(1);
+  });
+
+  it('--flavor demo on the default leg → the flavor task, no warning, no flavor_unused', async () => {
+    const { envelope, spawn } = await run(flavoredProject(), ['--flavor', 'demo']);
+    expect(umbrellaWarnings(envelope)).toEqual([]);
+    expect(envelope.errors.map(e => e.code)).not.toContain('flavor_unused');
+    expect(spawn.calls.filter(isGradleCall).map(effectiveGradleArgs).flat()).toContain(':app:testDemoDebugUnitTest');
+  });
+
+  it('--variant all on the default leg → the user opted into the umbrella, so no warning', async () => {
+    const { envelope } = await run(flavoredProject(), ['--variant', 'all']);
+    expect(umbrellaWarnings(envelope)).toEqual([]);
+  });
+
+  it('--flavor X on a project without flavors behaves exactly as before under the default test type: no flavor_unused error, no warning, exit 0', async () => {
+    const dir = makeProject([{ name: 'app', sourceSets: ['test'], build: 'plugins { id("com.android.application") }\n' }]);
+    const { envelope, exitCode } = await run(dir, ['--flavor', 'demo']);
+    expect(exitCode).toBe(0);
+    expect(envelope.errors.map(e => e.code)).not.toContain('flavor_unused');
+    expect(umbrellaWarnings(envelope)).toEqual([]);
+  });
+
+  it('--flavor X on a project without flavors under an explicit androidUnit leg is still the exit-2 flavor_unused error (flavorAffectsLeg is not widened)', async () => {
+    const dir = makeProject([{ name: 'app', sourceSets: ['test'], build: 'plugins { id("com.android.application") }\n' }]);
+    const { envelope, exitCode } = await run(dir, ['--test-type', 'androidUnit', '--flavor', 'demo']);
+    expect(exitCode).toBe(2);
+    expect(envelope.errors.map(e => e.code)).toContain('flavor_unused');
+  });
+});

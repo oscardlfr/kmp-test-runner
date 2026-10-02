@@ -31,6 +31,10 @@ afterEach(() => {
   else process.env.KMP_JUNIT_XML_MAX_MB = originalSizeLimit;
 });
 
+// The flavored fixture below also carries the soft flavor_defaulted_umbrella warning (a flavored module on the
+// default leg without --flavor); it is incidental to JUnit cache accounting, so these tests compare the rest.
+const withoutUmbrellaWarning = (warnings) => warnings.filter(w => w.code !== 'flavor_defaulted_umbrella');
+
 function fixture() {
   root = mkdtempSync(path.join(tmpdir(), 'kmp-umbrella-junit-'));
   vi.spyOn(Date, 'now').mockReturnValue(startMs);
@@ -84,7 +88,7 @@ describe('umbrella JUnit child cache accounting', () => {
     expect(junitTestCountFor(root, `:${moduleName}:test`)).toBe(4);
     expect(state.tests).toEqual({ total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 4 });
     expect(result.execution).toEqual({ fresh: 1, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 0, no_evidence: 0 });
-    expect(state.warnings).toEqual([]);
+    expect(withoutUmbrellaWarning(state.warnings)).toEqual([]);
     expect(state.errors).toEqual([]);
   });
 
@@ -133,7 +137,7 @@ describe('umbrella JUnit child cache accounting', () => {
     const { state } = await run([{ exit: 1, lines: [taskLine(first, 'FAILED'), taskLine(second, 'UP-TO-DATE'), taskLine('test', 'FAILED')] }]);
     expect(state.tests.individual_total).toBe(2);
     expect(state.modules[0].test_failures).toHaveLength(1);
-    expect(state.warnings.map(w => w.code)).toEqual(['junit_xml_oversized']);
+    expect(withoutUmbrellaWarning(state.warnings).map(w => w.code)).toEqual(['junit_xml_oversized']);
   });
 
   it('keeps direct JVM test reuse unchanged', async () => {

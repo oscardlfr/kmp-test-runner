@@ -101,7 +101,7 @@ The `SKIP_*_MODULES` env vars layer on top: `SKIP_DESKTOP_MODULES="legacy-app"`,
 Android product flavors (e.g. `demo`/`prod`) make the plain `testDebugUnitTest` task **ambiguous** — AGP only creates `test${Flavor}DebugUnitTest`. The CLI detects flavors from the gradle task-graph probe, so flavors applied by a build-logic convention plugin (not the module's own `productFlavors {}`) are recovered too (`describe`/the envelope report `has_flavor: true` + a `flavors: [...]` list).
 
 - **`--flavor demo`** → dispatches `:module:testDemoDebugUnitTest` (and, under `--coverage-tool auto`, the matching `createDemoDebugUnitTestCoverageReport` → real jacoco numbers).
-- **No `--flavor`** on a flavored project → the flavor-agnostic umbrella `:module:test` (runs **every** flavor — correct but slower) + a non-fatal `flavor_defaulted_umbrella` warning listing the candidate flavors. Pass `--flavor <name>` to target one (faster, single-variant coverage).
+- **No `--flavor`** on a flavored project → the flavor-agnostic umbrella `:module:test` (runs **every** flavor — correct but slower) + a non-fatal `flavor_defaulted_umbrella` warning listing the candidate flavors, with the default test type as well as with `--test-type androidUnit`. Pass `--flavor <name>` to target one (faster, single-variant coverage).
 - Non-flavored projects are unaffected (`:module:testDebugUnitTest` as before).
 
 Discovery reports flavor availability; it does not choose one. An explicitly requested flavor or

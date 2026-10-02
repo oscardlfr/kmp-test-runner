@@ -16,7 +16,7 @@ The user supplied `--flavor <name>` but the orchestrator found **no flavored mod
 
 Applies to `parallel --test-type androidUnit` / `androidInstrumented` / `--test-type all` and `android`. The `coverage` subcommand accepts `--flavor` but does not raise this error (it only re-aggregates leftover reports). Not applicable to `benchmark` / `changed`.
 
-> **Related — no `--flavor` on a flavored project is NOT an error.** When a project IS flavored and you omit `--flavor`, the unit / instrumented leg dispatches the flavor-agnostic umbrella task (`:module:test` / `:module:connectedAndroidTest`, which run *every* flavor) and emits a non-fatal `flavor_defaulted_umbrella` warning (exit 0) listing the candidate flavors. Pass `--flavor <name>` to target one flavor (faster, single-variant coverage).
+> **Related — no `--flavor` on a flavored project is NOT an error.** When a project IS flavored and you omit `--flavor`, the unit / instrumented leg (the default test type included) dispatches the flavor-agnostic umbrella task (`:module:test` / `:module:connectedAndroidTest`, which run *every* flavor) and emits a non-fatal `flavor_defaulted_umbrella` warning (exit 0) listing the candidate flavors. Pass `--flavor <name>` to target one flavor (faster, single-variant coverage).
 
 ## Root causes
 
