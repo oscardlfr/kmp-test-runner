@@ -2101,7 +2101,8 @@ describe('README_NOTES[3]: the larger-task note, recomputed independently of the
     costEstimate = loadCostEstimate(join(RUNS_DIR_V2, 'cost-estimate.json'));
   });
 
-  const kb = (cells, runtime, arm) => (median(cells.filter((c) => c.runtime_id === runtime && c.arm === arm && c.status !== 'missing').map((c) => c.output_bytes)) / 1024).toFixed(1);
+  // Decimal KB, like the metrics grid and the detailed document's tables: the same median must read the same number everywhere.
+  const kb = (cells, runtime, arm) => (median(cells.filter((c) => c.runtime_id === runtime && c.arm === arm && c.status !== 'missing').map((c) => c.output_bytes)) / 1000).toFixed(1);
   // The midpoint of the low and the high estimate of each session, then the median over the arm's sessions.
   function cost(runtime, arm) {
     const entry = costEstimate.runtimes[runtime];
@@ -2234,7 +2235,7 @@ describe('the committed evidence3-agentic-benchmark-2026-10-02 campaign (publish
   });
 
   it('the note\'s medians are recomputed independently from the committed summary and cost estimate', () => {
-    const kb = (runtime, arm) => (median(summary.cells.filter((c) => c.runtime_id === runtime && c.arm === arm && c.status !== 'missing').map((c) => c.output_bytes)) / 1024).toFixed(1);
+    const kb = (runtime, arm) => (median(summary.cells.filter((c) => c.runtime_id === runtime && c.arm === arm && c.status !== 'missing').map((c) => c.output_bytes)) / 1000).toFixed(1);
     const cost = (runtime, arm) => {
       const entry = costEstimate.runtimes[runtime];
       const price = entry.per_million_tokens;
@@ -2248,6 +2249,15 @@ describe('the committed evidence3-agentic-benchmark-2026-10-02 campaign (publish
     );
     // The committed root README carries it exactly once.
     expect(rootBlock().split(README_NOTES[3]({ summary, costEstimate, scenarioFacts })).length - 1).toBe(1);
+  });
+
+  it('the note\'s tool-output medians are the very numbers the metrics grid prints for the same four groups, in the same unit (decimal KB)', () => {
+    const grid = readFileSync(join(RUNS_DIR_V3, 'metrics-grid.svg'), 'utf8');
+    const printed = [...grid.matchAll(/>(\d+(?:\.\d+)? KB)</g)].map((m) => m[1]);
+    expect(printed).toHaveLength(4);
+    const note = README_NOTES[3]({ summary, costEstimate, scenarioFacts });
+    expect(note).toContain(`${printed[0]} with kmp-test and ${printed[1]} without for Claude Code`);
+    expect(note).toContain(`(as logged) was ${printed[2]} and ${printed[3]}. The median estimated cost`);
   });
 
   it('never names the scenario\'s ground truth (module paths, failing test classes) in generated text', () => {

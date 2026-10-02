@@ -1557,9 +1557,11 @@ function noteMedian(value, digits, what) {
   return value.toFixed(digits);
 }
 
+// Decimal KB (bytes / 1000), like the metrics grid's fmtBytes and the detailed document's tables: the same median must read the same
+// number, under the same "KB" label, everywhere the README and the document show it.
 function noteOutputKb(summary, runtimeId, arm) {
   const metric = scalarMetric(summary, findGroup(summary, runtimeId, arm), runtimeId, arm, 'output_bytes', () => null);
-  return noteMedian(metric.kind === 'per-session' ? metric.median / 1024 : null, 1, `output_bytes of ${runtimeId} ${arm}`);
+  return noteMedian(metric.kind === 'per-session' ? metric.median / 1000 : null, 1, `output_bytes of ${runtimeId} ${arm}`);
 }
 
 function noteCost(summary, costEstimate, runtimeId, arm) {
