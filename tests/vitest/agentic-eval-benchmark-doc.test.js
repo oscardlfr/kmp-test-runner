@@ -1164,25 +1164,32 @@ describe('the fixed prose of the Evidence3 section is backed by the committed da
       expect(misses).not.toMatch(/BookmarksViewModelTest|CompositeUserNewsResourceRepositoryTest|GetFollowableTopicsUseCaseTest/);
     });
 
-    it('the flag it says takes auto, debug, release or all is documented that way in the README, and the three product findings are at the top of the queued backlog', () => {
+    it('the flag it says takes auto, debug, release or all is documented that way in the README, and the three product findings are in the BACKLOG, shipped, in their original order', () => {
       const readme = crlfNormalize(readFileSync(join(REPO_ROOT, 'README.md'), 'utf8'));
       expect(readme).toContain('`--variant` / `--android-variant <auto\\|debug\\|release\\|all>`');
       expect(misses).toContain('`--variant` takes `auto`, `debug`, `release` or `all`');
       const backlog = crlfNormalize(readFileSync(join(REPO_ROOT, 'BACKLOG.md'), 'utf8'));
       const queued = backlog.slice(backlog.indexOf('## QUEUED — post-v0.3.4 ideas (newest first)'));
       const allHeadings = [...queued.matchAll(/^### (.+)$/gm)].map((m) => m[1]);
-      // They head the queue, in this order, followed by the two items of the same cycle; a newer item (the README overview's, WO-16) may sit above them.
-      const first = allHeadings.indexOf('🐛 BUG — The umbrella-flavor warning is skipped for the default test type');
+      // They were queued at the top when this section was written (WO-15); WO-17 shipped them: the heading becomes
+      // "✅ SHIPPED <date> (PR #<n>) — <title>" with the title and the text kept, and the parked milestone and newer items may sit above them.
+      const titles = [
+        'The umbrella-flavor warning is skipped for the default test type',
+        '`--variant` silently accepts values outside `auto|debug|release|all`',
+        'The envelope has no test-level failed count',
+      ];
+      const shipped = (title) => allHeadings.findIndex((h) => new RegExp(`^✅ SHIPPED \\d{4}-\\d{2}-\\d{2} \\(PR #\\d+\\) — ${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`).test(h));
+      const first = shipped(titles[0]);
       expect(first).toBeGreaterThan(-1);
-      expect(first).toBeLessThanOrEqual(1);
-      expect(allHeadings.slice(first, first + 5)).toEqual([
-        '🐛 BUG — The umbrella-flavor warning is skipped for the default test type',
-        '💡 IDEA — `--variant` silently accepts values outside `auto|debug|release|all`',
-        '💡 IDEA — The envelope has no test-level failed count',
+      expect(titles.map(shipped)).toEqual([first, first + 1, first + 2]);
+      // The two items of the same cycle follow them directly.
+      expect(allHeadings.slice(first + 3, first + 5)).toEqual([
         '💡 IDEA — Grader: accept a kmp-test envelope that reached the model through a file read (coverage family)',
         '💡 IDEA — Scenario B: multi-module coverage (NowInAndroid), same protocol as Evidence3',
       ]);
-      const findings = queued.slice(queued.indexOf('### 🐛 BUG — The umbrella-flavor warning'), queued.indexOf('### 💡 IDEA — Grader: accept a kmp-test envelope'));
+      const start = queued.indexOf(`### ${allHeadings[first]}`);
+      const findings = queued.slice(start, queued.indexOf('### 💡 IDEA — Grader: accept a kmp-test envelope'));
+      expect(findings.match(/\*\*Shipped:\*\*/g)).toHaveLength(3);
       expect(findings.match(/Evidence3/g).length).toBeGreaterThanOrEqual(3);
       expect(findings).not.toMatch(GROUND_TRUTH_NAMES);
     });

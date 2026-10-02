@@ -1325,6 +1325,34 @@ describe('runAndroid --variant (v0.9 step 3)', () => {
     expect(parseArgs([]).variant).toBe('auto');
   });
 
+  it('--variant demoDebug: parseArgs records one variant_unrecognized warning (value as typed); valid values and the default leave no warnings key', () => {
+    const opts = parseArgs(['--variant', 'demoDebug']);
+    expect(opts.variant).toBe('demodebug');
+    expect(opts.warnings).toEqual([{
+      code: 'variant_unrecognized',
+      message: expect.stringContaining("--variant 'demoDebug' is not one of [auto, debug, release, all]"),
+      value: 'demoDebug',
+      allowed: ['auto', 'debug', 'release', 'all'],
+    }]);
+    for (const value of ['Release', 'DEBUG', 'all', 'auto']) expect(Object.keys(parseArgs(['--variant', value])), value).not.toContain('warnings');
+    expect(Object.keys(parseArgs([]))).not.toContain('warnings');
+  });
+
+  it('--variant demoDebug: the envelope carries exactly one variant_unrecognized warning and the dispatch of --variant auto', async () => {
+    const dir = makeProject([{ name: 'a' }]);
+    const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
+    const run = async (variant) => {
+      const spawn = makeSpawnStub();
+      const { envelope } = await runAndroid({ projectRoot: dir, args: ['--variant', variant], spawn, adbProbe });
+      return { envelope, tasks: effectiveGradleArgs(findGradleCalls(spawn.calls)[0]) };
+    };
+    const typed = await run('demoDebug');
+    const auto = await run('auto');
+    expect(typed.envelope.warnings.filter(w => w.code === 'variant_unrecognized')).toEqual([expect.objectContaining({ value: 'demoDebug' })]);
+    expect(auto.envelope.warnings.filter(w => w.code === 'variant_unrecognized')).toEqual([]);
+    expect(typed.tasks).toEqual(auto.tasks);
+  });
+
   it('--dry-run echoes variant in plan', async () => {
     const dir = makeProject([{ name: 'a' }]);
     const spawn = makeSpawnStub();

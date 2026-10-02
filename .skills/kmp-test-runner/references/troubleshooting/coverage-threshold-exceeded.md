@@ -72,7 +72,7 @@ For "convention-plugin inheritance change":
 kmp-test coverage --json | jq '.coverage'
 
 # Per-module coverage breakdown
-kmp-test coverage --coverage-modules ":core:network" --json
+kmp-test coverage --coverage-modules "core:network" --json
 # (repeat per module to localise regression)
 
 # Verify which modules currently apply coverage

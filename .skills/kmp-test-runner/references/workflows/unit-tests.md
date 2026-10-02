@@ -85,7 +85,7 @@ When a leg's gradle invocation aborts during configuration / evaluation (compile
 Five things are auto-detected per-run unless overridden:
 
 1. **Test type** — `kmp-desktop` projects default to `common`, others to `androidUnit`. Explicit `--test-type` overrides.
-2. **Coverage plugin** — per-module probe via `lib/project-model.js`. Convention-plugin coverage is inherited per-module since v0.6.1; modules that don't apply a coverage-adding convention plugin are listed under `skipped[]` with reason `no coverage plugin`.
+2. **Coverage plugin** — per-module probe via `lib/project-model.js`. Convention-plugin coverage is inherited per-module since v0.6.1; modules that don't apply a coverage-adding convention plugin are simply left out of the coverage aggregation (they appear in none of `modules_with_kover_plugin`, `modules_with_jacoco_plugin` and `module_buckets`; there is no `skipped[]` entry).
 3. **JDK toolchain** — reads project's `jvmToolchain(N)` / `JvmTarget.JVM_N` / `JavaVersion.VERSION_N` (MAX), compares to runtime JDK, then walks `~/.kmp-test/config.json` `java_home` → `--java-home` → `gradle.properties org.gradle.java.home` → JDK catalogue (since v0.6.1: Adoptium / Zulu / Microsoft / Semeru / BellSoft on Windows; `/Library/Java/JavaVirtualMachines/` on macOS; `/usr/lib/jvm` + `/opt/{java,jdk}` on Linux) → host default.
 4. **Console mode** — when stdout is not a TTY or `NO_COLOR` is set, the orchestrator injects `--console=plain` into the gradle subprocess so test output stays parseable. Override with `--color always` / `--color never`.
 5. **Parallelism respect** — since v0.10 #2, if the resolved `gradle.properties` has `org.gradle.parallel=false`, the CLI drops the unconditional `--parallel` flag from the gradle dispatch and surfaces `gradle_config_applied: { parallel_dropped: true }` on the `parallel` envelope block. Re-enable via `--gradle-args "--parallel"`.
@@ -101,7 +101,7 @@ The `SKIP_*_MODULES` env vars layer on top: `SKIP_DESKTOP_MODULES="legacy-app"`,
 Android product flavors (e.g. `demo`/`prod`) make the plain `testDebugUnitTest` task **ambiguous** — AGP only creates `test${Flavor}DebugUnitTest`. The CLI detects flavors from the gradle task-graph probe, so flavors applied by a build-logic convention plugin (not the module's own `productFlavors {}`) are recovered too (`describe`/the envelope report `has_flavor: true` + a `flavors: [...]` list).
 
 - **`--flavor demo`** → dispatches `:module:testDemoDebugUnitTest` (and, under `--coverage-tool auto`, the matching `createDemoDebugUnitTestCoverageReport` → real jacoco numbers).
-- **No `--flavor`** on a flavored project → the flavor-agnostic umbrella `:module:test` (runs **every** flavor — correct but slower) + a non-fatal `flavor_defaulted_umbrella` warning listing the candidate flavors. Pass `--flavor <name>` to target one (faster, single-variant coverage).
+- **No `--flavor`** on a flavored project → the flavor-agnostic umbrella `:module:test` (runs **every** flavor — correct but slower) + a non-fatal `flavor_defaulted_umbrella` warning listing the candidate flavors, with the default test type as well as with `--test-type androidUnit`. Pass `--flavor <name>` to target one (faster, single-variant coverage).
 - Non-flavored projects are unaffected (`:module:testDebugUnitTest` as before).
 
 Discovery reports flavor availability; it does not choose one. An explicitly requested flavor or
@@ -131,7 +131,7 @@ The `parallel` subcommand emits the standard top-level envelope (see [`../cli/en
   "contracts": { "coverage_evidence": 1 },
   "subcommand": "parallel",
   "exit_code": 0,
-  "tests": { "total": 42, "passed": 42, "failed": 0, "skipped": 0, "individual_total": 58 },
+  "tests": { "total": 42, "passed": 42, "failed": 0, "skipped": 0, "individual_total": 58, "individual_failed": 0, "individual_skipped": 2 },
   "modules": [
     {
       "name": ":core:network",

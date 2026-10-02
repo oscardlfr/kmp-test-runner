@@ -57,7 +57,9 @@ Every subcommand emits the same canonical envelope on `--json`. Subcommand-speci
     "passed": 0,
     "failed": 0,
     "skipped": 0,
-    "individual_total": 0          // testcase-level (parallel only — derived from JUnit XML)
+    "individual_total": 0,         // testcase-level (parallel only — derived from JUnit XML)
+    "individual_failed": 0,        // testcases with a <failure> or <error> child (parallel only)
+    "individual_skipped": 0        // testcases with a <skipped> child (parallel only)
   },
   "modules": [
     {
@@ -112,6 +114,24 @@ Every subcommand emits the same canonical envelope on `--json`. Subcommand-speci
   //                "modules": [...] }
 }
 ```
+
+### `tests`: module-level and testcase-level counts
+
+`total`, `passed`, `failed` and `skipped` are module-level: one unit per dispatched Gradle task (for `parallel`,
+`skipped` is not incremented). `individual_total`, `individual_failed` and `individual_skipped` are the
+testcase-level view of the same run, and only `parallel` (and `changed`, which copies its delegate) carries them:
+
+- They are counted from the same JUnit XML files, with the same freshness and size guards, whatever the task's status:
+  `individual_total` is every `<testcase>`, `individual_failed` those with a `<failure>` or `<error>` child,
+  `individual_skipped` those with a `<skipped>` child. A passing task can carry skipped testcases.
+- Under the umbrella `test` task of a flavored module (no `--flavor`, see `flavor_defaulted_umbrella`) every flavor's
+  run counts, so a test that exists in two flavors is counted twice. `modules[].test_failures[]` lists one entry per
+  failing execution in the same way, and `individual_failed` equals the number of those entries for a failed task.
+  Pass `--flavor <name>` to count one flavor.
+- Envelopes built without JUnit XML (`--dry-run`, error envelopes, `changed --show-modules-only`) omit the three keys
+  rather than report zeros: a consumer treats an absent key as unknown, like the coverage keys below. A real run that
+  found no XML reports zeros.
+- `tests.skipped` keeps its meaning and is not a testcase count.
 
 ### `covered_lines` / `total_lines` scope
 
@@ -211,7 +231,8 @@ Non-fatal signals. They never change the exit code — an agent can branch on th
 |---|---|---|
 | `instrumented_only_skipped` | parallel, changed | the unit / auto-detect leg skipped a module whose only test surface is instrumented (`androidInstrumentedTest` / `androidTest`). Carries `module`. Run those tests with `--test-type androidInstrumented` (or `kmp-test android`). Suppressed under `--test-type all` (that run already targets the instrumented leg) |
 | `gradle_deprecation` | any | gradle exited 1 solely because of Gradle 9+ deprecation warnings while every task passed; the `BUILD FAILED` line is not duplicated to `errors[]` |
-| `flavor_defaulted_umbrella` | parallel (`androidUnit`/`androidInstrumented`) | a flavored project ran without `--flavor`; dispatch fell back to the flavor-agnostic umbrella task (runs every flavor). Carries `candidates` |
+| `flavor_defaulted_umbrella` | parallel, changed | a flavored Android module ran without `--flavor`, so dispatch fell back to the flavor-agnostic umbrella task (`:module:test` or `:module:connectedAndroidTest`, which run every flavor), under any test type that dispatches it: the default (auto) test type, `androidUnit`, `androidInstrumented` and `all`. Emitted once per run. Not emitted when `--flavor` is given or when `--variant all` asked for the umbrella. `changed` carries the warning of its parallel delegate. Carries `candidates` (the flavors of every filtered module) and `test_type` |
+| `variant_unrecognized` | parallel, changed, android, benchmark | `--variant` (or `--android-variant`) was given a value outside `auto`, `debug`, `release`, `all` (matched case-insensitively). Dispatch is unchanged: the value is treated as `auto`. A flavored build variant such as `demoDebug` is passed as `--flavor <flavor> --variant <buildType>`. Carries `value` (as typed) and `allowed` (`["auto","debug","release","all"]`). Emitted once; `changed` raises it itself and drops the copy of its parallel delegate. A dangling `--variant` is still the `invalid_flag_value` error (exit 2) |
 | `no_test_modules_for_leg` | parallel (`all`) | a leg matched no modules, but at least one sibling leg passed — demoted from `no_test_modules` error to a per-leg warning. Carries `test_type` |
 | `no_adb_implies_list_only` | android, info | `--no-adb` / `KMP_TEST_SKIP_ADB` set on the instrumented path; dispatch was skipped and the module set emitted as list-only |
 | `partial_timeout` | benchmark | at least one module timed out but others passed; graded exit 0 (override with `--strict-timeouts`) |

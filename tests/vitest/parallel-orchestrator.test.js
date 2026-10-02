@@ -5650,7 +5650,7 @@ describe('runParallel legit-skip exit semantics (drift #1)', () => {
     expect(envelope.skipped[0].module).toBe('androidonly');
     expect(envelope.skipped[0].reason).toMatch(/common/);
     expect(envelope.tests).toEqual({
-      total: 0, passed: 0, failed: 0, skipped: 0, individual_total: 0,
+      total: 0, passed: 0, failed: 0, skipped: 0, individual_total: 0, individual_failed: 0, individual_skipped: 0,
     });
   });
 
@@ -6672,5 +6672,283 @@ describe('coverage aggregation against a project with no coverage plugin anywher
     expect(envelope.coverage.missed_lines).toBeNull();
     expect(envelope.coverage.covered_lines).toBeNull();
     expect(envelope.coverage.total_lines).toBeNull();
+  });
+});
+
+// ===========================================================================
+// flavor_defaulted_umbrella under the DEFAULT test type (Evidence3 finding)
+// ===========================================================================
+// A flavored Android module run WITHOUT --flavor gets the flavor-agnostic umbrella
+// `test` task under every test type, so the "this runs every flavor" warning has to
+// follow the dispatch, not the test type. The warning comes from the task picker's
+// hint path (pickGradleTaskFor -> executeLeg) and does NOT widen flavorAffectsLeg,
+// which also gates the exit-2 flavor_unused error.
+describe('pickGradleTaskFor — flavor_umbrella hint', () => {
+  const flavoredApp = {
+    name: 'app', type: 'android',
+    sourceSets: { test: true },
+    flavors: ['demo', 'prod'], effectiveHasFlavor: true,
+    resolved: { unitTestTask: 'test', flavors: ['demo', 'prod'] },
+  };
+
+  it('the default leg and androidUnit pick the umbrella with the hint when no --flavor was supplied', () => {
+    for (const testType of ['', 'androidUnit']) {
+      expect(pickGradleTaskFor(flavoredApp, testType), testType || 'default').toEqual({
+        task: ':app:test', reason: '', hint: 'flavor_umbrella',
+      });
+    }
+  });
+
+  it('no hint when a flavor was supplied, when the user asked for --variant all, or when the module has no flavors', () => {
+    for (const testType of ['', 'androidUnit']) {
+      expect(pickGradleTaskFor(flavoredApp, testType, { flavor: 'demo' }).hint, `${testType || 'default'} --flavor`).toBeUndefined();
+      expect(pickGradleTaskFor(flavoredApp, testType, { androidVariant: 'all' }).hint, `${testType || 'default'} --variant all`).toBeUndefined();
+      const plain = { name: 'plain', type: 'android', sourceSets: { test: true }, flavors: [], resolved: { unitTestTask: 'test' } };
+      expect(pickGradleTaskFor(plain, testType), `${testType || 'default'} plain`).toEqual({ task: ':plain:testDebugUnitTest', reason: '' });
+    }
+  });
+
+  it('a flavored module that is not android never reaches the umbrella on the default leg, so it carries no hint', () => {
+    const kmpWithFlavors = {
+      name: 'shared', type: 'kmp', sourceSets: { commonTest: true },
+      flavors: ['demo'], effectiveHasFlavor: true,
+      resolved: { unitTestTask: 'jvmTest' },
+    };
+    expect(pickGradleTaskFor(kmpWithFlavors, '')).toEqual({ task: ':shared:jvmTest', reason: '' });
+  });
+});
+
+describe('runParallel — flavor_defaulted_umbrella under the default test type', () => {
+  const flavoredBuild = 'plugins { id("com.android.application") }\nandroid { productFlavors { create("demo") {}\ncreate("prod") {} } }\n';
+  const flavoredProject = () => makeProject([{ name: 'app', sourceSets: ['test'], build: flavoredBuild }]);
+  const umbrellaWarnings = (envelope) => envelope.warnings.filter(w => w.code === 'flavor_defaulted_umbrella');
+  const run = async (dir, args, extra = {}) => {
+    const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+    const result = await runParallel({
+      projectRoot: dir, args, spawn, log: () => {}, runCoverageInjection: makeRunCoverageStub(), ...extra,
+    });
+    return { ...result, spawn };
+  };
+
+  it('flavored module + no --flavor + default test type → the umbrella is dispatched and the warning is present once, with the usual payload', async () => {
+    // The real fixture: its flavors (demo, prod) come from the gradle-tasks probe, like a convention-applied project.
+    const { envelope, exitCode, spawn } = await run(path.resolve('tests/fixtures/flavored-unit-only'), ['--module-filter', ':app']);
+    expect(exitCode).toBe(0);
+    expect(spawn.calls.filter(isGradleCall).map(effectiveGradleArgs).flat()).toContain(':app:test');
+    const warnings = umbrellaWarnings(envelope);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatchObject({ code: 'flavor_defaulted_umbrella', candidates: ['demo', 'prod'], test_type: '' });
+    expect(warnings[0].message).toBe(
+      'project declares product flavors and no --flavor was supplied; running the flavor-agnostic umbrella task across all flavors (slower). '
+      + 'Pass --flavor <name> (one of: demo, prod) to target a single flavor.',
+    );
+  });
+
+  it('several flavored modules without --flavor under the default test type give exactly one warning, listing the flavors of all of them', async () => {
+    const dir = makeProject([
+      { name: 'app', sourceSets: ['test'], build: flavoredBuild },
+      { name: 'wear', sourceSets: ['test'], build: flavoredBuild },
+      { name: 'tv', sourceSets: ['test'], build: flavoredBuild },
+    ]);
+    const { envelope, spawn } = await run(dir, []);
+    const tasks = spawn.calls.filter(isGradleCall).map(effectiveGradleArgs).flat();
+    expect(tasks).toEqual(expect.arrayContaining([':app:test', ':tv:test', ':wear:test']));
+    expect(umbrellaWarnings(envelope)).toHaveLength(1);
+  });
+
+  it('an explicit androidUnit leg still warns exactly once (the leg-level hint does not duplicate the existing warning)', async () => {
+    const { envelope } = await run(flavoredProject(), ['--test-type', 'androidUnit']);
+    expect(umbrellaWarnings(envelope)).toHaveLength(1);
+  });
+
+  it('--test-type all warns exactly once across its legs', async () => {
+    const { envelope } = await run(flavoredProject(), ['--test-type', 'all'], { env: { ...process.env, KMP_TEST_SKIP_ADB: '1' } });
+    expect(umbrellaWarnings(envelope)).toHaveLength(1);
+  });
+
+  it('--flavor demo on the default leg → the flavor task, no warning, no flavor_unused', async () => {
+    const { envelope, spawn } = await run(flavoredProject(), ['--flavor', 'demo']);
+    expect(umbrellaWarnings(envelope)).toEqual([]);
+    expect(envelope.errors.map(e => e.code)).not.toContain('flavor_unused');
+    expect(spawn.calls.filter(isGradleCall).map(effectiveGradleArgs).flat()).toContain(':app:testDemoDebugUnitTest');
+  });
+
+  it('--variant all on the default leg → the user opted into the umbrella, so no warning', async () => {
+    const { envelope } = await run(flavoredProject(), ['--variant', 'all']);
+    expect(umbrellaWarnings(envelope)).toEqual([]);
+  });
+
+  it('--flavor X on a project without flavors behaves exactly as before under the default test type: no flavor_unused error, no warning, exit 0', async () => {
+    const dir = makeProject([{ name: 'app', sourceSets: ['test'], build: 'plugins { id("com.android.application") }\n' }]);
+    const { envelope, exitCode } = await run(dir, ['--flavor', 'demo']);
+    expect(exitCode).toBe(0);
+    expect(envelope.errors.map(e => e.code)).not.toContain('flavor_unused');
+    expect(umbrellaWarnings(envelope)).toEqual([]);
+  });
+
+  it('--flavor X on a project without flavors under an explicit androidUnit leg is still the exit-2 flavor_unused error (flavorAffectsLeg is not widened)', async () => {
+    const dir = makeProject([{ name: 'app', sourceSets: ['test'], build: 'plugins { id("com.android.application") }\n' }]);
+    const { envelope, exitCode } = await run(dir, ['--test-type', 'androidUnit', '--flavor', 'demo']);
+    expect(exitCode).toBe(2);
+    expect(envelope.errors.map(e => e.code)).toContain('flavor_unused');
+  });
+});
+
+// ===========================================================================
+// --variant: an unrecognized value warns (variant_unrecognized); valid values do not
+// ===========================================================================
+// `--variant` takes auto|debug|release|all (case-insensitive). Any other value is
+// still treated as `auto` (dispatch unchanged) but no longer silently: a flavored
+// build variant such as demoDebug is passed as `--flavor demo --variant debug`.
+describe('--variant: variant_unrecognized warning (parallel)', () => {
+  const ALLOWED = ['auto', 'debug', 'release', 'all'];
+  const variantWarnings = (envelope) => envelope.warnings.filter(w => w.code === 'variant_unrecognized');
+  const flavoredBuild = 'plugins { id("com.android.application") }\nandroid { productFlavors { create("demo") {}\ncreate("prod") {} } }\n';
+
+  it('parseArgs keeps the lowercased value and records one warning carrying the value as typed', () => {
+    const opts = parseArgs(['--variant', 'demoDebug']);
+    expect(opts.androidVariant).toBe('demodebug');
+    expect(opts.warnings).toEqual([{
+      code: 'variant_unrecognized',
+      message: expect.any(String),
+      value: 'demoDebug',
+      allowed: ALLOWED,
+    }]);
+    expect(opts.warnings[0].message).toContain("--variant 'demoDebug' is not one of [auto, debug, release, all]");
+    expect(opts.warnings[0].message).toContain('treated as auto');
+    expect(opts.warnings[0].message).toContain('--flavor <flavor> --variant <buildType>');
+  });
+
+  it('valid values in any case, and the --android-variant alias, leave parseArgs without a warnings key', () => {
+    for (const [flag, value] of [['--variant', 'Release'], ['--variant', 'DEBUG'], ['--variant', 'all'], ['--variant', 'auto'], ['--android-variant', 'Release']]) {
+      const opts = parseArgs([flag, value]);
+      expect(opts.androidVariant).toBe(value.toLowerCase());
+      expect(Object.keys(opts), `${flag} ${value}`).not.toContain('warnings');
+    }
+    expect(Object.keys(parseArgs([]))).not.toContain('warnings');
+  });
+
+  it('the --android-variant alias warns too, naming the flag that was typed', () => {
+    const opts = parseArgs(['--android-variant', 'prodRelease']);
+    expect(opts.warnings).toHaveLength(1);
+    expect(opts.warnings[0].value).toBe('prodRelease');
+    expect(opts.warnings[0].message).toContain("--android-variant 'prodRelease'");
+  });
+
+  it('a dangling --variant is still the invalid_flag_value error, with no warning', () => {
+    const opts = parseArgs(['--variant']);
+    expect(opts.errors.map(e => e.code)).toEqual(['invalid_flag_value']);
+    expect(Object.keys(opts)).not.toContain('warnings');
+  });
+
+  it('runParallel: --variant demoDebug → exactly one variant_unrecognized warning and the dispatch of --variant auto', async () => {
+    const dir = makeProject([{ name: 'app', sourceSets: ['test'], build: flavoredBuild }]);
+    const run = async (args) => {
+      const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
+      const result = await runParallel({ projectRoot: dir, args, spawn, log: () => {}, runCoverageInjection: makeRunCoverageStub() });
+      return { ...result, tasks: spawn.calls.filter(isGradleCall).map(effectiveGradleArgs) };
+    };
+    const typed = await run(['--variant', 'demoDebug', '--flavor', 'demo']);
+    const auto = await run(['--variant', 'auto', '--flavor', 'demo']);
+    expect(variantWarnings(typed.envelope)).toEqual([expect.objectContaining({ value: 'demoDebug', allowed: ALLOWED })]);
+    expect(typed.tasks).toEqual(auto.tasks);
+    expect(typed.exitCode).toBe(auto.exitCode);
+    expect(variantWarnings(auto.envelope)).toEqual([]);
+  });
+
+  it.each(['Release', 'DEBUG', 'all', 'auto'])('runParallel: --variant %s raises no variant_unrecognized warning', async (value) => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const { envelope } = await runParallel({
+      projectRoot: dir, args: ['--variant', value], spawn: makeSpawnStub(), log: () => {}, runCoverageInjection: makeRunCoverageStub(),
+    });
+    expect(variantWarnings(envelope)).toEqual([]);
+  });
+});
+
+// ===========================================================================
+// tests.individual_failed / tests.individual_skipped (test-level counts)
+// ===========================================================================
+// The task-level counters (total, passed, failed) count Gradle tasks; individual_total counts testcase
+// executions. individual_failed and individual_skipped complete that view from the same JUnit XML files,
+// whatever the task's status. Under the umbrella `test` task every flavor's run counts, like
+// individual_total, and test_failures[] lists one entry per failing execution.
+describe('tests.individual_failed / tests.individual_skipped', () => {
+  const MIXED_FLAVOR_XML = '<testsuite>'
+    + '<testcase name="passes" classname="contract.MixedTest"/>'
+    + '<testcase name="fails" classname="contract.MixedTest"><failure type="java.lang.AssertionError" message="boom"/></testcase>'
+    + '<testcase name="skipped" classname="contract.MixedTest"><skipped/></testcase>'
+    + '</testsuite>';
+  const SKIPPED_ONLY_XML = '<testsuite>'
+    + '<testcase name="passes" classname="contract.MixedTest"/>'
+    + '<testcase name="skipped one" classname="contract.MixedTest"><skipped/></testcase>'
+    + '<testcase name="skipped two" classname="contract.MixedTest"><skipped message="later"/></testcase>'
+    + '</testsuite>';
+
+  // The convention-flavored fixture (core-foo, flavors demo and prod): the stub writes `xml` for every flavor
+  // task it is asked to run (the umbrella `test` runs both) and fails the task when `failing` is set.
+  function makeFlavorSpawn(projectRoot, { xml, failing }) {
+    const calls = [];
+    const fn = (cmd, args, opts) => {
+      const call = { cmd, args: [...args], cwd: opts?.cwd ?? null, env: opts?.env ?? null };
+      calls.push(call);
+      const taskArgs = effectiveGradleArgs(call).filter((arg) => arg.startsWith(':'));
+      const testTask = taskArgs.find((task) => /:test(?:DemoDebugUnitTest)?$/.test(task));
+      if (!testTask) return { status: 0, stdout: 'BUILD SUCCESSFUL in 1s\n', stderr: '', signal: null, error: null };
+      const variants = testTask.endsWith(':test') ? ['testDemoDebugUnitTest', 'testProdDebugUnitTest'] : ['testDemoDebugUnitTest'];
+      for (const variant of variants) {
+        const junitPath = path.join(projectRoot, 'core-foo', 'build', 'test-results', variant, 'TEST-contract.MixedTest.xml');
+        writeFixtureFile(junitPath, xml);
+        const fresh = new Date(Date.now() + 1_000);
+        utimesSync(junitPath, fresh, fresh);
+      }
+      return {
+        status: failing ? 1 : 0,
+        stdout: `> Task ${testTask}${failing ? ' FAILED' : ''}\nBUILD ${failing ? 'FAILED' : 'SUCCESSFUL'} in 1s\n`,
+        stderr: '', signal: null, error: null,
+      };
+    };
+    fn.calls = calls;
+    return fn;
+  }
+  const run = async (args, spawnOptions) => {
+    const dir = makeConventionFlavorCoverageContractProject();
+    const spawn = makeFlavorSpawn(dir, spawnOptions);
+    return runParallel({ projectRoot: dir, args: ['--module-filter', ':core-foo', ...args], spawn, log: () => {}, runCoverageInjection: makeRunCoverageStub() });
+  };
+
+  it('umbrella task, 3 testcases x 2 flavors with 1 failing and 1 skipped each → individual_total 6, individual_failed 2, individual_skipped 2', async () => {
+    const { envelope, exitCode } = await run([], { xml: MIXED_FLAVOR_XML, failing: true });
+    expect(exitCode).toBe(1);
+    expect(envelope.tests).toEqual({
+      total: 1, passed: 0, failed: 1, skipped: 0,
+      individual_total: 6, individual_failed: 2, individual_skipped: 2,
+    });
+    // One entry per failing execution: the failing testcase of each flavor.
+    expect(envelope.modules[0].test_failures).toHaveLength(2);
+  });
+
+  it('--flavor demo narrows the run to one flavor: 3, 1 and 1', async () => {
+    const { envelope } = await run(['--flavor', 'demo'], { xml: MIXED_FLAVOR_XML, failing: true });
+    expect(envelope.tests).toMatchObject({ individual_total: 3, individual_failed: 1, individual_skipped: 1 });
+    expect(envelope.modules[0].test_failures).toHaveLength(1);
+  });
+
+  it('a passing task with skipped testcases is counted too: skipped yes, failed none, tests.skipped untouched', async () => {
+    const { envelope, exitCode } = await run([], { xml: SKIPPED_ONLY_XML, failing: false });
+    expect(exitCode).toBe(0);
+    expect(envelope.tests).toEqual({
+      total: 1, passed: 1, failed: 0, skipped: 0,
+      individual_total: 6, individual_failed: 0, individual_skipped: 4,
+    });
+  });
+
+  it('a run with no JUnit XML on disk reports zeros, and the dry-run envelope keeps its four-key tests block', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const { envelope } = await runParallel({
+      projectRoot: dir, args: ['--test-type', 'desktop'], spawn: makeSpawnStub(), log: () => {}, runCoverageInjection: makeRunCoverageStub(),
+    });
+    expect(envelope.tests).toMatchObject({ individual_total: 0, individual_failed: 0, individual_skipped: 0 });
+    const dry = await runParallel({ projectRoot: dir, args: ['--dry-run'], spawn: makeSpawnStub(), log: () => {} });
+    expect(Object.keys(dry.envelope.tests)).toEqual(['total', 'passed', 'failed', 'skipped']);
   });
 });

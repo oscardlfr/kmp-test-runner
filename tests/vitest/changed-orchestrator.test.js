@@ -1305,3 +1305,66 @@ kotlin {
     expect(dispatchedArgs.some(a => String(a).includes('testAndroidHostTest'))).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// --variant: an unrecognized value warns (variant_unrecognized), once, and is still forwarded
+// ---------------------------------------------------------------------------
+describe('runChanged --variant unrecognized value (variant_unrecognized)', () => {
+  const stubParallel = (warnings = []) => {
+    const calls = [];
+    const fn = async (opts) => {
+      calls.push(opts);
+      return {
+        envelope: {
+          tests: { total: 0, passed: 0, failed: 0, skipped: 0 },
+          modules: [], skipped: [],
+          coverage: { tool: 'auto', missed_lines: null },
+          errors: [], warnings,
+        },
+        exitCode: 0,
+      };
+    };
+    fn.calls = calls;
+    return fn;
+  };
+  const run = async (args, runParallelInjection) => {
+    const dir = makeProject(['app']);
+    const spawn = makeSpawnStub({ git: { statusOutput: porcelain(['app/src/androidUnitTest/X.kt']) } });
+    return runChanged({ projectRoot: dir, args, spawn, runParallelInjection });
+  };
+
+  it('--variant demoDebug → one warning carrying the value as typed; dispatch forwarded as before', async () => {
+    const parallel = stubParallel();
+    const { envelope } = await run(['--variant', 'demoDebug'], parallel);
+    expect(envelope.warnings).toEqual([{
+      code: 'variant_unrecognized',
+      message: expect.stringContaining("--variant 'demoDebug' is not one of [auto, debug, release, all]"),
+      value: 'demoDebug',
+      allowed: ['auto', 'debug', 'release', 'all'],
+    }]);
+    const args = parallel.calls[0].args;
+    expect(args[args.indexOf('--variant') + 1]).toBe('demodebug');
+  });
+
+  it('the parallel delegate raises the same warning for the forwarded value: the changed envelope still carries exactly one', async () => {
+    const delegateWarning = {
+      code: 'variant_unrecognized', message: 'from the delegate', value: 'demodebug', allowed: ['auto', 'debug', 'release', 'all'],
+    };
+    const { envelope } = await run(['--variant', 'demoDebug'], stubParallel([delegateWarning, { code: 'junit_xml_oversized', message: 'x' }]));
+    expect(envelope.warnings.map(w => w.code)).toEqual(['variant_unrecognized', 'junit_xml_oversized']);
+    expect(envelope.warnings[0].value).toBe('demoDebug');
+  });
+
+  it('valid values in any case raise no warning', async () => {
+    for (const value of ['Release', 'DEBUG', 'all', 'auto']) {
+      const { envelope } = await run(['--variant', value], stubParallel());
+      expect(envelope.warnings, value).toEqual([]);
+    }
+  });
+
+  it('changed inherits flavor_defaulted_umbrella from its parallel delegate', async () => {
+    const umbrella = { code: 'flavor_defaulted_umbrella', message: 'm', candidates: ['demo', 'prod'], test_type: '' };
+    const { envelope } = await run([], stubParallel([umbrella]));
+    expect(envelope.warnings).toEqual([umbrella]);
+  });
+});

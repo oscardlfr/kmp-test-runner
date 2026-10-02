@@ -91,6 +91,7 @@
 
 ### 🅿️ PARKED — promote on user trigger
 
+- **Next milestone: compile diagnostics, per-module coverage and `changed` against a base, then three new benchmark scenarios** — PARKED on user decision (2026-10-02), resume on user trigger. Details under [PARKED 2026-10-02 — Next milestone](#-parked-2026-10-02--next-milestone-compile-diagnostics-per-module-coverage-and-changed-against-a-base-then-three-new-benchmark-scenarios).
 - **Maven Central publish for the Gradle plugin** — needs Sonatype account. Promote when account exists.
 - **VitePress/MkDocs docs site** — promote when README exceeds 1500 lines (today: 716).
 
@@ -3455,6 +3456,104 @@ All five gaps shipped in v0.5.2 (PRs #63 / #64 / #65 / #66 / #67). One scope red
 
 ## QUEUED — post-v0.3.4 ideas (newest first)
 
+### 🅿️ PARKED 2026-10-02 — Next milestone: compile diagnostics, per-module coverage and `changed` against a base, then three new benchmark scenarios
+
+**Status: PARKED on user decision (2026-10-02), resume on user trigger.** After Evidence3 the maintainer
+decided which scenarios come next: multi-module coverage, `changed` and a compilation failure. A code review
+done to plan them (2026-10-02, at the 0.17.0 development head) showed that kmp-test does not support
+these tasks well enough yet. Benchmarking them now would measure the gaps instead of the product. The
+milestone therefore starts with product work, then harness work, then one pre-registered campaign per
+scenario.
+
+#### 1. Product (public API: every change below is additive unless stated)
+
+- **Compile failures in `parallel` and `changed`.**
+  - What happens today:
+    - A failing compile task is reported as `module_failed` with `setup_failed: true` and the message
+      `[FAIL] <module>`.
+    - The failing compile task, file, line and compiler message are not in the envelope. Only
+      `kmp-test android` extracts `e:` lines (`lib/orchestrators/android-orchestrator.js`).
+    - When a compile task fails before the dispatched test task prints, the cascade retry
+      (`lib/orchestrators/parallel/cascade-retry.js`) re-runs the leg per module, which is a second Gradle
+      run.
+  - Proposal:
+    - Parse the leg's Gradle output for the failing compile task and the compiler diagnostics
+      (`e: file:///…:line:column message`).
+    - Add them to the error entry as new fields.
+    - Skip the cascade re-run when the failure is a compile failure.
+- **Per-module coverage.**
+  - What happens today:
+    - `coverage` in the envelope holds project totals and module-name buckets only.
+    - Per-module numbers exist only in the markdown report, whose path is not in the envelope.
+    - The only threshold is `--min-missed-lines`, a project-wide count of missed lines.
+    - Aggregation (`lib/orchestrators/coverage-orchestrator.js`) scans every module with a coverage plugin,
+      ignores `--module-filter`/`--exclude-modules`, and has no freshness check: reports left by an earlier
+      run count.
+    - Without `--flavor`, the tests run every flavor (the umbrella `test` task) but only the first flavor's
+      Debug report is dispatched.
+    - `--variant` does not affect coverage: the build type is fixed to Debug.
+  - Proposal:
+    - Report per-module covered, missed and total lines and the percentage in the envelope, plus the report
+      path.
+    - Add a per-module minimum (for example `--min-line-coverage <percent>`) whose error lists the modules
+      below it.
+    - Aggregate only reports produced by the current run, or flag stale ones.
+    - Honor module filters, and make flavor handling consistent between the test and report tasks.
+- **`changed` against a base, with dependents.**
+  - What happens today:
+    - It reads uncommitted changes only (`git status --porcelain`), and `base_ref` is always `HEAD`.
+    - It has no base or ref flag.
+    - It has no dependents: there is no inter-module dependency graph anywhere (`describe`'s
+      `dependency_graph` lists composite builds and included modules only).
+    - It rejects `--flavor` and `--module-filter` as unknown flags.
+  - Proposal:
+    - Add `--base <ref>`, covering committed changes since the merge base plus the working tree.
+    - Add `--include-dependents`, from the project dependency graph obtained by a Gradle probe.
+    - Accept `--flavor` and `--variant`, and forward them.
+- **Follow-ups of 0.17.0.**
+  - Accept `<flavor><BuildType>` in `--variant`; 0.17.0 only warns.
+  - Make duplicate failures explicit under an umbrella task, either with a distinct failing-test count or with
+    the test task in each `test_failures[]` entry. 0.17.0 adds execution counts.
+
+#### 2. Benchmark harness (`tools/agentic-eval`)
+
+- **New scenario families** for per-module coverage, `changed` with dependents, and compile failure.
+  - There is no family registry: a family is a `FAMILY_VALUES` entry plus per-family branches.
+  - The closed `OUTCOME_KIND_VALUES` set has no compile outcome.
+  - The single-module graders reject `setup_failed`.
+- **Fixtures.** Only `append_comment` and `apply_patch` exist, and both leave unstaged edits. A scenario that
+  compares against a base needs a fixture operation that creates commits.
+- **Block campaigns,** run as blocks with controlled re-runs.
+  - Closure directories use the local round index, while the summary, cost and infra-flake tools key by the
+    global index.
+  - Eligibility promotion requires indices 0..n-1.
+  - Records and audits carry no `campaign_id`.
+  - `merge-campaign-blocks.mjs` does not exist.
+- **Publication.**
+  - `benchmark-doc.mjs` hard-wires the Evidence3 prose and the earlier-campaign list.
+  - The overview registry (`tools/runs/agentic-benchmark-campaigns.json`) takes new campaigns as entries.
+
+#### 3. Scenarios (NowInAndroid at the pinned commit; one pre-registered campaign each; 8 sessions per agent and arm, run in blocks)
+
+- **Evidence4, multi-module coverage.**
+  - 7 of the 11 in-scope modules have JaCoCo through AGP (`create<Flavor>DebugUnitTestCoverageReport`).
+  - A first measurement gave line coverage from about 10% to 64%. A line threshold near 26% splits the
+    modules 4 and 3, with about 7 points of margin on each side.
+  - Re-measure under the final protocol before fixing the threshold.
+- **Evidence5, `changed`.**
+  - A one-line production change whose own module's tests still pass while a test of a dependent module
+    fails.
+  - Candidates: `core:datastore` → `core:data`, `core:network` → `core:data`, and `core:model` →
+    `feature:bookmarks:impl`. Verify each by execution.
+- **Evidence6, compilation failure.**
+  - A one-line edit that breaks compilation in a module with in-scope dependents.
+  - The candidates block 2, 6 or 9 of the 11 modules; choose by what the key facts grade.
+
+The maintainer's working notes for this milestone are kept outside the repository: the code review with file
+references, the open questions and the environment constraints of the benchmark host.
+
+---
+
 ### 💡 IDEA — Reuse or remove the per-evidence README block renderer
 
 **Status: IDEA, no CLI milestone.** Since the README's benchmark block became the overview of every
@@ -3473,9 +3572,13 @@ costs maintenance, and removing it is a decision about the detailed document's c
 
 ---
 
-### 🐛 BUG — The umbrella-flavor warning is skipped for the default test type
+### ✅ SHIPPED 2026-10-02 (PR #560) — The umbrella-flavor warning is skipped for the default test type
 
-**Status: BUG, no CLI milestone.** Surfaced 2026-10-02 by the Evidence3 benchmark. With the default
+**Status: SHIPPED 2026-10-02 (PR #560).**
+
+**Shipped:** `flavor_defaulted_umbrella` is now emitted whenever a flavored Android module falls back to the umbrella `test` task, whatever the test type, once per run: `pickGradleTaskFor` returns a `flavor_umbrella` hint and `executeLeg` turns it into the warning (`lib/orchestrators/parallel/dispatch.js`, `cascade-retry.js`). `flavorAffectsLeg` is unchanged, so `--flavor` on a project without flavors behaves as before under the default test type.
+
+**Original BUG below (preserved for context):** Surfaced 2026-10-02 by the Evidence3 benchmark. With the default
 `--test-type auto`, a flavored Android module run without `--flavor` gets the umbrella `test` task,
 which runs every flavor, but `flavor_defaulted_umbrella` is emitted only for the test types
 `androidUnit`, `androidInstrumented` and `all` (`lib/orchestrators/parallel-orchestrator.js`, gated on
@@ -3493,9 +3596,13 @@ a failing-test count of 7 instead of 6 and missed the key facts (see
 
 ---
 
-### 💡 IDEA — `--variant` silently accepts values outside `auto|debug|release|all`
+### ✅ SHIPPED 2026-10-02 (PR #560) — `--variant` silently accepts values outside `auto|debug|release|all`
 
-**Status: IDEA, no CLI milestone.** Surfaced 2026-10-02 by the Evidence3 benchmark. The README
+**Status: SHIPPED 2026-10-02 (PR #560).**
+
+**Shipped:** the warning path (option 2) shipped: a value outside `auto|debug|release|all` still dispatches as `auto`, and the envelope now carries the soft `variant_unrecognized` warning (`value` as typed, `allowed`, and how to pass a flavored variant) on `parallel`, `changed`, `android` and `benchmark`. Accepting `<flavor><BuildType>` moved to the parked next milestone at the top of this section.
+
+**Original IDEA below (preserved for context):** Surfaced 2026-10-02 by the Evidence3 benchmark. The README
 documents `--variant <auto|debug|release|all>`, but `androidUnitTask` in
 `lib/orchestrators/parallel/dispatch.js` lowercases the value and matches only `debug`, `release` and
 `all`; any other value takes the `auto` branch. A Gradle variant name such as `demoDebug` is therefore
@@ -3513,9 +3620,13 @@ unrecognized value needs an intentional breaking-release note.
 
 ---
 
-### 💡 IDEA — The envelope has no test-level failed count
+### ✅ SHIPPED 2026-10-02 (PR #560) — The envelope has no test-level failed count
 
-**Status: IDEA, no CLI milestone.** Surfaced 2026-10-02 by the Evidence3 benchmark. In the `--json`
+**Status: SHIPPED 2026-10-02 (PR #560).**
+
+**Shipped:** `tests.individual_failed` and `tests.individual_skipped` are in the `parallel` and `changed` envelopes, counted from the same JUnit XML as `tests.individual_total` whatever the task status (`junitTestStatsFor` in `lib/parsers/junit-xml.js`) and documented in `docs/envelope-contract.md`; under an umbrella task each flavor's run counts. A distinct-failure count or the test task in each `test_failures[]` entry is a follow-up in the parked next milestone.
+
+**Original IDEA below (preserved for context):** Surfaced 2026-10-02 by the Evidence3 benchmark. In the `--json`
 envelope, `tests.failed` counts failing test tasks, and only `tests.individual_total` is test-level.
 There is no count of failing tests, so an agent has to count the `test_failures` entries or the failure
 lines of the console output.
