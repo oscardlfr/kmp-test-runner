@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-10-02
+
 ### Added
 
 - The soft warning `variant_unrecognized`: `--variant` (or `--android-variant`) with a value outside `auto|debug|release|all` is still treated as `auto`, but the envelope now says so, with the value as typed and the way to pass a flavored build variant (#560).
