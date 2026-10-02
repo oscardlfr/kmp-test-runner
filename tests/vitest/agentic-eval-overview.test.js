@@ -13,6 +13,7 @@ import { spawnSync } from 'node:child_process';
 import {
   loadCampaignRegistry, computeOverviewLayout, renderOverviewSvg, buildOverviewAlt, renderOverviewBlock, renderOverviewDocBlock,
   checkOverview, writeOverview, OVERVIEW_REGISTRY_PATH, OVERVIEW_SVG_PATH,
+  loadSummary, loadCostEstimate, renderScorecardSvg, renderMetricsGridSvg, checkEvidenceCharts,
   README_BLOCK_OWNER, ownsReadmeBlock, COLOR_WITH, COLOR_WITHOUT, COLOR_TEXT, COLOR_SECONDARY, FONT_STACK,
 } from '../../tools/agentic-eval/readme-evidence.mjs';
 
@@ -505,6 +506,33 @@ describe('--overview', () => {
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain('Overview figure, README block and document block are up to date.');
     expect(checkOverview(campaigns)).toEqual([]);
+  });
+
+  it('an evidence checks its own two SVGs with line endings ignored (a Windows autocrlf checkout holds CRLF) and names each drifted or missing one', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kmp-overview-charts-'));
+    try {
+      const summary = loadSummary(join(RUNS, E3, 'campaign-summary.json'));
+      const costEstimate = loadCostEstimate(join(RUNS, E3, 'cost-estimate.json'));
+      const paths = { scorecardPath: join(dir, 'scorecard.svg'), metricsGridPath: join(dir, 'metrics-grid.svg') };
+      const scorecard = renderScorecardSvg(summary, costEstimate);
+      const grid = renderMetricsGridSvg(summary, costEstimate);
+      writeFileSync(paths.scorecardPath, scorecard);
+      writeFileSync(paths.metricsGridPath, grid);
+      expect(checkEvidenceCharts(summary, costEstimate, paths)).toEqual([]);
+      writeFileSync(paths.scorecardPath, toCrlf(scorecard));
+      writeFileSync(paths.metricsGridPath, toCrlf(grid));
+      expect(checkEvidenceCharts(summary, costEstimate, paths)).toEqual([]);
+      writeFileSync(paths.scorecardPath, scorecard.replace('<svg', '<svg data-drift="1"'));
+      expect(checkEvidenceCharts(summary, costEstimate, paths)).toEqual([paths.scorecardPath]);
+      writeFileSync(paths.scorecardPath, scorecard);
+      writeFileSync(paths.metricsGridPath, grid.replace('<svg', '<svg data-drift="1"'));
+      expect(checkEvidenceCharts(summary, costEstimate, paths)).toEqual([paths.metricsGridPath]);
+      rmSync(paths.scorecardPath);
+      rmSync(paths.metricsGridPath);
+      expect(checkEvidenceCharts(summary, costEstimate, paths)).toEqual([paths.scorecardPath, paths.metricsGridPath]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('each evidence still checks its own two SVGs only: --evidence=2 and --evidence=3 --check exit 0 and never read or write the README block', () => {

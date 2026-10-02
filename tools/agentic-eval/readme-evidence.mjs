@@ -8,7 +8,7 @@
 //
 // Usage:
 //   node tools/agentic-eval/readme-evidence.mjs --check   (default) exits 1 if
-//     regenerating would change any committed file
+//     regenerating would change any committed file (line endings ignored)
 //   node tools/agentic-eval/readme-evidence.mjs --write   writes scorecard.svg
 //     and metrics-grid.svg of one campaign in place
 //   --evidence=<n>    which evidenceN-agentic-benchmark-<date> run dir to read/write
@@ -1950,6 +1950,14 @@ export function writeOverview(campaigns, paths = {}) {
   return [svgPath, readmePath, docPath];
 }
 
+/** An evidence's own charts whose committed text differs from what its summary generates, line endings ignored (a Windows autocrlf checkout holds CRLF). */
+export function checkEvidenceCharts(summary, costEstimate, { scorecardPath, metricsGridPath }) {
+  const stale = [];
+  if (!existsSync(scorecardPath) || lf(readFileSync(scorecardPath, 'utf8')) !== renderScorecardSvg(summary, costEstimate)) stale.push(scorecardPath);
+  if (!existsSync(metricsGridPath) || lf(readFileSync(metricsGridPath, 'utf8')) !== renderMetricsGridSvg(summary, costEstimate)) stale.push(metricsGridPath);
+  return stale;
+}
+
 // ---------------------------------------------------------------------------
 // CLI
 
@@ -2015,23 +2023,19 @@ function main(argv) {
     process.exit(1);
   }
 
-  const scorecardSvg = renderScorecardSvg(summary, costEstimate);
-  const metricsGridSvg = renderMetricsGridSvg(summary, costEstimate);
   const scorecardPath = join(runsDir, 'scorecard.svg');
   const metricsGridPath = join(runsDir, 'metrics-grid.svg');
 
   // An evidence checks and writes its own two SVGs only: the root README block belongs to the overview (--overview).
   if (mode === 'write') {
-    writeFileSync(scorecardPath, scorecardSvg);
-    writeFileSync(metricsGridPath, metricsGridSvg);
+    writeFileSync(scorecardPath, renderScorecardSvg(summary, costEstimate));
+    writeFileSync(metricsGridPath, renderMetricsGridSvg(summary, costEstimate));
     console.log(`Wrote ${scorecardPath}\nWrote ${metricsGridPath}`);
     return;
   }
 
   // check mode: regenerate and diff against what's committed
-  const mismatches = [];
-  if (!existsSync(scorecardPath) || readFileSync(scorecardPath, 'utf8') !== scorecardSvg) mismatches.push(scorecardPath);
-  if (!existsSync(metricsGridPath) || readFileSync(metricsGridPath, 'utf8') !== metricsGridSvg) mismatches.push(metricsGridPath);
+  const mismatches = checkEvidenceCharts(summary, costEstimate, { scorecardPath, metricsGridPath });
   if (mismatches.length > 0) {
     console.error(`::error::out of date, run with --write: ${mismatches.join(', ')}`);
     process.exit(1);
