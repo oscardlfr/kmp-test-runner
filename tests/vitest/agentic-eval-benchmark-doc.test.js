@@ -1170,15 +1170,19 @@ describe('the fixed prose of the Evidence3 section is backed by the committed da
       expect(misses).toContain('`--variant` takes `auto`, `debug`, `release` or `all`');
       const backlog = crlfNormalize(readFileSync(join(REPO_ROOT, 'BACKLOG.md'), 'utf8'));
       const queued = backlog.slice(backlog.indexOf('## QUEUED — post-v0.3.4 ideas (newest first)'));
-      const headings = [...queued.matchAll(/^### (.+)$/gm)].map((m) => m[1]).slice(0, 5);
-      expect(headings).toEqual([
+      const allHeadings = [...queued.matchAll(/^### (.+)$/gm)].map((m) => m[1]);
+      // They head the queue, in this order, followed by the two items of the same cycle; a newer item (the README overview's, WO-16) may sit above them.
+      const first = allHeadings.indexOf('🐛 BUG — The umbrella-flavor warning is skipped for the default test type');
+      expect(first).toBeGreaterThan(-1);
+      expect(first).toBeLessThanOrEqual(1);
+      expect(allHeadings.slice(first, first + 5)).toEqual([
         '🐛 BUG — The umbrella-flavor warning is skipped for the default test type',
         '💡 IDEA — `--variant` silently accepts values outside `auto|debug|release|all`',
         '💡 IDEA — The envelope has no test-level failed count',
         '💡 IDEA — Grader: accept a kmp-test envelope that reached the model through a file read (coverage family)',
         '💡 IDEA — Scenario B: multi-module coverage (NowInAndroid), same protocol as Evidence3',
       ]);
-      const findings = queued.slice(0, queued.indexOf('### 💡 IDEA — Grader: accept a kmp-test envelope'));
+      const findings = queued.slice(queued.indexOf('### 🐛 BUG — The umbrella-flavor warning'), queued.indexOf('### 💡 IDEA — Grader: accept a kmp-test envelope'));
       expect(findings.match(/Evidence3/g).length).toBeGreaterThanOrEqual(3);
       expect(findings).not.toMatch(GROUND_TRUTH_NAMES);
     });
