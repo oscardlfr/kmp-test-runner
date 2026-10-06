@@ -30,5 +30,11 @@
     ],
     "expected_parent": "7d45eae4f8720a0c77f507712ba2437ff974b6ed"
   },
+  "evidence_scope": {
+    "module_names": [":core:data", ":core:data-test", ":core:domain", ":core:network", ":core:testing", ":core:ui", ":feature:bookmarks:impl", ":feature:search:api", ":feature:search:impl", ":feature:settings:impl", ":feature:topic:api", ":feature:topic:impl", ":sync:sync-test", ":sync:work"],
+    "test_tasks_total": 14,
+    "individual_total": 62,
+    "required_gradle_tasks": [":core:data:testDemoDebugUnitTest", ":core:domain:testDemoDebugUnitTest", ":core:network:testDemoDebugUnitTest", ":feature:bookmarks:impl:testDemoDebugUnitTest", ":feature:search:impl:testDemoDebugUnitTest", ":feature:settings:impl:testDemoDebugUnitTest", ":feature:topic:impl:testDemoDebugUnitTest"]
+  },
   "tags": ["held-out"]
 }

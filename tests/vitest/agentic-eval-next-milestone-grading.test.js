@@ -3,10 +3,10 @@ import { gradeNextMilestoneScenario } from '../../tools/agentic-eval/graders-nex
 
 const answerText = (expected) => `KMP_EVAL_RESULT\n${JSON.stringify(expected)}\nKMP_EVAL_RESULT_END`;
 const envelope = (extra) => ({ tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', exit_code: 1,
-  tests: { individual_total: 0, individual_failed: 0, individual_failed_distinct: 0 }, modules: [], errors: [], ...extra });
-function grade(family, expected, result, command = 'kmp-test parallel --json', answer = expected) {
+  tests: { total: 0, failed: 0, individual_total: 0, individual_failed: 0, individual_failed_distinct: 0 }, modules: [], errors: [], ...extra });
+function grade(family, expected, result, command = 'kmp-test parallel --json', answer = expected, evidenceScope = undefined) {
   const attempt = { id: 't1', command, resultContent: JSON.stringify(result), resultIndex: 2 };
-  return gradeNextMilestoneScenario({ scenario: { family, expected, policy: {
+  return gradeNextMilestoneScenario({ scenario: { family, expected, evidence_scope: evidenceScope, policy: {
     allowed_kmptest_subcommands: ['parallel', 'changed'], allowed_gradle_tasks: [':feature:test'],
   } },
     observation: { terminal: { finalText: answerText(answer) } }, bashResults: [attempt],
@@ -21,12 +21,28 @@ describe('next milestone graders bind final answers to real envelopes', () => {
     const expected = { outcome_kind: 'coverage_threshold_exceeded', threshold_percent: 80,
       below_threshold_modules: [':core'], no_data_modules: [':empty'],
       module_line_coverage: { ':core': 75, ':app': 90 } };
-    const result = envelope({ coverage: { module_results: [
+    const result = envelope({ coverage: { data_provenance: 'current_run', module_results: [
       { module: 'core', status: 'with_data', line_coverage_percent: 75 },
       { module: 'app', status: 'with_data', line_coverage_percent: 90 },
-      { module: 'empty', status: 'no_xml', line_coverage_percent: null },
+      { module: 'empty', status: 'no_coverage_plugin', line_coverage_percent: null },
     ] }, errors: [{ code: 'module_coverage_threshold_exceeded', threshold: 80, modules: ['core'] }] });
     expect(grade('multi-module-coverage', expected, result).success).toBe(true);
+    expect(grade('multi-module-coverage', expected, { ...result, coverage: {
+      ...result.coverage, data_provenance: 'saved_reports' } }).success).toBe(false);
+    expect(grade('multi-module-coverage', expected, { ...result, coverage: {
+      ...result.coverage, module_results: result.coverage.module_results.map(item =>
+        item.module === 'empty' ? { ...item, status: 'no_xml' } : item) } }).success).toBe(false);
+    expect(grade('multi-module-coverage', expected, { ...result, tests: {
+      ...result.tests, individual_failed: 1, individual_failed_distinct: 1 } }).success).toBe(false);
+    const scope = { module_names: [':core', ':app', ':empty'], test_tasks_total: 3,
+      individual_total: 93, fresh_test_tasks: 3, required_gradle_tasks: [':core:test'] };
+    const freshResult = { ...result, tests: { ...result.tests, total: 3, individual_total: 93 },
+      modules: [{ name: 'core' }, { name: 'app' }, { name: 'empty' }],
+      parallel: { legs: [{ execution: { fresh: 3 } }] } };
+    expect(grade('multi-module-coverage', expected, freshResult, 'kmp-test parallel --json', expected, scope).success).toBe(true);
+    expect(grade('multi-module-coverage', expected, { ...freshResult,
+      parallel: { legs: [{ execution: { fresh: 2, up_to_date: 1 } }] } },
+    'kmp-test parallel --json', expected, scope).success).toBe(false);
     expect(grade('multi-module-coverage', expected, { ...result, coverage: { module_results: [
       { module: 'core', status: 'with_data', line_coverage_percent: 75 },
       { module: 'app', status: 'with_data', line_coverage_percent: 90 },
@@ -84,5 +100,29 @@ describe('next milestone graders bind final answers to real envelopes', () => {
     expect(grade('compile-failure', expected, { ...result, modules: [result.modules[0],
       { ...result.modules[1], tests: { total: 1 } }] }).success).toBe(false);
     expect(grade('compile-failure', expected, { ...result, errors: [{ ...result.errors[0], compile_failures: [] }, result.errors[1]] }).success).toBe(false);
+    const scope = { module_names: [':core', ':feature'], test_tasks_total: 2,
+      individual_total: 33, required_gradle_tasks: [':feature:test'] };
+    const scopedResult = { ...result, tests: { ...result.tests, total: 2, individual_total: 33 } };
+    expect(grade('compile-failure', expected, scopedResult, 'kmp-test parallel --json', expected, scope).success).toBe(true);
+    expect(grade('compile-failure', expected, { ...scopedResult, tests: {
+      ...scopedResult.tests, individual_total: 0 } }, 'kmp-test parallel --json', expected, scope).success).toBe(false);
+  });
+
+  it('requires the control arm to attempt every preregistered Gradle task', () => {
+    const expected = { outcome_kind: 'tests_failed', direct_modules: [':core'],
+      dependent_modules: [':feature'], selected_modules: [':core', ':feature'],
+      failing_modules: [':feature'], failed_test_classes: ['FeatureTest'], failed_count: 1 };
+    const scenario = { family: 'changed-dependents', expected,
+      evidence_scope: { required_gradle_tasks: [':core:test', ':feature:test'] },
+      policy: { allowed_kmptest_subcommands: ['changed'], allowed_gradle_tasks: [':core:test', ':feature:test'] } };
+    const control = (commands) => gradeNextMilestoneScenario({ scenario,
+      observation: { terminal: { finalText: answerText(expected) } },
+      bashResults: commands.map((command, index) => ({ id: `t${index}`, command, resultContent: 'BUILD SUCCESSFUL', resultIndex: index })),
+      checks: [{ name: 'no_transcript_structural_issues', passed: true },
+        { name: 'bash_tool_use_present', passed: true }, { name: 'tool_result_correlated', passed: true }],
+      junitAttribution: { decisionByAttempt: new Map(commands.map((_, index) => [`t${index}`, 'allow'])),
+        ambiguousJunitEvidence: false, captureIncomplete: false, unreliable: false } });
+    expect(control(['./gradlew :feature:test']).success).toBe(false);
+    expect(control(['./gradlew :core:test :feature:test --continue']).success).toBe(true);
   });
 });

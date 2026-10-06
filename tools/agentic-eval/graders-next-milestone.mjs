@@ -40,6 +40,16 @@ function answerComparison(finalText, scenario) {
     } };
 }
 
+function matchesEvidenceScope(scenario, envelope) {
+  const scope = scenario.evidence_scope;
+  if (!scope) return true; // Direct grader unit fixtures predate the corpus scope contract.
+  const fresh = (envelope.parallel?.legs ?? []).reduce((sum, leg) => sum + (leg.execution?.fresh ?? 0), 0);
+  return envelope.tests?.total === scope.test_tasks_total
+    && envelope.tests?.individual_total === scope.individual_total
+    && sameSet((envelope.modules ?? []).map(module => colon(module.name)), scope.module_names)
+    && (scope.fresh_test_tasks === undefined || fresh === scope.fresh_test_tasks);
+}
+
 function testFailureFacts(envelope) {
   const failedModules = [...new Set((envelope.errors ?? []).filter((error) => error.code === 'module_failed'
     && error.setup_failed !== true).map((error) => colon(error.module)))];
@@ -54,17 +64,24 @@ function testFailureFacts(envelope) {
 
 export function evidenceMatches(scenario, envelope) {
   const expected = scenario.expected;
+  if (!matchesEvidenceScope(scenario, envelope)) return false;
   if (scenario.family === 'multi-module-coverage') {
     const results = envelope.coverage?.module_results;
     const gate = (envelope.errors ?? []).find((error) => error.code === 'module_coverage_threshold_exceeded');
-    if (!Array.isArray(results) || !gate || envelope.exit_code !== 1 || gate.threshold !== expected.threshold_percent) return false;
+    if (envelope.subcommand !== 'parallel' || envelope.coverage?.data_provenance !== 'current_run'
+      || envelope.tests?.failed !== 0 || envelope.tests?.individual_failed !== 0
+      || envelope.tests?.individual_failed_distinct !== 0
+      || !Array.isArray(results) || !gate || envelope.exit_code !== 1
+      || gate.threshold !== expected.threshold_percent
+      || (envelope.errors ?? []).some(error => error !== gate)) return false;
     const below = results.filter((result) => result.status === 'with_data'
       && result.line_coverage_percent < expected.threshold_percent).map((result) => colon(result.module));
-    const noData = results.filter((result) => result.status !== 'with_data').map((result) => colon(result.module));
+    const noData = results.filter((result) => result.status === 'no_coverage_plugin').map((result) => colon(result.module));
     const percentages = Object.fromEntries(results.filter((result) => result.status === 'with_data')
-      .map((result) => [colon(result.module), result.line_coverage_percent]));
+      .map((result) => [colon(result.module), Math.round(result.line_coverage_percent * 10) / 10]));
     return sameSet(below, expected.below_threshold_modules)
       && sameSet(noData, expected.no_data_modules)
+      && results.every(result => result.status === 'with_data' || result.status === 'no_coverage_plugin')
       && sameSet((gate.modules ?? []).map(colon), expected.below_threshold_modules)
       && sameMap(percentages, expected.module_line_coverage);
   }
@@ -128,9 +145,11 @@ export function gradeNextMilestoneScenario({ scenario, observation, bashResults,
       const command = classifyBashCommand(attempt.command);
       if (command.kind !== 'gradle' || command.isPlanOnly) return false;
       return command.taskTokens.some((task) => (scenario.policy?.allowed_gradle_tasks ?? []).includes(task)
-        && /(?:^|:)(?:test[A-Za-z]*|compile[A-Za-z]*|koverXmlReport|jacocoTestReport)$/.test(task));
+        && /(?:^|:)(?:test[A-Za-z]*|compile[A-Za-z]*|koverXmlReport|jacocoTestReport|create[A-Za-z]*CoverageReport)$/.test(task));
     });
-    const ran = gradleAttempts.length > 0;
+    const attemptedTasks = new Set(gradleAttempts.flatMap(attempt => classifyBashCommand(attempt.command).taskTokens));
+    const ran = gradleAttempts.length > 0
+      && (scenario.evidence_scope?.required_gradle_tasks ?? []).every(task => attemptedTasks.has(task));
     for (const [name, passed] of [
       ['authoritative_evidence_well_formed', false], ['authoritative_target_matches_expected', false],
       ['authoritative_outcome_matches_expected', false], ['no_provider_contradiction', true],

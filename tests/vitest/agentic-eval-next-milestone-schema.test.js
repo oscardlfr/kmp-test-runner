@@ -8,6 +8,8 @@ function scenario(family, expected) {
   const value = structuredClone({ ...task, expected_outcome: truth.expected_outcome,
     expected, smoke: truth.smoke, first_useful_signal_predicate: truth.first_useful_signal_predicate });
   value.family = family;
+  value.evidence_scope = { module_names: [':core:data'], test_tasks_total: 1,
+    individual_total: 1, required_gradle_tasks: [':core:data:testDemoDebugUnitTest'] };
   if (family === 'multi-module-coverage') delete value.fixture_setup;
   if (family === 'changed-dependents') value.fixture_setup = {
     operation: 'commit_patch', patch_file: 'planned-edit.patch', expected_paths: ['core/data/src/main/kotlin/Foo.kt'],
@@ -51,5 +53,13 @@ describe('next milestone scenario contracts', () => {
   it('requires a compile task owned by the failed module', () => {
     const bad = scenario('compile-failure', { ...compile, compile_task: ':other:compileKotlin' });
     expect(validateScenario(bad).errors.some((error) => error.field === 'expected.compile_task')).toBe(true);
+  });
+  it('rejects missing or partial evidence scope', () => {
+    const missing = scenario('multi-module-coverage', coverage);
+    delete missing.evidence_scope;
+    expect(validateScenario(missing).errors.some(error => error.field === 'evidence_scope')).toBe(true);
+    const partial = scenario('compile-failure', compile);
+    partial.evidence_scope.required_gradle_tasks = [':not-allowed:test'];
+    expect(validateScenario(partial).errors.some(error => error.field === 'evidence_scope.required_gradle_tasks')).toBe(true);
   });
 });

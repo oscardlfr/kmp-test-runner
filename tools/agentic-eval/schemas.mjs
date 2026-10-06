@@ -1393,14 +1393,14 @@ export function validateRun(run) {
 const SCENARIO_CANONICAL_FIELDS = [
   'schema', 'id', 'family', 'project_alias', 'project_url', 'project_commit', 'prompt',
   'expected_outcome', 'policy', 'expected', 'first_useful_signal_predicate', 'tags', 'fixture_setup',
-  'smoke',
+  'smoke', 'evidence_scope',
 ];
 // The first-ever OPTIONAL canonical field -- every other entry above is unconditionally required.
 // `fixture_setup` only applies to a scenario that mutates its own pinned checkout before the agent
 // runs (the changed-module-verification shape, and the multi-module-tests family's patch) -- absent
 // for every other scenario. `smoke` belongs to the ground-truth file of the multi-module-tests
 // family alone (validateSmoke below): it is required there and rejected for every other family.
-const OPTIONAL_SCENARIO_FIELDS = ['fixture_setup', 'smoke'];
+const OPTIONAL_SCENARIO_FIELDS = ['fixture_setup', 'smoke', 'evidence_scope'];
 
 const OUTCOME_KIND_VALUES = ['tests_executed', 'no_applicable_tests', 'tests_failed', 'coverage_threshold_exceeded'];
 const GRADLE_MARKER_VALUES = ['NO-SOURCE'];
@@ -2161,6 +2161,34 @@ function validateSmoke(smoke, errors) {
   }
 }
 
+function validateEvidenceScope(scope, policy, errors) {
+  if (scope == null || typeof scope !== 'object' || Array.isArray(scope)) {
+    errors.push({ field: 'evidence_scope', message: 'is required for next-milestone campaign families' });
+    return;
+  }
+  rejectUnrecognizedKeys(scope, ['module_names', 'test_tasks_total', 'individual_total',
+    'fresh_test_tasks', 'required_gradle_tasks'], 'evidence_scope', errors);
+  const modules = validateModuleSet(scope.module_names, 'evidence_scope.module_names', errors);
+  if (!Number.isInteger(scope.test_tasks_total) || scope.test_tasks_total < 1
+    || (modules && scope.test_tasks_total !== modules.length)) {
+    errors.push({ field: 'evidence_scope.test_tasks_total', message: 'must equal the positive number of module_names' });
+  }
+  if (!Number.isInteger(scope.individual_total) || scope.individual_total < 0) {
+    errors.push({ field: 'evidence_scope.individual_total', message: 'must be a non-negative integer' });
+  }
+  if ('fresh_test_tasks' in scope && (!Number.isInteger(scope.fresh_test_tasks)
+    || scope.fresh_test_tasks < 0 || scope.fresh_test_tasks > scope.test_tasks_total)) {
+    errors.push({ field: 'evidence_scope.fresh_test_tasks', message: 'must be an integer in 0..test_tasks_total' });
+  }
+  const tasks = scope.required_gradle_tasks;
+  if (!Array.isArray(tasks) || tasks.length === 0 || new Set(tasks).size !== tasks.length
+    || tasks.some(task => typeof task !== 'string'
+      || !(policy?.allowed_gradle_tasks ?? []).includes(task))) {
+    errors.push({ field: 'evidence_scope.required_gradle_tasks',
+      message: 'must be a non-empty, duplicate-free subset of policy.allowed_gradle_tasks' });
+  }
+}
+
 export function validateScenario(scenario) {
   const errors = [];
   const warnings = [];
@@ -2210,9 +2238,11 @@ export function validateScenario(scenario) {
   } else if (['multi-module-coverage', 'changed-dependents', 'compile-failure'].includes(scenario.family)) {
     validateNextMilestoneExpected(scenario.family, scenario.expected, errors);
     validateSmoke(scenario.smoke, errors);
+    validateEvidenceScope(scenario.evidence_scope, scenario.policy, errors);
   } else {
     validateExpected(scenario.expected, scenario.policy, errors);
     if ('smoke' in scenario) errors.push({ field: 'smoke', message: 'is only allowed for campaign scenario families' });
+    if ('evidence_scope' in scenario) errors.push({ field: 'evidence_scope', message: 'is only allowed for next-milestone campaign families' });
   }
   if (scenario.first_useful_signal_predicate == null || typeof scenario.first_useful_signal_predicate.description !== 'string') {
     errors.push({ field: 'first_useful_signal_predicate', message: 'must have a string "description"' });

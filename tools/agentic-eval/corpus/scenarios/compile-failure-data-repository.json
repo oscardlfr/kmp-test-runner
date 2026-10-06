@@ -30,5 +30,11 @@
       "core/data/src/main/kotlin/com/google/samples/apps/nowinandroid/core/data/repository/OfflineFirstTopicsRepository.kt"
     ]
   },
+  "evidence_scope": {
+    "module_names": [":core:common", ":core:data", ":core:datastore", ":core:domain", ":core:navigation", ":core:network", ":feature:bookmarks:impl", ":feature:search:impl", ":feature:settings:impl", ":feature:topic:impl", ":lint"],
+    "test_tasks_total": 11,
+    "individual_total": 33,
+    "required_gradle_tasks": [":core:common:test", ":core:data:testDemoDebugUnitTest", ":core:datastore:testDemoDebugUnitTest", ":core:domain:testDemoDebugUnitTest", ":core:navigation:testDemoDebugUnitTest", ":core:network:testDemoDebugUnitTest", ":feature:bookmarks:impl:testDemoDebugUnitTest", ":feature:search:impl:testDemoDebugUnitTest", ":feature:settings:impl:testDemoDebugUnitTest", ":feature:topic:impl:testDemoDebugUnitTest", ":lint:test"]
+  },
   "tags": ["held-out"]
 }

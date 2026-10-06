@@ -266,6 +266,21 @@ describe('per-module line coverage', () => {
     expect(envelope.coverage.report_file).toMatch(/^\.kmp-test-runner\/reports\/coverage\/.*\.md$/);
   });
 
+  it('shows the unrounded LINE ratio used by the threshold gate', async () => {
+    const projectRoot = makeProject([{ name: 'core:edge', coverage: 'kover' }]);
+    dropFakeXml(projectRoot, 'core:edge', 'kover');
+    const parseCoverageXml = makeParseCoverageStub({ rowsByModule: {
+      'core:edge': ['core:edge|p|Edge.kt|Edge|2596|7404|10000|25.96|'],
+    } });
+    const { envelope, exitCode } = await runCoverage({ projectRoot, parseCoverageXml,
+      args: ['--min-line-coverage', '26'] });
+    expect(exitCode).toBe(1);
+    expect(envelope.coverage.module_results[0].line_coverage_percent).toBeCloseTo(25.96, 6);
+    expect(envelope.errors).toContainEqual(expect.objectContaining({
+      code: 'module_coverage_threshold_exceeded', modules: ['core:edge'],
+    }));
+  });
+
   it('limits totals and module results to the module filter and selected dispatch set', async () => {
     const projectRoot = makeProject([
       { name: 'core:data', coverage: 'kover' }, { name: 'core:domain', coverage: 'kover' },

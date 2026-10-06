@@ -29,5 +29,12 @@
       ":feature:topic:impl:createDemoDebugUnitTestCoverageReport"
     ]
   },
+  "evidence_scope": {
+    "module_names": [":core:common", ":core:data", ":core:datastore", ":core:domain", ":core:navigation", ":core:network", ":feature:bookmarks:impl", ":feature:search:impl", ":feature:settings:impl", ":feature:topic:impl", ":lint"],
+    "test_tasks_total": 11,
+    "individual_total": 93,
+    "fresh_test_tasks": 11,
+    "required_gradle_tasks": [":core:common:test", ":core:data:testDemoDebugUnitTest", ":core:datastore:testDemoDebugUnitTest", ":core:domain:testDemoDebugUnitTest", ":core:navigation:testDemoDebugUnitTest", ":core:network:testDemoDebugUnitTest", ":feature:bookmarks:impl:testDemoDebugUnitTest", ":feature:search:impl:testDemoDebugUnitTest", ":feature:settings:impl:testDemoDebugUnitTest", ":feature:topic:impl:testDemoDebugUnitTest", ":lint:test", ":core:data:createDemoDebugUnitTestCoverageReport", ":core:datastore:createDemoDebugUnitTestCoverageReport", ":core:domain:createDemoDebugUnitTestCoverageReport", ":core:network:createDemoDebugUnitTestCoverageReport", ":feature:search:impl:createDemoDebugUnitTestCoverageReport", ":feature:settings:impl:createDemoDebugUnitTestCoverageReport", ":feature:topic:impl:createDemoDebugUnitTestCoverageReport"]
+  },
   "tags": ["held-out"]
 }
