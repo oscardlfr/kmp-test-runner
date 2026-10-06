@@ -15,7 +15,7 @@ import { mkdtempSync, rmSync, existsSync, readdirSync, readFileSync } from 'node
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runScenarioMatrix } from '../../tools/agentic-eval/matrix-runner.mjs';
+import { acquireSharedEvalResources, runScenarioMatrix } from '../../tools/agentic-eval/matrix-runner.mjs';
 import { createInvocationJournal } from '../../tools/agentic-eval/durable-journal.mjs';
 import { runValidator as runPluginValidator } from '../../tools/validate-plugin.mjs';
 // Test-only, deliberately vendor-specific: matrix-runner.mjs no longer defaults runtimeAdapter
@@ -32,6 +32,30 @@ const FIXTURES_DIR = path.join(__dirname, '..', 'fixtures');
 const PINNED_SKILL_SHA = '9814ada0c45e6a3d2a0399291ec96cb8d1ef86bb';
 const TARGET_PLUGIN_NAME = 'kmp-test-runner';
 const TARGET_SKILL_NAME = 'kmp-test-runner';
+
+describe('shared resource acquisition diagnostics', () => {
+  it('reports a closed stage and OS code when an adapter error contains a private path', async () => {
+    const source = new Error('EACCES: permission denied, mkdir C:\\Users\\private\\secret');
+    source.code = 'EACCES';
+    source.syscall = 'mkdir';
+    const adapter = {
+      ...claudeCodeRuntimeAdapter,
+      prepareIsolatedHome: async () => { throw source; },
+    };
+    let caught;
+    try {
+      await acquireSharedEvalResources({
+        allowedGradleTasks: [':fakemod:test'], allowedKmpTestSubcommands: ['parallel'],
+        repoRoot: REPO_ROOT, pinnedSkillSha: PINNED_SKILL_SHA, runPluginValidator,
+        runtimeAdapter: adapter,
+      });
+    } catch (err) { caught = err; }
+    expect(caught?.agenticEvalPhase).toBe('acquiring_shared_resources');
+    expect(caught?.message).toBe('shared_resource_runtime_home_failed code=eacces syscall=mkdir');
+    expect(caught?.message).not.toContain('C:\\Users');
+    expect(caught?.cause).toBe(source);
+  }, 30000);
+});
 
 /** Same as agentic-eval-run-condition-pair.test.js's own identical helper -- `delete` (never
  * assigning back `undefined`, which Node coerces to the literal string "undefined") is the

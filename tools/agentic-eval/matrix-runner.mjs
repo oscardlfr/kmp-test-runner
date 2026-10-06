@@ -78,6 +78,14 @@ function createCleanupAccumulator() {
   return { registerCleanup, runCleanup };
 }
 
+/** Preserve an actionable acquisition stage without exposing host paths from fs/child-process errors. */
+function tagSharedResourceFailure(err, stage) {
+  const safeToken = (value) => typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value)
+    ? value.toLowerCase() : 'unknown';
+  const diagnostic = new Error(`shared_resource_${stage}_failed code=${safeToken(err?.code)} syscall=${safeToken(err?.syscall)}`, { cause: err });
+  return tagIncidentPhase(diagnostic, 'acquiring_shared_resources');
+}
+
 function pathEntriesEqual(a, b) {
   if (typeof a !== 'string' || typeof b !== 'string') return false;
   if (process.platform === 'win32') return normalize(a).toLowerCase() === normalize(b).toLowerCase();
@@ -161,7 +169,7 @@ export async function acquireSharedEvalResources({
     try {
       ({ shimDir } = buildPathShim({ worktreeRoot: repoRoot }));
     } catch (err) {
-      throw tagIncidentPhase(err, 'acquiring_shared_resources');
+      throw tagSharedResourceFailure(err, 'path_shim');
     }
     registerCleanup(() => rmSync(shimDir, { recursive: true, force: true }));
     // Explicitly phase-tagged: this call's own mkdtempSync
@@ -174,7 +182,7 @@ export async function acquireSharedEvalResources({
     try {
       ({ snapshotDir } = await materializeSkillSnapshot({ repoRoot, sha: pinnedSkillSha, validateFn: runPluginValidator }));
     } catch (err) {
-      throw tagIncidentPhase(err, 'acquiring_shared_resources');
+      throw tagSharedResourceFailure(err, 'skill_snapshot');
     }
     registerCleanup(() => rmSync(snapshotDir, { recursive: true, force: true }));
     // Computed here, immediately after materialization and its cleanup registration, and before
@@ -192,7 +200,7 @@ export async function acquireSharedEvalResources({
     try {
       skillSnapshotArtifact = computeSkillSnapshotArtifact({ repoRoot, sha: pinnedSkillSha, root: '.skills/kmp-test-runner' });
     } catch (err) {
-      throw tagIncidentPhase(err, 'acquiring_shared_resources');
+      throw tagSharedResourceFailure(err, 'skill_artifact');
     }
     // materializeGradleUserHome creates TWO temp directories (gradleUserHome itself, plus its own
     // internal snapshotDir it resets from) -- gradleSnapshotDir here is deliberately distinctly
@@ -205,7 +213,7 @@ export async function acquireSharedEvalResources({
         seedFromDir: gradleUserHomeSeedDir ?? undefined,
       }));
     } catch (err) {
-      throw tagIncidentPhase(err, 'acquiring_shared_resources');
+      throw tagSharedResourceFailure(err, 'gradle_home');
     }
     registerCleanup(() => rmSync(gradleUserHome, { recursive: true, force: true }));
     registerCleanup(() => rmSync(gradleSnapshotDir, { recursive: true, force: true }));
@@ -213,7 +221,7 @@ export async function acquireSharedEvalResources({
     try {
       kmpEvalTempHome = mkdtempLongPathSafe('kmp-agentic-eval-home-');
     } catch (err) {
-      throw tagIncidentPhase(err, 'acquiring_shared_resources');
+      throw tagSharedResourceFailure(err, 'temp_home');
     }
     registerCleanup(() => rmSync(kmpEvalTempHome, { recursive: true, force: true }));
 
@@ -230,7 +238,7 @@ export async function acquireSharedEvalResources({
         allowedGradleTasks, allowedKmpTestSubcommands, junitEvidenceEnabled, executionProfile,
       }));
     } catch (err) {
-      throw tagIncidentPhase(err, 'acquiring_shared_resources');
+      throw tagSharedResourceFailure(err, 'runtime_home');
     }
     for (const p of cleanupPaths) registerCleanup(() => rmSync(p, { recursive: true, force: true }));
 
@@ -240,7 +248,12 @@ export async function acquireSharedEvalResources({
     // incident this preflight exists to close). Self-tags 'acquiring_shared_resources': the
     // existing catch below has no phase-tagging of its own for other failures in this function
     // either, but this throw must not silently inherit the outer incidentPhaseOf() fallback.
-    const preflight = await runtimeAdapter.preflight({ sharedEnv, repoRoot });
+    let preflight;
+    try {
+      preflight = await runtimeAdapter.preflight({ sharedEnv, repoRoot });
+    } catch (err) {
+      throw tagSharedResourceFailure(err, 'runtime_preflight');
+    }
     if (!preflight.ok) {
       throw tagIncidentPhase(
         new Error(`Auth preflight failed: reason=${preflight.reasonCode}, exit_code=${Number.isInteger(preflight.exitCode) ? preflight.exitCode : 'null'}, logged_in=${preflight.loggedIn === true}`),
