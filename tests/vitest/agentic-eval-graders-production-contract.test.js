@@ -234,7 +234,8 @@ describe('gradeScenarioCondition -- production-real envelope (genuine runParalle
     // The exact real shape -- pinned field-by-field, not merely "passes the grader's own check",
     // so a drift shows up as a direct assertion failure here, independent of graders.mjs at all.
     expect(envelope.coverage).toEqual({
-      tool: 'auto', missed_lines: null, modules_with_kover_plugin: [], modules_with_jacoco_plugin: [],
+      tool: 'auto', missed_lines: null, data_provenance: null,
+      modules_with_kover_plugin: [], modules_with_jacoco_plugin: [],
     });
 
     const scenario = {
