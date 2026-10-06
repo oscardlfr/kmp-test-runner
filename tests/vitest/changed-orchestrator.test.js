@@ -26,6 +26,32 @@ import path from 'node:path';
 import { runChanged } from '../../lib/orchestrators/changed-orchestrator.js';
 import { computeCacheKey, CACHE_DIR_NAME } from '../../lib/project-model.js';
 
+describe('changed compile failure passthrough', () => {
+  it('preserves structured compiler diagnostics from its parallel delegate', async () => {
+    const dir = makeProject(['core']);
+    const spawn = makeSpawnStub({ git: { statusOutput: porcelain(['core/src/jvmMain/kotlin/Broken.kt']) } });
+    const failure = {
+      code: 'module_failed', module: 'core', task: ':core:jvmTest', setup_failed: true,
+      compile_failures: [{
+        task: ':core:compileKotlinJvm',
+        diagnostics: [{ file: 'core/src/jvmMain/kotlin/Broken.kt', line: 9, column: 4, message: 'Unresolved reference: missingValue', language: 'kotlin' }],
+      }],
+    };
+    const runParallelInjection = async () => ({
+      envelope: {
+        tests: { total: 1, passed: 0, failed: 1, skipped: 0 },
+        modules: [{ name: 'core' }], skipped: [], coverage: { tool: 'none' },
+        errors: [failure], warnings: [],
+      },
+      exitCode: 1,
+    });
+    const { envelope, exitCode } = await runChanged({ projectRoot: dir, spawn, runParallelInjection });
+    expect(exitCode).toBe(1);
+    expect(envelope.errors).toEqual([failure]);
+    expect(envelope.changed.detected_modules).toEqual(['core']);
+  });
+});
+
 const SOURCE_SETS = [
   'test', 'commonTest', 'jvmTest', 'desktopTest',
   'androidUnitTest', 'androidInstrumentedTest', 'androidTest',

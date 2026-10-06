@@ -44,6 +44,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, utimesSync, cpSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { isGradleCall, effectiveGradleArgs, isStopCall } from './_spawn-helpers.js';
 
 import {
@@ -70,11 +71,84 @@ import {
 } from '../../lib/orchestrators/parallel-orchestrator.js';
 import { computeCacheKey, CACHE_DIR_NAME } from '../../lib/project-model.js';
 import { TEST_TYPE_VALUES } from '../../lib/parsers/argv-constants.js';
+import { parseCompileFailures } from '../../lib/orchestrators/parallel/result-rollup.js';
 
 let workDir;
 afterEach(() => {
   if (workDir && existsSync(workDir)) rmSync(workDir, { recursive: true, force: true });
   workDir = null;
+});
+
+describe('compile failure diagnostics', () => {
+  it('parses Kotlin and Java diagnostics with exact task, location and message', () => {
+    const root = path.join(tmpdir(), 'compile-fixture');
+    const kotlin = path.join(root, 'core', 'src', 'commonMain', 'kotlin', 'Broken.kt');
+    const output = [
+      '> Task :core:compileKotlinJvm FAILED',
+      `e: ${pathToFileURL(kotlin).href}:7:13 Unresolved reference: missingValue`,
+      '> Task :api:compileJava FAILED',
+      `${path.join(root, 'api', 'src', 'main', 'java', 'Broken.java')}:21: error: cannot find symbol`,
+    ].join('\n');
+    expect(parseCompileFailures(output, '', root)).toEqual([
+      {
+        task: ':core:compileKotlinJvm',
+        diagnostics: [{ file: 'core/src/commonMain/kotlin/Broken.kt', line: 7, column: 13, message: 'Unresolved reference: missingValue', language: 'kotlin' }],
+      },
+      {
+        task: ':api:compileJava',
+        diagnostics: [{ file: 'api/src/main/java/Broken.java', line: 21, column: null, message: 'cannot find symbol', language: 'java' }],
+      },
+    ]);
+  });
+
+  it('ignores failed non-compile tasks and deduplicates diagnostics', () => {
+    const output = '> Task :core:jvmTest FAILED\n'
+      + '> Task :core:compileKotlinJvm FAILED\n'
+      + 'e: core/src/Broken.kt: (4, 2): Type mismatch\n'
+      + 'e: core/src/Broken.kt: (4, 2): Type mismatch\n';
+    expect(parseCompileFailures(output, '', '/project')).toEqual([{
+      task: ':core:compileKotlinJvm',
+      diagnostics: [{ file: 'core/src/Broken.kt', line: 4, column: 2, message: 'Type mismatch', language: 'kotlin' }],
+    }]);
+    expect(parseCompileFailures('> Task :core:jvmTest FAILED', '', '/project')).toEqual([]);
+  });
+
+  it('recognizes a compile task from Gradle failure prose in stderr', () => {
+    expect(parseCompileFailures('', "Execution failed for task ':core:compileKotlinJvm'.\n", '/project')).toEqual([
+      { task: ':core:compileKotlinJvm', diagnostics: [] },
+    ]);
+  });
+
+  it('does not rerun a known compile failure and adds its cause to module_failed', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const source = path.join(dir, 'core', 'src', 'jvmMain', 'kotlin', 'Broken.kt');
+    const calls = [];
+    const spawn = (cmd, args, options) => {
+      calls.push({ cmd, args: [...args], cwd: options?.cwd });
+      if (effectiveGradleArgs({ cmd, args }).includes(':core:jvmTest')) {
+        return {
+          status: 1,
+          stdout: `> Task :core:compileKotlinJvm FAILED\ne: ${pathToFileURL(source).href}:9:4 Unresolved reference: missingValue\nBUILD FAILED in 1s\n`,
+          stderr: '', signal: null, error: null,
+        };
+      }
+      return { status: 0, stdout: 'BUILD SUCCESSFUL\n', stderr: '', signal: null, error: null };
+    };
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir, args: ['--test-type', 'common', '--no-coverage'], spawn, log: () => {},
+    });
+    const testDispatches = calls.filter(c => effectiveGradleArgs(c).includes(':core:jvmTest'));
+    expect(testDispatches).toHaveLength(1);
+    expect(exitCode).toBe(1);
+    expect(envelope.parallel.legs[0]).toMatchObject({ cascade_detected: false, retry_fired: false });
+    expect(envelope.errors.find(e => e.code === 'module_failed')).toMatchObject({
+      module: 'core', setup_failed: true,
+      compile_failures: [{
+        task: ':core:compileKotlinJvm',
+        diagnostics: [{ file: 'core/src/jvmMain/kotlin/Broken.kt', line: 9, column: 4, message: 'Unresolved reference: missingValue', language: 'kotlin' }],
+      }],
+    });
+  });
 });
 
 // Build a synthetic project. Each module gets a build.gradle.kts so
