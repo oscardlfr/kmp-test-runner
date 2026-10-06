@@ -93,7 +93,7 @@ describe('materializeSkillSnapshot', { timeout: 30_000 }, () => {
   // content assertions below actually discriminate -- two blocks means a run against a stale pin
   // shows both failing for real, not just the first one.
   it('PINNED_SKILL_SHA is locked to the reviewed next-milestone skill contract', () => {
-    expect(PINNED_SKILL_SHA).toBe('7abc7b5c7c42744a66a3bb02ac81c10717357e3b');
+    expect(PINNED_SKILL_SHA).toBe('39ea824e301022af57990cb6e30a2fb381ad6df2');
   });
 
   it('the pinned current-skill snapshot reflects the PR #403 target-binding fix', async () => {
