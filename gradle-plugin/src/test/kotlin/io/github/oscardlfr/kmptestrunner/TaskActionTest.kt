@@ -144,6 +144,48 @@ class TaskActionTest {
         )
     }
 
+    @Test
+    fun `TaskAction forwards changed scope and Android selection to the matching commands`() {
+        writeMinimalProject(
+            """
+            kmpTestRunner {
+                baseRef = "HEAD~1"
+                includeDependents = true
+                flavor = "demo"
+                variant = "debug"
+            }
+            """.trimIndent()
+        )
+        val logFile = File(testKitDir, "selectors.log")
+        val env = if (isWindows) createWindowsShim(logFile) else createPosixShim(logFile)
+        GradleRunner.create()
+            .withProjectDir(projectDir)
+            .withTestKitDir(testKitDir)
+            .withEnvironment(env)
+            .withArguments("parallelTests", "changedTests", "coverageTask", "androidTests", "benchmarkTests")
+            .withGradleVersion("9.1.0")
+            .build()
+
+        val records = logFile.readLines().map { it.split('\u0000') }
+        fun command(name: String): List<String> = records.single { name in it }
+        fun assertPair(args: List<String>, flag: String, value: String) {
+            assertTrue(args.windowed(2).any { it == listOf(flag, value) },
+                "Expected $flag $value in ${args.joinToString(" ")}")
+        }
+        val changed = command("changed")
+        assertPair(changed, "--base", "HEAD~1")
+        assertTrue("--include-dependents" in changed)
+        for (subcommand in listOf("parallel", "changed", "coverage", "android", "benchmark")) {
+            val args = command(subcommand)
+            assertPair(args, "--flavor", "demo")
+            assertPair(args, "--variant", "debug")
+        }
+        for (subcommand in listOf("parallel", "coverage", "android", "benchmark")) {
+            assertTrue("--base" !in command(subcommand))
+            assertTrue("--include-dependents" !in command(subcommand))
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Parameterized arg-recording tests (POSIX + Windows)
     // -------------------------------------------------------------------------

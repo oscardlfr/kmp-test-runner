@@ -23,6 +23,18 @@ abstract class ChangedTestsTask : NodeRunnerTask() {
             if (extension.testType.isNotEmpty()) {
                 cmd += listOf("--test-type", extension.testType)
             }
+            if (extension.baseRef.isNotEmpty()) {
+                cmd += listOf("--base", extension.baseRef)
+            }
+            if (extension.includeDependents) {
+                cmd += "--include-dependents"
+            }
+            if (extension.flavor.isNotEmpty()) {
+                cmd += listOf("--flavor", extension.flavor)
+            }
+            if (extension.variant.isNotEmpty()) {
+                cmd += listOf("--variant", extension.variant)
+            }
             if (extension.minLineCoverage >= 0) {
                 cmd += listOf("--min-line-coverage", extension.minLineCoverage.toString())
             }

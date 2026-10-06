@@ -29,6 +29,12 @@ abstract class CoverageTask : NodeRunnerTask() {
             if (extension.testType.isNotEmpty()) {
                 cmd += listOf("--test-type", extension.testType)
             }
+            if (extension.flavor.isNotEmpty()) {
+                cmd += listOf("--flavor", extension.flavor)
+            }
+            if (extension.variant.isNotEmpty()) {
+                cmd += listOf("--variant", extension.variant)
+            }
             runNodeRunner(execOperations, "coverageTask", cmd, effectiveRoot, extension.sharedProjectName)
         } finally {
             RuntimeExtractor.cleanup(tempDir)

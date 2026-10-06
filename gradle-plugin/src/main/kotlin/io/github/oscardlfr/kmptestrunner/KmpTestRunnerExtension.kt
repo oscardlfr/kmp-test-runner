@@ -14,6 +14,10 @@ open class KmpTestRunnerExtension {
     // "common" | "desktop" | "androidUnit" | "androidInstrumented"
     // | "ios" | "macos" | "all".
     var testType: String = ""
+    var baseRef: String = ""
+    var includeDependents: Boolean = false
+    var flavor: String = ""
+    var variant: String = ""
     // On instrumented-test failure, capture a device screenshot + UI-hierarchy
     // dump via adb (best-effort, forensic-only — never changes the build's exit
     // code). Propagated to the `androidTests` task as --capture-on-fail. Paths

@@ -30,6 +30,12 @@ abstract class ParallelTestsTask : NodeRunnerTask() {
             if (extension.testType.isNotEmpty()) {
                 cmd += listOf("--test-type", extension.testType)
             }
+            if (extension.flavor.isNotEmpty()) {
+                cmd += listOf("--flavor", extension.flavor)
+            }
+            if (extension.variant.isNotEmpty()) {
+                cmd += listOf("--variant", extension.variant)
+            }
             if (extension.captureOnFail) {
                 cmd += "--capture-on-fail"
             }

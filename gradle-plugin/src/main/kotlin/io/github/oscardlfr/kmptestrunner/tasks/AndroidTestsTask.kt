@@ -24,6 +24,12 @@ abstract class AndroidTestsTask : NodeRunnerTask() {
             if (extension.captureDir.isNotEmpty()) {
                 cmd += listOf("--capture-dir", extension.captureDir)
             }
+            if (extension.flavor.isNotEmpty()) {
+                cmd += listOf("--flavor", extension.flavor)
+            }
+            if (extension.variant.isNotEmpty()) {
+                cmd += listOf("--variant", extension.variant)
+            }
             runNodeRunner(execOperations, "androidTests", cmd, effectiveRoot, extension.sharedProjectName)
         } finally {
             RuntimeExtractor.cleanup(tempDir)
