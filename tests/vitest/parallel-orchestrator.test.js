@@ -114,9 +114,15 @@ describe('compile failure diagnostics', () => {
   });
 
   it('recognizes a compile task from Gradle failure prose in stderr', () => {
-    expect(parseCompileFailures('', "Execution failed for task ':core:compileKotlinJvm'.\n", '/project')).toEqual([
+    expect(parseCompileFailures('', "Execution failed for task ':core:compileKotlinJvm'.\n> Compilation error. See log for more details\n", '/project')).toEqual([
       { task: ':core:compileKotlinJvm', diagnostics: [] },
     ]);
+  });
+
+  it('does not label dependency resolution in a compile task as a compiler failure', () => {
+    const output = "> Task :core:compileKotlinJvm FAILED\nExecution failed for task ':core:compileKotlinJvm'.\n"
+      + '> Could not resolve all files for configuration :core:compileClasspath.\n';
+    expect(parseCompileFailures(output, '', '/project')).toEqual([]);
   });
 
   it('does not rerun a known compile failure and adds its cause to module_failed', async () => {
