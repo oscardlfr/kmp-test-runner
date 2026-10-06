@@ -95,7 +95,7 @@ import { createFinalCampaignControlFromEnv } from './final-campaign-control.mjs'
 // CI job -- see condition-launcher.mjs's identical fix for the full story).
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..');
-const PINNED_SKILL_SHA = '27c943dc392675f78209a78ce09adb4f79283e3e';
+const PINNED_SKILL_SHA = '7abc7b5c7c42744a66a3bb02ac81c10717357e3b';
 // KMP_EVAL_RUNS_ROOT override exists specifically so tests never write to (or, worse, clean up
 // inside) the real committable tools/runs/ directory -- an earlier version of the integration
 // test suite listed and deleted files directly under the real RUNS_ROOT, including an
