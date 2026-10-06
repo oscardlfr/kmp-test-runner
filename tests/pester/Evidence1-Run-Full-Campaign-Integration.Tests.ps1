@@ -673,8 +673,8 @@ Describe 'Evidence1 failure-safe closure attempt on a mid-campaign crash (2026-0
             }
             # The 4 expected cells New-TestManifestObject's own default manifest resolves to
             # (2 runtimes x 2 rounds, round 1 reversed per Get-E1RunManifestExpectedCells' own D7
-            # alternation): codex-cli-0, claude-code-0, claude-code-1, codex-cli-1.
-            $script:ExpectedCellKeys = @('codex-cli-0', 'claude-code-0', 'claude-code-1', 'codex-cli-1')
+            # Host closure keys use the global campaign indices; guest copy requests remain local.
+            $script:ExpectedCellKeys = @('codex-cli-0', 'claude-code-2', 'claude-code-3', 'codex-cli-1')
         }
 
         It 'skips with no_manifest and never calls the copy capability when the context has no manifest at all' {
@@ -723,12 +723,12 @@ Describe 'Evidence1 failure-safe closure attempt on a mid-campaign crash (2026-0
             $copy.live_running_available | Should -BeFalse
             $copy.results.Count | Should -Be 4
             ($copy.results | ForEach-Object { $_.cell_key } | Sort-Object) | Should -Be ($script:ExpectedCellKeys | Sort-Object)
-            foreach ($entry in ($copy.results | Where-Object { $_.cell_key -cin @('codex-cli-0', 'claude-code-1') })) {
+            foreach ($entry in ($copy.results | Where-Object { $_.cell_key -cin @('codex-cli-0', 'claude-code-3') })) {
                 $entry.verdict | Should -BeExactly 'PASS'
                 $entry.spec_name | Should -BeExactly 'agentic-eval-session-record'
                 $entry.files_copied | Should -Be @('audit.json', 'record.json')
             }
-            foreach ($entry in ($copy.results | Where-Object { $_.cell_key -cin @('claude-code-0', 'codex-cli-1') })) {
+            foreach ($entry in ($copy.results | Where-Object { $_.cell_key -cin @('claude-code-2', 'codex-cli-1') })) {
                 $entry.verdict | Should -BeExactly 'FAIL'
                 $entry.error | Should -Match 'artifact_copy_required_source_missing'
             }
@@ -773,12 +773,13 @@ Describe 'Evidence1 failure-safe closure attempt on a mid-campaign crash (2026-0
             $rejectedCall = $script:E1TestCapturedCopySpecCalls | Where-Object { $_.cell_key -ceq 'claude-code-1' }
             $rejectedCall.spec_name | Should -BeExactly 'agentic-eval-rejection-diagnostic'
             $rejectedCall.rejection_id | Should -BeExactly $rejectionId
-            $rejectedResult = $copy.results | Where-Object { $_.cell_key -ceq 'claude-code-1' }
+            $rejectedResult = $copy.results | Where-Object { $_.cell_key -ceq 'claude-code-3' }
             $rejectedResult.benchmark_status | Should -BeExactly 'rejected'
             $rejectedResult.verdict | Should -BeExactly 'PASS'
 
-            foreach ($cellKey in @('codex-cli-0', 'claude-code-0', 'codex-cli-1')) {
-                $call = $script:E1TestCapturedCopySpecCalls | Where-Object { $_.cell_key -ceq $cellKey }
+            foreach ($cellKey in @('codex-cli-0', 'claude-code-2', 'codex-cli-1')) {
+                $guestCellKey = if ($cellKey -ceq 'claude-code-2') { 'claude-code-0' } else { $cellKey }
+                $call = $script:E1TestCapturedCopySpecCalls | Where-Object { $_.cell_key -ceq $guestCellKey }
                 $call.spec_name | Should -BeExactly 'agentic-eval-session-record'
                 $entry = $copy.results | Where-Object { $_.cell_key -ceq $cellKey }
                 $entry.benchmark_status | Should -BeExactly 'accepted'

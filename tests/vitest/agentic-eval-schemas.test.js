@@ -2315,6 +2315,13 @@ describe('schema v9 (eval-v2 recording fields, design.md (d)) -- reasoning effor
     expect(validateRun(v9ScenarioBase())).toEqual({ errors: [], warnings: [] });
   });
 
+  it('accepts a UUID campaign binding on schema-9 scenarios and rejects malformed or non-scenario bindings', () => {
+    const campaign_id = '11111111-2222-4333-8444-555555555555';
+    expect(validateRun(v9ScenarioBase({ campaign_id }))).toEqual({ errors: [], warnings: [] });
+    expect(validateRun(v9ScenarioBase({ campaign_id: 'wrong' })).errors.some((error) => error.field === 'campaign_id')).toBe(true);
+    expect(validateRun(v9Base({ campaign_id })).errors.some((error) => error.field === 'campaign_id')).toBe(true);
+  });
+
   // Regression lock for a real latent bug this schema-v9 addition surfaced and fixed: the
   // compatibleSidecarSchemas ternary previously checked `run.schema === 8`, not `>= 8`, silently
   // diverging from accepted-run-audit.mjs's own already-forward-compatible

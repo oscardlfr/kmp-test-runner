@@ -295,6 +295,7 @@ if ($InternalLibrary) {
     $started = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
     Clear-E1LegacyFinalCampaignEnvironment
     $runtimeEnvironment = New-E1DualConditionCanaryRuntimeEnvironment -RunsRoot $runsRoot
+    $runtimeEnvironment.KMP_EVAL_CAMPAIGN_ID = [string]$CurrentCampaignInputs.campaign_id
     if ([string]$Cell.condition -ceq 'free') {
       $runtimeEnvironment.Path = Remove-E1AgenticEvalProductCliPathEntries ([string]$runtimeEnvironment.Path)
     }

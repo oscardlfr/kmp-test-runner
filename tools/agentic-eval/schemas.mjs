@@ -200,7 +200,7 @@ const RUN_CANONICAL_FIELDS_V9 = [
 // is an "unrecognized field". agent_state is the content-free before/after listing
 // of the agent's config directory (agent-state.mjs); output_bytes_kind says what output_bytes measures
 // (OUTPUT_BYTES_KIND_BY_RUNTIME below). validateRun checks the shape of each when present.
-const OPTIONAL_RUN_FIELDS_V9 = ['agent_state', 'output_bytes_kind'];
+const OPTIONAL_RUN_FIELDS_V9 = ['agent_state', 'output_bytes_kind', 'campaign_id'];
 
 // What each runtime's output_bytes measures: the tool results returned to the model (claude-code), or the
 // command output as the runtime logged it (codex-cli, which may shorten what the model reads). The record
@@ -984,6 +984,11 @@ export function validateRun(run) {
   for (const k of keys) if (!canonicalFields.includes(k) && !optionalFields.includes(k)) warnings.push({ field: k, message: 'unrecognized field' });
   if (run.schema === 9 && keys.has('agent_state')) validateAgentState(run.agent_state, errors);
   if (run.schema === 9 && keys.has('output_bytes_kind')) validateOutputBytesKind(run, errors);
+  if (run.schema === 9 && keys.has('campaign_id')
+    && (run.run_kind !== 'scenario' || typeof run.campaign_id !== 'string'
+      || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(run.campaign_id))) {
+    errors.push({ field: 'campaign_id', message: 'must be a UUID on schema-9 scenario records' });
+  }
 
   if (typeof run.run_id !== 'string' || run.run_id.length === 0) errors.push({ field: 'run_id', message: 'must be a non-empty string' });
   if (!RUN_KIND_VALUES.includes(run.run_kind)) errors.push({ field: 'run_kind', message: `must be one of ${RUN_KIND_VALUES.join('|')}` });

@@ -90,6 +90,12 @@ function armFor(condition) {
   return null;
 }
 
+function blockCampaignIdsOf(manifest) {
+  if (manifest.kind !== 'merged-blocks') return null;
+  const ids = manifest.block_campaign_ids;
+  return Array.isArray(ids) && ids.length > 0 && ids.every((id) => typeof id === 'string' && id !== '') ? ids : undefined;
+}
+
 /** The arm the design put at a position of the manifest's round_order ('product' or 'free'), or null when the manifest names none. */
 function designArmAt(manifest, position) {
   const arm = Array.isArray(manifest.round_order) ? manifest.round_order[position] : undefined;
@@ -534,6 +540,16 @@ export function summarizeCampaign(campaignDir, excludeCellKeys = new Set(), { ac
     };
   }
 
+  const blockCampaignIds = blockCampaignIdsOf(manifest);
+  if (blockCampaignIds === undefined) {
+    return {
+      schema: CAMPAIGN_SUMMARY_SCHEMA, summary_status: 'refused', reason_code: 'merged_manifest_invalid',
+      campaign_id: manifest.campaign_id ?? null, scenario_id: manifest.scenario_id ?? null,
+      provider_mode: manifest.provider_mode ?? null, provenance: null, benchmark_eligible_counts: {},
+      by_runtime_arm: [], cells: [], limitations: [],
+    };
+  }
+
   // The access scan is applied only to a live, readable campaign (the two refusals above never look at
   // it); its flagged cells join the same exclusion set --exclude-cells feeds.
   const scanEffects = accessScan === null ? null : accessScanEffects(accessScan, manifest.campaign_id ?? null);
@@ -556,6 +572,7 @@ export function summarizeCampaign(campaignDir, excludeCellKeys = new Set(), { ac
   });
 
   const provenance = buildProvenance(loadedCells);
+  if (blockCampaignIds !== null) provenance.block_campaign_ids = blockCampaignIds;
 
   // Deterministic grouping key order: runtime_id, then arm ('free' before 'product' -- alphabetical,
   // arbitrary but fixed), then round_index -- matches the required (runtime -> arm -> cell) output
@@ -744,6 +761,7 @@ export function renderMarkdown(summary) {
   lines.push(fmtProvenanceLine('codex-cli reasoning_effort', summary.provenance.reasoning_effort['codex-cli']));
   lines.push(fmtProvenanceLine('claude-code reasoning_effort_source', summary.provenance.reasoning_effort_source['claude-code']));
   lines.push(fmtProvenanceLine('codex-cli reasoning_effort_source', summary.provenance.reasoning_effort_source['codex-cli']));
+  if (summary.provenance.block_campaign_ids) lines.push(`- block_campaign_ids: ${summary.provenance.block_campaign_ids.join(', ')}`);
   lines.push('');
   lines.push('## benchmark_eligible, as recorded on accepted cells (descriptive only, not a gate)');
   const eligibilityRuntimes = Object.keys(summary.benchmark_eligible_counts).sort();

@@ -849,17 +849,20 @@ describe('5. codex-cli fake-runtime E2E', () => {
 
   it('executes one nonzero design cell with a local journal ordinal and durable original order_index', async () => {
     const attestationPath = writeValidAttestation({ runtime_id: 'codex-cli' });
+    const campaignId = '11111111-2222-4333-8444-555555555555';
     const result = await runCli([
       'run', '--scenario', SCENARIO_ID, '--source-repo-dir', sourceRepoDir, '--seed', '17',
       '--runtime', 'codex-cli', '--model', 'gpt-5.6-terra', '--campaign-design', CODEX_DESIGN_ID,
       '--campaign-cell-index', '5', '--isolation-attestation-file', attestationPath, '--timeout-ms', '900000',
-    ], fakeCodexEnv(), 90000);
+    ], { ...fakeCodexEnv(), KMP_EVAL_CAMPAIGN_ID: campaignId }, 90000);
     expect(result.status, result.stderr || result.stdout).toBe(0);
     expect(result.parsed.records).toHaveLength(1);
     expect(result.parsed.records[0]).toMatchObject({
+      campaign_id: campaignId,
       order_index: 5, repetition_index: 2, condition: 'no-skill',
       execution_profile: { id: UNRESTRICTED }, product_access_mode: 'free-baseline-no-product',
     });
     expect(listEvidenceFiles('scenario')).toHaveLength(1);
+    expect(crossValidateAcceptedRunAuditAgainstRecord(readAcceptedAuditSidecar(result.parsed.records[0].run_id), result.parsed.records[0])).toEqual([]);
   }, 90000);
 });

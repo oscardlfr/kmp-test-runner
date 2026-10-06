@@ -1063,7 +1063,7 @@ function buildRunRecord({
   // return value, computed by the CALLER (cmdRun) -- buildRunRecord never grades anything itself,
   // it only reports an already-computed verdict, keeping grading and record-construction as two
   // separately-testable concerns.
-  seed = null, orderIndex = null, repetitionIndex = null, gradeResult = null,
+  seed = null, orderIndex = null, repetitionIndex = null, gradeResult = null, campaignId = null,
   // ambientProfileScopeId/ambientProfileKey (correction 2): the ONE opaque scope id + random HMAC
   // key generated once per harness invocation (generateAmbientProfileScope), shared by every
   // record this invocation produces -- REQUIRED (no default), so a caller can never silently fall
@@ -1313,6 +1313,7 @@ function buildRunRecord({
     schema: LATEST_RUN_SCHEMA,
     run_id: `${runKind}-${condition}-${randomUUID().slice(0, 8)}`,
     run_kind: runKind,
+    ...(isScenario && campaignId !== null ? { campaign_id: campaignId } : {}),
     benchmark_eligible: false,
     scenario_id: scenarioId,
     query_id: null,
@@ -3864,6 +3865,11 @@ const MAX_REPEATS = 20;
  * return -> real run) exactly, generalized to N resolved selections instead of one.
  */
 async function cmdRunCampaign(args, campaignDesignId) {
+  const campaignId = process.env.KMP_EVAL_CAMPAIGN_ID ?? null;
+  if (campaignId !== null && !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(campaignId)) {
+    console.error('KMP_EVAL_CAMPAIGN_ID must be a UUID');
+    return 1;
+  }
   if (args['execution-profile'] != null) {
     console.error('--campaign-design cannot be combined with --execution-profile -- the campaign design itself resolves an explicit execution profile per cell');
     return 1;
@@ -4147,6 +4153,7 @@ async function cmdRunCampaign(args, campaignDesignId) {
         selection: cellSelection, promptArtifact: runPromptArtifact, skillSnapshotArtifact: matrix.skillSnapshotArtifact,
         isolationAttestationSha256: attestationSha256ByProfileId[planCell.execution_profile_id],
         productAccessMode: planCell.product_access_mode,
+        campaignId,
       });
       records.push(record);
       conditionResults.push(cell.conditionResult);

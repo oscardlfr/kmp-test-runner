@@ -10,9 +10,15 @@ function Assert-E1CampaignEligibilityBalance([object[]]$ExpectedCells) {
       throw 'campaign_eligibility_order_unbalanced'
     }
     $indices = @($cells | ForEach-Object { [int]$_.campaign_cell_index } | Sort-Object)
-    $expectedIndices = @(0..($cells.Count - 1))
-    if (@(Compare-Object $indices $expectedIndices).Count -ne 0) {
+    # A block retains the global campaign indices. Each repetition must still
+    # contain both adjacent arms, but the first repetition need not be zero.
+    if ($indices.Count % 2 -ne 0 -or @($indices | Select-Object -Unique).Count -ne $indices.Count) {
       throw 'campaign_eligibility_cell_indices_invalid'
+    }
+    for ($position = 0; $position -lt $indices.Count; $position += 2) {
+      if ($indices[$position] % 2 -ne 0 -or $indices[$position + 1] -ne $indices[$position] + 1) {
+        throw 'campaign_eligibility_cell_indices_invalid'
+      }
     }
   }
 }
@@ -24,6 +30,7 @@ function Invoke-E1CampaignEligibilityFinalization {
     [Parameter(Mandatory)][object[]]$ExpectedCells,
     [Parameter(Mandatory)][string]$ScenarioId,
     [Parameter(Mandatory)][int64]$Seed,
+    [string]$CampaignId,
     # No default. An omitted flag is NOT "assume the weak mechanism" -- same principle
     # cell-integrity.mjs already applies. A default of 'live' would fail OPEN exactly where this
     # check exists to fail closed: a fake campaign promoted because a caller forgot to pass the mode.
@@ -53,7 +60,7 @@ function Invoke-E1CampaignEligibilityFinalization {
   }
   if ($cellCount -lt 2) { throw 'campaign_eligibility_cell_set_incomplete' }
 
-  $expectedKeys = @($ExpectedCells | ForEach-Object { "$([string]$_.runtime_id)-$([int]$_.round_index)" } | Sort-Object)
+  $expectedKeys = @($ExpectedCells | ForEach-Object { "$([string]$_.runtime_id)-$([int]$_.campaign_cell_index)" } | Sort-Object)
   if (@($expectedKeys | Select-Object -Unique).Count -ne $expectedKeys.Count) {
     throw 'campaign_eligibility_cell_key_duplicate'
   }
@@ -72,7 +79,7 @@ function Invoke-E1CampaignEligibilityFinalization {
   foreach ($group in @($ExpectedCells | Group-Object { [string]$_.runtime_id })) {
     $runtimeId = [string]$group.Name
     $runtimeCells = @($group.Group)
-    $runtimeCellKeys = @($runtimeCells | ForEach-Object { "$([string]$_.runtime_id)-$([int]$_.round_index)" })
+    $runtimeCellKeys = @($runtimeCells | ForEach-Object { "$([string]$_.runtime_id)-$([int]$_.campaign_cell_index)" })
     # Any one of this runtime's OWN cells already known-rejected excludes the whole runtime,
     # without attempting to validate its other cells as record/audit pairs -- a rejected cell's
     # directory legitimately holds rejection.json, not the pair this loop otherwise expects, so
@@ -87,7 +94,7 @@ function Invoke-E1CampaignEligibilityFinalization {
 
       $prepared = @()
       foreach ($cell in $runtimeCells) {
-        $cellKey = "$([string]$cell.runtime_id)-$([int]$cell.round_index)"
+        $cellKey = "$([string]$cell.runtime_id)-$([int]$cell.campaign_cell_index)"
         $cellRoot = Join-Path $PrivateEvidenceRoot $cellKey
         $entries = @(Get-ChildItem -LiteralPath $cellRoot -Force)
         $entryNames = @($entries | ForEach-Object Name | Sort-Object)
@@ -112,6 +119,7 @@ function Invoke-E1CampaignEligibilityFinalization {
             [int]$record.order_index -ne [int]$cell.campaign_cell_index -or
             [int]$record.repetition_index -ne [math]::Floor(([int]$cell.campaign_cell_index) / 2) -or
             [string]$record.condition -cne $expectedCondition -or
+            (-not [string]::IsNullOrWhiteSpace($CampaignId) -and [int]$record.schema -ge 9 -and [string]$record.campaign_id -cne $CampaignId) -or
             [string]$record.product_access_mode -cne $expectedAccessMode) {
           throw 'campaign_eligibility_record_identity_mismatch'
         }
