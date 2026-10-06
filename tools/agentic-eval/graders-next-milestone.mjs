@@ -42,7 +42,7 @@ function answerComparison(finalText, scenario) {
 
 function testFailureFacts(envelope) {
   const failedModules = [...new Set((envelope.errors ?? []).filter((error) => error.code === 'module_failed'
-    && error.setup_failed !== true && !(error.compile_failures?.length > 0)).map((error) => colon(error.module)))];
+    && error.setup_failed !== true).map((error) => colon(error.module)))];
   const details = (envelope.modules ?? []).filter((module) => failedModules.includes(colon(module.name)))
     .flatMap((module) => module.test_failures ?? []);
   return {

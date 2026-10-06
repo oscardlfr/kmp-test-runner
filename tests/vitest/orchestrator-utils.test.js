@@ -432,6 +432,12 @@ describe('splitGradleArgs', () => {
 });
 
 describe('expandNoCoverageAlias', () => {
+  it('keeps opaque Gradle option values intact across alias and equals expansion', () => {
+    expect(expandNoCoverageAlias(['--gradle-args', '--max-workers=4', '--no-coverage']))
+      .toEqual(['--gradle-args', '--max-workers=4', '--coverage-tool', 'none']);
+    expect(expandNoCoverageAlias(['--gradle-args', '--no-coverage']))
+      .toEqual(['--gradle-args', '--no-coverage']);
+  });
   it('aliases bare --no-coverage to [--coverage-tool, none]', () => {
     expect(expandNoCoverageAlias(['--no-coverage'])).toEqual(['--coverage-tool', 'none']);
   });

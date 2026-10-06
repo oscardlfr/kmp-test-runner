@@ -71,7 +71,7 @@ import {
 } from '../../lib/orchestrators/parallel-orchestrator.js';
 import { computeCacheKey, CACHE_DIR_NAME } from '../../lib/project-model.js';
 import { TEST_TYPE_VALUES } from '../../lib/parsers/argv-constants.js';
-import { parseCompileFailures } from '../../lib/orchestrators/parallel/result-rollup.js';
+import { parseCompileFailures, recordLegResults } from '../../lib/orchestrators/parallel/result-rollup.js';
 
 let workDir;
 afterEach(() => {
@@ -80,6 +80,21 @@ afterEach(() => {
 });
 
 describe('compile failure diagnostics', () => {
+  it('attributes compiler diagnostics only to their owner within a mixed-failure leg', () => {
+    const dir = makeProject(['core', 'feature']);
+    const tasks = [':core:jvmTest', ':feature:jvmTest'];
+    const state = { runStartMs: Date.now(), tests: { total: 0, passed: 0, failed: 0,
+      individual_total: 0 }, modules: [], errors: [], warnings: [] };
+    recordLegResults({ taskList: tasks, taskOwners: ['core', 'feature'],
+      results: new Map(tasks.map(task => [task, 'failed'])),
+      execModes: new Map(tasks.map(task => [task, 'failed'])),
+      execSummary: { failed: 2 }, modules: [{ name: 'core' }, { name: 'feature' }],
+      state, projectRoot: dir, log: () => {}, resolutionFailed: false,
+      compileFailures: [{ task: ':core:compileKotlin', diagnostics: [] }] });
+    expect(state.errors.find(error => error.module === 'core').compile_failures)
+      .toEqual([{ task: ':core:compileKotlin', diagnostics: [] }]);
+    expect(state.errors.find(error => error.module === 'feature').compile_failures).toBeUndefined();
+  });
   it('parses Kotlin and Java diagnostics with exact task, location and message', () => {
     const root = path.join(tmpdir(), 'compile-fixture');
     const kotlin = path.join(root, 'core', 'src', 'commonMain', 'kotlin', 'Broken.kt');
@@ -3057,6 +3072,16 @@ describe('runParallel', () => {
     expect(idxParallel).toBeGreaterThanOrEqual(0);
     expect(idxNoParallel).toBeGreaterThan(idxParallel);
     expect(idxFoo).toBeGreaterThan(idxNoParallel);
+  });
+
+  it('uses an explicit Gradle max-workers once instead of duplicating the default', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub();
+    await runParallel({ projectRoot: dir,
+      args: ['--test-type', 'common', '--max-workers', '2', '--gradle-args', '--max-workers=4'],
+      spawn, log: () => {}, runCoverageInjection: makeRunCoverageStub() });
+    const args = effectiveGradleArgs(spawn.calls.find(isGradleCall));
+    expect(args.filter(arg => arg.startsWith('--max-workers'))).toEqual(['--max-workers=4']);
   });
 
   // 2026-05-03 wide-smoke regression: when gradle aborts at evaluation phase

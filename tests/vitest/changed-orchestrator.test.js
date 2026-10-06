@@ -865,6 +865,21 @@ describe('runChanged --dry-run (F1)', () => {
 // Case 13 — v0.9 step 3: --variant global propagation to runParallel
 // ---------------------------------------------------------------------------
 describe('runChanged --variant propagation (v0.9 step 3)', () => {
+  it('forwards equals-form Gradle options unchanged into parallel parsing', async () => {
+    const dir = makeProject(['app']);
+    const spawn = makeSpawnStub({ git: { statusOutput: porcelain(['app/src/androidUnitTest/X.kt']) } });
+    const calls = [];
+    await runChanged({ projectRoot: dir,
+      args: ['--gradle-args', '--max-workers=4'], spawn,
+      runParallelInjection: async (input) => { calls.push(input); return {
+        envelope: { tests: { total: 0, passed: 0, failed: 0, skipped: 0 }, modules: [], skipped: [],
+          coverage: { tool: 'auto', missed_lines: null }, errors: [], warnings: [] }, exitCode: 0,
+      }; } });
+    expect(calls).toHaveLength(1);
+    const forwarded = calls[0].args;
+    expect(forwarded.slice(forwarded.indexOf('--gradle-args'), forwarded.indexOf('--gradle-args') + 2))
+      .toEqual(['--gradle-args', '--max-workers=4']);
+  });
   it('--variant release reaches runParallel via buildParallelArgs', async () => {
     const dir = makeProject(['app']);
     const spawn = makeSpawnStub({
