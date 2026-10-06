@@ -83,6 +83,8 @@ The `kmp-test` CLI shares a common flag surface across subcommands, with per-sub
 |------|---------|:--------:|:-------:|-------|
 | `--list` / `--list-only` | off | ✓ | ✓ | Emit post-filter `modules[]` + `skipped[]` envelope, exit 0 before gradle dispatch. Different from `--dry-run` (shows spawn command). |
 | `--staged-only` | off | — | — | `changed` only: only consider git-staged files (`git diff --cached`). |
+| `--base <ref>` | none | — | — | `changed` only: compare the merge base with `<ref>` against the current tree, including committed, staged, unstaged, and untracked files. With `--staged-only`, exclude unstaged and untracked files. |
+| `--include-dependents` | off | — | — | `changed` only: add transitive project dependents from Gradle's configured graph; reports direct, dependent, and selected module sets separately. |
 | `--show-modules-only` | off | — | — | `changed` only: list detected modules, exit 0 without running tests. |
 
 ## Subcommand-specific (benchmark / info / describe)

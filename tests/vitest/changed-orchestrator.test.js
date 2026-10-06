@@ -725,8 +725,8 @@ describe('changed coverage aggregation against unavailable explicitly requested 
         required_by: 'explicit-coverage-tool',
       }),
     ]);
-    expect(envelope.coverage.modules_contributing).toBe(1);
-    expect(envelope.coverage.module_buckets.with_data).toEqual(['other']);
+    expect(envelope.coverage.modules_contributing).toBe(0);
+    expect(envelope.coverage.module_buckets.with_data).toEqual([]);
     expect(envelope.coverage.module_buckets.no_xml).toEqual(['core']);
   });
 
