@@ -66,6 +66,15 @@ describe('changed --base', () => {
     expect(result.envelope.changed.detected_modules).toEqual(['consumer', 'core']);
   });
 
+  it('a cross-module rename selects both the old and new owning modules', async () => {
+    const base = fixture();
+    git('mv', 'consumer/src/main/A.kt', 'app/src/main/Moved.kt');
+    const result = await runChanged({ projectRoot,
+      args: ['--base', base, '--show-modules-only'] });
+    expect(result.exitCode).toBe(0);
+    expect(result.envelope.changed.detected_modules).toEqual(['app', 'consumer', 'core']);
+  });
+
   it('invalid refs fail closed with git_error', async () => {
     fixture();
     const result = await runChanged({ projectRoot,
