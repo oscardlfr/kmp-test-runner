@@ -4,12 +4,12 @@ import { gradeNextMilestoneScenario } from '../../tools/agentic-eval/graders-nex
 const answerText = (expected) => `KMP_EVAL_RESULT\n${JSON.stringify(expected)}\nKMP_EVAL_RESULT_END`;
 const envelope = (extra) => ({ tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', exit_code: 1,
   tests: { individual_total: 0 }, modules: [], errors: [], ...extra });
-function grade(family, expected, result, command = 'kmp-test parallel --json') {
+function grade(family, expected, result, command = 'kmp-test parallel --json', answer = expected) {
   const attempt = { id: 't1', command, resultContent: JSON.stringify(result), resultIndex: 2 };
   return gradeNextMilestoneScenario({ scenario: { family, expected, policy: {
     allowed_kmptest_subcommands: ['parallel', 'changed'], allowed_gradle_tasks: [':feature:test'],
   } },
-    observation: { terminal: { finalText: answerText(expected) } }, bashResults: [attempt],
+    observation: { terminal: { finalText: answerText(answer) } }, bashResults: [attempt],
     checks: [{ name: 'no_transcript_structural_issues', passed: true },
       { name: 'bash_tool_use_present', passed: true }, { name: 'tool_result_correlated', passed: true }],
     junitAttribution: { decisionByAttempt: new Map([['t1', 'allow']]), ambiguousJunitEvidence: false,
@@ -32,6 +32,19 @@ describe('next milestone graders bind final answers to real envelopes', () => {
       { module: 'app', status: 'with_data', line_coverage_percent: 90 },
     ] } }).success).toBe(false);
     expect(grade('multi-module-coverage', expected, { ...result, errors: [] }).success).toBe(false);
+    const missing = grade('multi-module-coverage', expected, result, 'kmp-test parallel --json',
+      { outcome_kind: expected.outcome_kind });
+    expect(missing.success).toBe(false);
+    expect(missing.outcomeAssessment).toMatchObject({ task_outcome_matched: null,
+      task_outcome_reason: 'claim-malformed', task_outcome_mismatch_fields: null });
+    const extra = grade('multi-module-coverage', expected, result, 'kmp-test parallel --json', { ...expected, hedge: true });
+    expect(extra.success).toBe(false);
+    expect(extra.outcomeAssessment).toMatchObject({ task_outcome_matched: true,
+      answer_protocol_matched: false, task_outcome_mismatch_fields: [], task_outcome_unexpected_key_count: 1 });
+    const unknown = grade('multi-module-coverage', expected, result, 'kmp-test parallel --json',
+      { ...expected, outcome_kind: 'something_else' });
+    expect(unknown.success).toBe(false);
+    expect(unknown.terminalEvidence.final_answer_block.declared_outcome_kind).toBe('unrecognized');
   });
 
   it('requires direct/dependent selection and a failure in the dependent, not the direct module', () => {

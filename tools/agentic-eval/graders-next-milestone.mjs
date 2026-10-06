@@ -23,14 +23,18 @@ function answerComparison(finalText, scenario) {
         : answer[field] !== expected[field])) : [];
   const unexpected = answer ? Object.keys(answer).filter((field) => !fields.includes(field)).length : 0;
   const protocolMatched = answer != null && missing.length === 0 && unexpected === 0;
-  const matched = protocolMatched && mismatched.length === 0;
-  const reason = !block.found ? 'claim-missing' : !protocolMatched ? 'claim-malformed'
+  const malformed = answer == null || missing.length > 0;
+  const matched = malformed ? null : mismatched.length === 0;
+  const reason = !block.found ? 'claim-missing' : malformed ? 'claim-malformed'
     : matched ? 'matched' : 'mismatched';
-  return { matched, protocolMatched, reason, mismatched, unexpected,
+  return { matched, protocolMatched, reason,
+    mismatched: malformed ? null : mismatched, unexpected: malformed ? null : unexpected,
     diagnostic: {
       found: block.found, parsed: answer != null, ambiguous: block.ambiguous,
       matches_observed: null, comparison_status: answer ? 'no-observed-result' : !block.found ? 'missing-block' : 'invalid-json',
-      declared_outcome_kind: typeof answer?.outcome_kind === 'string' ? answer.outcome_kind : null,
+      declared_outcome_kind: typeof answer?.outcome_kind === 'string'
+        ? (['tests_failed', 'coverage_threshold_exceeded', 'compilation_failed'].includes(answer.outcome_kind)
+          ? answer.outcome_kind : 'unrecognized') : null,
       observed_outcome_kind: null, missing_fields: missing, mismatch_fields: mismatched,
       unexpected_key_count: unexpected,
     } };
@@ -129,7 +133,7 @@ export function gradeNextMilestoneScenario({ scenario, observation, bashResults,
       ['final_answer_consistent_with_evidence', false],
     ]) checks.push({ name, passed, detail: 'standard-tools control: final answer is graded against ground truth', evidence_event_indices: [] });
     return {
-      expectedOutcomeMatched: answer.matched, success: answer.matched && ran && checks.slice(0, 3).every((check) => check.passed),
+      expectedOutcomeMatched: answer.matched, success: answer.matched === true && answer.protocolMatched && ran && checks.slice(0, 3).every((check) => check.passed),
       checks, firstUsefulSignalEventIndex: null, terminalAuthoritativeEventIndex: null,
       testInvocationsTotal: gradleAttempts.length, retries: Math.max(0, gradleAttempts.length - 1),
       harnessEvidenceAmbiguous: junitAttribution.ambiguousJunitEvidence,
@@ -159,10 +163,10 @@ export function gradeNextMilestoneScenario({ scenario, observation, bashResults,
   addCheck('authoritative_target_matches_expected', evidence, evidence ? 'scenario modules matched' : 'scenario modules did not match');
   addCheck('authoritative_outcome_matches_expected', evidence, evidence ? 'observed outcome matched' : 'observed outcome did not match');
   addCheck('no_provider_contradiction', evidence, evidence ? 'no contradiction' : 'missing or contradictory evidence');
-  addCheck('final_answer_consistent_with_evidence', answer.matched && evidence, answer.matched && evidence ? 'answer and evidence matched' : 'answer or evidence mismatched');
+  addCheck('final_answer_consistent_with_evidence', answer.matched === true && answer.protocolMatched && evidence, answer.matched && evidence ? 'answer and evidence matched' : 'answer or evidence mismatched');
   return {
     expectedOutcomeMatched: evidence && answer.matched,
-    success: checks.every((check) => check.passed) && evidence && answer.matched,
+    success: checks.every((check) => check.passed) && evidence && answer.matched === true && answer.protocolMatched,
     checks, firstUsefulSignalEventIndex: last?.attempt.resultIndex ?? null,
     terminalAuthoritativeEventIndex: last?.attempt.resultIndex ?? null,
     testInvocationsTotal: attempts.length, retries: Math.max(0, attempts.length - 1),
