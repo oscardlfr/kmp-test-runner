@@ -6982,28 +6982,18 @@ describe('runParallel — flavor_defaulted_umbrella under the default test type'
 });
 
 // ===========================================================================
-// --variant: an unrecognized value warns (variant_unrecognized); valid values do not
+// --variant: composite flavor/build type values dispatch the matching tasks
 // ===========================================================================
-// `--variant` takes auto|debug|release|all (case-insensitive). Any other value is
-// still treated as `auto` (dispatch unchanged) but no longer silently: a flavored
-// build variant such as demoDebug is passed as `--flavor demo --variant debug`.
-describe('--variant: variant_unrecognized warning (parallel)', () => {
+describe('--variant: composite flavor/build type (parallel)', () => {
   const ALLOWED = ['auto', 'debug', 'release', 'all'];
   const variantWarnings = (envelope) => envelope.warnings.filter(w => w.code === 'variant_unrecognized');
   const flavoredBuild = 'plugins { id("com.android.application") }\nandroid { productFlavors { create("demo") {}\ncreate("prod") {} } }\n';
 
-  it('parseArgs keeps the lowercased value and records one warning carrying the value as typed', () => {
+  it('parseArgs splits a composite variant without a warning', () => {
     const opts = parseArgs(['--variant', 'demoDebug']);
-    expect(opts.androidVariant).toBe('demodebug');
-    expect(opts.warnings).toEqual([{
-      code: 'variant_unrecognized',
-      message: expect.any(String),
-      value: 'demoDebug',
-      allowed: ALLOWED,
-    }]);
-    expect(opts.warnings[0].message).toContain("--variant 'demoDebug' is not one of [auto, debug, release, all]");
-    expect(opts.warnings[0].message).toContain('treated as auto');
-    expect(opts.warnings[0].message).toContain('--flavor <flavor> --variant <buildType>');
+    expect(opts.androidVariant).toBe('debug');
+    expect(opts.flavor).toBe('demo');
+    expect(opts.warnings ?? []).toEqual([]);
   });
 
   it('valid values in any case, and the --android-variant alias, leave parseArgs without a warnings key', () => {
@@ -7015,11 +7005,19 @@ describe('--variant: variant_unrecognized warning (parallel)', () => {
     expect(Object.keys(parseArgs([]))).not.toContain('warnings');
   });
 
-  it('the --android-variant alias warns too, naming the flag that was typed', () => {
+  it('the --android-variant alias splits a composite release', () => {
     const opts = parseArgs(['--android-variant', 'prodRelease']);
-    expect(opts.warnings).toHaveLength(1);
-    expect(opts.warnings[0].value).toBe('prodRelease');
-    expect(opts.warnings[0].message).toContain("--android-variant 'prodRelease'");
+    expect(opts.androidVariant).toBe('release');
+    expect(opts.flavor).toBe('prod');
+    expect(opts.warnings ?? []).toEqual([]);
+  });
+  it.each([['--variant', 'demoDebug', '--flavor', 'prod'], ['--flavor', 'prod', '--variant', 'demoDebug']])('conflicting explicit flavor fails regardless of flag order', (...args) => {
+    const opts = parseArgs(args);
+    expect(opts.errors).toEqual([expect.objectContaining({ code: 'invalid_variant_flavor_conflict', flavor: 'prod', variant_flavor: 'demo' })]);
+  });
+  it('still warns on a genuinely unknown variant', () => {
+    const opts = parseArgs(['--variant', 'demoStaging']);
+    expect(opts.warnings).toEqual([expect.objectContaining({ code: 'variant_unrecognized', value: 'demoStaging', allowed: ALLOWED })]);
   });
 
   it('a dangling --variant is still the invalid_flag_value error, with no warning', () => {
@@ -7028,19 +7026,18 @@ describe('--variant: variant_unrecognized warning (parallel)', () => {
     expect(Object.keys(opts)).not.toContain('warnings');
   });
 
-  it('runParallel: --variant demoDebug → exactly one variant_unrecognized warning and the dispatch of --variant auto', async () => {
+  it('runParallel: --variant demoDebug dispatches the same task as explicit flavor and build type', async () => {
     const dir = makeProject([{ name: 'app', sourceSets: ['test'], build: flavoredBuild }]);
     const run = async (args) => {
       const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
       const result = await runParallel({ projectRoot: dir, args, spawn, log: () => {}, runCoverageInjection: makeRunCoverageStub() });
       return { ...result, tasks: spawn.calls.filter(isGradleCall).map(effectiveGradleArgs) };
     };
-    const typed = await run(['--variant', 'demoDebug', '--flavor', 'demo']);
-    const auto = await run(['--variant', 'auto', '--flavor', 'demo']);
-    expect(variantWarnings(typed.envelope)).toEqual([expect.objectContaining({ value: 'demoDebug', allowed: ALLOWED })]);
-    expect(typed.tasks).toEqual(auto.tasks);
-    expect(typed.exitCode).toBe(auto.exitCode);
-    expect(variantWarnings(auto.envelope)).toEqual([]);
+    const typed = await run(['--variant', 'demoDebug']);
+    const explicit = await run(['--flavor', 'demo', '--variant', 'debug']);
+    expect(variantWarnings(typed.envelope)).toEqual([]);
+    expect(typed.tasks).toEqual(explicit.tasks);
+    expect(typed.exitCode).toBe(explicit.exitCode);
   });
 
   it.each(['Release', 'DEBUG', 'all', 'auto'])('runParallel: --variant %s raises no variant_unrecognized warning', async (value) => {

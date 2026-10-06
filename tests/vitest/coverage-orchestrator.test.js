@@ -199,8 +199,13 @@ describe('per-module line coverage', () => {
     } } };
     const auto = discoverCoverageModules(model, parseArgs(['--flavor', 'demo']));
     const debug = discoverCoverageModules(model, parseArgs(['--flavor', 'demo', '--variant', 'debug']));
+    const composite = discoverCoverageModules(model, parseArgs(['--variant', 'demoDebug']));
     expect(auto.dispatched[0].variantHint).toEqual({ flavor: 'demo', buildType: 'release' });
     expect(debug.dispatched[0].variantHint).toEqual({ flavor: 'demo', buildType: 'debug' });
+    expect(composite.dispatched[0].variantHint).toEqual(debug.dispatched[0].variantHint);
+  });
+  it.each([['--variant', 'demoDebug', '--flavor', 'prod'], ['--flavor', 'prod', '--variant', 'demoDebug']])('rejects a conflicting coverage flavor in either order', (...args) => {
+    expect(parseArgs(args).errors).toEqual([expect.objectContaining({ code: 'invalid_variant_flavor_conflict' })]);
   });
   it('exposes scored and unscored modules, report paths, and names every module below a decimal threshold', async () => {
     const projectRoot = makeProject([
