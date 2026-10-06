@@ -7,6 +7,7 @@ open class KmpTestRunnerExtension {
     var coverageTool: String = "kover"   // "kover" | "jacoco" | "none"
     var coverageModules: String = ""
     var minMissedLines: Int = 0
+    var minLineCoverage: Double = -1.0  // 0..100; negative disables the per-module gate
     var sharedProjectName: String = ""   // → SHARED_PROJECT_NAME env var
     // v0.7.0: opt into a specific test type. Empty = wrapper auto-detects
     // (kmp-desktop → "common"; otherwise → "androidUnit"). Accepts:

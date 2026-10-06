@@ -314,6 +314,7 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 | `--coverage-tool` | `auto` | `auto` \| `kover` \| `jacoco` \| `none`. Same default across `parallel`/`coverage`/`changed` — `auto` reads the project's Gradle task graph (catches per-module, convention, and root `subprojects {}` application). `info` reports the detected tool but does not accept or resolve this flag |
 | `--coverage-modules` | _(all)_ | Comma-separated module list for coverage aggregation |
 | `--min-missed-lines` | `0` | Fail if missed lines exceed this threshold |
+| `--min-line-coverage <pct>` | _(off)_ | Require each scored module to meet a decimal LINE percentage (0–100); JSON lists module scores and failing names |
 | `--exclude-modules` | _(none)_ | Comma-separated module globs to skip entirely (e.g. `"*:api,build-logic"`). See "Heterogeneous projects" above |
 | `--include-untested` | _(off)_ | Re-include modules with no `src/*Test*` directory (auto-skipped by default) |
 | `--ignore-jdk-mismatch` | _(off)_ | Bypass the project-vs-`JAVA_HOME` JDK toolchain check. Default behavior is `BLOCK` with exit 3 — see "JDK toolchain mismatch" above |
@@ -333,7 +334,7 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 | `--no-configuration-cache` | _(off — implicit on `benchmark`)_ | Pass `--no-configuration-cache` to the gradle subprocess. `kmp-test benchmark` injects this by default (kotlinx-benchmark caches `%TEMP%` inside the config cache, producing silent FAIL on stale paths). Override via `--gradle-args "--configuration-cache"` (gradle's last-wins). Applies to all script-backed subs |
 | `--ignore-gradle-timeout` | _(off)_ | (`benchmark` only) Disable the per-task gradle watchdog entirely. Risky on suites that hang — kmp-test will wait until gradle exits on its own |
 | `--no-adb` | _(off)_ | Skip the ADB probe (equivalent to `KMP_TEST_SKIP_ADB=1`). On `kmp-test android`, implies `--list-only` and emits `warnings[].code: "no_adb_implies_list_only"`. Applies to `info` / `android` |
-| `--variant` / `--android-variant <auto\|debug\|release\|all>` | `auto` | Android build-variant selector — global, accepted on `parallel` / `changed` / `android` / `benchmark` (`coverage` accepts the flag but ignores it: it always reads the Debug report). `auto` picks Debug if its task exists, falls back to Release (handles `testBuildType = "release"` projects). `all` dispatches both variants in the same gradle invocation. Any other value is treated as `auto` and raises the `variant_unrecognized` warning; a flavored build variant such as `demoDebug` is passed as `--flavor demo --variant debug` |
+| `--variant` / `--android-variant <auto\|debug\|release\|all>` | `auto` | Android build-variant selector — global, accepted on `parallel` / `changed` / `android` / `benchmark` / `coverage`. The coverage reader selects the matching Debug or Release XML for an AGP report; `auto` uses the module's test build type. `all` runs both variants but a per-module coverage gate requires one variant. A flavored build variant such as `demoDebug` is passed as `--flavor demo --variant debug` |
 | `--module-filter <glob>` | _(all)_ | Glob, comma-separated (e.g. `"core-*"`, `":feature:auth,:feature:profile"`). Selects which modules to dispatch. Applies to `parallel` / `android` / `benchmark` (not `changed` — its module set is git-derived; see `--show-modules-only`) |
 | `--module-filter <regex>` | _(all)_ | A **real regular expression**, not a glob — different syntax from the row above despite the shared flag name. `describe`-only; filters the modules array (see the `describe` section below for an example) |
 | `--device <serial>` | _(none)_ | (`androidInstrumented` only) Pin the ADB device serial. Validated against `adb devices`; pins `ANDROID_SERIAL` for AGP. Mismatched serial → `errors[].code: instrumented_setup_failed` (exit 3). Applies to `parallel --test-type androidInstrumented` / `android` |
@@ -797,6 +798,7 @@ A token with `read:packages` scope is sufficient for consumers. Maven Central pu
 | `--coverage-tool` | `auto` | `auto` \| `kover` \| `jacoco` \| `none` — `auto` probes the project's plugins; explicit value overrides |
 | `--coverage-modules` | _(all)_ | Comma-separated module names for coverage |
 | `--min-missed-lines` | `0` | Fail threshold for missed lines |
+| `--min-line-coverage <pct>` | _(off)_ | Fail when a module's LINE coverage is below this decimal percentage |
 
 > The shared-project name is now configured via `.kmp-test-runner.json` (`sharedProject.name`). The legacy `SHARED_PROJECT_NAME` env var still works as a fallback. There is no `--shared-project-name` CLI flag.
 
@@ -809,6 +811,7 @@ A token with `read:packages` scope is sufficient for consumers. Maven Central pu
 | `coverageTool` | `String` | `"kover"` | `"kover"` \| `"jacoco"` \| `"none"` |
 | `coverageModules` | `String` | _(all)_ | Colon-prefixed module list (e.g. `":core,:app"`) |
 | `minMissedLines` | `Int` | `0` | Fail threshold for missed lines |
+| `minLineCoverage` | `Double` | `-1.0` (off) | Per-module LINE percentage floor, forwarded to parallel, changed and coverage tasks |
 | `sharedProjectName` | `String` | _(none)_ | Shared KMP module name |
 | `testType` | `String` | `""` (wrapper auto-detect) | `"common"` \| `"desktop"` \| `"androidUnit"` \| `"androidInstrumented"` \| `"ios"` \| `"macos"` \| `"all"`. Propagated as `--test-type <value>` to `parallelTests` / `changedTests` / `coverageTask` |
 

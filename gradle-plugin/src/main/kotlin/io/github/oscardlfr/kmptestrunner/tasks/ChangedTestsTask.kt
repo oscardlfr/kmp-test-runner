@@ -23,6 +23,9 @@ abstract class ChangedTestsTask : NodeRunnerTask() {
             if (extension.testType.isNotEmpty()) {
                 cmd += listOf("--test-type", extension.testType)
             }
+            if (extension.minLineCoverage >= 0) {
+                cmd += listOf("--min-line-coverage", extension.minLineCoverage.toString())
+            }
             runNodeRunner(execOperations, "changedTests", cmd, effectiveRoot, extension.sharedProjectName)
         } finally {
             RuntimeExtractor.cleanup(tempDir)

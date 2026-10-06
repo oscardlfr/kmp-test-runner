@@ -50,6 +50,7 @@ Defaults grounded in `lib/cli.js` SUBCOMMAND_HELP. Full matrix in [`../cli/flags
 | `--coverage-modules <list>` | all modules with a plugin | Comma-separated **exact** module names (no leading `:`, no glob/substring matching) to include in aggregation. Other modules' reports are not read. |
 | `--exclude-coverage <list>` | none | Comma-separated **exact** module names (same matching rules as `--coverage-modules`) to skip from aggregation. Useful for excluding `test-fakes` or `sample` modules by their real names. |
 | `--min-missed-lines <N>` | `0` | Fail (`errors[].code: coverage_threshold_exceeded`, exit 1) if `coverage.missed_lines` — aggregated across the modules selected by `--coverage-modules` / `--exclude-coverage` — exceeds `N`. `0` is "don't gate". The threshold itself never narrows that selected aggregate; it only narrows the markdown report's per-class "Detailed Class Coverage" section. |
+| `--min-line-coverage <pct>` | off | Fail when any scored module is below the decimal LINE percentage (0–100). See `coverage.module_results` and `module_coverage_threshold_exceeded.modules`; use `--flavor` for flavored Android builds. |
 | `--output-file <name>` | `coverage-full-report.md` | Markdown report filename inside `.kmp-test-runner/reports/coverage/`. |
 | `--skip-tests` | implicit | Accepted for parity with `parallel --skip-tests` (the `coverage` subcommand sets this internally). Silently consumed. |
 | `--java-home <path>` | none | Override JDK location for this run. Skips auto-select. |
@@ -59,7 +60,7 @@ Defaults grounded in `lib/cli.js` SUBCOMMAND_HELP. Full matrix in [`../cli/flags
 | `--json` | off | Single JSON envelope on stdout. |
 | `--color <mode>` | `auto` | `always` / `never` / `auto`. Controls `--console=plain` injection. |
 
-Note that `coverage` accepts `--module-filter`, `--test-type`, `--variant` and `--test-filter` but ignores them: it never dispatches Gradle, and the report it reads is always the Debug one. Use `--coverage-modules` / `--exclude-coverage` (exact module names, no leading `:`) for module-level narrowing instead.
+`coverage` honors `--module-filter`, `--exclude-modules`, `--flavor` and `--variant` while reading saved reports. It never dispatches Gradle. Use `--coverage-modules` / `--exclude-coverage` (exact module names, no leading `:`) to narrow coverage without changing the test selection.
 
 ## Behaviors únicos
 

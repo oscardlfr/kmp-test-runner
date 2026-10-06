@@ -35,7 +35,7 @@
 //     its own node:fs mock scoped away from the ~60 tests in this file
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -187,6 +187,99 @@ describe('parseArgs', () => {
     const opts = parseArgs(['--max-failures', '1']);
     expect(opts.errors.some(e => e.code === 'unknown_flag' && e.flag === '--max-failures'))
       .toBe(true);
+  });
+});
+
+describe('per-module line coverage', () => {
+  it('resolves the requested AGP build type for the same flavor as test dispatch', () => {
+    const model = { modules: { ':core:data': {
+      type: 'android', coveragePlugin: 'jacoco', hasFlavor: true,
+      flavors: ['demo', 'prod'], testBuildType: 'release',
+      resolved: { coverageReportTasks: ['createDemoReleaseUnitTestCoverageReport'] },
+    } } };
+    const auto = discoverCoverageModules(model, parseArgs(['--flavor', 'demo']));
+    const debug = discoverCoverageModules(model, parseArgs(['--flavor', 'demo', '--variant', 'debug']));
+    expect(auto.dispatched[0].variantHint).toEqual({ flavor: 'demo', buildType: 'release' });
+    expect(debug.dispatched[0].variantHint).toEqual({ flavor: 'demo', buildType: 'debug' });
+  });
+  it('exposes scored and unscored modules, report paths, and names every module below a decimal threshold', async () => {
+    const projectRoot = makeProject([
+      { name: 'core:good', coverage: 'kover' },
+      { name: 'core:low', coverage: 'kover' },
+      { name: 'core:plain' },
+    ]);
+    dropFakeXml(projectRoot, 'core:good', 'kover');
+    dropFakeXml(projectRoot, 'core:low', 'kover');
+    const parseCoverageXml = makeParseCoverageStub({ rowsByModule: {
+      'core:good': ['core:good|p|Good.kt|Good|3|1|4|75|'],
+      'core:low': ['core:low|p|Low.kt|Low|1|3|4|25|'],
+    } });
+    const { envelope, exitCode } = await runCoverage({
+      projectRoot, parseCoverageXml, args: ['--min-line-coverage', '26.5'],
+    });
+    expect(exitCode).toBe(1);
+    expect(envelope.errors).toContainEqual(expect.objectContaining({
+      code: 'module_coverage_threshold_exceeded', threshold: 26.5, modules: ['core:low'],
+    }));
+    expect(envelope.coverage.module_results).toEqual([
+      expect.objectContaining({ module: 'core:good', covered_lines: 3, missed_lines: 1,
+        total_lines: 4, line_coverage_percent: 75, xml_report_file: 'core/good/build/reports/kover/report.xml' }),
+      expect.objectContaining({ module: 'core:low', covered_lines: 1, missed_lines: 3,
+        total_lines: 4, line_coverage_percent: 25 }),
+      expect.objectContaining({ module: 'core:plain', status: 'no_coverage_plugin',
+        line_coverage_percent: null }),
+    ]);
+    expect(envelope.coverage.report_file).toMatch(/^\.kmp-test-runner\/reports\/coverage\/.*\.md$/);
+  });
+
+  it('limits totals and module results to the module filter and selected dispatch set', async () => {
+    const projectRoot = makeProject([
+      { name: 'core:data', coverage: 'kover' }, { name: 'core:domain', coverage: 'kover' },
+    ]);
+    dropFakeXml(projectRoot, 'core:data', 'kover');
+    dropFakeXml(projectRoot, 'core:domain', 'kover');
+    const parseCoverageXml = makeParseCoverageStub({ rowsByModule: {
+      'core:data': ['core:data|p|Data.kt|Data|2|8|10|20|'],
+      'core:domain': ['core:domain|p|Domain.kt|Domain|8|2|10|80|'],
+    } });
+    const { envelope } = await runCoverage({
+      projectRoot, parseCoverageXml, args: ['--module-filter', ':core:domain'],
+      selectedModuleNames: ['core:domain'],
+    });
+    expect(envelope.coverage.covered_lines).toBe(8);
+    expect(envelope.coverage.module_results.map(m => m.module)).toEqual(['core:domain']);
+    expect(envelope.coverage.modules_with_kover_plugin).toEqual(['core:domain']);
+    expect(parseCoverageXml.calls.map(c => c.moduleName)).toEqual(['core:domain']);
+  });
+
+  it('rejects an older XML in a full run but permits it for standalone coverage', async () => {
+    const projectRoot = makeProject([{ name: 'app', coverage: 'kover' }]);
+    const xml = dropFakeXml(projectRoot, 'app', 'kover');
+    utimesSync(xml, new Date(0), new Date(0));
+    const parseCoverageXml = makeParseCoverageStub({ rowsByModule: {
+      app: ['app|p|App.kt|App|1|1|2|50|'],
+    } });
+    const stale = await runCoverage({ projectRoot, parseCoverageXml,
+      args: ['--min-line-coverage', '26'], selectedModuleNames: ['app'], freshSinceMs: Date.now() });
+    expect(stale.exitCode).toBe(3);
+    expect(stale.envelope.coverage.module_results[0].status).toBe('stale_xml');
+    expect(stale.envelope.coverage.covered_lines).toBeNull();
+    expect(stale.envelope.coverage.data_provenance).toBe('current_run');
+    expect(stale.envelope.warnings).toContainEqual(expect.objectContaining({ code: 'coverage_xml_stale', modules: ['app'] }));
+    expect(parseCoverageXml.calls).toHaveLength(0);
+    const standalone = await runCoverage({ projectRoot, parseCoverageXml });
+    expect(standalone.envelope.coverage.covered_lines).toBe(1);
+    expect(standalone.envelope.coverage.data_provenance).toBe('saved_reports');
+  });
+
+  it('accepts 0..100 decimals and rejects out-of-range or nonnumeric thresholds', () => {
+    expect(parseArgs(['--min-line-coverage', '26.5']).minLineCoverage).toBe(26.5);
+    expect(parseArgs(['--min-line-coverage', '0']).minLineCoverage).toBe(0);
+    expect(parseArgs(['--min-line-coverage', '100']).minLineCoverage).toBe(100);
+    for (const value of ['-1', '101', 'abc', 'NaN']) {
+      expect(parseArgs(['--min-line-coverage', value]).errors)
+        .toContainEqual(expect.objectContaining({ code: 'invalid_min_line_coverage' }));
+    }
   });
 });
 
@@ -362,6 +455,17 @@ describe('findCoverageXmlPath', () => {
     const prodXml = mk('prod');
     expect(findCoverageXmlPath(projectRoot, 'app', 'jacoco', false, { flavor: 'prod', buildType: 'debug' })).toBe(prodXml);
     expect(findCoverageXmlPath(projectRoot, 'app', 'jacoco', false, { flavor: 'demo', buildType: 'debug' })).toBe(demoXml);
+  });
+
+  it('never substitutes another flavor or build type for a requested AGP report', () => {
+    const projectRoot = makeProject([{ name: 'app', coverage: 'jacoco' }]);
+    const dir = path.join(projectRoot, 'app', 'build', 'reports', 'coverage', 'test', 'demo', 'debug');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, 'report.xml'), '<report></report>');
+    expect(findCoverageXmlPath(projectRoot, 'app', 'jacoco', false,
+      { flavor: 'demo', buildType: 'release' })).toBeNull();
+    expect(findCoverageXmlPath(projectRoot, 'app', 'jacoco', false,
+      { flavor: 'prod', buildType: 'debug' })).toBeNull();
   });
 
   it('classic jacocoTestReport.xml still wins over an AGP variant report (non-flavored byte-identical)', () => {

@@ -1998,6 +1998,22 @@ describe('runParallel', () => {
     expect(stubCoverage.calls[0].testsRan).toBe(true);
   });
 
+  it('changed delegation restricts colon-substring matches to exact Gradle modules', async () => {
+    const dir = makeProject([
+      { name: 'core:data', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      { name: 'core:database', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--module-filter', 'core:data', '--test-type', 'common', '--no-coverage'],
+      exactModuleNames: ['core:data'],
+      spawn: makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' }),
+      log: () => {},
+    });
+    expect(envelope.modules.map(m => m.name)).toEqual(['core:data']);
+    expect(envelope.coverage.modules_with_kover_plugin).toEqual([]);
+  });
+
   // wet-audit-v0.9-part2 BUG-2 — coverage gate breach (errors[].code:
   // 'coverage_threshold_exceeded') propagates from in-process runCoverage
   // through state.errors and promotes the parallel envelope to exit 1.
@@ -2056,10 +2072,11 @@ describe('runParallel', () => {
       expect(envelope.coverage.modules_contributing).toBe(1);
       expect(envelope.coverage.module_buckets).toEqual({
         with_data: ['core-foo'],
-        no_xml: ['app'],
+        no_xml: [],
         parse_errored: [],
         skipped_by_user: [],
       });
+      expect(envelope.coverage.module_results.map(m => m.module)).toEqual(['core-foo']);
       expect(envelope.errors.map((error) => error.code)).toEqual(['coverage_threshold_exceeded']);
       expect(envelope.errors[0]).toMatchObject({ threshold: 15, missed_lines: 23 });
       expect(exitCode).toBe(1);
@@ -2092,6 +2109,43 @@ describe('runParallel', () => {
       expect(envelope.errors.map((error) => error.code)).toEqual(['coverage_threshold_exceeded']);
       expect(envelope.warnings.some((warning) => warning.code === 'flavor_defaulted_umbrella')).toBe(false);
       expect(exitCode).toBe(1);
+    });
+
+    it('gates per-module LINE coverage after a fresh flavor-specific report', async () => {
+      const dir = makeConventionFlavorCoverageContractProject();
+      const spawn = makeCoverageContractSpawn(dir);
+      const { envelope, exitCode } = await runParallel({
+        projectRoot: dir,
+        args: ['--test-type', 'androidUnit', '--module-filter', ':core-foo',
+          '--flavor', 'demo', '--min-line-coverage', '80'],
+        spawn, log: () => {},
+      });
+      expect(coverageContractTaskCalls(spawn)).toEqual([
+        [':core-foo:testDemoDebugUnitTest'],
+        [':core-foo:createDemoDebugUnitTestCoverageReport'],
+      ]);
+      expect(envelope.coverage.module_results[0]).toMatchObject({
+        module: 'core-foo', covered_lines: 77, missed_lines: 23,
+        total_lines: 100, line_coverage_percent: 77,
+      });
+      expect(envelope.errors).toContainEqual(expect.objectContaining({
+        code: 'module_coverage_threshold_exceeded', threshold: 80, modules: ['core-foo'],
+      }));
+      expect(exitCode).toBe(1);
+    });
+
+    it('refuses a per-module percentage when umbrella tests span several flavors', async () => {
+      const dir = makeConventionFlavorCoverageContractProject();
+      const { envelope, exitCode } = await runParallel({
+        projectRoot: dir,
+        args: ['--test-type', 'androidUnit', '--module-filter', ':core-foo',
+          '--min-line-coverage', '80'],
+        spawn: makeCoverageContractSpawn(dir), log: () => {},
+      });
+      expect(envelope.errors).toContainEqual(expect.objectContaining({
+        code: 'coverage_data_unavailable', reason: 'variant-ambiguous',
+      }));
+      expect(exitCode).toBe(3);
     });
 
     it('keeps a prior module failure distinct from the later coverage threshold result', async () => {
