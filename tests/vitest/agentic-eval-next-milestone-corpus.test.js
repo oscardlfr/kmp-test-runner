@@ -19,6 +19,31 @@ function patchSha(file) {
 }
 
 describe('next-milestone NiA corpus pins', () => {
+  it('uses an untouched pinned checkout and fresh per-module LINE coverage for the 26% gate', () => {
+    const s = scenario('multi-module-line-coverage');
+    expect(s.project_commit).toBe(PIN);
+    expect(s).not.toHaveProperty('fixture_setup');
+    expect(s.expected).toEqual({
+      outcome_kind: 'coverage_threshold_exceeded',
+      threshold_percent: 26,
+      below_threshold_modules: [':feature:search:impl', ':feature:settings:impl', ':feature:topic:impl'],
+      no_data_modules: [':core:common', ':core:navigation', ':feature:bookmarks:impl', ':lint'],
+      module_line_coverage: {
+        ':core:data': 63.7,
+        ':core:datastore': 46.5,
+        ':core:domain': 47.7,
+        ':core:network': 33.3,
+        ':feature:search:impl': 12.3,
+        ':feature:settings:impl': 9.7,
+        ':feature:topic:impl': 19.1,
+      },
+    });
+    expect(s.smoke.kmp_test_args.slice(0, 3)).toEqual(['parallel', '--min-line-coverage', '26']);
+    expect(s.smoke.kmp_test_args.some((arg) => arg.includes('--rerun-tasks'))).toBe(true);
+    expect(s.smoke.warm_tasks.filter((task) => task.endsWith('UnitTestCoverageReport'))).toHaveLength(7);
+    expect(s.smoke.warm_tasks.filter((task) => /:(?:test|testDemoDebugUnitTest)$/.test(task))).toHaveLength(11);
+  });
+
   it('commits the observed one-line network edit on the exact base before changed detection', () => {
     const s = scenario('changed-dependents-network-topic');
     expect(s.project_commit).toBe(PIN);

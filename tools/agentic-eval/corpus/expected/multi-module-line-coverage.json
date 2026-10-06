@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "id": "multi-module-line-coverage",
+  "expected_outcome": "On the clean pinned NowInAndroid checkout, all 93 demoDebug host test methods pass. Seven current-run JaCoCo XML reports produce report-level LINE percentages; :feature:search:impl, :feature:settings:impl and :feature:topic:impl are below 26%. Four other in-scope modules have no coverage plugin and no score. The 26% gate alone yields exit 1.",
+  "expected": {
+    "outcome_kind": "coverage_threshold_exceeded",
+    "threshold_percent": 26,
+    "below_threshold_modules": [
+      ":feature:search:impl",
+      ":feature:settings:impl",
+      ":feature:topic:impl"
+    ],
+    "no_data_modules": [
+      ":core:common",
+      ":core:navigation",
+      ":feature:bookmarks:impl",
+      ":lint"
+    ],
+    "module_line_coverage": {
+      ":core:data": 63.7,
+      ":core:datastore": 46.5,
+      ":core:domain": 47.7,
+      ":core:network": 33.3,
+      ":feature:search:impl": 12.3,
+      ":feature:settings:impl": 9.7,
+      ":feature:topic:impl": 19.1
+    }
+  },
+  "smoke": {
+    "kmp_test_args": [
+      "parallel", "--min-line-coverage", "26", "--max-workers", "4", "--timeout", "900",
+      "--exclude-modules", "app,core:designsystem,feature:foryou:impl,feature:interests:impl,benchmarks,core:analytics,core:data-test,core:database,core:datastore-proto,core:datastore-test,core:model,core:notifications,core:screenshot-testing,core:testing,core:ui,feature:*:api,sync:*,ui-test-hilt-manifest",
+      "--flavor", "demo", "--variant", "debug",
+      "--gradle-args", "--offline --no-configuration-cache --rerun-tasks", "--json"
+    ],
+    "warm_tasks": [
+      ":core:common:test",
+      ":core:data:testDemoDebugUnitTest",
+      ":core:datastore:testDemoDebugUnitTest",
+      ":core:domain:testDemoDebugUnitTest",
+      ":core:navigation:testDemoDebugUnitTest",
+      ":core:network:testDemoDebugUnitTest",
+      ":feature:bookmarks:impl:testDemoDebugUnitTest",
+      ":feature:search:impl:testDemoDebugUnitTest",
+      ":feature:settings:impl:testDemoDebugUnitTest",
+      ":feature:topic:impl:testDemoDebugUnitTest",
+      ":lint:test",
+      ":core:data:createDemoDebugUnitTestCoverageReport",
+      ":core:datastore:createDemoDebugUnitTestCoverageReport",
+      ":core:domain:createDemoDebugUnitTestCoverageReport",
+      ":core:network:createDemoDebugUnitTestCoverageReport",
+      ":feature:search:impl:createDemoDebugUnitTestCoverageReport",
+      ":feature:settings:impl:createDemoDebugUnitTestCoverageReport",
+      ":feature:topic:impl:createDemoDebugUnitTestCoverageReport"
+    ]
+  },
+  "first_useful_signal_predicate": {
+    "description": "First executed current-run evidence that reports all seven per-module LINE scores, four no-plugin modules, and the three specific modules below 26% with zero failed test methods."
+  }
+}

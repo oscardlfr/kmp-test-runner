@@ -81,7 +81,7 @@ describe('corpus/scenarios/', () => {
   // failing (6 exist today) to passing once Stage B4 lands, exactly like every other RED case here.
   // Evidence3 WO-09 adds multi-module-test-failures.json (the multi-module-tests family's first
   // scenario), so the corpus is now 8 files. This is an intended specification change.
-  it('contains exactly the 10 expected scenario files, including the changed and compile milestone families', () => {
+  it('contains exactly the 11 expected scenario files, including the three milestone families', () => {
     expect(scenarioFiles.sort()).toEqual([
       'changed-dependents-network-topic.json',
       'changed-module-verification.json',
@@ -91,6 +91,7 @@ describe('corpus/scenarios/', () => {
       'deterministic-unit-test-failure.json',
       'kampkit-android-host-test-discovery.json',
       'kampkit-no-applicable-tests.json',
+      'multi-module-line-coverage.json',
       'multi-module-test-failures.json',
       'nowinandroid-core-common.json',
     ]);
@@ -102,14 +103,14 @@ describe('corpus/scenarios/', () => {
   // honestly held-out. 3/3 was the corpus's original, now-historical balance -- see BACKLOG.md.
   // v2 (Stage B4) adds a 5th train-tagged scenario. Evidence3 WO-09 adds a 3rd held-out one
   // (multi-module-test-failures, tagged held-out in its own scenario file).
-  it('tags partition exactly 5 train / 5 held-out across the corpus', () => {
+  it('tags partition exactly 5 train / 6 held-out across the corpus', () => {
     const tagCounts = { train: 0, 'held-out': 0 };
     for (const file of scenarioFiles) {
       const { scenario, parseError } = loadScenarioFile(SCENARIOS_DIR, file);
       if (parseError) throw new Error(`${file}: ${parseError}`);
       for (const tag of scenario.tags ?? []) tagCounts[tag] = (tagCounts[tag] ?? 0) + 1;
     }
-    expect(tagCounts).toEqual({ train: 5, 'held-out': 5 });
+    expect(tagCounts).toEqual({ train: 5, 'held-out': 6 });
   });
 
   // Reuses cli.mjs's own loadScenarioFile (never throws on malformed JSON) rather than a
