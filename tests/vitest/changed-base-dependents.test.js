@@ -86,10 +86,15 @@ describe('changed --base', () => {
 });
 
 describe('dependent module graph', () => {
-  const output = `noise\nKMP_TEST_DEPENDENCIES_BEGIN\nKMP_TEST_DEPENDENCY\t:consumer\t:core\nKMP_TEST_DEPENDENCY\t:app\t:consumer\nKMP_TEST_DEPENDENCY\t:core\t:app\nKMP_TEST_DEPENDENCIES_END\n`;
+  const outputFor = (root) => `noise\nKMP_TEST_DEPENDENCIES_BEGIN\t${root}/build-logic\nKMP_TEST_DEPENDENCIES_END\t${root}/build-logic\nKMP_TEST_DEPENDENCIES_BEGIN\t${root}\nKMP_TEST_DEPENDENCY\t:consumer\t:core\nKMP_TEST_DEPENDENCY\t:app\t:consumer\nKMP_TEST_DEPENDENCY\t:core\t:app\nKMP_TEST_DEPENDENCIES_END\t${root}\n`;
   it('expands transitively, terminates on cycles, and excludes the direct module', () => {
-    const graph = parseDependencyGraph(output, ['core', 'consumer', 'app']);
+    const graph = parseDependencyGraph(outputFor('/work'), ['core', 'consumer', 'app'], '/work');
     expect(expandDependents(['core'], graph)).toEqual(['app', 'consumer']);
+  });
+
+  it('fails closed if the root graph is missing or emitted twice', () => {
+    expect(parseDependencyGraph(outputFor('/work'), ['core'], '/different')).toBeNull();
+    expect(parseDependencyGraph(outputFor('/work') + outputFor('/work'), ['core'], '/work')).toBeNull();
   });
 
   it('includes dependents in dispatch while keeping detected_modules direct', async () => {
@@ -98,7 +103,7 @@ describe('dependent module graph', () => {
     const spawn = (cmd, args, options) => {
       if (cmd === 'git') return spawnSync(cmd, args, options);
       calls.push({ cmd, args });
-      return { status: 0, stdout: output, stderr: '' };
+      return { status: 0, stdout: outputFor(projectRoot), stderr: '' };
     };
     let parallelArgs;
     let exactModuleNames;
