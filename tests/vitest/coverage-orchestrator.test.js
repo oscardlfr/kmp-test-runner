@@ -191,6 +191,35 @@ describe('parseArgs', () => {
 });
 
 describe('per-module line coverage', () => {
+  it('fails a standalone threshold when one in-scope plugin module lacks XML', async () => {
+    const projectRoot = makeProject([
+      { name: 'good', coverage: 'kover' },
+      { name: 'missing', coverage: 'kover' },
+      { name: 'plain' },
+    ]);
+    dropFakeXml(projectRoot, 'good', 'kover');
+    const parseCoverageXml = makeParseCoverageStub({ rowsByModule: {
+      good: ['good|p|Good.kt|Good|9|1|10|90|'],
+    } });
+    const result = await runCoverage({ projectRoot, parseCoverageXml,
+      args: ['--min-line-coverage', '80'] });
+    expect(result.exitCode).toBe(3);
+    expect(result.envelope.errors).toContainEqual(expect.objectContaining({
+      code: 'coverage_data_unavailable', reason: 'target-no-xml', threshold: 80,
+    }));
+    expect(result.envelope.coverage.module_results).toEqual([
+      expect.objectContaining({ module: 'good', status: 'with_data' }),
+      expect.objectContaining({ module: 'missing', status: 'no_xml' }),
+      expect.objectContaining({ module: 'plain', status: 'no_coverage_plugin' }),
+    ]);
+
+    const narrowed = await runCoverage({ projectRoot, parseCoverageXml,
+      args: ['--min-line-coverage', '80', '--exclude-coverage', 'missing'] });
+    expect(narrowed.exitCode).toBe(0);
+    expect(narrowed.envelope.coverage.module_results)
+      .toContainEqual(expect.objectContaining({ module: 'missing', status: 'skipped_by_user' }));
+  });
+
   it('resolves the requested AGP build type for the same flavor as test dispatch', () => {
     const model = { modules: { ':core:data': {
       type: 'android', coveragePlugin: 'jacoco', hasFlavor: true,
