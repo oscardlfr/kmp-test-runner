@@ -758,8 +758,13 @@ kmpTestRunner {
     projectRoot = rootDir.absolutePath
     maxWorkers = 4
     coverageTool = "kover"           // "kover" | "jacoco" | "none"
-    coverageModules = ":core,:app"
+    coverageModules = "core:network,app" // exact names, without a leading ':'
     minMissedLines = 0
+    minLineCoverage = 26.0             // optional per-module LINE floor
+    flavor = "demo"                    // optional Android flavor
+    variant = "debug"                  // optional Android build type
+    baseRef = "origin/develop"         // changedTests only
+    includeDependents = true           // changedTests only
     sharedProjectName = "my-shared-lib"
     // Opt into a specific test type. Empty = wrapper auto-detects (the unit leg).
     // For a Compose-UI-only / instrumented-only module, set "androidInstrumented"
@@ -811,11 +816,15 @@ A token with `read:packages` scope is sufficient for consumers. Maven Central pu
 | `projectRoot` | `String` | `rootDir.absolutePath` | Gradle project root path |
 | `maxWorkers` | `Int` | `4` | Parallel Gradle workers |
 | `coverageTool` | `String` | `"kover"` | `"kover"` \| `"jacoco"` \| `"none"` |
-| `coverageModules` | `String` | _(all)_ | Colon-prefixed module list (e.g. `":core,:app"`) |
+| `coverageModules` | `String` | _(all)_ | Comma-separated exact module names without a leading colon (e.g. `"core:network,app"`) |
 | `minMissedLines` | `Int` | `0` | Fail threshold for missed lines |
 | `minLineCoverage` | `Double` | `-1.0` (off) | Per-module LINE percentage floor, forwarded to parallel, changed and coverage tasks |
 | `sharedProjectName` | `String` | _(none)_ | Shared KMP module name |
 | `testType` | `String` | `""` (wrapper auto-detect) | `"common"` \| `"desktop"` \| `"androidUnit"` \| `"androidInstrumented"` \| `"ios"` \| `"macos"` \| `"all"`. Propagated as `--test-type <value>` to `parallelTests` / `changedTests` / `coverageTask` |
+| `baseRef` | `String` | `""` (off) | Git ref for `changedTests`; compares from the merge base with the current tree |
+| `includeDependents` | `Boolean` | `false` | Also test transitive project dependents in `changedTests` |
+| `flavor` | `String` | `""` (off) | Android flavor forwarded to all five plugin tasks |
+| `variant` | `String` | `""` (auto) | Android build type or composite variant forwarded to all five plugin tasks |
 
 ## Architecture
 
