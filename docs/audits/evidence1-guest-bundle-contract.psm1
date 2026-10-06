@@ -1174,9 +1174,10 @@ function Get-E1GuestBundleRegistry {
             }
           }
 
-          # The coverage smoke's command and its 900 s bound are the ones this bundle has always run. A
-          # multi-module-tests scenario runs the arguments its own ground-truth file names, with the same CLI and
-          # project root, bounded at 3300 s.
+          # The coverage smoke's command and its 900 s bound are the ones this bundle has always run.
+          # Broad scenarios use their ground-truth arguments and a 3300 s process bound. Their CLI
+          # wrapper has a separate 3240 s watchdog via KMP_TEST_OUTER_TIMEOUT_MS, so it can return
+          # its own timeout envelope before this bundle terminates the process.
           $kmpTestArguments = [string[]]@($cli, 'parallel', '--module-filter', ':core:domain', '--min-missed-lines', '15', '--json', '--project-root', $cloneRoot)
           $kmpTestTimeoutSeconds = [int]900
           if ($isMultiModule -or $isNextMilestone) {

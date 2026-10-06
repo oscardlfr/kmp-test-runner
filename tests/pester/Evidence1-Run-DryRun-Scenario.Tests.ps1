@@ -102,7 +102,7 @@ Describe 'Invoke-E1RunDryRunPassedState hands the scenario to the smoke' {
         $script:BundleCalls[0].TimeoutSeconds | Should -Be 3600
     }
 
-    It 'gives each new milestone family a 3600 s outer smoke timeout' -TestCases @(
+    It 'gives each new milestone family a 4500 s outer smoke timeout' -TestCases @(
         @{ ScenarioId = 'multi-module-line-coverage'; Family = 'multi-module-coverage' }
         @{ ScenarioId = 'changed-dependents-network-topic'; Family = 'changed-dependents' }
         @{ ScenarioId = 'compile-failure-data-repository'; Family = 'compile-failure' }
@@ -111,7 +111,7 @@ Describe 'Invoke-E1RunDryRunPassedState hands the scenario to the smoke' {
         $setup = New-TestContext $ScenarioId $Family
         $receipt = Invoke-E1RunDryRunPassedState $setup.Context
         $receipt.verdict | Should -BeExactly 'PASS'
-        $script:BundleCalls[0].TimeoutSeconds | Should -Be 3600
+        $script:BundleCalls[0].TimeoutSeconds | Should -Be 4500
     }
 
     It 'hands the bundle arguments its own closed schema accepts, in the schema''s order' {

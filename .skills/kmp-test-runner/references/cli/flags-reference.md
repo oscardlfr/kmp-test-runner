@@ -121,7 +121,8 @@ The `kmp-test` CLI shares a common flag surface across subcommands, with per-sub
 | `PARENT_ONLY_MODULES` | always | Comma-separated module names that are aggregator-only — skipped at discovery time. |
 | `NO_COLOR` | always (POSIX) | Any non-empty value disables gradle ANSI output (equivalent to `--color never`). |
 | `KMP_COLOR_MODE` | always | `always` / `never` / `auto`. Set via `--color`; persists across re-exec chain. |
-| `KMP_GRADLE_TIMEOUT_MS` | parallel / benchmark | Per-task gradle watchdog override in milliseconds. Precedence: `--ignore-gradle-timeout` > `--timeout` > this > config default. |
+| `KMP_GRADLE_TIMEOUT_MS` | parallel / benchmark | Per-task gradle watchdog override in milliseconds; also the legacy default for the CLI's outer watchdog. Per-task precedence: `--ignore-gradle-timeout` > `--timeout` > this > config default. |
+| `KMP_TEST_OUTER_TIMEOUT_MS` | script-backed subcommands | Whole CLI/wrapper watchdog override in milliseconds. Independent of each Gradle task's `--timeout`; useful for broad multi-module runs. |
 | `KMP_GRADLE_MAXBUFFER_MB` | always | Max stdout/stderr captured per gradle/adb subprocess, in megabytes (default `64`). Exceeding the cap surfaces as `errors[].code: "spawn_error"`. |
 | `KMP_TEST_NO_SWEEP` | test subcommands | Set to `1` to disable the startup artifact-lifecycle sweep of `.kmp-test-runner/` (config key `cleanup:{auto,logsTtlDays}`). Explicit purge: `kmp-test clean [--all] [--dry-run]`. |
 | `KMP_PROBE_TIMEOUT` | always | `lib/gradle-tasks-probe.sh` timeout in seconds (default 60). |
