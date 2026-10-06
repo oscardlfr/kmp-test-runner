@@ -4,7 +4,7 @@
 // data must back. No network calls; reads only what is committed under tools/runs/ and docs/.
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import { readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
@@ -17,7 +17,7 @@ import { costEstimateCellEntry, costEstimateCellMidpoint } from '../../tools/age
 import {
   sessionCostComponents, costGroups, computeCostBreakdownLayout, renderCostBreakdownSvg,
   buildCostComponentsBlock, buildSessionsBlock, docBlocks, readDocBlock, fillDocBlocks, docBlockMarkers,
-  buildScenarioBlock, buildRunBlock, buildCampaignsBlock, docContext, missingSessionsNote, staleOutputs,
+  buildScenarioBlock, loadScenarioPublicationFacts, buildRunBlock, buildCampaignsBlock, docContext, missingSessionsNote, staleOutputs,
 } from '../../tools/agentic-eval/benchmark-doc.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1194,5 +1194,104 @@ describe('the fixed prose of the Evidence3 section is backed by the committed da
       expect(findings.match(/Evidence3/g).length).toBeGreaterThanOrEqual(3);
       expect(findings).not.toMatch(GROUND_TRUTH_NAMES);
     });
+  });
+});
+
+describe('publication blocks for later scenario families', () => {
+  const cases = [
+    { evidenceN: 4, family: 'multi-module-coverage', expected: {
+      outcome_kind: 'coverage_threshold_exceeded', threshold_percent: 26,
+      below_threshold_modules: [':core:data'], no_data_modules: [':core:domain'],
+      module_line_coverage: { ':core:data': 20 },
+    }, phrases: ['LINE coverage separately for 2 in-scope modules', '26% threshold', 'no coverage data'] },
+    { evidenceN: 5, family: 'changed-dependents', expected: {
+      outcome_kind: 'tests_failed', direct_modules: [':core:data'], dependent_modules: [':core:domain'],
+      selected_modules: [':core:data', ':core:domain'], failing_modules: [':core:domain'],
+      failed_test_classes: ['DependentTest'], failed_count: 1,
+    }, phrases: ['compares against the specified base', 'includes dependent modules', '2 modules are in scope'] },
+    { evidenceN: 6, family: 'compile-failure', expected: {
+      outcome_kind: 'compilation_failed', compile_module: ':core:data', compile_task: ':core:data:compileKotlin',
+      diagnostic_file: 'core/data/Foo.kt', diagnostic_line: 10,
+      diagnostic_message: 'Unresolved reference', unrun_dependents: [':core:domain'],
+    }, phrases: ['failing compile task and diagnostic', 'dependents could not run', '2 modules are in scope'] },
+  ];
+
+  it('reads each family from synthetic corpus files and renders task-specific, aggregate-only prose', () => {
+    const root = mkdtempSync(join(tmpdir(), 'kmp-publication-families-'));
+    try {
+      mkdirSync(join(root, 'scenarios'));
+      mkdirSync(join(root, 'expected'));
+      for (const { evidenceN, family, expected, phrases } of cases) {
+        const id = `synthetic-e${evidenceN}`;
+        writeFileSync(join(root, 'scenarios', `${id}.json`), JSON.stringify({
+          id, family, policy: { allowed_gradle_tasks: [':core:data:tasks', ':core:domain:tasks'] },
+        }));
+        writeFileSync(join(root, 'expected', `${id}.json`), JSON.stringify({ id, expected }));
+        const facts = loadScenarioPublicationFacts(id, root);
+        expect(facts.family).toBe(family);
+        expect(facts.moduleCount).toBe(2);
+        const prose = buildScenarioBlock(facts);
+        for (const phrase of phrases) expect(prose, family).toContain(phrase);
+        expect(prose).not.toContain('6 failing test methods');
+        expect(prose).not.toContain(':core:');
+      }
+      expect(() => buildScenarioBlock({ family: 'unknown', moduleCount: 2 })).toThrow(/unsupported family/);
+      const id = 'synthetic-e4';
+      writeFileSync(join(root, 'expected', `${id}.json`), JSON.stringify({ id, expected: { threshold_percent: '26' } }));
+      expect(() => loadScenarioPublicationFacts(id, root)).toThrow(/threshold_percent/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('uses the validated-registry order through Evidence6 and checks synthetic generated outputs for staleness', () => {
+    const root = mkdtempSync(join(tmpdir(), 'kmp-publication-registry-'));
+    try {
+      mkdirSync(join(root, 'scenarios'));
+      mkdirSync(join(root, 'expected'));
+      const originalSummary = loadSummary(join(E3_DIR, 'campaign-summary.json'));
+      const costEstimate = loadCostEstimate(join(E3_DIR, 'cost-estimate.json'));
+      const campaigns = [2, 3].map((evidenceN) => ({
+        evidenceN, dir: `evidence${evidenceN}-agentic-benchmark-${evidenceN === 2 ? '2026-09-30' : E3_DATE}`,
+        summary: originalSummary, costEstimate,
+      }));
+      for (const { evidenceN, family, expected, phrases } of cases) {
+        const id = `synthetic-e${evidenceN}`;
+        writeFileSync(join(root, 'scenarios', `${id}.json`), JSON.stringify({
+          id, family, policy: { allowed_gradle_tasks: [':core:data:tasks', ':core:domain:tasks'] },
+        }));
+        writeFileSync(join(root, 'expected', `${id}.json`), JSON.stringify({ id, expected }));
+        const summary = { ...originalSummary, scenario_id: id };
+        campaigns.push({ evidenceN, dir: `evidence${evidenceN}-agentic-benchmark-2026-10-07`, summary, costEstimate });
+        const context = docContext(evidenceN, '2026-10-07', summary, costEstimate, { campaigns, corpusDir: root });
+        expect(context.campaigns.map((entry) => entry.evidenceN)).toEqual(Array.from({ length: evidenceN - 1 }, (_, i) => i + 2));
+        const blocks = docBlocks(evidenceN, summary, costEstimate, context);
+        for (const phrase of phrases) expect(blocks[`e${evidenceN}-scenario`]).toContain(phrase);
+        expect(blocks.campaigns.match(/^\| Evidence\d+ \|/gm)).toHaveLength(4 * (evidenceN - 1));
+        expect(blocks.campaigns).toContain(`key facts differ between the ${{ 4: 'three', 5: 'four', 6: 'five' }[evidenceN]} tasks`);
+        expect(blocks[`e${evidenceN}-run`]).toContain(`Record: [Evidence${evidenceN}](../tools/runs/evidence${evidenceN}-agentic-benchmark-2026-10-07/README.md).`);
+        const template = Object.keys(blocks).map((key) => {
+          const marker = docBlockMarkers(key);
+          return `${marker.start}\nstale\n${marker.end}`;
+        }).join('\n\n');
+        const filled = fillDocBlocks(template, blocks);
+        const svgPath = join(root, `e${evidenceN}.svg`);
+        const svg = renderCostBreakdownSvg(summary, costEstimate);
+        writeFileSync(svgPath, svg);
+        expect(staleOutputs({ svgPath, svg, docPath: 'synthetic.md', doc: filled, filled })).toEqual([]);
+        expect(staleOutputs({ svgPath, svg, docPath: 'synthetic.md', doc: template, filled })).toEqual(['synthetic.md']);
+      }
+      const oldSummary = campaigns.find((campaign) => campaign.evidenceN === 4).summary;
+      const oldContext = docContext(4, '2026-10-07', oldSummary, costEstimate, { campaigns, corpusDir: root });
+      expect(oldContext.campaigns.map((campaign) => campaign.evidenceN)).toEqual([2, 3, 4, 5, 6]);
+      expect(docBlocks(4, oldSummary, costEstimate, oldContext).campaigns.match(/^\| Evidence\d+ \|/gm)).toHaveLength(20);
+      const latest = campaigns.at(-1);
+      expect(() => docContext(6, '2026-10-08', latest.summary, costEstimate, { campaigns, corpusDir: root })).toThrow(/exactly one registry entry/);
+      expect(() => docContext(6, '2026-10-07', latest.summary, costEstimate, {
+        campaigns: [...campaigns, { ...latest, dir: 'evidence6-agentic-benchmark-2026-10-08' }], corpusDir: root,
+      })).toThrow(/exactly one registry entry/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
