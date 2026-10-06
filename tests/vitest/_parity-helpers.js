@@ -77,6 +77,9 @@ export const ORCHESTRATOR_INTERNAL_LITERALS = Object.freeze({
     '--is-inside-work-tree', // emitted: git rev-parse --is-inside-work-tree
     '--cached',              // emitted: git diff --cached
     '--name-only',           // emitted: git diff --name-only
+    '--no-renames',          // emitted: git diff --no-renames
+    '--others',              // emitted: git ls-files --others
+    '--exclude-standard',    // emitted: git ls-files --exclude-standard
     '--porcelain',           // emitted: git status --porcelain
   ]),
   coverage: new Set([

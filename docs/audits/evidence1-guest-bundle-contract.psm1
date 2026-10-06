@@ -787,35 +787,40 @@ function Get-E1GuestBundleRegistry {
             if (-not (Test-Path -LiteralPath $scenarioPath -PathType Leaf) -or -not (Test-Path -LiteralPath $truthPath -PathType Leaf)) { return $unsupported }
             $scenario = [IO.File]::ReadAllText($scenarioPath) | ConvertFrom-Json
             $truth = [IO.File]::ReadAllText($truthPath) | ConvertFrom-Json
-            if ($scenario.family -cne 'multi-module-tests' -or $scenario.id -cne $ScenarioId) { return $unsupported }
-            $fixture = $scenario.fixture_setup
-            if ($fixture.operation -cne 'apply_patch' -or [string]$fixture.patch_file -cnotmatch '^[a-z0-9-]+\.patch$') { return $unsupported }
-            $paths = @($fixture.expected_paths | ForEach-Object { [string]$_ })
-            if ($paths.Count -eq 0 -or @($paths | Where-Object { $_ -cnotmatch '^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$' -or $_ -cmatch '(^|/)\.\.?(/|$)' }).Count -ne 0) { return $unsupported }
+            $family = [string]$scenario.family
+            $nextFamilies = @('multi-module-coverage', 'changed-dependents', 'compile-failure')
+            if (($family -cne 'multi-module-tests' -and $family -cnotin $nextFamilies) -or $scenario.id -cne $ScenarioId) { return $unsupported }
+            $fixture = if ($null -ne $scenario.PSObject.Properties['fixture_setup']) { $scenario.fixture_setup } else { $null }
+            $paths = @()
+            if ($family -cne 'multi-module-coverage') {
+              if ($family -ceq 'changed-dependents' -and $fixture.operation -cne 'commit_patch') { return $unsupported }
+              if ($family -cne 'changed-dependents' -and $fixture.operation -cne 'apply_patch') { return $unsupported }
+              if ([string]$fixture.patch_file -cnotmatch '^[a-z0-9-]+\.patch$') { return $unsupported }
+              $paths = @($fixture.expected_paths | ForEach-Object { [string]$_ })
+              if ($paths.Count -eq 0 -or @($paths | Where-Object { $_ -cnotmatch '^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$' -or $_ -cmatch '(^|/)\.\.?(/|$)' }).Count -ne 0) { return $unsupported }
+              if ($family -ceq 'changed-dependents' -and [string]$fixture.expected_parent -cne [string]$scenario.project_commit) { return $unsupported }
+            }
             $expected = $truth.expected
             $outcomeKind = [string]$expected.outcome_kind
-            $failingModules = @($expected.failing_modules | ForEach-Object { [string]$_ })
-            $failedClasses = @($expected.failed_test_classes | ForEach-Object { [string]$_ })
-            if ($outcomeKind -ceq 'tests_failed') {
-              if ($failingModules.Count -eq 0 -or $failedClasses.Count -eq 0) { return $unsupported }
-            } elseif ($outcomeKind -ceq 'tests_passed') {
-              if ($failingModules.Count -ne 0 -or $failedClasses.Count -ne 0) { return $unsupported }
-            } else { return $unsupported }
-            if ($expected.failed_count -isnot [int] -and $expected.failed_count -isnot [long]) { return $unsupported }
+            if ($family -ceq 'multi-module-tests') {
+              $failingModules = @($expected.failing_modules | ForEach-Object { [string]$_ })
+              $failedClasses = @($expected.failed_test_classes | ForEach-Object { [string]$_ })
+              if ($outcomeKind -ceq 'tests_failed') {
+                if ($failingModules.Count -eq 0 -or $failedClasses.Count -eq 0) { return $unsupported }
+              } elseif ($outcomeKind -ceq 'tests_passed') {
+                if ($failingModules.Count -ne 0 -or $failedClasses.Count -ne 0) { return $unsupported }
+              } else { return $unsupported }
+              if ($expected.failed_count -isnot [int] -and $expected.failed_count -isnot [long]) { return $unsupported }
+            }
             $kmpTestArguments = @($truth.smoke.kmp_test_args | ForEach-Object { [string]$_ })
             if ($kmpTestArguments.Count -eq 0 -or @($kmpTestArguments | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -ne 0) { return $unsupported }
             return [ordered]@{
               supported = $true
-              mode = 'multi-module-tests'
-              patch_file = [string]$fixture.patch_file
+              mode = $family
+              patch_file = $(if ($family -ceq 'multi-module-coverage') { $null } else { [string]$fixture.patch_file })
               expected_paths = @($paths)
               kmp_test_args = @($kmpTestArguments)
-              expected = [ordered]@{
-                outcome_kind = $outcomeKind
-                failing_modules = @($failingModules)
-                failed_test_classes = @($failedClasses)
-                failed_count = [int]$expected.failed_count
-              }
+              expected = $expected
             }
           } catch { return $unsupported }
         }
@@ -953,6 +958,8 @@ function Get-E1GuestBundleRegistry {
             }
           }
           $isMultiModule = ($smokeScenario.mode -ceq 'multi-module-tests')
+          $isNextMilestone = @('multi-module-coverage', 'changed-dependents', 'compile-failure') -ccontains $smokeScenario.mode
+          $hasScenarioPatch = $isMultiModule -or @('changed-dependents', 'compile-failure') -ccontains $smokeScenario.mode
 
           $worker = Join-Path $HarnessDir 'docs\audits\evidence1-dual-condition-canary-launch.ps1'
           if (-not (Test-Path -LiteralPath $worker -PathType Leaf)) { throw 'product_smoke_worker_missing' }
@@ -1141,7 +1148,7 @@ function Get-E1GuestBundleRegistry {
           # the clone must then differ from the pinned commit by exactly the files the scenario names. A clone that
           # is not the pinned source is refused here, before the patch and before a kmp-test run that can take an
           # hour, because nothing measured on it would mean anything.
-          if ($isMultiModule) {
+          if ($hasScenarioPatch) {
             if (-not $sourceIdentityVerified) { throw "product_smoke_source_identity_mismatch:$observedSourceCommit" }
             $patchPath = Join-Path $HarnessDir (Join-Path 'tools\agentic-eval\corpus\fixtures' $smokeScenario.patch_file)
             if (-not (Test-Path -LiteralPath $patchPath -PathType Leaf)) { throw "product_smoke_patch_missing:$($smokeScenario.patch_file)" }
@@ -1152,14 +1159,28 @@ function Get-E1GuestBundleRegistry {
             $patchStatus = & $script:E1InternalBoundedProcess -FileName $git -Arguments @('-C', $cloneRoot, 'status', '--porcelain') -WorkingDirectory $cloneRoot -EnvironmentVariables $environment -TimeoutSeconds 60
             if ($patchStatus.exit_code -ne 0 -or -not $patchStatus.cleanup_ok) { throw 'product_smoke_patch_status_unreadable' }
             if (-not (Test-E1SmokePatchPostcondition ([string]$patchStatus.stdout) @($smokeScenario.expected_paths))) { throw "product_smoke_patch_postcondition_failed:$($smokeScenario.patch_file)" }
+            if ($smokeScenario.mode -ceq 'changed-dependents') {
+              # A committed edit is the fixture's changed --base comparison point.
+              $commitEnvironment = [hashtable]$environment.Clone()
+              $commitEnvironment.GIT_AUTHOR_DATE = '2000-01-01T00:00:00Z'
+              $commitEnvironment.GIT_COMMITTER_DATE = '2000-01-01T00:00:00Z'
+              $gitAdd = & $script:E1InternalBoundedProcess -FileName $git -Arguments ([string[]]@('-C', $cloneRoot, 'add', '--') + [string[]]@($smokeScenario.expected_paths)) -WorkingDirectory $cloneRoot -EnvironmentVariables $commitEnvironment -TimeoutSeconds 60
+              if ($gitAdd.exit_code -ne 0 -or -not $gitAdd.cleanup_ok) { throw 'product_smoke_commit_add_failed' }
+              $gitCommit = & $script:E1InternalBoundedProcess -FileName $git -Arguments @('-C', $cloneRoot, '-c', 'core.hooksPath=NUL', '-c', 'commit.gpgsign=false', '-c', 'user.name=KMP Test Runner Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'test(fixture): apply committed scenario edit') -WorkingDirectory $cloneRoot -EnvironmentVariables $commitEnvironment -TimeoutSeconds 60
+              if ($gitCommit.exit_code -ne 0 -or -not $gitCommit.cleanup_ok) { throw 'product_smoke_commit_failed' }
+              $commitParent = & $script:E1InternalBoundedProcess -FileName $git -Arguments @('-C', $cloneRoot, 'rev-parse', 'HEAD^') -WorkingDirectory $cloneRoot -EnvironmentVariables $commitEnvironment -TimeoutSeconds 60
+              $commitStatus = & $script:E1InternalBoundedProcess -FileName $git -Arguments @('-C', $cloneRoot, 'status', '--porcelain') -WorkingDirectory $cloneRoot -EnvironmentVariables $commitEnvironment -TimeoutSeconds 60
+              if ($commitParent.exit_code -ne 0 -or $commitStatus.exit_code -ne 0 -or ([string]$commitParent.stdout).Trim() -cne $ExpectedSourceCommit -or -not [string]::IsNullOrWhiteSpace([string]$commitStatus.stdout)) { throw 'product_smoke_commit_postcondition_failed' }
+            }
           }
 
-          # The coverage smoke's command and its 900 s bound are the ones this bundle has always run. A
-          # multi-module-tests scenario runs the arguments its own ground-truth file names, with the same CLI and
-          # project root, bounded at 3300 s.
+          # The coverage smoke's command and its 900 s bound are the ones this bundle has always run.
+          # Broad scenarios use their ground-truth arguments and a 3300 s process bound. Their CLI
+          # wrapper has a separate 3240 s watchdog via KMP_TEST_OUTER_TIMEOUT_MS, so it can return
+          # its own timeout envelope before this bundle terminates the process.
           $kmpTestArguments = [string[]]@($cli, 'parallel', '--module-filter', ':core:domain', '--min-missed-lines', '15', '--json', '--project-root', $cloneRoot)
           $kmpTestTimeoutSeconds = [int]900
-          if ($isMultiModule) {
+          if ($isMultiModule -or $isNextMilestone) {
             $kmpTestArguments = [string[]]@($cli) + [string[]]@($smokeScenario.kmp_test_args) + [string[]]@('--project-root', $cloneRoot)
             $kmpTestTimeoutSeconds = [int]3300
           }
@@ -1215,6 +1236,27 @@ function Get-E1GuestBundleRegistry {
             $observedFailedTestClasses = @($multiModuleObservation.failed_test_classes)
             $observedFailedCount = [int]$multiModuleObservation.failed_count
             $multiModuleMatches = Test-E1SmokeMultiModuleMatches $multiModuleObservation $smokeScenario.expected
+          }
+          $nextMilestoneMatches = $false
+          if ($isNextMilestone -and $null -ne $report) {
+            # Reuse the host grader's closed, family-specific envelope contract. The raw
+            # envelope and private ground truth travel as files to avoid command-line
+            # truncation and PowerShell's default JSON serialization depth limit.
+            $smokeEnvelopePath = Join-Path $SmokeRoot 'next-milestone-envelope.json'
+            [IO.File]::WriteAllText($smokeEnvelopePath, ([string]$process.stdout).Trim(), [Text.UTF8Encoding]::new($false))
+            $smokeVerifier = @'
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const [harnessDir, scenarioId, family, envelopePath] = process.argv.slice(1);
+const { evidenceMatches } = await import(pathToFileURL(join(harnessDir, 'tools', 'agentic-eval', 'graders-next-milestone.mjs')).href);
+const expected = JSON.parse(readFileSync(join(harnessDir, 'tools', 'agentic-eval', 'corpus', 'expected', `${scenarioId}.json`), 'utf8')).expected;
+const envelope = JSON.parse(readFileSync(envelopePath, 'utf8'));
+const valid = envelope.tool === 'kmp-test' && envelope.schema_version === 3 && evidenceMatches({ family, expected }, envelope) === true;
+process.stdout.write(valid ? 'MATCH' : 'MISMATCH');
+'@
+            $verifyProcess = & $script:E1InternalBoundedProcess -FileName $node -Arguments @('--input-type=module', '-e', $smokeVerifier, $HarnessDir, $ScenarioId, $smokeScenario.mode, $smokeEnvelopePath) -WorkingDirectory $HarnessDir -EnvironmentVariables $environment -TimeoutSeconds 60
+            $nextMilestoneMatches = $verifyProcess.exit_code -eq 0 -and $verifyProcess.cleanup_ok -and ([string]$verifyProcess.stdout).Trim() -ceq 'MATCH'
           }
 
           $observedProductVersion = if ($null -eq $report) { $null } else { [string]$report.version }
@@ -1317,6 +1359,8 @@ process.stdout.write(JSON.stringify(result));
             $expectedExitCode = $(if ($smokeScenario.expected.outcome_kind -ceq 'tests_failed') { 1 } else { 0 })
             $semanticPass = $productIdentityVerified -and $sourceIdentityVerified -and $process.cleanup_ok -and $process.exit_code -eq $expectedExitCode -and
               $multiModuleMatches
+          } elseif ($isNextMilestone) {
+            $semanticPass = $productIdentityVerified -and $sourceIdentityVerified -and $process.cleanup_ok -and $process.exit_code -eq 1 -and $nextMilestoneMatches
           } else {
             $semanticPass = $productIdentityVerified -and $sourceIdentityVerified -and $process.cleanup_ok -and $process.exit_code -eq 1 -and
               $errorCodes -contains 'coverage_threshold_exceeded' -and

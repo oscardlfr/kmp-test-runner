@@ -51,7 +51,7 @@ Setup-failure shape (`setup_failed: true`):
 | `setup_failed` | Meaning | Where to look |
 |----------------|---------|---------------|
 | absent | Tests ran, at least one failed. JUnit XML evidence exists. | `modules[<n>].test_failures[]` carries `{ test, cause, type }`. The agent should surface failing test names verbatim. |
-| `true` | The task failed and there is no JUnit XML evidence (no testcase and no failure was found): compile error, missing test dependency, configuration phase exception, OutOfMemoryError during configuration, etc. | The envelope does not carry the compiler message. With `--json`, the filtered Gradle lines of a failed run are forwarded to stderr (the tail, at most about 32 KB): they name the failing task (`> Task :x:compileDemoDebugKotlin FAILED`, `Execution failed for task ':x:compileDemoDebugKotlin'`) but not the `e: file://...` diagnostics. Re-run the failing module's Gradle compile task to read the compiler message. |
+| `true` | The task failed and no JUnit XML testcase evidence was found: compilation, dependency resolution, configuration, or runner setup may have failed. | First check `errors[].compile_failures[]` on the compiler task's owning module; each diagnostic contains file, line, optional column, message, and language. `parallel.legs[].compile_failures[]` retains all compiler failures on the leg. If those arrays are absent, inspect Gradle output for a non-compiler setup cause. |
 
 The key was added in v0.9.0 (schema:2). Pre-v0.9, agents couldn't tell whether `module_failed` meant "test broke" or "couldn't even build".
 
@@ -80,7 +80,7 @@ When `setup_failed` is absent (tests ran, failed):
 
 For `setup_failed: true` (no test ran):
 
-1. **Compilation failure** — typo in test code, deleted production code that tests still reference. The envelope does not name the failing compile task or carry the compiler message: read the failing-task line on stderr and re-run that Gradle compile task.
+1. **Compilation failure** — typo in test code or deleted production code. A recognized compiler failure names the Gradle compile task and source diagnostics in `compile_failures[]`; it suppresses cascade retry. Use the diagnostic location to inspect the source change.
 2. **Missing test dependency** — `commonTest` imports a library not in `dependencies { commonTestImplementation(...) }`. Recovery: add the dependency.
 3. **Configuration-time exception** — a `tasks.named("...") { ... }` block throws during configuration (not execution). Often AGP / KMP version mismatch.
 4. **OutOfMemoryError during configuration** — common on monorepos with many modules. Recovery: bump `gradle.properties` `org.gradle.jvmargs=-Xmx4g` or higher. `--fresh-daemon` may help when a stale daemon accumulates heap pressure.
@@ -96,8 +96,8 @@ When `setup_failed` is absent:
 
 For `setup_failed: true`:
 
-1. Read the stderr of the run (its Gradle lines name the failing task; `errors[].message` is only `[FAIL] <module>`), then re-run the failing module's Gradle compile task for the compiler message.
-2. Distinguish compile-time (unresolved reference, type mismatch) from configuration-time (plugin not applied, task name collision).
+1. Check `errors[].compile_failures[]` and, for `parallel`, `parallel.legs[].compile_failures[]`. A leg may contain an independent JUnit failure in another module; do not label that test failure as compilation.
+2. If no compiler diagnostic is present, inspect Gradle output and distinguish dependency resolution, configuration, and runtime setup errors. Re-run a specific Gradle task only when the captured evidence is insufficient.
 3. For compile errors: the user (or the agent) needs to read the production code change; the test file may not be the locus of the bug.
 4. For configuration errors: try `kmp-test parallel --gradle-args "--no-configuration-cache"` to bypass a stale config cache. Try `--fresh-daemon` for daemon-state issues.
 5. For OOM: bump JVM args in `gradle.properties`.
@@ -108,7 +108,7 @@ For `setup_failed: true`:
 # Re-run just the failed module with verbose gradle output
 kmp-test parallel --module-filter ":feature:auth:impl" --gradle-args "--info --stacktrace" --json
 
-# Read the compiler message: re-run the failing module's compile task (the task name is on stderr)
+# Fallback when the envelope has no compiler diagnostic: re-run the named compile task
 ./gradlew :feature:auth:impl:compileDebugUnitTestKotlin --console=plain
 
 # Bypass configuration cache (common setup-failure recovery)

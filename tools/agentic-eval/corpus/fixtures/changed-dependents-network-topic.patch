@@ -1,0 +1,13 @@
+diff --git a/core/network/src/main/kotlin/com/google/samples/apps/nowinandroid/core/network/model/NetworkTopic.kt b/core/network/src/main/kotlin/com/google/samples/apps/nowinandroid/core/network/model/NetworkTopic.kt
+index 0d21c09e..65a9993e 100644
+--- a/core/network/src/main/kotlin/com/google/samples/apps/nowinandroid/core/network/model/NetworkTopic.kt
++++ b/core/network/src/main/kotlin/com/google/samples/apps/nowinandroid/core/network/model/NetworkTopic.kt
+@@ -36,7 +36,7 @@ data class NetworkTopic(
+ fun NetworkTopic.asExternalModel(): Topic =
+     Topic(
+         id = id,
+-        name = name,
++        name = shortDescription,
+         shortDescription = shortDescription,
+         longDescription = longDescription,
+         url = url,

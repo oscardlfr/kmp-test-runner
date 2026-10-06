@@ -21,7 +21,7 @@ The `kmp-test` CLI shares a common flag surface across subcommands, with per-sub
 | Flag | Default | parallel | coverage | benchmark | changed | android | Notes |
 |------|---------|:--------:|:--------:|:---------:|:-------:|:-------:|-------|
 | `--test-type <type>` | auto-detect | ✓ | — | — | ✓ | — | `all` / `common` / `androidUnit` / `androidInstrumented` / `desktop` / `ios` / `macos` / `jvm` / `js` / `wasm`. |
-| `--module-filter <glob>` | `*` | ✓ | — | ✓ | — | ✓ | Glob, comma-separated. Not accepted by `changed` (`unknown_flag`) — its module set is always git-derived; see `--show-modules-only`. |
+| `--module-filter <glob>` | `*` | ✓ | ✓ | ✓ | — | ✓ | Glob, comma-separated. On `coverage`, filters aggregated module names; use `--coverage-modules` for exact names. Not accepted by `changed` (`unknown_flag`) — its module set is always git-derived. |
 | `--test-filter <pattern>` | none | ✓ | — | android only | ✓ | ✓ | Single class or `Class#method`. JVM test tasks use gradle `--tests`; Android resolves wildcards to FQN by source scan. **benchmark**: only the android leg filters (`-P` instrumentation args); jvm benchmark legs are SKIPPED with `warnings[].code: test_filter_unsupported` + `skipped[]` entries — kotlinx-benchmark tasks reject `--tests` and have no CLI filter (use `benchmark { configurations { include(...) } }` in the build script, or `--module-filter` + `--config smoke` to narrow). |
 | `--exclude-modules <list>` | none | ✓ | — | — | ✓ | — | Comma-separated globs to skip entirely (not probed, not tested). |
 | `--include-untested` | off | ✓ | — | — | ✓ | — | Re-include modules auto-skipped because filesystem has no `src/*Test*` directory. |
@@ -37,6 +37,7 @@ The `kmp-test` CLI shares a common flag surface across subcommands, with per-sub
 | `--exclude-coverage <list>` | none | ✓ | ✓ | ✓ | Comma-separated **exact** module names (same matching rules as `--coverage-modules`) to skip from coverage aggregation only (tests still run). |
 | `--no-coverage-xml-autofix` | off | ✓ | — | — | Disable the auto-injected init-script that forces jacoco `xml.required=true` on the coverage-report leg. By default `kmp-test` enables jacoco XML so HTML-only `jacocoTestReport` modules still produce parseable XML. No-op for Kover. Opting out surfaces `coverage_xml_disabled` for HTML-only modules. |
 | `--min-missed-lines <N>` | `0` | ✓ | ✓ | ✓ | Fail (`coverage_threshold_exceeded`, exit 1) if aggregated missed lines exceed `N`. `0` = no gate. |
+| `--min-line-coverage <pct>` | off | ✓ | ✓ | ✓ | Per-module LINE minimum, decimal 0–100. Below-gate modules appear in `module_coverage_threshold_exceeded.modules`. Missing/invalid XML or zero coverable lines makes a required score unavailable (`coverage_data_unavailable`, exit 3). Use one `--flavor` and build `--variant` for flavored Android modules. Inspect `coverage.module_results[]` and `coverage.data_provenance`. |
 | `--output-file <path>` | (writes under `.kmp-test-runner/reports/coverage/`) | ✓ | ✓ | — | Path for the markdown report. Absolute → verbatim; relative → resolved against `--project-root`. When omitted (or set to the historic literal `coverage-full-report.md`), writes to `.kmp-test-runner/reports/coverage/<runId>.md` with a `latest.md` alias. With a custom path, only that file is written — no alias. |
 | `--skip-tests` | off (set internally by `coverage`) | ✓ | implicit | — | Skip test execution; aggregate coverage from existing reports. Coverage subcommand sets this internally. |
 | `--coverage-only` | off | ✓ | — | — | Generate only coverage report — implies `--skip-tests`, skips test discovery. |
@@ -55,12 +56,12 @@ The `kmp-test` CLI shares a common flag surface across subcommands, with per-sub
 
 | Flag | Default | parallel | benchmark | changed | android | Notes |
 |------|---------|:--------:|:---------:|:-------:|:-------:|-------|
-| `--variant` / `--android-variant <val>` | `auto` | ✓ | ✓ | ✓ | ✓ | `auto` (respects `testBuildType="release"`) / `debug` / `release` / `all`. JVM benchmarks ignore. Any other value is treated as `auto` and raises the `variant_unrecognized` warning (flavored: `--flavor demo --variant debug`). |
+| `--variant` / `--android-variant <val>` | `auto` | ✓ | ✓ | ✓ | ✓ | `auto` (respects `testBuildType="release"`) / `debug` / `release` / `all`, or a flavored variant such as `demoDebug` / `prodRelease`. The composite form sets `--flavor` and build type together; a conflicting explicit `--flavor` fails with `invalid_variant_flavor_conflict`. JVM benchmarks ignore the build type. Other unknown values are treated as `auto` with `variant_unrecognized`. |
 | `--device <serial>` | auto | ✓ (`androidInstrumented`) | — | — | ✓ | Pin ADB device. Validated against `adb devices`; pins `ANDROID_SERIAL`. Mismatched serial → `instrumented_setup_failed` (exit 3). |
 | `--device-task <name>` | auto | ✓ (`androidInstrumented`) | — | — | ✓ | Force gradle task name (e.g. `androidConnectedCheck` for `androidLibrary { }` DSL). Preempts auto-resolution. |
 | `--auto-retry` | off | ✓ (`androidInstrumented`) | — | — | ✓ | Re-dispatch instrumented tasks that ran but failed. One retry per task. Surfaces `parallel.legs[i].retries[]`. |
 | `--clear-data` | off | ✓ (`androidInstrumented`) | — | — | ✓ | `adb shell pm clear <pkg>` before retry. Implies `--auto-retry`. |
-| `--flavor <name>` | none | ✓ (`androidUnit`/`androidInstrumented`/`all` + coverage) | — | — | ✓ | Android `productFlavors` weave for the unit (`test${Cap}${Variant}UnitTest`), instrumented (`connected${Cap}${Variant}AndroidTest`), and coverage report tasks. Convention-applied flavors are recovered from the gradle probe. No `--flavor` on a flavored project → flavor-agnostic umbrella (`test`/`connectedAndroidTest`) + `flavor_defaulted_umbrella` warning, also under the default test type. `--flavor` on a non-flavored project → `flavor_unused` (exit 2). |
+| `--flavor <name>` | none | ✓ (`androidUnit`/`androidInstrumented`/`all` + coverage) | ✓ (Android) | ✓ | ✓ | Android `productFlavors` weave for unit, instrumented, benchmark, and coverage report tasks. Accepted by standalone `coverage` to select an AGP report. Convention-applied flavors are recovered from the gradle probe. No `--flavor` on a flavored test project → flavor-agnostic umbrella (`test`/`connectedAndroidTest`) + `flavor_defaulted_umbrella` warning. `--flavor` on a non-flavored parallel leg → `flavor_unused` (exit 2). |
 | `--capture-on-fail` | off | ✓ (`androidInstrumented`) | — | — | ✓ | On instrumented-module failure, capture a device screenshot (`adb exec-out screencap`) + UI-hierarchy dump (`adb exec-out uiautomator dump`), best-effort. Paths surface on `errors[].screenshot_file` / `.ui_hierarchy_file` (`capture_error` when adb can't oblige). On `parallel`: once per still-failed module, after `--auto-retry`/cascade settle (no per-attempt spam). Forensic-only — **never** changes the exit code. Emulators are first-class. |
 | `--capture-dir <path>` | per-run log dir | ✓ (`androidInstrumented`) | — | — | ✓ | Override where `--capture-on-fail` artifacts land (default `.kmp-test-runner/logs/android/<runId>/`, namespaced `<module>_screenshot.png` / `<module>_ui-hierarchy.xml`). Implies `--capture-on-fail`. Relative → resolved against `--project-root`. |
 | `--skip-app` | off | — | — | — | ✓ | Skip `app/androidApp` modules. android-only. |
@@ -82,6 +83,8 @@ The `kmp-test` CLI shares a common flag surface across subcommands, with per-sub
 |------|---------|:--------:|:-------:|-------|
 | `--list` / `--list-only` | off | ✓ | ✓ | Emit post-filter `modules[]` + `skipped[]` envelope, exit 0 before gradle dispatch. Different from `--dry-run` (shows spawn command). |
 | `--staged-only` | off | — | — | `changed` only: only consider git-staged files (`git diff --cached`). |
+| `--base <ref>` | none | — | — | `changed` only: compare the merge base with `<ref>` against the current tree, including committed, staged, unstaged, and untracked files. With `--staged-only`, exclude unstaged and untracked files. |
+| `--include-dependents` | off | — | — | `changed` only: add transitive project dependents from Gradle's configured graph; reports direct, dependent, and selected module sets separately. Graph-probe failure emits `dependency_graph_unavailable` (exit 3). |
 | `--show-modules-only` | off | — | — | `changed` only: list detected modules, exit 0 without running tests. |
 
 ## Subcommand-specific (benchmark / info / describe)
@@ -118,7 +121,8 @@ The `kmp-test` CLI shares a common flag surface across subcommands, with per-sub
 | `PARENT_ONLY_MODULES` | always | Comma-separated module names that are aggregator-only — skipped at discovery time. |
 | `NO_COLOR` | always (POSIX) | Any non-empty value disables gradle ANSI output (equivalent to `--color never`). |
 | `KMP_COLOR_MODE` | always | `always` / `never` / `auto`. Set via `--color`; persists across re-exec chain. |
-| `KMP_GRADLE_TIMEOUT_MS` | parallel / benchmark | Per-task gradle watchdog override in milliseconds. Precedence: `--ignore-gradle-timeout` > `--timeout` > this > config default. |
+| `KMP_GRADLE_TIMEOUT_MS` | parallel / benchmark | Per-task gradle watchdog override in milliseconds; also the legacy default for the CLI's outer watchdog. Per-task precedence: `--ignore-gradle-timeout` > `--timeout` > this > config default. |
+| `KMP_TEST_OUTER_TIMEOUT_MS` | script-backed subcommands | Whole CLI/wrapper watchdog override in milliseconds. Independent of each Gradle task's `--timeout`; useful for broad multi-module runs. |
 | `KMP_GRADLE_MAXBUFFER_MB` | always | Max stdout/stderr captured per gradle/adb subprocess, in megabytes (default `64`). Exceeding the cap surfaces as `errors[].code: "spawn_error"`. |
 | `KMP_TEST_NO_SWEEP` | test subcommands | Set to `1` to disable the startup artifact-lifecycle sweep of `.kmp-test-runner/` (config key `cleanup:{auto,logsTtlDays}`). Explicit purge: `kmp-test clean [--all] [--dry-run]`. |
 | `KMP_PROBE_TIMEOUT` | always | `lib/gradle-tasks-probe.sh` timeout in seconds (default 60). |

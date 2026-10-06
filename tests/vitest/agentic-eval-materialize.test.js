@@ -86,14 +86,14 @@ describe('materializeSkillSnapshot', { timeout: 30_000 }, () => {
   // above (mechanism-only) and from the live-HEAD test above (tracks develop's tip forever, never
   // references this constant). calibrate/smoke both materialize current-skill via
   // runConditionPair's one call site using exactly PINNED_SKILL_SHA. This is a tripwire, not a
-  // general staleness detector: it deliberately hardcodes 27c943d and will need its own edit on
+  // general staleness detector: it deliberately hardcodes the milestone skill commit and needs an edit on
   // every future legitimate pin advance -- the next test verifies the semantics that should
   // survive such an advance. Split into two independent it() blocks on purpose: expect().toBe()
   // throws synchronously, so a single block with the equality check first would hide whether the
   // content assertions below actually discriminate -- two blocks means a run against a stale pin
   // shows both failing for real, not just the first one.
-  it('PINNED_SKILL_SHA is locked to the v0.15.0 release tag commit (D1 -- measure the published version)', () => {
-    expect(PINNED_SKILL_SHA).toBe('27c943dc392675f78209a78ce09adb4f79283e3e');
+  it('PINNED_SKILL_SHA is locked to the reviewed next-milestone skill contract', () => {
+    expect(PINNED_SKILL_SHA).toBe('39ea824e301022af57990cb6e30a2fb381ad6df2');
   });
 
   it('the pinned current-skill snapshot reflects the PR #403 target-binding fix', async () => {
@@ -328,8 +328,9 @@ describe('materializeSkillSnapshot', { timeout: 30_000 }, () => {
     expect(quickstartStep1).toBeTruthy();
     expect(quickstartStep1).toMatch(/^1\.\s+Runs\s+`git status --porcelain`\s+\(default\)/);
     expect(quickstartStep1).not.toMatch(/git diff --name-only HEAD/);
-    // --staged-only uses `git diff --cached --name-only`, mutually exclusive with the default.
-    expect(quickstartStep1).toMatch(/`git diff --cached --name-only`\s+\(`--staged-only`\)\s*—\s*mutually exclusive/);
+    // --staged-only and --base retain distinct, documented change sources.
+    expect(quickstartStep1).toContain('`git diff --cached --name-only` (`--staged-only`)');
+    expect(quickstartStep1).toContain('NUL-delimited diff from `merge-base(<ref>, HEAD)` (`--base`)');
 
     // The envelope never carries a top-level `parallel:{}` block -- the pre-#415 doc claimed the
     // opposite (a `parallel:{}` block "present because changed delegates in-process").
@@ -338,12 +339,13 @@ describe('materializeSkillSnapshot', { timeout: 30_000 }, () => {
     // --max-failures is fully retired -- not documented anywhere in this workflow doc.
     expect(changedDoc).not.toMatch(/--max-failures/);
 
-    // Detected modules are bare/colon-less, and base_ref is always the literal "HEAD" in both
-    // modes -- the pre-#415 doc claimed base_ref became "the index" under --staged-only.
-    const changedBlockClause = changedDoc.split('\n').find((l) => l.includes('carries exactly 3 fields'));
+    // Direct module names stay bare; base_ref is HEAD by default and reflects
+    // the supplied ref in base mode. Dependent fields are additive.
+    const changedBlockClause = changedDoc.split('\n').find((l) => l.includes('block always carries `detected_modules`'));
     expect(changedBlockClause).toBeTruthy();
-    expect(changedBlockClause).toContain('bare/colon-less');
-    expect(changedBlockClause).toContain('always the literal string `"HEAD"`');
+    expect(changedBlockClause).toContain('without a leading `:`');
+    expect(changedBlockClause).toContain('`"HEAD"` by default, or the supplied ref');
+    expect(changedBlockClause).toContain('`dependent_modules` and `selected_modules`');
   });
 
   // #413 + #415 coverage semantics: --min-missed-lines 0 disables the gate entirely (coverage.md

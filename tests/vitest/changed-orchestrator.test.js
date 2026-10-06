@@ -26,6 +26,32 @@ import path from 'node:path';
 import { runChanged } from '../../lib/orchestrators/changed-orchestrator.js';
 import { computeCacheKey, CACHE_DIR_NAME } from '../../lib/project-model.js';
 
+describe('changed compile failure passthrough', () => {
+  it('preserves structured compiler diagnostics from its parallel delegate', async () => {
+    const dir = makeProject(['core']);
+    const spawn = makeSpawnStub({ git: { statusOutput: porcelain(['core/src/jvmMain/kotlin/Broken.kt']) } });
+    const failure = {
+      code: 'module_failed', module: 'core', task: ':core:jvmTest', setup_failed: true,
+      compile_failures: [{
+        task: ':core:compileKotlinJvm',
+        diagnostics: [{ file: 'core/src/jvmMain/kotlin/Broken.kt', line: 9, column: 4, message: 'Unresolved reference: missingValue', language: 'kotlin' }],
+      }],
+    };
+    const runParallelInjection = async () => ({
+      envelope: {
+        tests: { total: 1, passed: 0, failed: 1, skipped: 0 },
+        modules: [{ name: 'core' }], skipped: [], coverage: { tool: 'none' },
+        errors: [failure], warnings: [],
+      },
+      exitCode: 1,
+    });
+    const { envelope, exitCode } = await runChanged({ projectRoot: dir, spawn, runParallelInjection });
+    expect(exitCode).toBe(1);
+    expect(envelope.errors).toEqual([failure]);
+    expect(envelope.changed.detected_modules).toEqual(['core']);
+  });
+});
+
 const SOURCE_SETS = [
   'test', 'commonTest', 'jvmTest', 'desktopTest',
   'androidUnitTest', 'androidInstrumentedTest', 'androidTest',
@@ -699,8 +725,8 @@ describe('changed coverage aggregation against unavailable explicitly requested 
         required_by: 'explicit-coverage-tool',
       }),
     ]);
-    expect(envelope.coverage.modules_contributing).toBe(1);
-    expect(envelope.coverage.module_buckets.with_data).toEqual(['other']);
+    expect(envelope.coverage.modules_contributing).toBe(0);
+    expect(envelope.coverage.module_buckets.with_data).toEqual([]);
     expect(envelope.coverage.module_buckets.no_xml).toEqual(['core']);
   });
 
@@ -839,6 +865,21 @@ describe('runChanged --dry-run (F1)', () => {
 // Case 13 — v0.9 step 3: --variant global propagation to runParallel
 // ---------------------------------------------------------------------------
 describe('runChanged --variant propagation (v0.9 step 3)', () => {
+  it('forwards equals-form Gradle options unchanged into parallel parsing', async () => {
+    const dir = makeProject(['app']);
+    const spawn = makeSpawnStub({ git: { statusOutput: porcelain(['app/src/androidUnitTest/X.kt']) } });
+    const calls = [];
+    await runChanged({ projectRoot: dir,
+      args: ['--gradle-args', '--max-workers=4'], spawn,
+      runParallelInjection: async (input) => { calls.push(input); return {
+        envelope: { tests: { total: 0, passed: 0, failed: 0, skipped: 0 }, modules: [], skipped: [],
+          coverage: { tool: 'auto', missed_lines: null }, errors: [], warnings: [] }, exitCode: 0,
+      }; } });
+    expect(calls).toHaveLength(1);
+    const forwarded = calls[0].args;
+    expect(forwarded.slice(forwarded.indexOf('--gradle-args'), forwarded.indexOf('--gradle-args') + 2))
+      .toEqual(['--gradle-args', '--max-workers=4']);
+  });
   it('--variant release reaches runParallel via buildParallelArgs', async () => {
     const dir = makeProject(['app']);
     const spawn = makeSpawnStub({
@@ -1307,9 +1348,9 @@ kotlin {
 });
 
 // ---------------------------------------------------------------------------
-// --variant: an unrecognized value warns (variant_unrecognized), once, and is still forwarded
+// --variant: composite values forward flavor and build type to parallel
 // ---------------------------------------------------------------------------
-describe('runChanged --variant unrecognized value (variant_unrecognized)', () => {
+describe('runChanged --variant composite flavor and build type', () => {
   const stubParallel = (warnings = []) => {
     const calls = [];
     const fn = async (opts) => {
@@ -1333,26 +1374,30 @@ describe('runChanged --variant unrecognized value (variant_unrecognized)', () =>
     return runChanged({ projectRoot: dir, args, spawn, runParallelInjection });
   };
 
-  it('--variant demoDebug → one warning carrying the value as typed; dispatch forwarded as before', async () => {
+  it('--variant demoDebug forwards the parsed flavor and build type', async () => {
     const parallel = stubParallel();
     const { envelope } = await run(['--variant', 'demoDebug'], parallel);
-    expect(envelope.warnings).toEqual([{
-      code: 'variant_unrecognized',
-      message: expect.stringContaining("--variant 'demoDebug' is not one of [auto, debug, release, all]"),
-      value: 'demoDebug',
-      allowed: ['auto', 'debug', 'release', 'all'],
-    }]);
+    expect(envelope.warnings).toEqual([]);
     const args = parallel.calls[0].args;
-    expect(args[args.indexOf('--variant') + 1]).toBe('demodebug');
+    expect(args[args.indexOf('--variant') + 1]).toBe('debug');
+    expect(args[args.indexOf('--flavor') + 1]).toBe('demo');
   });
 
   it('the parallel delegate raises the same warning for the forwarded value: the changed envelope still carries exactly one', async () => {
     const delegateWarning = {
-      code: 'variant_unrecognized', message: 'from the delegate', value: 'demodebug', allowed: ['auto', 'debug', 'release', 'all'],
+      code: 'variant_unrecognized', message: 'from the delegate', value: 'demostaging', allowed: ['auto', 'debug', 'release', 'all'],
     };
-    const { envelope } = await run(['--variant', 'demoDebug'], stubParallel([delegateWarning, { code: 'junit_xml_oversized', message: 'x' }]));
+    const { envelope } = await run(['--variant', 'demoStaging'], stubParallel([delegateWarning, { code: 'junit_xml_oversized', message: 'x' }]));
     expect(envelope.warnings.map(w => w.code)).toEqual(['variant_unrecognized', 'junit_xml_oversized']);
-    expect(envelope.warnings[0].value).toBe('demoDebug');
+    expect(envelope.warnings[0].value).toBe('demoStaging');
+  });
+
+  it.each([['--variant', 'demoDebug', '--flavor', 'prod'], ['--flavor', 'prod', '--variant', 'demoDebug']])('rejects conflicting flavor before delegation', async (...args) => {
+    const parallel = stubParallel();
+    const { exitCode, envelope } = await run(args, parallel);
+    expect(exitCode).toBe(2);
+    expect(envelope.errors).toEqual([expect.objectContaining({ code: 'invalid_variant_flavor_conflict' })]);
+    expect(parallel.calls).toEqual([]);
   });
 
   it('valid values in any case raise no warning', async () => {

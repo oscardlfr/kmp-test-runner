@@ -1,0 +1,77 @@
+{
+  "schema": 1,
+  "id": "changed-dependents-network-topic",
+  "expected_outcome": "The one-line NetworkTopic mapper edit is committed on the pinned base. The changed module is :core:network; its direct and transitive project dependents include :core:data. The selected demoDebug host tests report exactly one distinct failing method, NetworkEntityTest.networkTopicMapsToExternalModel in :core:data. The 18 dependent paths below come from the executed changed --base --include-dependents envelope before four Robolectric exclusions.",
+  "expected": {
+    "outcome_kind": "tests_failed",
+    "direct_modules": [":core:network"],
+    "dependent_modules": [
+      ":app",
+      ":app-nia-catalog",
+      ":benchmarks",
+      ":core:data",
+      ":core:data-test",
+      ":core:domain",
+      ":core:testing",
+      ":core:ui",
+      ":feature:bookmarks:impl",
+      ":feature:foryou:impl",
+      ":feature:interests:impl",
+      ":feature:search:api",
+      ":feature:search:impl",
+      ":feature:settings:impl",
+      ":feature:topic:api",
+      ":feature:topic:impl",
+      ":sync:sync-test",
+      ":sync:work"
+    ],
+    "selected_modules": [
+      ":app",
+      ":app-nia-catalog",
+      ":benchmarks",
+      ":core:data",
+      ":core:data-test",
+      ":core:domain",
+      ":core:network",
+      ":core:testing",
+      ":core:ui",
+      ":feature:bookmarks:impl",
+      ":feature:foryou:impl",
+      ":feature:interests:impl",
+      ":feature:search:api",
+      ":feature:search:impl",
+      ":feature:settings:impl",
+      ":feature:topic:api",
+      ":feature:topic:impl",
+      ":sync:sync-test",
+      ":sync:work"
+    ],
+    "failing_modules": [":core:data"],
+    "failed_test_classes": ["NetworkEntityTest"],
+    "failed_count": 1
+  },
+  "smoke": {
+    "kmp_test_args": [
+      "changed", "--base", "7d45eae4f8720a0c77f507712ba2437ff974b6ed",
+      "--include-dependents", "--no-coverage", "--exclude-modules",
+      "app,core:designsystem,feature:foryou:impl,feature:interests:impl",
+      "--flavor", "demo", "--variant", "debug", "--json"
+    ],
+    "warm_tasks": [
+      ":core:common:test",
+      ":core:data:testDemoDebugUnitTest",
+      ":core:datastore:testDemoDebugUnitTest",
+      ":core:domain:testDemoDebugUnitTest",
+      ":core:navigation:testDemoDebugUnitTest",
+      ":core:network:testDemoDebugUnitTest",
+      ":feature:bookmarks:impl:testDemoDebugUnitTest",
+      ":feature:search:impl:testDemoDebugUnitTest",
+      ":feature:settings:impl:testDemoDebugUnitTest",
+      ":feature:topic:impl:testDemoDebugUnitTest",
+      ":lint:test"
+    ]
+  },
+  "first_useful_signal_predicate": {
+    "description": "First executed changed evidence showing :core:network as the direct edit, :core:data among graph dependents, and a failing :core:data NetworkEntityTest method."
+  }
+}

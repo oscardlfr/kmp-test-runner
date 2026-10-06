@@ -53,11 +53,12 @@ Defaults grounded in `lib/cli.js` SUBCOMMAND_HELP (the canonical source). Full p
 | `--coverage-tool <tool>` | `auto` | `auto` / `jacoco` / `kover` / `none`. `auto` picks per-module from the project model. |
 | `--no-coverage` | off | Alias for `--coverage-tool none`. Drops coverage aggregation entirely. |
 | `--min-missed-lines <N>` | `0` | Fail (`errors[].code: coverage_threshold_exceeded`, exit 1) if aggregated missed lines exceed `N`. `0` = no gate (default). |
+| `--min-line-coverage <pct>` | off | Per-module LINE minimum (decimal 0–100). Missing required coverage evidence fails closed (`coverage_data_unavailable`, exit 3). |
 | `--exclude-modules <list>` | none | Comma-separated globs to skip entirely (not even probed). |
 | `--exclude-coverage <list>` | none | Comma-separated modules to skip from coverage aggregation only — tests still run. |
 | `--include-untested` | off | Re-include modules auto-skipped because their filesystem path has no `src/*Test*` directory. |
 | `--timeout <seconds>` | `600` | Per-task gradle watchdog. `0` disables. Overridden by `KMP_GRADLE_TIMEOUT_MS` env var. |
-| `--variant <auto\|debug\|release\|all>` | `auto` | Android build-variant selector. `auto` respects `testBuildType="release"` projects; `all` dispatches both. |
+| `--variant <value>` | `auto` | Android build-variant selector: `auto`, `debug`, `release`, `all`, or a flavored variant such as `demoDebug`. A composite variant selects its flavor and build type; a conflicting `--flavor` is an error. |
 | `--gradle-args "<args>"` | none | Escape hatch — tokens appended LAST so they override CLI defaults via gradle's last-wins (e.g. `--gradle-args "--no-parallel"`). |
 | `--isolated` | off | Wrap gradle with `--project-cache-dir <tmp>` so concurrent `kmp-test` runs don't share configuration cache. |
 | `--isolated-cache-dir <path>` | per-run tmpdir | Override the cache-dir location. Implies `--isolated`. |
@@ -76,7 +77,7 @@ Defaults grounded in `lib/cli.js` SUBCOMMAND_HELP (the canonical source). Full p
 
 ### Cascade retry
 
-When a leg's gradle invocation aborts during configuration / evaluation (compile error, missing dependency), every task in that leg's downstream graph is marked `no_evidence` because gradle never got to run them. The orchestrator detects this shape (`no_evidence > 0` AND `failed === 0`) and surfaces it as `parallel.legs[i].cascade_detected: true`. The leg's `exit_code` is non-zero; the envelope's top-level `errors[]` carries the originating gradle failure with discriminated `code` when recognisable.
+When a leg's Gradle invocation fails before any requested test task has execution evidence, the orchestrator can retry each module once to isolate the failure. `cascade_detected:true` requires **every** requested task to have `no_evidence` and no recognized compiler failure. Recognized Kotlin/Java compilation errors are reported in `parallel.legs[].compile_failures[]`, with matching diagnostics attached only to the owning module's `module_failed` error; `retry_fired` stays `false`. An independent JUnit failure in the same leg retains its own test-failure evidence.
 
 `--auto-retry` re-dispatches **runtime-failed instrumented tasks** (not cascades). Surfaces `parallel.legs[i].retries[]`. Unit tests don't typically need this.
 
@@ -117,8 +118,9 @@ change scope and the request is ambiguous, ask before running.
 - **Filter narrows to zero modules**: `--module-filter "nonexistent-*"` produces `errors[].code: no_test_modules` with `caused_by_filter: true` and `exit 2`. Compare with the same code at project-wide scope (no filter, project genuinely has no test modules) which sets `caused_by_filter: false` and `exit 3`.
 - **JDK toolchain mismatch with `--ignore-jdk-mismatch`**: the gate downgrades to a `WARN` stderr line; tests then run under the host default and likely fail with `unsupported_class_version` on the actual task. Prefer fixing the JDK (catalogue auto-select, `--java-home`, `~/.kmp-test/config.json java_home`) over bypassing.
 - **Concurrent `kmp-test` on the same project root**: the second process exits 3 with `errors[].code: lock_held`. Bypass with `--force` only when you know the prior run is dead (stale lockfile from a crashed process). `--isolated` is the safer answer for parallel agents — gives each its own cache dir.
-- **Compile-time failure in a module**: surfaces as `errors[].code: module_failed` with `setup_failed: true` (no JUnit XML evidence). Distinguishes from runtime test failure (`setup_failed: false`, has `modules[].test_failures[]`).
+- **Compile-time failure in a module**: `module_failed` has `setup_failed:true` when no JUnit XML testcase exists, and recognized compiler diagnostics appear in `compile_failures[]`. A runtime JUnit failure has `modules[].test_failures[]`; the `setup_failed` key is absent. Other setup failures can also have `setup_failed:true`, so check compiler diagnostics before classifying the cause.
 - **Coverage gate**: `--min-missed-lines 100` emits `errors[].code: coverage_threshold_exceeded` (exit 1) when `coverage.missed_lines > 100`. Useful in CI gates.
+- **Per-module LINE gate**: `--min-line-coverage 80` compares each scored module; read `coverage.module_results[]` for percentages and `coverage.data_provenance` for freshness. Below-gate scores exit 1; missing required data exits 3.
 
 ## Envelope shape excerpt
 
@@ -131,7 +133,7 @@ The `parallel` subcommand emits the standard top-level envelope (see [`../cli/en
   "contracts": { "coverage_evidence": 1 },
   "subcommand": "parallel",
   "exit_code": 0,
-  "tests": { "total": 42, "passed": 42, "failed": 0, "skipped": 0, "individual_total": 58, "individual_failed": 0, "individual_skipped": 2 },
+  "tests": { "total": 42, "passed": 42, "failed": 0, "skipped": 0, "individual_total": 58, "individual_failed": 0, "individual_failed_distinct": 0, "individual_skipped": 2 },
   "modules": [
     {
       "name": ":core:network",
@@ -144,7 +146,8 @@ The `parallel` subcommand emits the standard top-level envelope (see [`../cli/en
     "tool": "kover",
     "missed_lines": 16,
     "modules_with_kover_plugin": [":core:network"],
-    "modules_with_jacoco_plugin": []
+    "modules_with_jacoco_plugin": [],
+    "data_provenance": "current_run"
   },
   "parallel": {
     "test_type": "androidUnit",

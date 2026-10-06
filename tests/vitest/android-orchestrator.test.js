@@ -1325,32 +1325,32 @@ describe('runAndroid --variant (v0.9 step 3)', () => {
     expect(parseArgs([]).variant).toBe('auto');
   });
 
-  it('--variant demoDebug: parseArgs records one variant_unrecognized warning (value as typed); valid values and the default leave no warnings key', () => {
+  it('--variant demoDebug: parseArgs resolves the flavor and build type', () => {
     const opts = parseArgs(['--variant', 'demoDebug']);
-    expect(opts.variant).toBe('demodebug');
-    expect(opts.warnings).toEqual([{
-      code: 'variant_unrecognized',
-      message: expect.stringContaining("--variant 'demoDebug' is not one of [auto, debug, release, all]"),
-      value: 'demoDebug',
-      allowed: ['auto', 'debug', 'release', 'all'],
-    }]);
+    expect(opts.variant).toBe('debug');
+    expect(opts.flavor).toBe('demo');
+    expect(opts.warnings ?? []).toEqual([]);
     for (const value of ['Release', 'DEBUG', 'all', 'auto']) expect(Object.keys(parseArgs(['--variant', value])), value).not.toContain('warnings');
     expect(Object.keys(parseArgs([]))).not.toContain('warnings');
   });
 
-  it('--variant demoDebug: the envelope carries exactly one variant_unrecognized warning and the dispatch of --variant auto', async () => {
-    const dir = makeProject([{ name: 'a' }]);
+  it('--variant demoDebug: dispatches the flavored Debug task', async () => {
+    const dir = makeProject([{ name: 'a', build: 'plugins { id("com.android.library") }\nandroid { productFlavors { create("demo") {} } }\n' }]);
     const adbProbe = () => [{ serial: 'emulator-5554', type: 'emulator', model: 'sdk' }];
-    const run = async (variant) => {
+    const run = async (args) => {
       const spawn = makeSpawnStub();
-      const { envelope } = await runAndroid({ projectRoot: dir, args: ['--variant', variant], spawn, adbProbe });
+      const { envelope } = await runAndroid({ projectRoot: dir, args, spawn, adbProbe });
       return { envelope, tasks: effectiveGradleArgs(findGradleCalls(spawn.calls)[0]) };
     };
-    const typed = await run('demoDebug');
-    const auto = await run('auto');
-    expect(typed.envelope.warnings.filter(w => w.code === 'variant_unrecognized')).toEqual([expect.objectContaining({ value: 'demoDebug' })]);
-    expect(auto.envelope.warnings.filter(w => w.code === 'variant_unrecognized')).toEqual([]);
-    expect(typed.tasks).toEqual(auto.tasks);
+    const typed = await run(['--variant', 'demoDebug']);
+    const explicit = await run(['--flavor', 'demo', '--variant', 'debug']);
+    expect(typed.envelope.warnings.filter(w => w.code === 'variant_unrecognized')).toEqual([]);
+    expect(typed.tasks).toContain(':a:connectedDemoDebugAndroidTest');
+    expect(typed.tasks).toEqual(explicit.tasks);
+  });
+
+  it.each([['--variant', 'demoDebug', '--flavor', 'prod'], ['--flavor', 'prod', '--variant', 'demoDebug']])('rejects a conflicting flavor in either order', (...args) => {
+    expect(parseArgs(args).errors).toEqual([expect.objectContaining({ code: 'invalid_variant_flavor_conflict' })]);
   });
 
   it('--dry-run echoes variant in plan', async () => {

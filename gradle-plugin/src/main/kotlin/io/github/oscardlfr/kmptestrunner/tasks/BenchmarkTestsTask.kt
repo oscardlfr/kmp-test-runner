@@ -17,7 +17,13 @@ abstract class BenchmarkTestsTask : NodeRunnerTask() {
             val runnerPath = tempDir.resolve("lib/runner.js").toString()
             val cmd = buildNodeCommand(runnerPath, "benchmark",
                 "--project-root", effectiveRoot
-            )
+            ).toMutableList()
+            if (extension.flavor.isNotEmpty()) {
+                cmd += listOf("--flavor", extension.flavor)
+            }
+            if (extension.variant.isNotEmpty()) {
+                cmd += listOf("--variant", extension.variant)
+            }
             runNodeRunner(execOperations, "benchmarkTests", cmd, effectiveRoot, extension.sharedProjectName)
         } finally {
             RuntimeExtractor.cleanup(tempDir)

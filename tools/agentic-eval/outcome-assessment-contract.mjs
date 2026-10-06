@@ -49,8 +49,14 @@ export function outcomeAssessmentKeysFor(schema) {
 export const MULTI_MODULE_TASK_FIELD_VALUES = Object.freeze([
   'outcome_kind', 'failing_modules', 'failed_test_classes', 'failed_count',
 ]);
+export const NEXT_MILESTONE_TASK_FIELD_VALUES = Object.freeze({
+  'multi-module-coverage': ['outcome_kind', 'threshold_percent', 'below_threshold_modules', 'no_data_modules', 'module_line_coverage'],
+  'changed-dependents': ['outcome_kind', 'direct_modules', 'dependent_modules', 'selected_modules', 'failing_modules', 'failed_test_classes', 'failed_count'],
+  'compile-failure': ['outcome_kind', 'compile_module', 'compile_task', 'diagnostic_file', 'diagnostic_line', 'diagnostic_message', 'unrun_dependents'],
+});
 
 /** The closed list of mismatch field names a record of `family` may carry. */
 export function taskOutcomeMismatchFieldValuesFor(family) {
-  return family === 'multi-module-tests' ? MULTI_MODULE_TASK_FIELD_VALUES : TASK_OUTCOME_MISMATCH_FIELD_VALUES;
+  return NEXT_MILESTONE_TASK_FIELD_VALUES[family]
+    ?? (family === 'multi-module-tests' ? MULTI_MODULE_TASK_FIELD_VALUES : TASK_OUTCOME_MISMATCH_FIELD_VALUES);
 }

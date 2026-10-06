@@ -29,7 +29,7 @@ import { dirname, join } from 'node:path';
 
 import {
   loadSummary, loadCostEstimate, validatePairing, disjointTokens, medianOf,
-  countPhrase, fmtToolCallsMedian, loadScenarioFacts,
+  countPhrase, fmtToolCallsMedian, loadScenarioFacts, loadCampaignRegistry,
   textItem, wrapWords, escapeXml, renderCompositionRow, runtimeModelLabel, toolOutputMeasured,
   TOKEN_COMPONENT_TYPES, TOKEN_COMPONENT_LABEL, TOKEN_COMPONENT_COLORS,
   RUNTIME_ORDER, ARM_ORDER, GRID_W, PAD, ROW_GAP, COLUMN_W, COLUMN_GAP,
@@ -280,10 +280,46 @@ export function missingSessionsNote(summary) {
 // An evidence section's task and session paragraphs, and the table of both campaigns. Every number comes from the
 // committed summary, the scenario's corpus files or the run directory's name.
 
-/** The scenario paragraph: the module count and the failing-method count come from the scenario's corpus files
- * (loadScenarioFacts), never from a literal. */
+/** The scenario paragraph is based on the scenario family and facts from its corpus files. The legacy
+ * multi-module-tests wording is retained for the published Evidence3 document. */
 export function buildScenarioBlock(scenarioFacts) {
-  return `**Scenario:** in NowInAndroid, a small production-code change breaks tests in several modules. The agent runs the unit tests of every module except those whose Robolectric tests need network access, then reports which modules and test classes fail and how many tests. ${scenarioFacts.moduleCount} modules are in scope, with ${scenarioFacts.failedCount} failing test methods.`;
+  const { family = 'multi-module-tests', moduleCount } = scenarioFacts;
+  if (!Number.isInteger(moduleCount) || moduleCount < 1) throw new Error('scenario publication: moduleCount must be a positive integer');
+  switch (family) {
+    case 'multi-module-tests':
+      if (!Number.isInteger(scenarioFacts.failedCount) || scenarioFacts.failedCount < 0) throw new Error('scenario publication: failedCount must be a nonnegative integer');
+      return `**Scenario:** in NowInAndroid, a small production-code change breaks tests in several modules. The agent runs the unit tests of every module except those whose Robolectric tests need network access, then reports which modules and test classes fail and how many tests. ${moduleCount} modules are in scope, with ${scenarioFacts.failedCount} failing test methods.`;
+    case 'multi-module-coverage':
+      return `**Scenario:** in NowInAndroid, the agent runs unit tests and measures LINE coverage separately for ${moduleCount} in-scope modules. It reports which modules fall below the ${scenarioFacts.thresholdPercent}% threshold and which have no coverage data.`;
+    case 'changed-dependents':
+      return `**Scenario:** in NowInAndroid, a committed production-code change affects a module whose own tests pass. The agent compares against the specified base, includes dependent modules, runs the selected unit tests and reports the selected modules and failing tests. ${moduleCount} modules are in scope.`;
+    case 'compile-failure':
+      return `**Scenario:** in NowInAndroid, a small production-code change breaks compilation. The agent runs the in-scope unit tests, identifies the failing compile task and diagnostic, and reports which dependents could not run. ${moduleCount} modules are in scope.`;
+    default:
+      throw new Error(`scenario publication: unsupported family ${family}`);
+  }
+}
+
+/** Public, aggregate facts only. Do not copy expected module paths or diagnostics into the overview prose. */
+export function loadScenarioPublicationFacts(scenarioId, corpusDir = join(REPO_ROOT, 'tools', 'agentic-eval', 'corpus')) {
+  const scenario = JSON.parse(readFileSync(join(corpusDir, 'scenarios', `${scenarioId}.json`), 'utf8'));
+  const expected = JSON.parse(readFileSync(join(corpusDir, 'expected', `${scenarioId}.json`), 'utf8'));
+  if (scenario.id !== scenarioId || expected.id !== scenarioId) throw new Error(`scenario ${scenarioId}: corpus ids do not match`);
+  if (scenario.family === 'multi-module-tests') return { family: scenario.family, ...loadScenarioFacts(scenarioId, corpusDir) };
+  const tasks = scenario.policy?.allowed_gradle_tasks;
+  const modules = new Set(Array.isArray(tasks) ? tasks.filter((task) => typeof task === 'string' && task.endsWith(':tasks')).map((task) => task.slice(0, -':tasks'.length)) : []);
+  if (modules.size === 0) throw new Error(`scenario ${scenarioId}: allowed_gradle_tasks names no module (no "<module>:tasks" entry)`);
+  const facts = { family: scenario.family, moduleCount: modules.size };
+  if (scenario.family === 'multi-module-coverage') {
+    const threshold = expected.expected?.threshold_percent;
+    if (typeof threshold !== 'number' || !Number.isFinite(threshold) || threshold < 0 || threshold > 100) {
+      throw new Error(`scenario ${scenarioId}: expected.threshold_percent is not a valid percentage`);
+    }
+    facts.thresholdPercent = threshold;
+  } else if (!['changed-dependents', 'compile-failure'].includes(scenario.family)) {
+    throw new Error(`scenario ${scenarioId}: unsupported publication family ${scenario.family}`);
+  }
+  return facts;
 }
 
 function resolvedModel(summary, runtimeId) {
@@ -335,7 +371,7 @@ function countedSessions(summary, runtimeId, arm) {
   return summary.cells.filter((c) => c.runtime_id === runtimeId && c.arm === arm && c.status !== 'missing');
 }
 
-/** The both-campaigns table. `campaigns`: [{ evidenceN, summary, costEstimate }] in the order to show. Tool output is a
+/** The campaigns table. `campaigns`: [{ evidenceN, summary, costEstimate }] in the order to show. Tool output is a
  * dash where the campaign did not measure it for that agent (Codex CLI in Evidence2, erratum E6); where Codex CLI's
  * is measured, a footnote says it is the output of its commands as logged. */
 export function buildCampaignsBlock(campaigns) {
@@ -369,7 +405,8 @@ export function buildCampaignsBlock(campaigns) {
       }
     }
   }
-  const notes = ['Key facts matched: counted sessions whose final answer matched the key facts of that campaign\'s task, out of the counted sessions; the key facts differ between the two tasks.'];
+  const taskCount = NUMBER_WORD[campaigns.length]?.toLowerCase() ?? String(campaigns.length);
+  const notes = [`Key facts matched: counted sessions whose final answer matched the key facts of that campaign's task, out of the counted sessions; the key facts differ between the ${taskCount} tasks.`];
   if (codexMeasured) notes.push('Tool output is the tool results returned to the model for Claude Code and, for Codex CLI, command output as logged; Codex may shorten what the model reads.');
   notes.push(...notMeasured);
   if (notes.length > 0) lines.push('', ...notes.map((n) => `- ${n}`));
@@ -387,7 +424,7 @@ export function docBlockMarkers(blockId) {
 }
 
 /** The generated blocks of one evidence, keyed by block id. `context` (optional) adds the blocks of an evidence whose
- * section generates its task and session paragraphs and the both-campaigns table: { date, scenarioFacts, campaigns }. */
+ * section generates its task and session paragraphs and the campaigns table: { date, scenarioFacts, campaigns }. */
 export function docBlocks(evidenceN, summary, costEstimate, context = null) {
   const blocks = {
     [`e${evidenceN}-cost-components`]: buildCostComponentsBlock(costEstimate),
@@ -428,23 +465,27 @@ export function fillDocBlocks(doc, blocks) {
 
 // The earlier campaigns the both-campaigns table shows next to the current one: evidence number -> the date of its run
 // directory. The evidences whose section generates its task and session paragraphs and that table.
-const EARLIER_CAMPAIGNS = Object.freeze({ 2: '2026-09-30' });
-const DOC_CONTEXT_EVIDENCES = Object.freeze([3]);
-
-function loadCampaign(evidenceN, date) {
-  const dir = join(REPO_ROOT, 'tools', 'runs', `evidence${evidenceN}-agentic-benchmark-${date}`);
-  const summary = loadSummary(join(dir, 'campaign-summary.json'));
-  const costEstimate = loadCostEstimate(join(dir, 'cost-estimate.json'));
-  const pairingErrors = validatePairing(summary, costEstimate);
-  if (pairingErrors.length > 0) throw new Error(`Evidence${evidenceN}: campaign-summary.json / cost-estimate.json mismatch:\n  ${pairingErrors.join('\n  ')}`);
-  return { evidenceN, summary, costEstimate };
-}
-
-/** The extra input of an evidence that generates its paragraphs and the both-campaigns table; null for the others. */
-export function docContext(evidenceN, date, summary, costEstimate) {
-  if (!DOC_CONTEXT_EVIDENCES.includes(Number(evidenceN))) return null;
-  const earlier = Object.entries(EARLIER_CAMPAIGNS).filter(([n]) => Number(n) < Number(evidenceN)).map(([n, d]) => loadCampaign(Number(n), d));
-  return { date, scenarioFacts: loadScenarioFacts(summary.scenario_id), campaigns: [...earlier, { evidenceN: Number(evidenceN), summary, costEstimate }] };
+/** The extra input of an evidence that generates its paragraphs and the campaigns table; null for Evidence2.
+ * The validated overview registry supplies every published campaign in display order. The shared table is
+ * cumulative even when checking an earlier section after later campaigns are published. The current campaign
+ * must already be registered, so a partial publication cannot silently omit it. */
+export function docContext(evidenceN, date, summary, costEstimate, options = {}) {
+  const n = Number(evidenceN);
+  if (n < 3) return null;
+  const registered = options.campaigns ?? loadCampaignRegistry();
+  const currentDir = `evidence${n}-agentic-benchmark-${date}`;
+  const current = registered.filter((campaign) => campaign.evidenceN === n);
+  if (current.length !== 1 || current[0].dir !== currentDir) {
+    throw new Error(`Evidence${n}: expected exactly one registry entry named ${currentDir}`);
+  }
+  const campaigns = registered
+    .map((campaign) => campaign.evidenceN === n
+      ? { evidenceN: n, summary, costEstimate }
+      : { evidenceN: campaign.evidenceN, summary: campaign.summary, costEstimate: campaign.costEstimate });
+  if (campaigns.some((campaign, i) => campaigns.findIndex((other) => other.evidenceN === campaign.evidenceN) !== i)) {
+    throw new Error(`Evidence${n}: duplicate evidence numbers in campaign registry`);
+  }
+  return { date, scenarioFacts: loadScenarioPublicationFacts(summary.scenario_id, options.corpusDir), campaigns };
 }
 
 const lf = (text) => text.replace(/\r\n/g, '\n');

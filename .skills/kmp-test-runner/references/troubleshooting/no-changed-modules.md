@@ -1,6 +1,6 @@
-# `no_changed_modules` — working tree clean (soft code)
+# `no_changed_modules` — no selected module changed (soft code)
 
-The `changed` subcommand ran `git status` (or `git diff --cached` under `--staged-only`) and found nothing to test. This is a **soft code** — does NOT promote `exit_code` via WS-5. Legitimate exit-0 outcome with structured signal.
+The `changed` subcommand found no module paths in the selected Git comparison: working tree by default, staged index with `--staged-only`, or the merge-base diff with `--base <ref>`. This is a **soft code** and does not promote `exit_code` via WS-5.
 
 ## Symptom
 
@@ -31,16 +31,17 @@ Agents should:
 1. **Clean working tree**: the user committed (or stashed) every change before running `kmp-test changed`. Expected outcome.
 2. **`--staged-only` with nothing staged**: `git diff --cached` returns empty even when the working tree has unstaged modifications. Recovery: drop `--staged-only` or stage the changes first.
 3. **Changes only in non-module paths**: the user edited `README.md`, `.github/`, `.editorconfig`, or `gradle/libs.versions.toml`. These don't belong to any module → silently dropped during longest-prefix mapping → empty changed set.
-4. **Detached HEAD or zero commits yet — NOT actually a distinct cause**: `changed` uses `git status --porcelain` (or `git diff --cached --name-only` under `--staged-only`), and neither command depends on `HEAD` pointing to a branch or even existing as a real commit — both work identically to the normal case. If you see `no_changed_modules` while on a detached `HEAD` (e.g. after checking out a tag mid-investigation), it's cause #1 (clean working tree at that point), not the detached `HEAD` itself.
-5. **Wrong branch**: the user expected to be on a feature branch with changes, but they're actually on `main` (or vice versa). `git status` clarifies.
+4. **No module changes against `--base`**: the branch diff may be empty, or only root-level files changed. A ref without a valid merge base produces `git_error` (exit 3), not this soft code.
+5. **Wrong branch**: the user expected changes on a different branch. Inspect `changed.base_ref` and the checked-out branch.
 
 ## Recovery path
 
 For "clean working tree" (most common):
 
 1. Confirm with the user: "no uncommitted changes — did you mean to test something specific?"
-2. Suggest `kmp-test parallel` for a full-suite run.
-3. Suggest `kmp-test parallel --module-filter "<glob>"` if they want to test a specific module range without changes.
+2. If changes were committed on this branch, suggest `kmp-test changed --base <ref>` to compare with its base branch.
+3. Suggest `kmp-test parallel` for a full-suite run.
+4. Suggest `kmp-test parallel --module-filter "<glob>"` if they want to test a specific module range without changes.
 
 For "`--staged-only` with nothing staged":
 

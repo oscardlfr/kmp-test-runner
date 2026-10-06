@@ -31,7 +31,7 @@ import { classifyBashCommand } from './command-classify.mjs';
 import { assertCleanOrThrowObject } from './privacy.mjs';
 import { DISPATCH_STATUS_VALUES as BASH_DISPATCH_STATUS_VALUES } from './dispatch-accounting.mjs';
 import { canonicalJsonSha256 } from './canonical-json.mjs';
-import { MULTI_MODULE_TASK_FIELD_VALUES } from './outcome-assessment-contract.mjs';
+import { MULTI_MODULE_TASK_FIELD_VALUES, NEXT_MILESTONE_TASK_FIELD_VALUES, taskOutcomeMismatchFieldValuesFor } from './outcome-assessment-contract.mjs';
 import {
   COVERAGE_GATE_ERROR_BUCKET_FIELDS,
   validateOutcomeObservabilitySummary,
@@ -701,7 +701,9 @@ function validateNullableOutcomeKind(value, field, errors) {
 }
 
 function validateNullableDeclaredOutcomeKind(value, field, errors, family) {
-  const allowed = family === MULTI_MODULE_FAMILY ? MULTI_MODULE_DECLARED_OUTCOME_KIND_VALUES : TERMINAL_OUTCOME_KIND_VALUES;
+  const allowed = NEXT_MILESTONE_TASK_FIELD_VALUES[family]
+    ? [...TERMINAL_OUTCOME_KIND_VALUES, 'compilation_failed']
+    : family === MULTI_MODULE_FAMILY ? MULTI_MODULE_DECLARED_OUTCOME_KIND_VALUES : TERMINAL_OUTCOME_KIND_VALUES;
   if (value !== null && value !== 'unrecognized' && !allowed.includes(value)) {
     errors.push({ field, message: `must be null, unrecognized, or one of ${allowed.join('|')}` });
   }
@@ -712,7 +714,9 @@ function validateFieldNameArray(value, field, errors, family) {
     errors.push({ field, message: 'must be an array' });
     return;
   }
-  const allowed = family === MULTI_MODULE_FAMILY ? MULTI_MODULE_TASK_FIELD_VALUES : TERMINAL_FINAL_ANSWER_MISMATCH_FIELD_VALUES;
+  const allowed = NEXT_MILESTONE_TASK_FIELD_VALUES[family]
+    ? taskOutcomeMismatchFieldValuesFor(family)
+    : family === MULTI_MODULE_FAMILY ? MULTI_MODULE_TASK_FIELD_VALUES : TERMINAL_FINAL_ANSWER_MISMATCH_FIELD_VALUES;
   for (const [i, item] of value.entries()) {
     if (!allowed.includes(item)) {
       errors.push({ field: `${field}[${i}]`, message: `must be one of ${allowed.join('|')}` });

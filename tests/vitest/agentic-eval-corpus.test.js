@@ -81,14 +81,17 @@ describe('corpus/scenarios/', () => {
   // failing (6 exist today) to passing once Stage B4 lands, exactly like every other RED case here.
   // Evidence3 WO-09 adds multi-module-test-failures.json (the multi-module-tests family's first
   // scenario), so the corpus is now 8 files. This is an intended specification change.
-  it('contains exactly the 8 expected scenario files (corpus complete, Evidence3 adds multi-module-test-failures)', () => {
+  it('contains exactly the 11 expected scenario files, including the three milestone families', () => {
     expect(scenarioFiles.sort()).toEqual([
+      'changed-dependents-network-topic.json',
       'changed-module-verification.json',
+      'compile-failure-data-repository.json',
       'coverage-threshold-failure-v2.json',
       'coverage-threshold-failure.json',
       'deterministic-unit-test-failure.json',
       'kampkit-android-host-test-discovery.json',
       'kampkit-no-applicable-tests.json',
+      'multi-module-line-coverage.json',
       'multi-module-test-failures.json',
       'nowinandroid-core-common.json',
     ]);
@@ -100,14 +103,14 @@ describe('corpus/scenarios/', () => {
   // honestly held-out. 3/3 was the corpus's original, now-historical balance -- see BACKLOG.md.
   // v2 (Stage B4) adds a 5th train-tagged scenario. Evidence3 WO-09 adds a 3rd held-out one
   // (multi-module-test-failures, tagged held-out in its own scenario file).
-  it('tags partition exactly 5 train / 3 held-out across the completed corpus (Stage B4 adds v2, tagged train; Evidence3 adds multi-module-test-failures, tagged held-out)', () => {
+  it('tags partition exactly 5 train / 6 held-out across the corpus', () => {
     const tagCounts = { train: 0, 'held-out': 0 };
     for (const file of scenarioFiles) {
       const { scenario, parseError } = loadScenarioFile(SCENARIOS_DIR, file);
       if (parseError) throw new Error(`${file}: ${parseError}`);
       for (const tag of scenario.tags ?? []) tagCounts[tag] = (tagCounts[tag] ?? 0) + 1;
     }
-    expect(tagCounts).toEqual({ train: 5, 'held-out': 3 });
+    expect(tagCounts).toEqual({ train: 5, 'held-out': 6 });
   });
 
   // Reuses cli.mjs's own loadScenarioFile (never throws on malformed JSON) rather than a

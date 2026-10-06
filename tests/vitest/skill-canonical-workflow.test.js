@@ -242,9 +242,9 @@ describe('changed workflow contract parity (doc/help alignment with verified run
     expect(cells[2]).toBe('`auto`');
   });
 
-  it('changed.md rename handling: only the destination module survives, source is discarded -- not both', () => {
-    expect(changedDoc).not.toMatch(/both.{0,40}(enter the changed set|feed the module-mapping step)/i);
-    expect(changedDoc).toMatch(/only the destination (path|module)/i);
+  it('changed.md distinguishes local rename handling from base-diff handling', () => {
+    expect(changedDoc).toMatch(/without `--base`[^\n]*rename's destination path/i);
+    expect(changedDoc).toMatch(/with `--base <ref>`[^\n]*--no-renames[^\n]*both source and destination paths/i);
   });
 
   it('changed.md root-path handling: files matching no module are discarded outright, not mapped to a "root module"', () => {
@@ -262,9 +262,9 @@ describe('changed workflow contract parity (doc/help alignment with verified run
     expect(changedDoc).not.toMatch(/changed\.modules\[\]/);
   });
 
-  it('changed.md: base_ref is always the literal "HEAD" in both modes, never described as becoming "the index"', () => {
+  it('changed.md: base_ref is HEAD by default and the supplied ref in base mode', () => {
     expect(changedDoc).not.toMatch(/the index for `--staged-only`/);
-    expect(changedDoc).toMatch(/always the literal string `"HEAD"`/);
+    expect(changedDoc).toMatch(/base_ref` \(`"HEAD"` by default, or the supplied ref\)/);
   });
 
   it('changed.md: no real envelope carries a top-level parallel:{} block, in the illustrative example or the prose', () => {
@@ -287,7 +287,7 @@ describe('changed workflow contract parity (doc/help alignment with verified run
 
   it('changed.md: the file-list recovery suggestion is mode-aware, not a blanket git diff --name-only HEAD', () => {
     expect(changedDoc).not.toMatch(/re-run `git diff --name-only HEAD` directly/);
-    expect(changedDoc).toMatch(/git status --porcelain.{0,20}for the default mode/i);
+    expect(changedDoc).toMatch(/working-tree status by default, the cached diff for `--staged-only`/i);
   });
 
   it('unit-tests.md cross-link to changed.md does not name git-diff as the mechanism', () => {
@@ -2017,9 +2017,11 @@ describe('SKILL.md version wording', () => {
 // examples -- a policy-unsafe bracketed placeholder anywhere in SKILL.md (e.g. Guidelines'
 // pre-existing `--module-filter <glob>` / `--test-filter <FQN>#<method>`) undermines this PR's
 // whole purpose just as much as one in the new section would.
-describe('SKILL.md never presents a bracketed flag-value placeholder as literal syntax', () => {
-  it('no "--flag <placeholder>" pattern appears anywhere in the document', () => {
-    expect(skillMd).not.toMatch(/--[\w-]+\s+<[^>]*>/);
+describe('SKILL.md runnable command examples', () => {
+  it('never presents a bracketed flag-value placeholder as a runnable command', () => {
+    const commandBlocks = [...skillMd.matchAll(/```(?:bash|sh|powershell|pwsh)?\s*\n([\s\S]*?)```/g)]
+      .map((match) => match[1]).join('\n');
+    expect(commandBlocks).not.toMatch(/--[\w-]+\s+<[^>]*>/);
   });
 });
 

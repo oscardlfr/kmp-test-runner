@@ -14,10 +14,10 @@ The `kmp-test` CLI emits a JSON envelope to stdout when invoked with `--json`. T
 | `project_root` | string | Absolute path to the gradle project root. |
 | `exit_code` | number | `0` SUCCESS / `1` TEST_FAIL / `2` CONFIG_ERROR / `3` ENV_ERROR. See [`exit-codes.md`](exit-codes.md). |
 | `duration_ms` | number | Wall-clock duration of the run. |
-| `tests` | object | `{ total, passed, failed, skipped, individual_total?, individual_failed?, individual_skipped? }` — see [`tests` shape](#tests-shape). |
+| `tests` | object | `{ total, passed, failed, skipped, individual_total?, individual_failed?, individual_failed_distinct?, individual_skipped? }` — see [`tests` shape](#tests-shape). |
 | `modules` | array | Per-module results — see [`modules[]` shape](#modules-shape). |
 | `skipped` | array | `[{ module, reason }]` — modules the dispatcher legitimately skipped. |
-| `coverage` | object | `{ tool, missed_lines, covered_lines, total_lines, modules_contributing, modules_with_kover_plugin, modules_with_jacoco_plugin, module_buckets }` — see [`coverage` shape](#coverage-shape). `missed_lines` / `covered_lines` / `total_lines` / `modules_contributing` are the aggregate across the modules `--coverage-modules` / `--exclude-coverage` selected for this run, never further narrowed by `--min-missed-lines`. `covered_lines` / `total_lines` are `null` whenever `modules_contributing` is `0` (same null-semantics as `missed_lines`). |
+| `coverage` | object | `{ tool, missed_lines, covered_lines, total_lines, modules_contributing, modules_with_kover_plugin, modules_with_jacoco_plugin, module_buckets, module_results, data_provenance }` — see [`coverage` shape](#coverage-shape). Aggregate counts follow the selected modules, never the `--min-missed-lines` report-detail filter. Counts are `null` when `modules_contributing` is `0`. |
 | `errors` | array | `[{ message, code?, ...extra }]` — see [error-codes table](#errors-discriminated-codes). |
 | `warnings` | array | Soft signals — never affect `exit_code`. |
 | `isolated` | object | `{ enabled, cache_dir, kept, locked }` — present when `--isolated` was passed (omitted by `coverage` orchestrator, which never dispatches tests — the only gradle process it can trigger is an unrelated, cached module-discovery probe, not a concurrent test run `--isolated` isolates). |
@@ -42,12 +42,12 @@ Plus the orthogonal `dry_run: true` flag (with a `plan{}` block) on any subcomma
 ## `tests` shape
 
 ```json
-{ "total": 42, "passed": 40, "failed": 1, "skipped": 0, "individual_total": 58, "individual_failed": 3, "individual_skipped": 2 }
+{ "total": 42, "passed": 40, "failed": 1, "skipped": 0, "individual_total": 58, "individual_failed": 3, "individual_failed_distinct": 2, "individual_skipped": 2 }
 ```
 
 - `total` / `passed` / `failed` / `skipped` — module-level counts (count of dispatched gradle tasks for `parallel`).
-- `individual_total` / `individual_failed` / `individual_skipped` — testcase-level counts derived from the same JUnit XML files: every testcase, those with a `<failure>` or `<error>` child, those with a `<skipped>` child, whatever the task's status. Populated by `parallel` (and `changed`, which copies it) only; omitted for other subcommands and for dry-run and error envelopes.
-- Under the umbrella `test` task of a flavored module (no `--flavor`) every flavor's run counts, so a test present in two flavors counts twice, and `modules[].test_failures[]` has one entry per failing execution (`individual_failed` equals their number for a failed task). Pass `--flavor <name>` to count one flavor.
+- `individual_total` / `individual_failed` / `individual_skipped` — testcase-level execution counts derived from the same JUnit XML files: every testcase, those with a `<failure>` or `<error>` child, those with a `<skipped>` child, whatever the task's status. `individual_failed_distinct` counts unique `(module, testcase)` failure identities. Populated by `parallel` (and `changed`, which copies it) only; omitted for other subcommands and for dry-run and error envelopes.
+- Under the umbrella `test` task of a flavored module (no `--flavor`) every flavor's run counts, so a test present in two flavors counts twice, and `modules[].test_failures[]` has one entry per failing execution (`individual_failed` equals their number for a failed task). `individual_failed_distinct` counts that testcase once within its module. Pass `--flavor <name>` to count one flavor.
 - `skipped` is module-level and is not incremented by `parallel`; use `individual_skipped` for skipped testcases.
 
 ## `modules[]` shape
@@ -96,7 +96,7 @@ Fields:
 - `cause` — failure/error message body from JUnit XML.
 - `type` — exception class (`null` when the XML element has no `type` attribute).
 
-> Compile-time / setup-time failures (e.g. unresolved imports, missing test dependencies) produce **no** JUnit XML and therefore no `test_failures[]` entries. Detect these via the `module_failed` error with `setup_failed:true` (see error-codes table).
+> Compile-time / setup-time failures (e.g. unresolved imports, missing test dependencies) produce **no** JUnit XML and therefore no `test_failures[]` entries. Detect these via `module_failed` with `setup_failed:true`. Recognized compilation diagnostics appear in the owning module's `errors[].compile_failures[]` (`task`, then `diagnostics[]` with source location and message). `parallel.legs[].compile_failures[]` keeps all recognized compiler failures for that leg, including an upstream compile task outside the selected test modules. Do not treat `setup_failed:true` alone as proof of a compiler error; dependency resolution and other setup faults also have that flag.
 
 ## `errors[]` discriminated codes
 
@@ -109,7 +109,7 @@ Branch on `errors[].code` before reading `message` (the message is human-readabl
 | `missing_shell` | any | 3 | `pwsh`/`powershell` (Windows) or `bash` (Unix) not on `PATH`. | — |
 | `wrapper_no_output` | any | 3 | The wrapper (sh/ps1) process exited non-zero without writing anything to stdout — it never ran far enough to produce a summary. On Windows, this means PowerShell refused to load the ps1 even with the `-ExecutionPolicy Bypass` kmp-test's spawn already passes — typically an execution policy enforced by Group Policy (a MachinePolicy/UserPolicy scope outranks the Process-scope Bypass); also covers a POSIX wrapper that can't start (permission denied, `noexec`, missing `bash`). **`--json` only** — in text mode `stdio:'inherit'` streams the child's output straight to the terminal and it is never captured, so this diagnosis isn't observable there; a text-mode run just returns the raw non-zero exit code. Discriminates from the soft `no_summary` (wrapper ran to completion but produced nothing parseable). | `message` carries a bounded stderr excerpt and, when the stderr contains `about_Execution_Policies` / `UnauthorizedAccess` / `PSSecurityException`, a "PowerShell execution policy" hint |
 | `no_test_modules` | parallel, changed | **2 \| 3** | No modules match the leg's test-type or `--module-filter`. | `caused_by_filter:bool` (`true` → 2, `false` → 3) |
-| `module_failed` | parallel, android | 1 | A gradle task failed. | `setup_failed:true` (key absent when tests ran), `module:string`; on `kmp-test android --capture-on-fail` or `parallel --test-type androidInstrumented --capture-on-fail`: `screenshot_file?:string`, `ui_hierarchy_file?:string`, `capture_error?:string` |
+| `module_failed` | parallel, changed, android | 1 | A Gradle task failed. Recognized compiler diagnostics suppress cascade retry; an independent JUnit failure in the same leg remains a test failure. | `setup_failed:true` (key absent when tests ran), `module:string`, `compile_failures?:[{task:string,diagnostics:[{file:string,line:int,column:int\|null,message:string,language:"kotlin"\|"java"}]}]` **only for the module owning the compiler task**; on instrumented `--capture-on-fail`: `screenshot_file?:string`, `ui_hierarchy_file?:string`, `capture_error?:string` |
 | `spawn_error` | any | **1 \| 3** | A child process errored at the spawn layer (e.g. output exceeded `KMP_GRADLE_MAXBUFFER_MB`, default 64 MB). Orchestrator-level gradle child → exit 1; dispatcher-level wrapper spawn failure → exit 3 (env-error envelope, sibling of `missing_shell`). | orchestrator-level: `errno:string` (Node error code), `module:string` |
 | `instrumented_setup_failed` | android, parallel, benchmark | 3 | adb has no usable device when one was required. On `parallel`, the adb check only runs when the leg set includes `androidInstrumented` (`--test-type androidInstrumented` explicitly, or `all`) — a plain `--test-type common`/etc. never probes adb, `--device`/`--clear-data` included. Within that: `--device <serial>` (not found / bad state), `--clear-data` when ≥1 device is connected but none usable, or the explicit `androidInstrumented` test-type. **Not** for `--clear-data` with zero devices connected (`clear_data_no_device` instead) or `--test-type all` with neither flag (`instrumented_leg_skipped` instead). | — |
 | `device_offline` | android, parallel, benchmark | 3 | A device is present in `adb devices` but its state is `offline` — reconnect USB or restart adb. Same `parallel` prerequisite and branch coverage as `instrumented_setup_failed` above. | `device?:string` (serial, when `--device` was passed) |
@@ -118,13 +118,15 @@ Branch on `errors[].code` before reading `message` (the message is human-readabl
 | `flavor_unused` | parallel (`androidUnit`/`androidInstrumented`/`all`) | 2 | `--flavor <name>` passed but no module on the leg is flavored (static `productFlavors {}` or probe-recovered). | — |
 | `isolated_runtime_race` | parallel | 2 | `--isolated` combined with a test-type that hits a shared runtime resource (iOS sim, ADB without `--device`, `--test-type all`). | — |
 | `coverage_threshold_exceeded` | parallel (`--min-missed-lines`), coverage | 1 | Aggregated (unfiltered) `coverage.missed_lines` exceeds the threshold. `--min-missed-lines` never removes coverage data — it only decides this gate and narrows the *markdown report's* per-class detail section; `coverage.missed_lines` / `modules_contributing` / `module_buckets` always reflect the complete project even when this error fires. | `threshold:int`, `missed_lines:int` |
+| `module_coverage_threshold_exceeded` | parallel, changed, coverage | 1 | At least one scored module has LINE coverage below `--min-line-coverage`. | `threshold:number`, `modules:string[]` |
 | `coverage_data_unavailable` | parallel, changed, coverage | 3 | Requested coverage evidence is unavailable. Explicit `--coverage-tool auto\|kover\|jacoco` requests fail when zero selected modules contribute, even without a numeric budget; mixed real/no-XML inputs retain real totals and expose the missing module in `module_buckets.no_xml`. | `reason:string`; `threshold:int` for a budget, otherwise `required_by:"explicit-coverage-tool"` |
+| `dependency_graph_unavailable` | changed | 3 | `--include-dependents` could not resolve the Gradle project graph. The command fails closed instead of running only the direct modules. | — |
 | `coverage_budget_without_coverage` | parallel, changed, coverage | 2 | A positive `--min-missed-lines` budget was combined with `--coverage-tool none` / `--no-coverage`. | — |
 | `git_error` | changed | 3 | A git command failed — repo unreadable, corrupted, or access denied. **Hard code** — `exit_code` is always 3. Only emitted when git probing fails; `no_changed_modules` is emitted instead when git succeeds but the diff is empty. | `git_command:string` (subcommand invoked), `exit_status:number` (git exit code), `stderr_summary?:string` (first 300 chars of stderr, CR/LF collapsed, omitted when empty) |
 | `gradle_timeout` | parallel, benchmark | 3 | The gradle spawn process was killed by the `--timeout` deadline (SIGTERM on POSIX; ETIMEDOUT on Windows). Never retried — spawn timeouts are infra failures, not flaky tests. | **parallel**: `module:string`, `task:string`, `timeout_ms:number`. **benchmark**: additionally `platform:string`, `log_path:string` |
 | `task_not_found` | any | 3 | Gradle task class missing — typically a plugin not applied to the requested module. | `probe_failed:true` when the gradle-tasks probe never recovered real task-graph data this run (see `gradle_probe_failed` below) — the task name was guessed statically and may simply be wrong, not genuinely missing. Absent (not `false`) on a normal probe |
 | `unsupported_class_version` | any | 3 | JDK toolchain mismatch — gradle daemon ran on an older JVM than the test classes target. | — |
-| `invalid_*` | any | 2 | CLI validation failure (e.g. `invalid_flag_value`, `invalid_regex`). | `flag?`, `value?` |
+| `invalid_*` | any | 2 | CLI validation failure (e.g. `invalid_flag_value`, `invalid_regex`). `invalid_variant_flavor_conflict` means a composite `--variant` selected a different flavor than explicit `--flavor`. | `flag?`, `value?`; flavor conflict adds `flavor`, `variant_flavor` |
 | `unknown_flag` | any | 2 | A `--flag` token was not recognized by any subcommand. Two-layer gate: Layer 1 (cli.js) catches flags unknown to all subcommands before the PS wrapper spawns; Layer 2 (each orchestrator's `default:` case) catches flags valid for other subcommands but not this one. | `flag:string` |
 | `no_project` | any | 3 | No gradle project found at `--project-root`. | — |
 | `release_resolve_failed` | update | 3 | `kmp-test update` could not resolve the latest release tag (HEAD redirect + REST API both failed). | `probe_errors: [{tier, source, message}]` — per-tier diagnostic (cert / proxy / DNS / rate-limit error message) |
@@ -148,6 +150,7 @@ Branch on `errors[].code` before reading `message` (the message is human-readabl
 | Code | Subcommand | Description | Extra fields |
 |------|-----------|-------------|--------------|
 | `no_coverage_data` | coverage, parallel, changed | No XML coverage data collected from any module — either no plugin is applied or no test run has produced reports yet. | — |
+| `coverage_xml_stale` | parallel, changed | XML predates this execution and was excluded from `current_run` totals. | `modules:string[]` |
 | `coverage_aggregation_skipped` | coverage | `--coverage-tool none` (or the `--no-coverage` alias) disabled the aggregation step. | — |
 | `coverage_aggregation_drift` | coverage, parallel | The four `module_buckets` (`with_data` + `no_xml` + `parse_errored` + `skipped_by_user`) didn't sum to `modules_with_kover_plugin.length + modules_with_jacoco_plugin.length`. Defensive guard against silent model drops. | `detected:int`, `accounted:int`, `unaccounted:int` |
 | `coverage_xml_disabled` | coverage, parallel | A jacoco module ran its report but emitted HTML/`.exec` only — no XML (Gradle's default `xml.required=false`). `kmp-test parallel` enables jacoco XML automatically; this fires when `--no-coverage-xml-autofix` was passed (or XML is otherwise absent). The module is also in `module_buckets.no_xml`. | `modules:string[]` |
@@ -156,7 +159,7 @@ Branch on `errors[].code` before reading `message` (the message is human-readabl
 | `coverage_report_write_failed` | coverage, parallel | The coverage markdown report could not be written to disk (full disk, permissions) — the JSON envelope and its `coverage` data are still valid; only the on-disk `.md` file failed. | `message` carries the short fs error code (e.g. `ENOSPC`/`EACCES`) only, never a resolved path |
 | `partial_timeout` | benchmark | At least one benchmark module timed out but at least one other passed. Exit code stays at `0` (graded). Pass `--strict-timeouts` to restore pre-graded hard-fail behavior. | `timed_out:int`, `passed:int` |
 | `flavor_defaulted_umbrella` | parallel, changed (default test type, `androidUnit`/`androidInstrumented`/`all`) | A flavored Android module ran with no `--flavor`, so the leg dispatched the flavor-agnostic umbrella task (`:module:test` / `:module:connectedAndroidTest`, which run every flavor — slower). Emitted once per run, whatever the test type; not emitted when `--flavor` is given or `--variant all` was asked for. Pass `--flavor <name>` to target one. | `candidates:string[]`, `test_type:string` |
-| `variant_unrecognized` | parallel, changed, android, benchmark | `--variant` / `--android-variant` got a value outside `auto|debug|release|all`. Dispatch is unchanged (the value is treated as `auto`); a flavored build variant is passed as `--flavor <flavor> --variant <buildType>`. | `value:string` (as typed), `allowed:string[]` |
+| `variant_unrecognized` | parallel, changed, android, benchmark | `--variant` / `--android-variant` got a value outside `auto|debug|release|all` and the `<flavor>Debug` / `<flavor>Release` forms. Dispatch treats the unknown value as `auto`. | `value:string` (as typed), `allowed:string[]` |
 | `gradle_config_applied` | parallel (envelope payload, not `warnings[]` entry) | Project's `gradle.properties` had `org.gradle.parallel=false` so the CLI dropped its own `--parallel` injection to respect user intent. | `parallel_dropped:bool` (on the top-level `gradle_config_applied:{}` field) |
 | `config_invalid_field` | any (runner-backed) | A `.kmp-test-runner.json` / user-global config field failed validation and was dropped — previously visible only as a stderr `[WARN]` line, invisible to `--json` consumers. | `source: "project_local" \| "user_global"` |
 | `envelope_parse_failed` | parallel, changed, android, benchmark, coverage | The orchestrator's envelope sentinel was present in stdout but its JSON did not parse (truncated/corrupted); results come from the coarser legacy output parser. | `reason: "json_parse_failed"` |
@@ -199,7 +202,12 @@ This lets agents safely read **either** `errors.length > 0` **or** `exit_code !=
     "no_xml": [":feature:auth"],
     "parse_errored": [],
     "skipped_by_user": []
-  }
+  },
+  "module_results": [
+    { "module": "core:network", "status": "with_data", "covered_lines": 88, "missed_lines": 12, "total_lines": 100, "line_coverage_percent": 88, "xml_report_file": "core/network/build/reports/kover/report.xml" },
+    { "module": "feature:auth", "status": "no_xml", "covered_lines": null, "missed_lines": null, "total_lines": null, "line_coverage_percent": null, "xml_report_file": null }
+  ],
+  "data_provenance": "saved_reports"
 }
 ```
 
@@ -209,6 +217,8 @@ This lets agents safely read **either** `errors.length > 0` **or** `exit_code !=
 - `modules_contributing` — count of modules with real aggregated data. Same unfiltered guarantee as `missed_lines`: a `--min-missed-lines` value that no single class individually crosses does **not** zero this out, and does **not** trigger a false `no_coverage_data` warning.
 - `modules_with_kover_plugin` / `modules_with_jacoco_plugin` — per-module surface so agents see which coverage flavor each module declares.
 - `module_buckets` — per-module accounting on a successful `coverage` / `parallel` run. Each module with a detected coverage plugin lands in exactly one bucket: `with_data` (XML found fresh and parsed without error — see below, this does NOT guarantee non-zero coverage), `no_xml` (XML missing on disk — the most common silent-drop case in CI), `parse_errored` (the coverage-XML parser reported a failure — malformed, unreadable, or oversized XML; see the `coverage_parse_failed` / `coverage_xml_oversized` warning codes for the discriminated reason), or `skipped_by_user` (filtered out by `--exclude-coverage` / `--coverage-modules`). The sum of the four buckets should equal `modules_with_kover_plugin.length + modules_with_jacoco_plugin.length`; when it doesn't, a `coverage_aggregation_drift` entry is pushed to `warnings[]` with `{detected, accounted, unaccounted}` counts. Buckets are empty on `--dry-run` and `--coverage-tool none` for shape parity.
+- `module_results[]` — each selected module's LINE result: `module`, `status`, `covered_lines`, `missed_lines`, `total_lines`, `line_coverage_percent` (rounded to one decimal), and project-relative `xml_report_file` or `null`. Status may be `with_data`, `no_xml`, `parse_errored`, `stale_xml`, `skipped_by_user`, `tool_mismatch`, or `no_coverage_plugin`; only positive coverable lines produce a percentage. A `--min-line-coverage` gate fails with `module_coverage_threshold_exceeded` (exit 1) for scores below the requested decimal percentage. Missing required XML, parse failures, zero coverable lines, or ambiguous flavored variants emit `coverage_data_unavailable` (exit 3) rather than silently passing.
+- `data_provenance` — `"current_run"` when `parallel`/`changed` aggregates coverage from that test execution, excluding stale XML; `"saved_reports"` on standalone `coverage` or `parallel --skip-tests`/`--coverage-only`; `null` for dry-run, disabled coverage, or empty shapes. Do not use `saved_reports` to claim fresh test execution.
 - **`with_data` vs. `modules_contributing`** — not interchangeable. `with_data` only means the XML parsed cleanly; a module can sit in `with_data` with zero coverable lines (interface-only module, or a coverage-report task that ran without any test executing — e.g. the unit-test task failed at setup, and Kover/JaCoCo still emit a structurally valid, empty report). That module is excluded from `modules_contributing` and from the aggregate. To check whether ANY real coverage data exists, read `modules_contributing`, never `with_data.length`.
 - Coverage XML parsing is Node-native (`lib/parsers/coverage-xml.js`) — no `python3` (or any interpreter) is required on the host.
 
@@ -221,7 +231,7 @@ Emitted on the `parallel` subcommand. Each leg corresponds to a test-type (e.g. 
 ```json
 {
   "test_type": "androidUnit",
-  "exit_code": 0,
+  "exit_code": 1,
   "execution": {
     "fresh": 0,
     "up_to_date": 0,
@@ -229,16 +239,20 @@ Emitted on the `parallel` subcommand. Each leg corresponds to a test-type (e.g. 
     "no_source": 0,
     "skipped_by_gradle": 0,
     "failed": 0,
-    "no_evidence": 0
+    "no_evidence": 1
   },
   "cascade_detected": false,
-  "retry_fired": false
+  "retry_fired": false,
+  "compile_failures": [
+    { "task": ":core:data:compileKotlin", "diagnostics": [{ "file": "core/data/src/main/kotlin/Example.kt", "line": 47, "column": 12, "message": "Unresolved reference", "language": "kotlin" }] }
+  ]
 }
 ```
 
 - `execution.*` — per-task disposition counts.
-- `cascade_detected` — `true` when `no_evidence > 0` AND `failed === 0` (build aborted before reaching this leg).
-- `retry_fired` — `true` when the orchestrator's per-module retry path executed for this leg.
+- `cascade_detected` — `true` when every requested task has `no_evidence`, the Gradle process failed, and no compiler failure was recognized; this may trigger one per-module retry.
+- `retry_fired` — `true` when the orchestrator's per-module retry path executed for this leg. Recognized compilation failures keep it `false`.
+- `compile_failures` — optional, leg-wide compiler evidence. Each failure names the compiler task and its diagnostic locations. The owning module's `module_failed` error also receives its matching failures; unrelated test-failure errors do not.
 
 ## Special envelopes
 

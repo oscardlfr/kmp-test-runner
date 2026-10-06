@@ -44,6 +44,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, utimesSync, cpSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { isGradleCall, effectiveGradleArgs, isStopCall } from './_spawn-helpers.js';
 
 import {
@@ -70,11 +71,105 @@ import {
 } from '../../lib/orchestrators/parallel-orchestrator.js';
 import { computeCacheKey, CACHE_DIR_NAME } from '../../lib/project-model.js';
 import { TEST_TYPE_VALUES } from '../../lib/parsers/argv-constants.js';
+import { parseCompileFailures, recordLegResults } from '../../lib/orchestrators/parallel/result-rollup.js';
 
 let workDir;
 afterEach(() => {
   if (workDir && existsSync(workDir)) rmSync(workDir, { recursive: true, force: true });
   workDir = null;
+});
+
+describe('compile failure diagnostics', () => {
+  it('attributes compiler diagnostics only to their owner within a mixed-failure leg', () => {
+    const dir = makeProject(['core', 'feature']);
+    const tasks = [':core:jvmTest', ':feature:jvmTest'];
+    const state = { runStartMs: Date.now(), tests: { total: 0, passed: 0, failed: 0,
+      individual_total: 0 }, modules: [], errors: [], warnings: [] };
+    recordLegResults({ taskList: tasks, taskOwners: ['core', 'feature'],
+      results: new Map(tasks.map(task => [task, 'failed'])),
+      execModes: new Map(tasks.map(task => [task, 'failed'])),
+      execSummary: { failed: 2 }, modules: [{ name: 'core' }, { name: 'feature' }],
+      state, projectRoot: dir, log: () => {}, resolutionFailed: false,
+      compileFailures: [{ task: ':core:compileKotlin', diagnostics: [] }] });
+    expect(state.errors.find(error => error.module === 'core').compile_failures)
+      .toEqual([{ task: ':core:compileKotlin', diagnostics: [] }]);
+    expect(state.errors.find(error => error.module === 'feature').compile_failures).toBeUndefined();
+  });
+  it('parses Kotlin and Java diagnostics with exact task, location and message', () => {
+    const root = path.join(tmpdir(), 'compile-fixture');
+    const kotlin = path.join(root, 'core', 'src', 'commonMain', 'kotlin', 'Broken.kt');
+    const output = [
+      '> Task :core:compileKotlinJvm FAILED',
+      `e: ${pathToFileURL(kotlin).href}:7:13 Unresolved reference: missingValue`,
+      '> Task :api:compileJava FAILED',
+      `${path.join(root, 'api', 'src', 'main', 'java', 'Broken.java')}:21: error: cannot find symbol`,
+    ].join('\n');
+    expect(parseCompileFailures(output, '', root)).toEqual([
+      {
+        task: ':core:compileKotlinJvm',
+        diagnostics: [{ file: 'core/src/commonMain/kotlin/Broken.kt', line: 7, column: 13, message: 'Unresolved reference: missingValue', language: 'kotlin' }],
+      },
+      {
+        task: ':api:compileJava',
+        diagnostics: [{ file: 'api/src/main/java/Broken.java', line: 21, column: null, message: 'cannot find symbol', language: 'java' }],
+      },
+    ]);
+  });
+
+  it('ignores failed non-compile tasks and deduplicates diagnostics', () => {
+    const output = '> Task :core:jvmTest FAILED\n'
+      + '> Task :core:compileKotlinJvm FAILED\n'
+      + 'e: core/src/Broken.kt: (4, 2): Type mismatch\n'
+      + 'e: core/src/Broken.kt: (4, 2): Type mismatch\n';
+    expect(parseCompileFailures(output, '', '/project')).toEqual([{
+      task: ':core:compileKotlinJvm',
+      diagnostics: [{ file: 'core/src/Broken.kt', line: 4, column: 2, message: 'Type mismatch', language: 'kotlin' }],
+    }]);
+    expect(parseCompileFailures('> Task :core:jvmTest FAILED', '', '/project')).toEqual([]);
+  });
+
+  it('recognizes a compile task from Gradle failure prose in stderr', () => {
+    expect(parseCompileFailures('', "Execution failed for task ':core:compileKotlinJvm'.\n> Compilation error. See log for more details\n", '/project')).toEqual([
+      { task: ':core:compileKotlinJvm', diagnostics: [] },
+    ]);
+  });
+
+  it('does not label dependency resolution in a compile task as a compiler failure', () => {
+    const output = "> Task :core:compileKotlinJvm FAILED\nExecution failed for task ':core:compileKotlinJvm'.\n"
+      + '> Could not resolve all files for configuration :core:compileClasspath.\n';
+    expect(parseCompileFailures(output, '', '/project')).toEqual([]);
+  });
+
+  it('does not rerun a known compile failure and adds its cause to module_failed', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const source = path.join(dir, 'core', 'src', 'jvmMain', 'kotlin', 'Broken.kt');
+    const calls = [];
+    const spawn = (cmd, args, options) => {
+      calls.push({ cmd, args: [...args], cwd: options?.cwd });
+      if (effectiveGradleArgs({ cmd, args }).includes(':core:jvmTest')) {
+        return {
+          status: 1,
+          stdout: `> Task :core:compileKotlinJvm FAILED\ne: ${pathToFileURL(source).href}:9:4 Unresolved reference: missingValue\nBUILD FAILED in 1s\n`,
+          stderr: '', signal: null, error: null,
+        };
+      }
+      return { status: 0, stdout: 'BUILD SUCCESSFUL\n', stderr: '', signal: null, error: null };
+    };
+    const { envelope, exitCode } = await runParallel({
+      projectRoot: dir, args: ['--test-type', 'common', '--no-coverage'], spawn, log: () => {},
+    });
+    const testDispatches = calls.filter(c => effectiveGradleArgs(c).includes(':core:jvmTest'));
+    expect(testDispatches).toHaveLength(1);
+    expect(exitCode).toBe(1);
+    expect(envelope.parallel.legs[0]).toMatchObject({ cascade_detected: false, retry_fired: false });
+    expect(envelope.errors.find(e => e.code === 'module_failed')).toMatchObject({
+      module: 'core', setup_failed: true,
+      compile_failures: [{
+        task: ':core:compileKotlinJvm',
+        diagnostics: [{ file: 'core/src/jvmMain/kotlin/Broken.kt', line: 9, column: 4, message: 'Unresolved reference: missingValue', language: 'kotlin' }],
+      }],
+    });
+  });
 });
 
 // Build a synthetic project. Each module gets a build.gradle.kts so
@@ -1924,6 +2019,22 @@ describe('runParallel', () => {
     expect(stubCoverage.calls[0].testsRan).toBe(true);
   });
 
+  it('changed delegation restricts colon-substring matches to exact Gradle modules', async () => {
+    const dir = makeProject([
+      { name: 'core:data', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+      { name: 'core:database', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] },
+    ]);
+    const { envelope } = await runParallel({
+      projectRoot: dir,
+      args: ['--module-filter', 'core:data', '--test-type', 'common', '--no-coverage'],
+      exactModuleNames: ['core:data'],
+      spawn: makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' }),
+      log: () => {},
+    });
+    expect(envelope.modules.map(m => m.name)).toEqual(['core:data']);
+    expect(envelope.coverage.modules_with_kover_plugin).toEqual([]);
+  });
+
   // wet-audit-v0.9-part2 BUG-2 — coverage gate breach (errors[].code:
   // 'coverage_threshold_exceeded') propagates from in-process runCoverage
   // through state.errors and promotes the parallel envelope to exit 1.
@@ -1982,10 +2093,11 @@ describe('runParallel', () => {
       expect(envelope.coverage.modules_contributing).toBe(1);
       expect(envelope.coverage.module_buckets).toEqual({
         with_data: ['core-foo'],
-        no_xml: ['app'],
+        no_xml: [],
         parse_errored: [],
         skipped_by_user: [],
       });
+      expect(envelope.coverage.module_results.map(m => m.module)).toEqual(['core-foo']);
       expect(envelope.errors.map((error) => error.code)).toEqual(['coverage_threshold_exceeded']);
       expect(envelope.errors[0]).toMatchObject({ threshold: 15, missed_lines: 23 });
       expect(exitCode).toBe(1);
@@ -2018,6 +2130,43 @@ describe('runParallel', () => {
       expect(envelope.errors.map((error) => error.code)).toEqual(['coverage_threshold_exceeded']);
       expect(envelope.warnings.some((warning) => warning.code === 'flavor_defaulted_umbrella')).toBe(false);
       expect(exitCode).toBe(1);
+    });
+
+    it('gates per-module LINE coverage after a fresh flavor-specific report', async () => {
+      const dir = makeConventionFlavorCoverageContractProject();
+      const spawn = makeCoverageContractSpawn(dir);
+      const { envelope, exitCode } = await runParallel({
+        projectRoot: dir,
+        args: ['--test-type', 'androidUnit', '--module-filter', ':core-foo',
+          '--flavor', 'demo', '--min-line-coverage', '80'],
+        spawn, log: () => {},
+      });
+      expect(coverageContractTaskCalls(spawn)).toEqual([
+        [':core-foo:testDemoDebugUnitTest'],
+        [':core-foo:createDemoDebugUnitTestCoverageReport'],
+      ]);
+      expect(envelope.coverage.module_results[0]).toMatchObject({
+        module: 'core-foo', covered_lines: 77, missed_lines: 23,
+        total_lines: 100, line_coverage_percent: 77,
+      });
+      expect(envelope.errors).toContainEqual(expect.objectContaining({
+        code: 'module_coverage_threshold_exceeded', threshold: 80, modules: ['core-foo'],
+      }));
+      expect(exitCode).toBe(1);
+    });
+
+    it('refuses a per-module percentage when umbrella tests span several flavors', async () => {
+      const dir = makeConventionFlavorCoverageContractProject();
+      const { envelope, exitCode } = await runParallel({
+        projectRoot: dir,
+        args: ['--test-type', 'androidUnit', '--module-filter', ':core-foo',
+          '--min-line-coverage', '80'],
+        spawn: makeCoverageContractSpawn(dir), log: () => {},
+      });
+      expect(envelope.errors).toContainEqual(expect.objectContaining({
+        code: 'coverage_data_unavailable', reason: 'variant-ambiguous',
+      }));
+      expect(exitCode).toBe(3);
     });
 
     it('keeps a prior module failure distinct from the later coverage threshold result', async () => {
@@ -2923,6 +3072,16 @@ describe('runParallel', () => {
     expect(idxParallel).toBeGreaterThanOrEqual(0);
     expect(idxNoParallel).toBeGreaterThan(idxParallel);
     expect(idxFoo).toBeGreaterThan(idxNoParallel);
+  });
+
+  it('uses an explicit Gradle max-workers once instead of duplicating the default', async () => {
+    const dir = makeProject([{ name: 'core', sourceSets: ['commonMain', 'jvmMain', 'jvmTest'] }]);
+    const spawn = makeSpawnStub();
+    await runParallel({ projectRoot: dir,
+      args: ['--test-type', 'common', '--max-workers', '2', '--gradle-args', '--max-workers=4'],
+      spawn, log: () => {}, runCoverageInjection: makeRunCoverageStub() });
+    const args = effectiveGradleArgs(spawn.calls.find(isGradleCall));
+    expect(args.filter(arg => arg.startsWith('--max-workers'))).toEqual(['--max-workers=4']);
   });
 
   // 2026-05-03 wide-smoke regression: when gradle aborts at evaluation phase
@@ -6854,28 +7013,18 @@ describe('runParallel — flavor_defaulted_umbrella under the default test type'
 });
 
 // ===========================================================================
-// --variant: an unrecognized value warns (variant_unrecognized); valid values do not
+// --variant: composite flavor/build type values dispatch the matching tasks
 // ===========================================================================
-// `--variant` takes auto|debug|release|all (case-insensitive). Any other value is
-// still treated as `auto` (dispatch unchanged) but no longer silently: a flavored
-// build variant such as demoDebug is passed as `--flavor demo --variant debug`.
-describe('--variant: variant_unrecognized warning (parallel)', () => {
+describe('--variant: composite flavor/build type (parallel)', () => {
   const ALLOWED = ['auto', 'debug', 'release', 'all'];
   const variantWarnings = (envelope) => envelope.warnings.filter(w => w.code === 'variant_unrecognized');
   const flavoredBuild = 'plugins { id("com.android.application") }\nandroid { productFlavors { create("demo") {}\ncreate("prod") {} } }\n';
 
-  it('parseArgs keeps the lowercased value and records one warning carrying the value as typed', () => {
+  it('parseArgs splits a composite variant without a warning', () => {
     const opts = parseArgs(['--variant', 'demoDebug']);
-    expect(opts.androidVariant).toBe('demodebug');
-    expect(opts.warnings).toEqual([{
-      code: 'variant_unrecognized',
-      message: expect.any(String),
-      value: 'demoDebug',
-      allowed: ALLOWED,
-    }]);
-    expect(opts.warnings[0].message).toContain("--variant 'demoDebug' is not one of [auto, debug, release, all]");
-    expect(opts.warnings[0].message).toContain('treated as auto');
-    expect(opts.warnings[0].message).toContain('--flavor <flavor> --variant <buildType>');
+    expect(opts.androidVariant).toBe('debug');
+    expect(opts.flavor).toBe('demo');
+    expect(opts.warnings ?? []).toEqual([]);
   });
 
   it('valid values in any case, and the --android-variant alias, leave parseArgs without a warnings key', () => {
@@ -6887,11 +7036,19 @@ describe('--variant: variant_unrecognized warning (parallel)', () => {
     expect(Object.keys(parseArgs([]))).not.toContain('warnings');
   });
 
-  it('the --android-variant alias warns too, naming the flag that was typed', () => {
+  it('the --android-variant alias splits a composite release', () => {
     const opts = parseArgs(['--android-variant', 'prodRelease']);
-    expect(opts.warnings).toHaveLength(1);
-    expect(opts.warnings[0].value).toBe('prodRelease');
-    expect(opts.warnings[0].message).toContain("--android-variant 'prodRelease'");
+    expect(opts.androidVariant).toBe('release');
+    expect(opts.flavor).toBe('prod');
+    expect(opts.warnings ?? []).toEqual([]);
+  });
+  it.each([['--variant', 'demoDebug', '--flavor', 'prod'], ['--flavor', 'prod', '--variant', 'demoDebug']])('conflicting explicit flavor fails regardless of flag order', (...args) => {
+    const opts = parseArgs(args);
+    expect(opts.errors).toEqual([expect.objectContaining({ code: 'invalid_variant_flavor_conflict', flavor: 'prod', variant_flavor: 'demo' })]);
+  });
+  it('still warns on a genuinely unknown variant', () => {
+    const opts = parseArgs(['--variant', 'demoStaging']);
+    expect(opts.warnings).toEqual([expect.objectContaining({ code: 'variant_unrecognized', value: 'demoStaging', allowed: ALLOWED })]);
   });
 
   it('a dangling --variant is still the invalid_flag_value error, with no warning', () => {
@@ -6900,19 +7057,18 @@ describe('--variant: variant_unrecognized warning (parallel)', () => {
     expect(Object.keys(opts)).not.toContain('warnings');
   });
 
-  it('runParallel: --variant demoDebug → exactly one variant_unrecognized warning and the dispatch of --variant auto', async () => {
+  it('runParallel: --variant demoDebug dispatches the same task as explicit flavor and build type', async () => {
     const dir = makeProject([{ name: 'app', sourceSets: ['test'], build: flavoredBuild }]);
     const run = async (args) => {
       const spawn = makeSpawnStub({ stdout: 'BUILD SUCCESSFUL in 1s\n' });
       const result = await runParallel({ projectRoot: dir, args, spawn, log: () => {}, runCoverageInjection: makeRunCoverageStub() });
       return { ...result, tasks: spawn.calls.filter(isGradleCall).map(effectiveGradleArgs) };
     };
-    const typed = await run(['--variant', 'demoDebug', '--flavor', 'demo']);
-    const auto = await run(['--variant', 'auto', '--flavor', 'demo']);
-    expect(variantWarnings(typed.envelope)).toEqual([expect.objectContaining({ value: 'demoDebug', allowed: ALLOWED })]);
-    expect(typed.tasks).toEqual(auto.tasks);
-    expect(typed.exitCode).toBe(auto.exitCode);
-    expect(variantWarnings(auto.envelope)).toEqual([]);
+    const typed = await run(['--variant', 'demoDebug']);
+    const explicit = await run(['--flavor', 'demo', '--variant', 'debug']);
+    expect(variantWarnings(typed.envelope)).toEqual([]);
+    expect(typed.tasks).toEqual(explicit.tasks);
+    expect(typed.exitCode).toBe(explicit.exitCode);
   });
 
   it.each(['Release', 'DEBUG', 'all', 'auto'])('runParallel: --variant %s raises no variant_unrecognized warning', async (value) => {
@@ -6980,7 +7136,7 @@ describe('tests.individual_failed / tests.individual_skipped', () => {
     expect(exitCode).toBe(1);
     expect(envelope.tests).toEqual({
       total: 1, passed: 0, failed: 1, skipped: 0,
-      individual_total: 6, individual_failed: 2, individual_skipped: 2,
+      individual_total: 6, individual_failed: 2, individual_failed_distinct: 1, individual_skipped: 2,
     });
     // One entry per failing execution: the failing testcase of each flavor.
     expect(envelope.modules[0].test_failures).toHaveLength(2);
@@ -6988,7 +7144,7 @@ describe('tests.individual_failed / tests.individual_skipped', () => {
 
   it('--flavor demo narrows the run to one flavor: 3, 1 and 1', async () => {
     const { envelope } = await run(['--flavor', 'demo'], { xml: MIXED_FLAVOR_XML, failing: true });
-    expect(envelope.tests).toMatchObject({ individual_total: 3, individual_failed: 1, individual_skipped: 1 });
+    expect(envelope.tests).toMatchObject({ individual_total: 3, individual_failed: 1, individual_failed_distinct: 1, individual_skipped: 1 });
     expect(envelope.modules[0].test_failures).toHaveLength(1);
   });
 
@@ -6997,7 +7153,7 @@ describe('tests.individual_failed / tests.individual_skipped', () => {
     expect(exitCode).toBe(0);
     expect(envelope.tests).toEqual({
       total: 1, passed: 1, failed: 0, skipped: 0,
-      individual_total: 6, individual_failed: 0, individual_skipped: 4,
+      individual_total: 6, individual_failed: 0, individual_failed_distinct: 0, individual_skipped: 4,
     });
   });
 

@@ -853,12 +853,13 @@ function Invoke-E1RunDryRunPassedState($Context) {
     $scenario = Get-Content -LiteralPath $scenarioPath -Raw | ConvertFrom-Json -ErrorAction Stop
     $expectedSourceCommit = [string]$scenario.project_commit
     if ($expectedSourceCommit -notmatch '^[0-9a-f]{40}$') { throw 'dry_run_passed_expected_source_commit_invalid' }
-    # The scenario's family sizes the guest call. The coverage smoke is the 4-minute run this state has always
-    # made (1200 s); a multi-module-tests smoke applies the scenario's patch and runs kmp-test over a dozen
-    # modules inside the guest for up to 3300 s, so its bundle call gets 3600 s. The guest decides what a
-    # scenario id means from the scenario's own files and refuses what it cannot run (smoke_scenario_unsupported).
-    $isMultiModuleScenario = ([string]$scenario.family -ceq 'multi-module-tests')
-    $smokeTimeoutSeconds = $(if ($isMultiModuleScenario) { 3600 } else { 1200 })
+    # These scenario families run broad Gradle scopes inside the guest with an inner 3300 s bound.
+    # Give the new families' outer bundle call 4500 s for seed copy, clone and verification overhead.
+    # The historical multi-module scenario retains 3600 s and legacy coverage retains 1200 s.
+    $family = [string]$scenario.family
+    $isMultiModuleScenario = ($family -ceq 'multi-module-tests')
+    $requiresLongSmoke = $family -cin @('multi-module-tests', 'multi-module-coverage', 'changed-dependents', 'compile-failure')
+    $smokeTimeoutSeconds = $(if ($isMultiModuleScenario) { 3600 } elseif ($requiresLongSmoke) { 4500 } else { 1200 })
     $smokeRoot = Join-Path ([string]$Context.Manifest.private_root) (Join-Path $Context.CampaignId 'provider-free-product-smoke')
     $transportArgs = Get-E1RunRealTransportArguments
     $smoke = Invoke-E1GuestBundle -VMName $Context.VMName -GuestCredentialPath $Context.GuestCredentialPath `
@@ -1072,7 +1073,8 @@ function Invoke-E1RunEvidenceCopiedState($Context) {
     $copyResults = @()
     $rejectedCellKeys = @()
     foreach ($cell in @(Get-E1RunManifestExpectedCells $Context.Manifest)) {
-      $cellKey = "$([string]$cell.runtime_id)-$([int]$cell.round_index)"
+      $cellKey = "$([string]$cell.runtime_id)-$([int]$cell.campaign_cell_index)"
+      $guestCellKey = "$([string]$cell.runtime_id)-$([int]$cell.round_index)"
       $destination = Join-Path $privateEvidenceRoot $cellKey
       $matchingSessions = @($liveSessions | Where-Object { [string]$_.runtime_id -ceq [string]$cell.runtime_id -and [int]$_.round_index -eq [int]$cell.round_index })
       if ($matchingSessions.Count -ne 1) { throw 'evidence_copied_live_session_identity_mismatch' }
@@ -1083,7 +1085,7 @@ function Invoke-E1RunEvidenceCopiedState($Context) {
         if ($resumeAction -ceq 'reuse') {
           $copy = [ordered]@{ files_copied = @('record.json','audit.json') }
         } else {
-          $copy = Copy-E1ArtifactsReadOnly -VMName $Context.VMName -ExpectedVMId $Context.VMId -SpecName 'agentic-eval-session-record' -Arguments @{ PrivateRootRelative = $privateRootRelative; CellKey = $cellKey } -DestinationDir $destination -TrustedRoot $Context.OutputRootsTrustedRoot @transportArguments
+          $copy = Copy-E1ArtifactsReadOnly -VMName $Context.VMName -ExpectedVMId $Context.VMId -SpecName 'agentic-eval-session-record' -Arguments @{ PrivateRootRelative = $privateRootRelative; CellKey = $guestCellKey } -DestinationDir $destination -TrustedRoot $Context.OutputRootsTrustedRoot @transportArguments
         }
         Assert-E1ArtifactCopyResultShape 'agentic-eval-session-record' $copy
         if ((Resolve-E1ArtifactCopyResumeDestination @resumeArguments) -cne 'reuse') { throw 'evidence_copied_record_pair_validation_failed' }
@@ -1102,7 +1104,7 @@ function Invoke-E1RunEvidenceCopiedState($Context) {
           $copy = [ordered]@{ files_copied = @('rejection.json') }
         } else {
           $resumeAction = 'copy'
-          $copy = Copy-E1ArtifactsReadOnly -VMName $Context.VMName -ExpectedVMId $Context.VMId -SpecName 'agentic-eval-rejection-diagnostic' -Arguments @{ PrivateRootRelative = $privateRootRelative; CellKey = $cellKey; RejectionId = $rejectionId } -DestinationDir $destination -TrustedRoot $Context.OutputRootsTrustedRoot @transportArguments
+          $copy = Copy-E1ArtifactsReadOnly -VMName $Context.VMName -ExpectedVMId $Context.VMId -SpecName 'agentic-eval-rejection-diagnostic' -Arguments @{ PrivateRootRelative = $privateRootRelative; CellKey = $guestCellKey; RejectionId = $rejectionId } -DestinationDir $destination -TrustedRoot $Context.OutputRootsTrustedRoot @transportArguments
         }
         Assert-E1ArtifactCopyResultShape 'agentic-eval-rejection-diagnostic' $copy
         $rejectedCellKeys += $cellKey
@@ -1121,6 +1123,7 @@ function Invoke-E1RunEvidenceCopiedState($Context) {
       -ExpectedCells @(Get-E1RunManifestExpectedCells $Context.Manifest) `
       -ScenarioId ([string]$Context.Manifest.scenario_id) `
       -Seed ([int64]$Context.Manifest.seed) `
+      -CampaignId ([string]$Context.Manifest.campaign_id) `
       -ProviderMode ([string]$Context.Manifest.provider_mode) `
       -RejectedCellKeys $rejectedCellKeys
     return New-E1RunStateReceipt -CampaignId $Context.CampaignId -StateName 'EvidenceCopied' -Verdict 'PASS' -ReasonCode $null -Detail ([ordered]@{ network_result = $networkResult; vm_result = $vmResult; private_root = $privateEvidenceRoot; copy_results = $copyResults; eligibility = $eligibility })
@@ -1355,7 +1358,8 @@ function Invoke-E1RunFailureSafeEvidenceCopyAttempt($Context, $VmResult, $Transp
     $copy.attempted = $true
 
     foreach ($cell in $expectedCells) {
-      $cellKey = "$([string]$cell.runtime_id)-$([int]$cell.round_index)"
+      $cellKey = "$([string]$cell.runtime_id)-$([int]$cell.campaign_cell_index)"
+      $guestCellKey = "$([string]$cell.runtime_id)-$([int]$cell.round_index)"
       $destination = Join-Path $destinationRoot $cellKey
       try {
         if ($copy.live_running_available) {
@@ -1366,13 +1370,13 @@ function Invoke-E1RunFailureSafeEvidenceCopyAttempt($Context, $VmResult, $Transp
             $rejectionId = [string]$matchingSessions[0].output_summary.rejection_id
             if ($rejectionId -cnotmatch '^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$') { throw 'failure_safe_evidence_copy_rejection_identity_invalid' }
             $result = Copy-E1ArtifactsReadOnly -VMName $Context.VMName -ExpectedVMId $Context.VMId -SpecName 'agentic-eval-rejection-diagnostic' `
-              -Arguments @{ PrivateRootRelative = $privateRootRelative; CellKey = $cellKey; RejectionId = $rejectionId } -DestinationDir $destination `
+              -Arguments @{ PrivateRootRelative = $privateRootRelative; CellKey = $guestCellKey; RejectionId = $rejectionId } -DestinationDir $destination `
               -TrustedRoot $Context.OutputRootsTrustedRoot -TimeoutMinutes 10 @TransportArguments
             Assert-E1ArtifactCopyResultShape 'agentic-eval-rejection-diagnostic' $result
             $copy.results += [ordered]@{ cell_key = $cellKey; spec_name = 'agentic-eval-rejection-diagnostic'; benchmark_status = $benchmarkStatus; verdict = 'PASS'; files_copied = @($result.files_copied) }
           } elseif ($benchmarkStatus -ceq 'accepted') {
             $result = Copy-E1ArtifactsReadOnly -VMName $Context.VMName -ExpectedVMId $Context.VMId -SpecName 'agentic-eval-session-record' `
-              -Arguments @{ PrivateRootRelative = $privateRootRelative; CellKey = $cellKey } -DestinationDir $destination `
+              -Arguments @{ PrivateRootRelative = $privateRootRelative; CellKey = $guestCellKey } -DestinationDir $destination `
               -TrustedRoot $Context.OutputRootsTrustedRoot -TimeoutMinutes 10 @TransportArguments
             Assert-E1ArtifactCopyResultShape 'agentic-eval-session-record' $result
             $copy.results += [ordered]@{ cell_key = $cellKey; spec_name = 'agentic-eval-session-record'; benchmark_status = $benchmarkStatus; verdict = 'PASS'; files_copied = @($result.files_copied) }
@@ -1381,7 +1385,7 @@ function Invoke-E1RunFailureSafeEvidenceCopyAttempt($Context, $VmResult, $Transp
           }
         } else {
           $result = Copy-E1ArtifactsReadOnly -VMName $Context.VMName -ExpectedVMId $Context.VMId -SpecName 'agentic-eval-session-record' `
-            -Arguments @{ PrivateRootRelative = $privateRootRelative; CellKey = $cellKey } -DestinationDir $destination `
+            -Arguments @{ PrivateRootRelative = $privateRootRelative; CellKey = $guestCellKey } -DestinationDir $destination `
             -TrustedRoot $Context.OutputRootsTrustedRoot -TimeoutMinutes 10 @TransportArguments
           Assert-E1ArtifactCopyResultShape 'agentic-eval-session-record' $result
           $copy.results += [ordered]@{ cell_key = $cellKey; spec_name = 'agentic-eval-session-record'; benchmark_status = $null; verdict = 'PASS'; files_copied = @($result.files_copied) }

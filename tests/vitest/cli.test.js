@@ -54,6 +54,7 @@ import {
   runDoctorChecks,
   parseGradleConfig,
   parseGradleTimeoutMs,
+  resolveScriptOuterTimeoutMs,
   DEFAULT_GRADLE_TIMEOUT_MS,
   extractMigratedEnvelopeDetailed,
 } from '../../lib/cli.js';
@@ -1605,6 +1606,19 @@ describe('parseGradleTimeoutMs (Bug H — gradle watchdog)', () => {
     expect(parseGradleTimeoutMs('not-a-number')).toBe(DEFAULT_GRADLE_TIMEOUT_MS);
     expect(parseGradleTimeoutMs('0')).toBe(DEFAULT_GRADLE_TIMEOUT_MS);
     expect(parseGradleTimeoutMs('-100')).toBe(DEFAULT_GRADLE_TIMEOUT_MS);
+  });
+});
+
+describe('script outer watchdog', () => {
+  it('keeps the historical default and benchmark adaptive default', () => {
+    expect(resolveScriptOuterTimeoutMs('parallel', [], {})).toBe(1_800_000);
+    expect(resolveScriptOuterTimeoutMs('benchmark', ['--config', 'stress'], {})).toBe(5_400_000);
+  });
+
+  it('allows a broad-run outer bound without changing the Gradle task timeout', () => {
+    const env = { KMP_TEST_OUTER_TIMEOUT_MS: '3240000', KMP_GRADLE_TIMEOUT_MS: '600000' };
+    expect(resolveScriptOuterTimeoutMs('changed', [], env)).toBe(3_240_000);
+    expect(parseGradleTimeoutMs(env.KMP_GRADLE_TIMEOUT_MS)).toBe(600_000);
   });
 });
 

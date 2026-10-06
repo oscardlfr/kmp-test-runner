@@ -24,6 +24,7 @@ param(
     [string]$ModuleFilter = "*",
     [switch]$SkipTests,
     [int]$MinMissedLines = 0,
+    [double]$MinLineCoverage = -1,
     [string]$OutputFile = "coverage-full-report.md",
     [string]$JavaHome,
     [int]$MaxWorkers = 0,
@@ -101,6 +102,10 @@ if ($TestType)             { $kmpArgv += @('--test-type', $TestType) }
 if ($ModuleFilter -and $ModuleFilter -ne "*") { $kmpArgv += @('--module-filter', $ModuleFilter) }
 if ($SkipTests)            { $kmpArgv += @('--skip-tests') }
 if ($MinMissedLines -gt 0) { $kmpArgv += @('--min-missed-lines', "$MinMissedLines") }
+if ($MinLineCoverage -ge 0) {
+    $invariantThreshold = $MinLineCoverage.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+    $kmpArgv += @('--min-line-coverage', $invariantThreshold)
+}
 if ($OutputFile -and $OutputFile -ne "coverage-full-report.md") { $kmpArgv += @('--output-file', $OutputFile) }
 if ($JavaHome)             { $kmpArgv += @('--java-home', $JavaHome) }
 if ($MaxWorkers -gt 0)     { $kmpArgv += @('--max-workers', "$MaxWorkers") }

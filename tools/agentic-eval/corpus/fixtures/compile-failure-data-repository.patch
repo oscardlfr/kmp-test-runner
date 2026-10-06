@@ -1,0 +1,13 @@
+diff --git a/core/data/src/main/kotlin/com/google/samples/apps/nowinandroid/core/data/repository/OfflineFirstTopicsRepository.kt b/core/data/src/main/kotlin/com/google/samples/apps/nowinandroid/core/data/repository/OfflineFirstTopicsRepository.kt
+index 5c8cecce..fe6da45f 100644
+--- a/core/data/src/main/kotlin/com/google/samples/apps/nowinandroid/core/data/repository/OfflineFirstTopicsRepository.kt
++++ b/core/data/src/main/kotlin/com/google/samples/apps/nowinandroid/core/data/repository/OfflineFirstTopicsRepository.kt
+@@ -44,7 +44,7 @@ internal class OfflineFirstTopicsRepository @Inject constructor(
+             .map { it.map(TopicEntity::asExternalModel) }
+ 
+     override fun getTopic(id: String): Flow<Topic> =
+-        topicDao.getTopicEntity(id).map { it.asExternalModel() }
++        topicDao.getTopicEntity(id).map { it.asExternalModels() }
+ 
+     override suspend fun syncWith(synchronizer: Synchronizer): Boolean =
+         synchronizer.changeListSync(

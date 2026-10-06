@@ -114,6 +114,14 @@ AfterAll {
     $env:CLAUDE_CONFIG_DIR = $script:PreviousClaudeConfigDirEnv
 }
 
+Describe 'Dual-condition runtime timeout boundary' {
+    It 'sets only the outer kmp-test watchdog for broad campaigns' {
+        $runtime = New-E1DualConditionCanaryRuntimeEnvironment
+        $runtime.KMP_TEST_OUTER_TIMEOUT_MS | Should -BeExactly '3240000'
+        $runtime.ContainsKey('KMP_GRADLE_TIMEOUT_MS') | Should -BeFalse
+    }
+}
+
 Describe 'Invoke-E1DualConditionCanarySession: bounded-process exception handling (2026-09-28 incident, F2)' {
     It '(RED on the pre-fix shape / GREEN after) a cleanup_failed exception after runs_root exists returns a proper FAIL session result, not a thrown exception' {
         $private = Join-Path $script:ScratchRoot ('private-' + [guid]::NewGuid().ToString('N'))
