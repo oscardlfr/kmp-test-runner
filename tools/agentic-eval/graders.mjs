@@ -954,11 +954,11 @@ function canonicalModuleFilterIdentity(moduleFilter) {
   return normalized;
 }
 
-// The EXACT closed key set `state.coverage` carries at the no_applicable_tests early-exit --
-// see isCoherentNoApplicableTestsCoverageBlock's own doc comment for the full real-producer trace.
+// Historical envelopes have four keys; the module-LINE product adds a null
+// provenance on this early exit. Both are closed forms with no report data.
 const NO_APPLICABLE_TESTS_COVERAGE_KEYS = new Set(['tool', 'missed_lines', 'modules_with_kover_plugin', 'modules_with_jacoco_plugin']);
 
-/** True iff `cov` has the EXACT shape `parallel-orchestrator.js`'s own `state.coverage` initializer
+/** True iff `cov` has a closed shape from `parallel-orchestrator.js`'s own `state.coverage` initializer
  * produces at the `modules.length === 0` (no_applicable_tests) early-exit -- traced directly:
  * `state.coverage` is built as `{tool: opts.coverageTool, missed_lines: null,
  * modules_with_kover_plugin: koverModules, modules_with_jacoco_plugin: jacocoModules}` BEFORE the
@@ -972,11 +972,16 @@ const NO_APPLICABLE_TESTS_COVERAGE_KEYS = new Set(['tool', 'missed_lines', 'modu
  * later-aggregation-only keys is therefore evidence of a different code path entirely -- impossible
  * for a genuine no_applicable_tests early-exit. `tool` is checked against the real, closed
  * `COVERAGE_TOOL_VALUES` enum (`lib/parsers/argv-constants.js`) rather than merely "any non-empty
- * string", since `opts.coverageTool` can only ever be one of those four real CLI values. */
+ * string", since `opts.coverageTool` can only ever be one of those four real CLI values.
+ * The newer no-test path adds `data_provenance:null`; earlier envelopes omit it. */
 function isCoherentNoApplicableTestsCoverageBlock(cov) {
   if (cov == null || typeof cov !== 'object' || Array.isArray(cov)) return false;
   const keys = Object.keys(cov);
-  if (keys.length !== NO_APPLICABLE_TESTS_COVERAGE_KEYS.size || keys.some((k) => !NO_APPLICABLE_TESTS_COVERAGE_KEYS.has(k))) return false;
+  if (keys.length !== NO_APPLICABLE_TESTS_COVERAGE_KEYS.size
+    && keys.length !== NO_APPLICABLE_TESTS_COVERAGE_KEYS.size + 1) return false;
+  if (keys.some((k) => !NO_APPLICABLE_TESTS_COVERAGE_KEYS.has(k) && k !== 'data_provenance')) return false;
+  if ([...NO_APPLICABLE_TESTS_COVERAGE_KEYS].some((k) => !Object.hasOwn(cov, k))) return false;
+  if (Object.hasOwn(cov, 'data_provenance') && cov.data_provenance !== null) return false;
   if (!COVERAGE_TOOL_VALUES.includes(cov.tool)) return false;
   if (cov.missed_lines !== null) return false;
   if (!Array.isArray(cov.modules_with_kover_plugin) || cov.modules_with_kover_plugin.length !== 0) return false;
