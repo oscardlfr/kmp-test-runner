@@ -7054,7 +7054,7 @@ describe('tests.individual_failed / tests.individual_skipped', () => {
     expect(exitCode).toBe(1);
     expect(envelope.tests).toEqual({
       total: 1, passed: 0, failed: 1, skipped: 0,
-      individual_total: 6, individual_failed: 2, individual_skipped: 2,
+      individual_total: 6, individual_failed: 2, individual_failed_distinct: 1, individual_skipped: 2,
     });
     // One entry per failing execution: the failing testcase of each flavor.
     expect(envelope.modules[0].test_failures).toHaveLength(2);
@@ -7062,7 +7062,7 @@ describe('tests.individual_failed / tests.individual_skipped', () => {
 
   it('--flavor demo narrows the run to one flavor: 3, 1 and 1', async () => {
     const { envelope } = await run(['--flavor', 'demo'], { xml: MIXED_FLAVOR_XML, failing: true });
-    expect(envelope.tests).toMatchObject({ individual_total: 3, individual_failed: 1, individual_skipped: 1 });
+    expect(envelope.tests).toMatchObject({ individual_total: 3, individual_failed: 1, individual_failed_distinct: 1, individual_skipped: 1 });
     expect(envelope.modules[0].test_failures).toHaveLength(1);
   });
 
@@ -7071,7 +7071,7 @@ describe('tests.individual_failed / tests.individual_skipped', () => {
     expect(exitCode).toBe(0);
     expect(envelope.tests).toEqual({
       total: 1, passed: 1, failed: 0, skipped: 0,
-      individual_total: 6, individual_failed: 0, individual_skipped: 4,
+      individual_total: 6, individual_failed: 0, individual_failed_distinct: 0, individual_skipped: 4,
     });
   });
 

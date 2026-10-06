@@ -118,7 +118,7 @@ Every subcommand emits the same canonical envelope on `--json`. Subcommand-speci
 ### `tests`: module-level and testcase-level counts
 
 `total`, `passed`, `failed` and `skipped` are module-level: one unit per dispatched Gradle task (for `parallel`,
-`skipped` is not incremented). `individual_total`, `individual_failed` and `individual_skipped` are the
+`skipped` is not incremented). `individual_total`, `individual_failed`, `individual_failed_distinct` and `individual_skipped` are the
 testcase-level view of the same run, and only `parallel` (and `changed`, which copies its delegate) carries them:
 
 - They are counted from the same JUnit XML files, with the same freshness and size guards, whatever the task's status:
@@ -131,8 +131,9 @@ testcase-level view of the same run, and only `parallel` (and `changed`, which c
 - Under the umbrella `test` task of a flavored module (no `--flavor`, see `flavor_defaulted_umbrella`) every flavor's
   run counts, so a test that exists in two flavors is counted twice. `modules[].test_failures[]` lists one entry per
   failing execution in the same way, and `individual_failed` equals the number of those entries for a failed task.
+  `individual_failed_distinct` counts unique `(module, testcase)` identities, so those two executions count once.
   Pass `--flavor <name>` to count one flavor.
-- Envelopes built without JUnit XML (`--dry-run`, error envelopes, `changed --show-modules-only`) omit the three keys
+- Envelopes built without JUnit XML (`--dry-run`, error envelopes, `changed --show-modules-only`) omit these four keys
   rather than report zeros: a consumer treats an absent key as unknown, like the coverage keys below. A real run that
   found no XML reports zeros.
 - `tests.skipped` keeps its meaning and is not a testcase count.
