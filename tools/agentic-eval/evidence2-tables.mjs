@@ -133,6 +133,21 @@ const FAMILY_FIELD_COLUMNS = Object.freeze({
     Object.freeze(['failed_test_classes', 'failing classes']),
     Object.freeze(['failed_count', 'count']),
   ]),
+  'multi-module-coverage': Object.freeze([
+    Object.freeze(['below_threshold_modules', 'below threshold']),
+    Object.freeze(['no_data_modules', 'no data']),
+    Object.freeze(['module_line_coverage', 'LINE coverage']),
+  ]),
+  'changed-dependents': Object.freeze([
+    Object.freeze(['direct_modules', 'direct']),
+    Object.freeze(['dependent_modules', 'dependents']),
+    Object.freeze(['failing_modules', 'failures']),
+  ]),
+  'compile-failure': Object.freeze([
+    Object.freeze(['compile_module', 'compile module']),
+    Object.freeze(['compile_task', 'compile task']),
+    Object.freeze(['unrun_dependents', 'unrun dependents']),
+  ]),
 });
 
 function fmtFieldStatus(status) {

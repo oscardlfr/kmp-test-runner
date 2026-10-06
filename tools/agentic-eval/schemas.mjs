@@ -76,7 +76,10 @@ export const CURRENT_AGGREGATE_SCHEMA = 4;
 
 export const RUN_KIND_VALUES = ['calibration', 'corpus-probe', 'scenario', 'smoke'];
 export const CONDITION_VALUES = ['no-skill', 'current-skill', 'candidate-skill'];
-export const FAMILY_VALUES = ['test-only', 'coverage', 'trigger-only', 'multi-module-tests'];
+export const FAMILY_VALUES = [
+  'test-only', 'coverage', 'trigger-only', 'multi-module-tests',
+  'multi-module-coverage', 'changed-dependents', 'compile-failure',
+];
 export const CACHE_STATE_VALUES = ['cold', 'warm', 'mixed', 'unknown'];
 export const PLATFORM_VALUES = ['windows', 'macos', 'linux', 'not-recorded'];
 export const TERMINATION_REASON_VALUES = [null, 'timeout', 'error', 'unsupported-platform-profile'];
@@ -1472,8 +1475,9 @@ const FIXTURE_SETUP_KEYS = ['operation', 'relative_path', 'expected_blob_oid'];
 // the corpus's fixtures/ directory (materialize.mjs's applyFixtureSetup resolves it), named here by
 // bare file name only; `expected_paths` lists exactly the tracked files the patch must modify.
 const APPLY_PATCH_KEYS = ['operation', 'patch_file', 'expected_paths'];
+const COMMIT_PATCH_KEYS = [...APPLY_PATCH_KEYS, 'expected_parent'];
 const APPLY_PATCH_FILE_RE = /^[a-z0-9-]+\.patch$/;
-const FIXTURE_SETUP_OPERATION_VALUES = ['append_comment', 'apply_patch'];
+const FIXTURE_SETUP_OPERATION_VALUES = ['append_comment', 'apply_patch', 'commit_patch'];
 
 /** Closed, defense-in-depth safety check for `fixture_setup.relative_path` -- rejects absolute
  * paths (POSIX leading `/` or a Windows drive-letter prefix), any backslash, and any `.`/`..`
@@ -1499,8 +1503,8 @@ function validateFixtureSetup(fixtureSetup, errors) {
     errors.push({ field: 'fixture_setup', message: 'must be an object' });
     return;
   }
-  if (fixtureSetup.operation === 'apply_patch') {
-    validateApplyPatchFixtureSetup(fixtureSetup, errors);
+  if (fixtureSetup.operation === 'apply_patch' || fixtureSetup.operation === 'commit_patch') {
+    validateApplyPatchFixtureSetup(fixtureSetup, errors, fixtureSetup.operation === 'commit_patch');
     return;
   }
   rejectUnrecognizedKeys(fixtureSetup, FIXTURE_SETUP_KEYS, 'fixture_setup', errors);
@@ -1518,8 +1522,11 @@ function validateFixtureSetup(fixtureSetup, errors) {
 /** Validates the `apply_patch` shape of `fixture_setup`: a bare patch file name and the non-empty,
  * duplicate-free list of repo-relative paths the patch is expected to modify. One error per field
  * at most, so a single broken rule reads as a single finding. */
-function validateApplyPatchFixtureSetup(fixtureSetup, errors) {
-  rejectUnrecognizedKeys(fixtureSetup, APPLY_PATCH_KEYS, 'fixture_setup', errors);
+function validateApplyPatchFixtureSetup(fixtureSetup, errors, committed = false) {
+  rejectUnrecognizedKeys(fixtureSetup, committed ? COMMIT_PATCH_KEYS : APPLY_PATCH_KEYS, 'fixture_setup', errors);
+  if (committed && (typeof fixtureSetup.expected_parent !== 'string' || !/^[0-9a-f]{40}$/.test(fixtureSetup.expected_parent))) {
+    errors.push({ field: 'fixture_setup.expected_parent', message: 'must be the pinned 40-character base commit SHA' });
+  }
   if (typeof fixtureSetup.patch_file !== 'string' || !APPLY_PATCH_FILE_RE.test(fixtureSetup.patch_file)) {
     errors.push({ field: 'fixture_setup.patch_file', message: `must match ${APPLY_PATCH_FILE_RE} -- a bare lowercase file name under the corpus fixtures directory` });
   }
@@ -1568,8 +1575,20 @@ function validateFixtureSetupCoupling(scenario, errors) {
   // apply_patch has no expected.changed counterpart: its only coupling is to the family that owns it.
   const fixture = scenario.fixture_setup;
   if (fixture != null && typeof fixture === 'object' && !Array.isArray(fixture) && fixture.operation === 'apply_patch') {
-    if (scenario.family !== 'multi-module-tests') {
-      errors.push({ field: 'fixture_setup.operation', message: 'apply_patch is only allowed for family multi-module-tests' });
+    if (scenario.family !== 'multi-module-tests' && scenario.family !== 'compile-failure') {
+      errors.push({ field: 'fixture_setup.operation', message: 'apply_patch is only allowed for multi-module-tests or compile-failure' });
+    }
+    return;
+  }
+  if (fixture != null && typeof fixture === 'object' && !Array.isArray(fixture) && fixture.operation === 'commit_patch') {
+    if (scenario.family !== 'changed-dependents') {
+      errors.push({ field: 'fixture_setup.operation', message: 'commit_patch is only allowed for changed-dependents' });
+    }
+    if (fixture.expected_parent !== scenario.project_commit) {
+      errors.push({ field: 'fixture_setup.expected_parent', message: 'must equal scenario.project_commit' });
+    }
+    if (!scenario.policy?.allowed_kmptest_subcommands?.includes('changed')) {
+      errors.push({ field: 'policy.allowed_kmptest_subcommands', message: 'must include changed for a committed changed-dependents fixture' });
     }
     return;
   }
@@ -1980,6 +1999,94 @@ const MULTI_MODULE_OUTCOME_KIND_VALUES = ['tests_failed', 'tests_passed'];
 const MULTI_MODULE_FAILING_MODULE_RE = /^(:[A-Za-z0-9_-]+)+$/;
 const JAVA_IDENTIFIER_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 const SMOKE_KEYS = ['kmp_test_args', 'warm_tasks'];
+const NEXT_COVERAGE_KEYS = ['outcome_kind', 'threshold_percent', 'below_threshold_modules', 'no_data_modules', 'module_line_coverage'];
+const NEXT_CHANGED_KEYS = ['outcome_kind', 'direct_modules', 'dependent_modules', 'selected_modules', 'failing_modules', 'failed_test_classes', 'failed_count'];
+const NEXT_COMPILE_KEYS = ['outcome_kind', 'compile_module', 'compile_task', 'diagnostic_file', 'diagnostic_line', 'diagnostic_message', 'unrun_dependents'];
+
+function validateModuleSet(values, field, errors, nonEmpty = true) {
+  const valid = Array.isArray(values) && (!nonEmpty || values.length > 0)
+    && values.every(v => typeof v === 'string' && MULTI_MODULE_FAILING_MODULE_RE.test(v))
+    && new Set(values).size === values.length;
+  if (!valid) errors.push({ field, message: `must be a ${nonEmpty ? 'non-empty, ' : ''}duplicate-free array of colon-prefixed Gradle modules` });
+  return valid ? values : null;
+}
+
+function validateNextMilestoneExpected(family, expected, errors) {
+  if (expected == null || typeof expected !== 'object' || Array.isArray(expected)) {
+    errors.push({ field: 'expected', message: 'must be an object' });
+    return;
+  }
+  const keys = family === 'multi-module-coverage' ? NEXT_COVERAGE_KEYS
+    : family === 'changed-dependents' ? NEXT_CHANGED_KEYS : NEXT_COMPILE_KEYS;
+  rejectUnrecognizedKeys(expected, keys, 'expected', errors);
+  const kind = family === 'multi-module-coverage' ? 'coverage_threshold_exceeded'
+    : family === 'changed-dependents' ? 'tests_failed' : 'compilation_failed';
+  if (expected.outcome_kind !== kind) {
+    errors.push({ field: 'expected.outcome_kind', message: `must be ${kind} for family ${family}` });
+  }
+  if (family === 'multi-module-coverage') {
+    if (!Number.isFinite(expected.threshold_percent) || expected.threshold_percent < 0 || expected.threshold_percent > 100) {
+      errors.push({ field: 'expected.threshold_percent', message: 'must be a finite decimal percent in 0..100' });
+    }
+    const below = validateModuleSet(expected.below_threshold_modules, 'expected.below_threshold_modules', errors);
+    const noData = validateModuleSet(expected.no_data_modules, 'expected.no_data_modules', errors, false);
+    const coverage = expected.module_line_coverage;
+    if (coverage == null || typeof coverage !== 'object' || Array.isArray(coverage)
+      || Object.keys(coverage).length === 0
+      || Object.entries(coverage).some(([module, percent]) => !MULTI_MODULE_FAILING_MODULE_RE.test(module)
+        || !Number.isFinite(percent) || percent < 0 || percent > 100)) {
+      errors.push({ field: 'expected.module_line_coverage', message: 'must map Gradle modules to finite LINE percentages in 0..100' });
+    } else if (below && noData && (below.some(m => !(m in coverage))
+      || noData.some(m => m in coverage)
+      || below.some(m => coverage[m] >= expected.threshold_percent))) {
+      errors.push({ field: 'expected.module_line_coverage', message: 'must include every below-threshold module, exclude no-data modules, and agree with threshold_percent' });
+    }
+    return;
+  }
+  if (family === 'changed-dependents') {
+    const direct = validateModuleSet(expected.direct_modules, 'expected.direct_modules', errors);
+    const dependents = validateModuleSet(expected.dependent_modules, 'expected.dependent_modules', errors);
+    const selected = validateModuleSet(expected.selected_modules, 'expected.selected_modules', errors);
+    const failing = validateModuleSet(expected.failing_modules, 'expected.failing_modules', errors);
+    validateExpectedStringSet(expected.failed_test_classes, 'expected.failed_test_classes', JAVA_IDENTIFIER_RE,
+      'a Java simple class name', 'tests_failed', errors);
+    if (!Number.isInteger(expected.failed_count) || expected.failed_count < 1) {
+      errors.push({ field: 'expected.failed_count', message: 'must be an integer >= 1' });
+    }
+    if (direct && dependents && selected && failing
+      && (direct.some(m => dependents.includes(m))
+        || !sameStringSet(selected, [...direct, ...dependents])
+        || failing.some(m => !dependents.includes(m)))) {
+      errors.push({ field: 'expected.selected_modules', message: 'must be the union of disjoint direct/dependent modules, with failures in dependents' });
+    }
+    return;
+  }
+  if (typeof expected.compile_module !== 'string' || !MULTI_MODULE_FAILING_MODULE_RE.test(expected.compile_module)) {
+    errors.push({ field: 'expected.compile_module', message: 'must be a colon-prefixed Gradle module' });
+  }
+  if (typeof expected.compile_task !== 'string' || !GRADLE_TASK_ENTRY_RE.test(expected.compile_task)
+    || !/(?:^|:)compile[A-Z]/.test(expected.compile_task)
+    || !expected.compile_task.startsWith(`${expected.compile_module}:`)) {
+    errors.push({ field: 'expected.compile_task', message: 'must be a compile task owned by compile_module' });
+  }
+  if (!isSafeFixtureRelativePath(expected.diagnostic_file)) {
+    errors.push({ field: 'expected.diagnostic_file', message: 'must be a safe project-relative source file path' });
+  }
+  if (!Number.isInteger(expected.diagnostic_line) || expected.diagnostic_line < 1) {
+    errors.push({ field: 'expected.diagnostic_line', message: 'must be a positive line number' });
+  }
+  if (typeof expected.diagnostic_message !== 'string' || expected.diagnostic_message.trim() === '') {
+    errors.push({ field: 'expected.diagnostic_message', message: 'must be a non-empty compiler message' });
+  }
+  const unrun = validateModuleSet(expected.unrun_dependents, 'expected.unrun_dependents', errors);
+  if (unrun?.includes(expected.compile_module)) {
+    errors.push({ field: 'expected.unrun_dependents', message: 'must exclude the root compile module' });
+  }
+}
+
+function sameStringSet(a, b) {
+  return a.length === b.length && a.every(v => b.includes(v));
+}
 
 /** Validates a string-set field (`failing_modules` or `failed_test_classes`): an array of unique
  * entries that each match `entryRe`, empty exactly when the outcome is `tests_passed`. At most one
@@ -2070,7 +2177,7 @@ export function validateScenario(scenario) {
   if (scenario.schema !== CURRENT_SCENARIO_SCHEMA) errors.push({ field: 'schema', message: `expected ${CURRENT_SCENARIO_SCHEMA}` });
   if (typeof scenario.id !== 'string' || !/^[a-z0-9-]+$/.test(scenario.id)) errors.push({ field: 'id', message: 'must be a kebab-case string' });
   if (!FAMILY_VALUES.includes(scenario.family) || scenario.family === 'trigger-only') {
-    errors.push({ field: 'family', message: 'must be test-only, coverage or multi-module-tests for a scenario' });
+    errors.push({ field: 'family', message: `must be one of ${FAMILY_VALUES.filter(f => f !== 'trigger-only').join('|')} for a scenario` });
   }
   if (typeof scenario.project_alias !== 'string' || scenario.project_alias.length === 0) {
     errors.push({ field: 'project_alias', message: 'must be a non-empty string' });
@@ -2100,9 +2207,12 @@ export function validateScenario(scenario) {
   if (scenario.family === 'multi-module-tests') {
     validateMultiModuleExpected(scenario.expected, errors);
     validateSmoke(scenario.smoke, errors);
+  } else if (['multi-module-coverage', 'changed-dependents', 'compile-failure'].includes(scenario.family)) {
+    validateNextMilestoneExpected(scenario.family, scenario.expected, errors);
+    validateSmoke(scenario.smoke, errors);
   } else {
     validateExpected(scenario.expected, scenario.policy, errors);
-    if ('smoke' in scenario) errors.push({ field: 'smoke', message: 'is only allowed for family multi-module-tests' });
+    if ('smoke' in scenario) errors.push({ field: 'smoke', message: 'is only allowed for campaign scenario families' });
   }
   if (scenario.first_useful_signal_predicate == null || typeof scenario.first_useful_signal_predicate.description !== 'string') {
     errors.push({ field: 'first_useful_signal_predicate', message: 'must have a string "description"' });

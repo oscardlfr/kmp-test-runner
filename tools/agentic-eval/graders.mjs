@@ -31,6 +31,7 @@ import { matchModuleFilter } from '../../lib/orchestrators/module-filter.js';
 import { summarizeCoverageGateErrors } from './coverage-gate-observability.mjs';
 import { LATEST_OUTCOME_ASSESSMENT_SCHEMA, TASK_OUTCOME_MISMATCH_FIELD_VALUES } from './outcome-assessment-contract.mjs';
 import { gradeMultiModuleScenario } from './graders-multi-module.mjs';
+import { gradeNextMilestoneScenario } from './graders-next-milestone.mjs';
 import { GRADING_CHECK_NAMES } from './grading-contract.mjs';
 
 export { GRADING_CHECK_NAMES } from './grading-contract.mjs';
@@ -2679,6 +2680,9 @@ export function gradeScenarioCondition(conditionResult, scenario) {
   // above, which apply to every family. Every other family continues below, untouched.
   if (scenario.family === 'multi-module-tests') {
     return gradeMultiModuleScenario({ scenario, observation, bashResults, checks, junitAttribution });
+  }
+  if (['multi-module-coverage', 'changed-dependents', 'compile-failure'].includes(scenario.family)) {
+    return gradeNextMilestoneScenario({ scenario, observation, bashResults, checks, junitAttribution });
   }
 
   // Evaluate every attempt capable of producing target evidence, from either provider, in

@@ -252,8 +252,10 @@ export function materializeCalibrationProject({ templateDir, existingDir }) {
   return { fixtureDir: dest };
 }
 
-function runGitViaBash(argv, cwd) {
-  const r = spawnSync(resolveBash(), ['-c', buildLongpathsGitCommand(argv)], { cwd, encoding: 'utf8' });
+function runGitViaBash(argv, cwd, envOverrides = null) {
+  const r = spawnSync(resolveBash(), ['-c', buildLongpathsGitCommand(argv)], {
+    cwd, encoding: 'utf8', env: envOverrides ? { ...process.env, ...envOverrides } : process.env,
+  });
   if (r.status !== 0) throw new Error(`git ${argv.join(' ')} failed (exit ${r.status}): ${r.stderr}`);
   return r.stdout;
 }
@@ -579,7 +581,7 @@ function isSafeRelativePosixPath(p) {
   return p.split('/').every((seg) => seg !== '.' && seg !== '..' && /^[A-Za-z0-9._-]+$/.test(seg));
 }
 
-function applyPatchFixtureSetup({ fixtureDir, fixtureSetup, scenariosDir }) {
+function applyPatchFixtureSetup({ fixtureDir, fixtureSetup, scenariosDir, commitPatch = false }) {
   const patchFile = fixtureSetup.patch_file;
   const expectedPaths = fixtureSetup.expected_paths;
   // Fail closed BEFORE any git/file I/O.
@@ -589,10 +591,16 @@ function applyPatchFixtureSetup({ fixtureDir, fixtureSetup, scenariosDir }) {
   if (!Array.isArray(expectedPaths) || expectedPaths.length === 0 || new Set(expectedPaths).size !== expectedPaths.length || !expectedPaths.every(isSafeRelativePosixPath)) {
     throw new Error('fixture_setup.expected_paths must be a non-empty, duplicate-free array of safe repo-relative POSIX paths');
   }
+  if (commitPatch && (typeof fixtureSetup.expected_parent !== 'string' || !/^[0-9a-f]{40}$/.test(fixtureSetup.expected_parent))) {
+    throw new Error('fixture_setup.expected_parent must be a 40-character commit SHA');
+  }
 
   const statusBefore = runGitViaBash(['status', '--porcelain'], fixtureDir);
   if (statusBefore.trim() !== '') {
     throw new Error(`fixture_setup precondition failed: working tree not clean before mutation:\n${statusBefore}`);
+  }
+  if (commitPatch && runGitViaBash(['rev-parse', 'HEAD'], fixtureDir).trim() !== fixtureSetup.expected_parent) {
+    throw new Error('fixture_setup precondition failed: HEAD does not match expected_parent');
   }
 
   const scenariosRoot = scenariosDir ?? (process.env.KMP_EVAL_SCENARIOS_DIR || join(dirname(fileURLToPath(import.meta.url)), 'corpus', 'scenarios'));
@@ -625,6 +633,30 @@ function applyPatchFixtureSetup({ fixtureDir, fixtureSetup, scenariosDir }) {
     err.code = 'fixture_setup_postcondition_failed';
     throw err;
   }
+  if (!commitPatch) return;
+
+  // A fixed identity and clock make the fixture commit byte-identical across
+  // cells. The pinned checkout is the base ref; only the harness-owned patch
+  // becomes the one new commit. Disable host hooks and signing for isolation.
+  runGitViaBash(['add', '--', ...expectedPaths], fixtureDir);
+  runGitViaBash([
+    '-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgsign=false',
+    '-c', 'user.name=KMP Test Runner Fixture', '-c', 'user.email=fixture@example.invalid',
+    'commit', '-m', 'test(fixture): apply committed scenario edit',
+  ], fixtureDir, {
+    GIT_AUTHOR_DATE: '2000-01-01T00:00:00Z',
+    GIT_COMMITTER_DATE: '2000-01-01T00:00:00Z',
+  });
+  const parent = runGitViaBash(['rev-parse', 'HEAD^'], fixtureDir).trim();
+  const committedPaths = runGitViaBash(['diff', '--name-only', fixtureSetup.expected_parent, 'HEAD'], fixtureDir)
+    .trim().split(/\r?\n/).filter(Boolean).sort();
+  const clean = runGitViaBash(['status', '--porcelain'], fixtureDir).trim() === '';
+  if (parent !== fixtureSetup.expected_parent
+    || JSON.stringify(committedPaths) !== JSON.stringify([...expectedPaths].sort()) || !clean) {
+    const err = new Error('fixture_setup postcondition failed: committed edit is not exactly the expected patch on the pinned base');
+    err.code = 'fixture_setup_postcondition_failed';
+    throw err;
+  }
 }
 
 /**
@@ -639,6 +671,10 @@ function applyPatchFixtureSetup({ fixtureDir, fixtureSetup, scenariosDir }) {
  *   defaults to KMP_EVAL_SCENARIOS_DIR, else the committed corpus/scenarios directory.
  */
 export function applyFixtureSetup({ fixtureDir, fixtureSetup, scenariosDir }) {
+  if (fixtureSetup.operation === 'commit_patch') {
+    applyPatchFixtureSetup({ fixtureDir, fixtureSetup, scenariosDir, commitPatch: true });
+    return;
+  }
   if (fixtureSetup.operation === 'apply_patch') {
     applyPatchFixtureSetup({ fixtureDir, fixtureSetup, scenariosDir });
     return;

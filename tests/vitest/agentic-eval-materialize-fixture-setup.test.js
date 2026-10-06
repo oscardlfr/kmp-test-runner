@@ -5,7 +5,7 @@
 // init/add/commit/worktree against throwaway repos -- local, no network, no Claude, matching the
 // existing repo idiom of real subprocess tests over mocking.
 import { describe, it, expect, afterEach } from 'vitest';
-import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, symlinkSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
@@ -177,6 +177,27 @@ describe('applyFixtureSetup -- target validation (defense in depth, independent 
 });
 
 describe('applyFixtureSetup -- correct application', { timeout: 30000 }, () => {
+  it('commit_patch creates the same clean one-commit base/edit pair on every materialization', () => {
+    const { sourceRepoDir, pinnedCommit } = makeSourceRepo();
+    const fixtureDir = makeWorktree(sourceRepoDir, pinnedCommit);
+    const corpusDir = mkdtempSync(path.join(os.tmpdir(), 'aefs-corpus-'));
+    cleanupDirs.push(corpusDir);
+    mkdirSync(path.join(corpusDir, 'fixtures'));
+    mkdirSync(path.join(corpusDir, 'scenarios'));
+    writeFileSync(path.join(sourceRepoDir, ...RELATIVE_PATH.split('/')), `${FILE_CONTENT}// planned edit\n`);
+    writeFileSync(path.join(corpusDir, 'fixtures', 'planned-edit.patch'), gitViaBash(['diff', '--', RELATIVE_PATH], sourceRepoDir));
+    const setup = { operation: 'commit_patch', patch_file: 'planned-edit.patch',
+      expected_paths: [RELATIVE_PATH], expected_parent: pinnedCommit };
+    applyFixtureSetup({ fixtureDir, fixtureSetup: setup, scenariosDir: path.join(corpusDir, 'scenarios') });
+    const first = gitViaBash(['rev-parse', 'HEAD'], fixtureDir).trim();
+    expect(first).not.toBe(pinnedCommit);
+    expect(gitViaBash(['rev-parse', 'HEAD^'], fixtureDir).trim()).toBe(pinnedCommit);
+    expect(gitViaBash(['status', '--porcelain'], fixtureDir).trim()).toBe('');
+    expect(gitViaBash(['diff', '--name-only', 'HEAD^', 'HEAD'], fixtureDir).trim()).toBe(RELATIVE_PATH);
+    materializeScenarioProject({ sourceRepoDir, pinnedCommit, existingWorktreeDir: fixtureDir });
+    applyFixtureSetup({ fixtureDir, fixtureSetup: setup, scenariosDir: path.join(corpusDir, 'scenarios') });
+    expect(gitViaBash(['rev-parse', 'HEAD'], fixtureDir).trim()).toBe(first);
+  });
   it('produces exactly one unstaged modification, appending the exact harness-constant comment', () => {
     const { sourceRepoDir, pinnedCommit, blobOid } = makeSourceRepo();
     const fixtureDir = makeWorktree(sourceRepoDir, pinnedCommit);

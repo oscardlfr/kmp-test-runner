@@ -1493,7 +1493,7 @@ failing test methods). The agent answers with a `KMP_EVAL_RESULT` block carrying
 keys, and the grader compares them with the ground truth directly: a module without its leading
 colon is accepted, set order does not matter, class names are case-sensitive.
 
-What differs from every other family:
+How this family is graded:
 
 - **No evidence binding.** A multi-module run spans many Gradle tasks, so no single kmp-test
   envelope or JUnit result stands for the authoritative evidence. The terminal-evidence checks, the
@@ -1504,14 +1504,34 @@ What differs from every other family:
   any tests never counts.
 - **Field names.** `outcome_assessment.task_outcome_mismatch_fields`, `task_field_correctness` and
   the accepted-run audit's final-answer block use the four names above instead of the eight
-  historical ones, and the campaign summary's key facts are those four fields. Records of every
-  other family are unchanged.
-- **`fixture_setup.operation: "apply_patch"`** (this family only) applies a harness-owned patch from
+  historical ones, and the campaign summary's key facts are those four fields.
+- **`fixture_setup.operation: "apply_patch"`** applies a harness-owned patch from
   the corpus's `fixtures/` directory to the pinned checkout with `git apply`, unstaged, and fails
   closed unless exactly the declared `expected_paths` end up modified.
-- **`smoke`** (a block of the ground-truth file, this family only) carries `kmp_test_args`, the
+- **`smoke`** (a block of the ground-truth file) carries `kmp_test_args`, the
   scoped command of the product arm, and `warm_tasks`, the Gradle tasks an offline seed must warm.
   The fake providers and the VM runbook read it.
+
+### Next milestone scenario families
+
+Three additional families keep the task, ground truth and smoke arguments split across the
+corpus files. Each requires a final `KMP_EVAL_RESULT` block with exactly its `expected` fields.
+When the agent uses `kmp-test`, the grader checks both that answer and the last policy-allowed,
+executed JSON envelope. A control agent using standard Gradle tasks is graded against ground
+truth after a relevant Gradle task runs, as in the existing multi-module family. A plan-only
+or denied command cannot supply evidence.
+
+| Family | Ground truth | Product evidence |
+| --- | --- | --- |
+| `multi-module-coverage` | LINE percentage per module, modules below the threshold, modules with no data | `coverage.module_results` and `module_coverage_threshold_exceeded` |
+| `changed-dependents` | Direct, dependent and selected module sets; dependent test failures | `changed.detected_modules`, `dependent_modules`, `selected_modules` and test-failure details |
+| `compile-failure` | Failed compile task, source diagnostic and dependent modules whose tests must remain unrun | `module_failed.compile_failures`, `setup_failed` for each dependent and zero executed test cases |
+
+`changed-dependents` uses `fixture_setup.operation: "commit_patch"`: the harness checks the
+pinned parent, applies only the declared patch, makes one deterministic commit, and checks a
+clean worktree. The smoke runs against the same committed-edit shape. `compile-failure` uses
+`apply_patch` so a controlled source error is present before test dispatch. Every family has a
+ground-truth `smoke` block for its provider-free product check.
 
 ## Fairness Contract
 

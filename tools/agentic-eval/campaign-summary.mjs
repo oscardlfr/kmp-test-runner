@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 import { validateRun } from './schemas.mjs';
 import { validateAcceptedRunAuditSidecar, crossValidateAcceptedRunAuditAgainstRecord } from './accepted-run-audit.mjs';
 import { analyzeRunRecord, summarizeNumericValues, buildTaskFieldCorrectness } from './analysis.mjs';
-import { MULTI_MODULE_TASK_FIELD_VALUES } from './outcome-assessment-contract.mjs';
+import { MULTI_MODULE_TASK_FIELD_VALUES, NEXT_MILESTONE_TASK_FIELD_VALUES } from './outcome-assessment-contract.mjs';
 
 // Schema 2 (Evidence2): adds provenance.reasoning_effort, a per-runtime {values, mixed} tracker
 // sourced from each accepted cell's own reasoning_effort_requested (schema v9 recording field) --
@@ -69,7 +69,7 @@ function qualifiesForD3NegativeReclassification(runtimeId, rejectionCell) {
 const KEY_FACTS_FIELDS = Object.freeze(['module', 'outcome_kind', 'missed_lines', 'threshold']);
 // The multi-module-tests family answers with its own four fields (PLAN.md D4), so its key facts are those four,
 // each exactly 'matched' by the same strict rule; every other family keeps KEY_FACTS_FIELDS above.
-const KEY_FACTS_FIELDS_BY_FAMILY = Object.freeze({ 'multi-module-tests': MULTI_MODULE_TASK_FIELD_VALUES });
+const KEY_FACTS_FIELDS_BY_FAMILY = Object.freeze({ 'multi-module-tests': MULTI_MODULE_TASK_FIELD_VALUES, ...NEXT_MILESTONE_TASK_FIELD_VALUES });
 
 function isKeyFactsMatch(taskFieldCorrectness, family) {
   const fields = KEY_FACTS_FIELDS_BY_FAMILY[family] ?? KEY_FACTS_FIELDS;
