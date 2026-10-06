@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "id": "compile-failure-data-repository",
+  "expected_outcome": "The one-line OfflineFirstTopicsRepository edit breaks Kotlin compilation in :core:data. The executed 11-module CLI envelope identifies :core:data:compileDemoDebugKotlin at source line 47 with Unresolved reference 'asExternalModels'. Thirty-three independent test methods pass and none fail; five other selected modules cannot run because their setup depends on the failed compilation.",
+  "expected": {
+    "outcome_kind": "compilation_failed",
+    "compile_module": ":core:data",
+    "compile_task": ":core:data:compileDemoDebugKotlin",
+    "diagnostic_file": "core/data/src/main/kotlin/com/google/samples/apps/nowinandroid/core/data/repository/OfflineFirstTopicsRepository.kt",
+    "diagnostic_line": 47,
+    "diagnostic_message": "Unresolved reference 'asExternalModels'.",
+    "unrun_dependents": [
+      ":core:domain",
+      ":feature:bookmarks:impl",
+      ":feature:search:impl",
+      ":feature:settings:impl",
+      ":feature:topic:impl"
+    ]
+  },
+  "smoke": {
+    "kmp_test_args": [
+      "parallel", "--no-coverage", "--max-workers", "4", "--timeout", "900",
+      "--exclude-modules", "app,core:designsystem,feature:foryou:impl,feature:interests:impl,benchmarks,core:analytics,core:data-test,core:database,core:datastore-proto,core:datastore-test,core:model,core:notifications,core:screenshot-testing,core:testing,core:ui,feature:*:api,sync:*,ui-test-hilt-manifest",
+      "--flavor", "demo", "--variant", "debug", "--json"
+    ],
+    "warm_tasks": [
+      ":core:common:test",
+      ":core:data:testDemoDebugUnitTest",
+      ":core:datastore:testDemoDebugUnitTest",
+      ":core:domain:testDemoDebugUnitTest",
+      ":core:navigation:testDemoDebugUnitTest",
+      ":core:network:testDemoDebugUnitTest",
+      ":feature:bookmarks:impl:testDemoDebugUnitTest",
+      ":feature:search:impl:testDemoDebugUnitTest",
+      ":feature:settings:impl:testDemoDebugUnitTest",
+      ":feature:topic:impl:testDemoDebugUnitTest",
+      ":lint:test"
+    ]
+  },
+  "first_useful_signal_predicate": {
+    "description": "First executed evidence assigning the unresolved asExternalModels reference to :core:data:compileDemoDebugKotlin and distinguishing downstream unrun test modules from failed test methods."
+  }
+}

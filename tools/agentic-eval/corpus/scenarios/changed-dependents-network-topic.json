@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "id": "changed-dependents-network-topic",
+  "family": "changed-dependents",
+  "project_alias": "nowinandroid",
+  "project_url": "https://github.com/android/nowinandroid",
+  "project_commit": "7d45eae4f8720a0c77f507712ba2437ff974b6ed",
+  "prompt": "This checkout has one new production-code commit on top of its base. Compare it with the parent commit, identify the directly changed Gradle module and all of its project dependents, and run the affected host unit tests using the demoDebug variant. Exclude :app, :core:designsystem, :feature:foryou:impl and :feature:interests:impl from test execution because their Robolectric tests require network access unavailable here. Report the complete dependency selection, including modules excluded from test execution, and the distinct test failures you actually observe. End your reply with valid JSON between the two exact marker lines below. Use colon-prefixed Gradle paths in all module arrays and simple class names in failed_test_classes.\n\nKMP_EVAL_RESULT\n{\"outcome_kind\":\"tests_failed\",\"direct_modules\":[\"<module>\"],\"dependent_modules\":[\"<module>\"],\"selected_modules\":[\"<module>\"],\"failing_modules\":[\"<module>\"],\"failed_test_classes\":[\"<class>\"],\"failed_count\":<integer>}\nKMP_EVAL_RESULT_END\n\nCount distinct failing test methods, not Gradle tasks. If no test fails, state that plainly before the final block.",
+  "policy": {
+    "allowed_kmptest_subcommands": ["doctor", "describe", "parallel", "changed"],
+    "allowed_gradle_tasks": [
+      ":core:common:test",
+      ":core:data:testDemoDebugUnitTest",
+      ":core:datastore:testDemoDebugUnitTest",
+      ":core:domain:testDemoDebugUnitTest",
+      ":core:navigation:testDemoDebugUnitTest",
+      ":core:network:testDemoDebugUnitTest",
+      ":feature:bookmarks:impl:testDemoDebugUnitTest",
+      ":feature:search:impl:testDemoDebugUnitTest",
+      ":feature:settings:impl:testDemoDebugUnitTest",
+      ":feature:topic:impl:testDemoDebugUnitTest",
+      ":lint:test"
+    ]
+  },
+  "fixture_setup": {
+    "operation": "commit_patch",
+    "patch_file": "changed-dependents-network-topic.patch",
+    "expected_paths": [
+      "core/network/src/main/kotlin/com/google/samples/apps/nowinandroid/core/network/model/NetworkTopic.kt"
+    ],
+    "expected_parent": "7d45eae4f8720a0c77f507712ba2437ff974b6ed"
+  },
+  "tags": ["held-out"]
+}

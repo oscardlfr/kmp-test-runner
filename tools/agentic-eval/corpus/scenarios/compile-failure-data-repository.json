@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "id": "compile-failure-data-repository",
+  "family": "compile-failure",
+  "project_alias": "nowinandroid",
+  "project_url": "https://github.com/android/nowinandroid",
+  "project_commit": "7d45eae4f8720a0c77f507712ba2437ff974b6ed",
+  "prompt": "A one-line production edit may have broken this multi-module Android build. Run demoDebug host unit tests for these 11 modules: :core:common, :core:data, :core:datastore, :core:domain, :core:navigation, :core:network, :feature:bookmarks:impl, :feature:search:impl, :feature:settings:impl, :feature:topic:impl and :lint. Diagnose the root compilation error with its owning Gradle module, task, project-relative source file, line and compiler message. Name which of those 11 modules' tests could not run because compilation failed; do not count them as failing test methods. Other modules may have passing tests. End your reply with valid JSON between the two exact marker lines below. Use colon-prefixed Gradle paths for modules.\n\nKMP_EVAL_RESULT\n{\"outcome_kind\":\"compilation_failed\",\"compile_module\":\"<module>\",\"compile_task\":\"<task>\",\"diagnostic_file\":\"<relative path>\",\"diagnostic_line\":<integer>,\"diagnostic_message\":\"<compiler message>\",\"unrun_dependents\":[\"<module>\"]}\nKMP_EVAL_RESULT_END",
+  "policy": {
+    "allowed_kmptest_subcommands": ["doctor", "describe", "parallel"],
+    "allowed_gradle_tasks": [
+      ":core:common:test",
+      ":core:data:compileDemoDebugKotlin",
+      ":core:data:testDemoDebugUnitTest",
+      ":core:datastore:testDemoDebugUnitTest",
+      ":core:domain:testDemoDebugUnitTest",
+      ":core:navigation:testDemoDebugUnitTest",
+      ":core:network:testDemoDebugUnitTest",
+      ":feature:bookmarks:impl:testDemoDebugUnitTest",
+      ":feature:search:impl:testDemoDebugUnitTest",
+      ":feature:settings:impl:testDemoDebugUnitTest",
+      ":feature:topic:impl:testDemoDebugUnitTest",
+      ":lint:test"
+    ]
+  },
+  "fixture_setup": {
+    "operation": "apply_patch",
+    "patch_file": "compile-failure-data-repository.patch",
+    "expected_paths": [
+      "core/data/src/main/kotlin/com/google/samples/apps/nowinandroid/core/data/repository/OfflineFirstTopicsRepository.kt"
+    ]
+  },
+  "tags": ["held-out"]
+}
