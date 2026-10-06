@@ -853,12 +853,13 @@ function Invoke-E1RunDryRunPassedState($Context) {
     $scenario = Get-Content -LiteralPath $scenarioPath -Raw | ConvertFrom-Json -ErrorAction Stop
     $expectedSourceCommit = [string]$scenario.project_commit
     if ($expectedSourceCommit -notmatch '^[0-9a-f]{40}$') { throw 'dry_run_passed_expected_source_commit_invalid' }
-    # The scenario's family sizes the guest call. The coverage smoke is the 4-minute run this state has always
-    # made (1200 s); a multi-module-tests smoke applies the scenario's patch and runs kmp-test over a dozen
-    # modules inside the guest for up to 3300 s, so its bundle call gets 3600 s. The guest decides what a
-    # scenario id means from the scenario's own files and refuses what it cannot run (smoke_scenario_unsupported).
-    $isMultiModuleScenario = ([string]$scenario.family -ceq 'multi-module-tests')
-    $smokeTimeoutSeconds = $(if ($isMultiModuleScenario) { 3600 } else { 1200 })
+    # These scenario families run broad Gradle scopes inside the guest with an inner 3300 s bound.
+    # Give the outer bundle call 3600 s so it cannot time out before the smoke itself. The legacy
+    # coverage smoke retains its 1200 s outer bound. The guest still decides which scenario ids it supports.
+    $family = [string]$scenario.family
+    $isMultiModuleScenario = ($family -ceq 'multi-module-tests')
+    $requiresLongSmoke = $family -cin @('multi-module-tests', 'multi-module-coverage', 'changed-dependents', 'compile-failure')
+    $smokeTimeoutSeconds = $(if ($requiresLongSmoke) { 3600 } else { 1200 })
     $smokeRoot = Join-Path ([string]$Context.Manifest.private_root) (Join-Path $Context.CampaignId 'provider-free-product-smoke')
     $transportArgs = Get-E1RunRealTransportArguments
     $smoke = Invoke-E1GuestBundle -VMName $Context.VMName -GuestCredentialPath $Context.GuestCredentialPath `
