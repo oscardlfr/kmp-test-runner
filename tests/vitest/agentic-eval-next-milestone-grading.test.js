@@ -3,7 +3,7 @@ import { gradeNextMilestoneScenario } from '../../tools/agentic-eval/graders-nex
 
 const answerText = (expected) => `KMP_EVAL_RESULT\n${JSON.stringify(expected)}\nKMP_EVAL_RESULT_END`;
 const envelope = (extra) => ({ tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', exit_code: 1,
-  tests: { individual_total: 0 }, modules: [], errors: [], ...extra });
+  tests: { individual_total: 0, individual_failed: 0, individual_failed_distinct: 0 }, modules: [], errors: [], ...extra });
 function grade(family, expected, result, command = 'kmp-test parallel --json', answer = expected) {
   const attempt = { id: 't1', command, resultContent: JSON.stringify(result), resultIndex: 2 };
   return gradeNextMilestoneScenario({ scenario: { family, expected, policy: {
@@ -78,7 +78,9 @@ describe('next milestone graders bind final answers to real envelopes', () => {
     { code: 'module_failed', module: 'feature', setup_failed: true }] });
     expect(grade('compile-failure', expected, result).success).toBe(true);
     expect(grade('compile-failure', expected, { ...result, errors: result.errors.slice(0, 1) }).success).toBe(false);
-    expect(grade('compile-failure', expected, { ...result, tests: { individual_total: 1 } }).success).toBe(false);
+    expect(grade('compile-failure', expected, { ...result, tests: { ...result.tests, individual_total: 33 } }).success).toBe(true);
+    expect(grade('compile-failure', expected, { ...result, tests: { ...result.tests, individual_total: 33,
+      individual_failed: 1, individual_failed_distinct: 1 } }).success).toBe(false);
     expect(grade('compile-failure', expected, { ...result, modules: [result.modules[0],
       { ...result.modules[1], tests: { total: 1 } }] }).success).toBe(false);
     expect(grade('compile-failure', expected, { ...result, errors: [{ ...result.errors[0], compile_failures: [] }, result.errors[1]] }).success).toBe(false);

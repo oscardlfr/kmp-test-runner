@@ -86,7 +86,7 @@ describe('umbrella JUnit child cache accounting', () => {
     writeXml(second, -60_000);
     const { state, result } = await run([{ lines: [taskLine(first), taskLine(second, suffix), taskLine('test'), 'BUILD SUCCESSFUL'] }]);
     expect(junitTestCountFor(root, `:${moduleName}:test`)).toBe(4);
-    expect(state.tests).toEqual({ total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 4, individual_failed: 0, individual_skipped: 0 });
+    expect(state.tests).toEqual({ total: 1, passed: 1, failed: 0, skipped: 0, individual_total: 4, individual_failed: 0, individual_failed_distinct: 0, individual_skipped: 0 });
     expect(result.execution).toEqual({ fresh: 1, up_to_date: 0, from_cache: 0, no_source: 0, skipped_by_gradle: 0, failed: 0, no_evidence: 0 });
     expect(withoutUmbrellaWarning(state.warnings)).toEqual([]);
     expect(state.errors).toEqual([]);
@@ -125,7 +125,7 @@ describe('umbrella JUnit child cache accounting', () => {
     writeXml(first, 1000, failedXml);
     writeXml(second, -60_000, failedXml);
     const { state } = await run([{ exit: 1, lines: [taskLine(first, 'FAILED'), taskLine(second, 'FROM-CACHE'), taskLine('test', 'FAILED')] }]);
-    expect(state.tests).toEqual({ total: 1, passed: 0, failed: 1, skipped: 0, individual_total: 4, individual_failed: 2, individual_skipped: 0 });
+    expect(state.tests).toEqual({ total: 1, passed: 0, failed: 1, skipped: 0, individual_total: 4, individual_failed: 2, individual_failed_distinct: 1, individual_skipped: 0 });
     expect(state.modules[0].test_failures).toHaveLength(2);
   });
 

@@ -95,7 +95,11 @@ export function evidenceMatches(scenario, envelope) {
     const result = (envelope.modules ?? []).find((item) => colon(item.name) === module);
     return error && result && (!Array.isArray(result.test_failures) || result.test_failures.length === 0);
   });
-  return envelope.exit_code === 1 && envelope.tests?.individual_total === 0 && failure && dependentsUnrun
+  // Independent modules may complete tests under Gradle --continue. The
+  // contract concerns the compile root and its blocked dependents, not a
+  // global zero-test count for the whole selected project scope.
+  return envelope.exit_code === 1 && envelope.tests?.individual_failed === 0
+    && envelope.tests?.individual_failed_distinct === 0 && failure && dependentsUnrun
     && !(envelope.modules ?? []).some((module) => expected.unrun_dependents.includes(colon(module.name))
       && (module.tests?.total > 0 || module.execution?.fresh > 0));
 }

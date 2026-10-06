@@ -1164,9 +1164,10 @@ describe('the fixed prose of the Evidence3 section is backed by the committed da
       expect(misses).not.toMatch(/BookmarksViewModelTest|CompositeUserNewsResourceRepositoryTest|GetFollowableTopicsUseCaseTest/);
     });
 
-    it('the flag it says takes auto, debug, release or all is documented that way in the README, and the three product findings are in the BACKLOG, shipped, in their original order', () => {
+    it('the historical variant finding remains documented and the current README includes flavored variants', () => {
       const readme = crlfNormalize(readFileSync(join(REPO_ROOT, 'README.md'), 'utf8'));
-      expect(readme).toContain('`--variant` / `--android-variant <auto\\|debug\\|release\\|all>`');
+      expect(readme).toContain('`--variant` / `--android-variant <value>`');
+      expect(readme).toContain('Accepts `auto`, `debug`, `release`, `all`, or a flavored variant such as `demoDebug` or `prodRelease`');
       expect(misses).toContain('`--variant` takes `auto`, `debug`, `release` or `all`');
       const backlog = crlfNormalize(readFileSync(join(REPO_ROOT, 'BACKLOG.md'), 'utf8'));
       const queued = backlog.slice(backlog.indexOf('## QUEUED — post-v0.3.4 ideas (newest first)'));
