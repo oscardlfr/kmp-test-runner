@@ -246,7 +246,8 @@ describe('acquireSharedEvalResources -- fail-closed when the artifact computatio
       }).catch((e) => e);
 
       expect(err).toBeInstanceOf(Error);
-      expect(err.message).toContain('SENTINEL: simulated git object-database failure');
+      expect(err.message).toBe('shared_resource_skill_artifact_failed code=unknown syscall=unknown');
+      expect(err.cause.message).toContain('SENTINEL: simulated git object-database failure');
       expect(err.agenticEvalPhase).toBe('acquiring_shared_resources');
 
       expect(materializeFixtureCalls).toBe(0);
