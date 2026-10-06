@@ -4,7 +4,7 @@ Re-aggregate coverage reports (Kover XML / JaCoCo XML) across every module that 
 
 ## Goal
 
-Walk every module's `build/reports/kover/**.xml` / `build/reports/jacoco/**.xml`, merge missed-line counts, render a `coverage-full-report.md` markdown summary, and emit a JSON envelope with the aggregate plus per-plugin module attribution. Optionally gate on a missed-lines threshold.
+Walk each selected module's `build/reports/kover/**.xml` / `build/reports/jacoco/**.xml`, merge line counts, render a markdown summary, and emit aggregate and per-module LINE evidence. Optionally gate on a total missed-lines budget or a minimum LINE percentage for each module.
 
 ## When to use this workflow
 
@@ -50,7 +50,7 @@ Defaults grounded in `lib/cli.js` SUBCOMMAND_HELP. Full matrix in [`../cli/flags
 | `--coverage-modules <list>` | all modules with a plugin | Comma-separated **exact** module names (no leading `:`, no glob/substring matching) to include in aggregation. Other modules' reports are not read. |
 | `--exclude-coverage <list>` | none | Comma-separated **exact** module names (same matching rules as `--coverage-modules`) to skip from aggregation. Useful for excluding `test-fakes` or `sample` modules by their real names. |
 | `--min-missed-lines <N>` | `0` | Fail (`errors[].code: coverage_threshold_exceeded`, exit 1) if `coverage.missed_lines` — aggregated across the modules selected by `--coverage-modules` / `--exclude-coverage` — exceeds `N`. `0` is "don't gate". The threshold itself never narrows that selected aggregate; it only narrows the markdown report's per-class "Detailed Class Coverage" section. |
-| `--min-line-coverage <pct>` | off | Fail when any scored module is below the decimal LINE percentage (0–100). See `coverage.module_results` and `module_coverage_threshold_exceeded.modules`; use `--flavor` for flavored Android builds. |
+| `--min-line-coverage <pct>` | off | Require each selected coverage module to meet the decimal LINE percentage (0–100). Below-gate modules emit `module_coverage_threshold_exceeded` (exit 1); missing/invalid XML or zero coverable lines emits `coverage_data_unavailable` (exit 3). See `coverage.module_results`; select one `--flavor` and build `--variant` for flavored Android builds. |
 | `--output-file <name>` | `coverage-full-report.md` | Markdown report filename inside `.kmp-test-runner/reports/coverage/`. |
 | `--skip-tests` | implicit | Accepted for parity with `parallel --skip-tests` (the `coverage` subcommand sets this internally). Silently consumed. |
 | `--java-home <path>` | none | Override JDK location for this run. Skips auto-select. |
@@ -60,7 +60,9 @@ Defaults grounded in `lib/cli.js` SUBCOMMAND_HELP. Full matrix in [`../cli/flags
 | `--json` | off | Single JSON envelope on stdout. |
 | `--color <mode>` | `auto` | `always` / `never` / `auto`. Controls `--console=plain` injection. |
 
-`coverage` honors `--module-filter`, `--exclude-modules`, `--flavor` and `--variant` while reading saved reports. It never dispatches Gradle. Use `--coverage-modules` / `--exclude-coverage` (exact module names, no leading `:`) to narrow coverage without changing the test selection.
+`coverage` honors `--module-filter`, `--exclude-modules`, `--flavor` and `--variant` while reading saved reports. It never dispatches Gradle test or report tasks. Use `--coverage-modules` / `--exclude-coverage` (exact module names, no leading `:`) for precise coverage scope.
+
+`coverage.data_provenance` is `"saved_reports"` for this standalone command. For evidence generated in the same test execution, use `parallel` or `changed` and require `"current_run"`; those commands reject XML that predates their run. A saved report can be valid for inspection, but its score is not proof of a fresh test run.
 
 ## Behaviors únicos
 
@@ -94,6 +96,8 @@ Per `lib/orchestrators/coverage-orchestrator.js`:
 
 If the XML doesn't exist (tests never ran, or `--skip-tests` was passed without a prior `parallel` run), the module lands in `module_buckets.no_xml` — `coverage` never dispatches gradle to generate it.
 
+`coverage.module_results[]` lists each module with `module`, `status`, `covered_lines`, `missed_lines`, `total_lines`, `line_coverage_percent`, and `xml_report_file` (project-relative or `null`). A module with no coverage plugin is visible with `status:"no_coverage_plugin"` and no score. Other unscored statuses include `no_xml`, `parse_errored`, `stale_xml`, `skipped_by_user`, and `tool_mismatch`. A clean XML with zero coverable lines has `status:"with_data"` but no LINE percentage. With a percentage gate, missing required data fails closed as `coverage_data_unavailable` rather than passing the module.
+
 ## Edge cases
 
 - **No module contributes coverage data** (no module has a coverage plugin, or no coverage XML is on disk): without `--min-missed-lines` the envelope has `coverage.modules_contributing: 0`, `missed_lines: null`, the warning `no_coverage_data` and exit 0; with `--min-missed-lines N` (N > 0) it is `errors[].code: coverage_data_unavailable` with `reason: "no-contributing-data"` and exit 3. Suggest the user check whether the project actually uses Kover or JaCoCo at all.
@@ -124,7 +128,12 @@ If the XML doesn't exist (tests never ran, or `--skip-tests` was passed without 
     "modules_contributing": 2,
     "modules_with_kover_plugin": ["core:network", "feature:auth"],
     "modules_with_jacoco_plugin": [],
-    "module_buckets": { "with_data": ["core:network", "feature:auth"], "no_xml": [], "parse_errored": [], "skipped_by_user": [] }
+    "module_buckets": { "with_data": ["core:network", "feature:auth"], "no_xml": [], "parse_errored": [], "skipped_by_user": [] },
+    "module_results": [
+      { "module": "core:network", "status": "with_data", "covered_lines": 42, "missed_lines": 8, "total_lines": 50, "line_coverage_percent": 84, "xml_report_file": "core/network/build/reports/kover/report.xml" },
+      { "module": "feature:auth", "status": "with_data", "covered_lines": 42, "missed_lines": 8, "total_lines": 50, "line_coverage_percent": 84, "xml_report_file": "feature/auth/build/reports/kover/report.xml" }
+    ],
+    "data_provenance": "saved_reports"
   },
   "skipped": [],
   "errors": [],
@@ -137,8 +146,9 @@ If the XML doesn't exist (tests never ran, or `--skip-tests` was passed without 
 `exit_code: 0` here means coverage was aggregated successfully. A non-zero exit can come from:
 
 - `1` — `--min-missed-lines` gate fired (`errors[].code: coverage_threshold_exceeded`).
+- `1` — `--min-line-coverage` found a below-gate module (`module_coverage_threshold_exceeded`).
 - `2` — invalid args (`--coverage-tool xyzzy`).
-- `3` — environment problem (no `gradlew`, JDK mismatch, `--min-missed-lines` with no contributing coverage data: `coverage_data_unavailable`).
+- `3` — environment problem (no `gradlew`, JDK mismatch, or unavailable data for a requested coverage gate: `coverage_data_unavailable`).
 
 ## Troubleshooting
 

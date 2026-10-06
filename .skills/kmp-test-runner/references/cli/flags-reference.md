@@ -21,7 +21,7 @@ The `kmp-test` CLI shares a common flag surface across subcommands, with per-sub
 | Flag | Default | parallel | coverage | benchmark | changed | android | Notes |
 |------|---------|:--------:|:--------:|:---------:|:-------:|:-------:|-------|
 | `--test-type <type>` | auto-detect | ✓ | — | — | ✓ | — | `all` / `common` / `androidUnit` / `androidInstrumented` / `desktop` / `ios` / `macos` / `jvm` / `js` / `wasm`. |
-| `--module-filter <glob>` | `*` | ✓ | — | ✓ | — | ✓ | Glob, comma-separated. Not accepted by `changed` (`unknown_flag`) — its module set is always git-derived; see `--show-modules-only`. |
+| `--module-filter <glob>` | `*` | ✓ | ✓ | ✓ | — | ✓ | Glob, comma-separated. On `coverage`, filters aggregated module names; use `--coverage-modules` for exact names. Not accepted by `changed` (`unknown_flag`) — its module set is always git-derived. |
 | `--test-filter <pattern>` | none | ✓ | — | android only | ✓ | ✓ | Single class or `Class#method`. JVM test tasks use gradle `--tests`; Android resolves wildcards to FQN by source scan. **benchmark**: only the android leg filters (`-P` instrumentation args); jvm benchmark legs are SKIPPED with `warnings[].code: test_filter_unsupported` + `skipped[]` entries — kotlinx-benchmark tasks reject `--tests` and have no CLI filter (use `benchmark { configurations { include(...) } }` in the build script, or `--module-filter` + `--config smoke` to narrow). |
 | `--exclude-modules <list>` | none | ✓ | — | — | ✓ | — | Comma-separated globs to skip entirely (not probed, not tested). |
 | `--include-untested` | off | ✓ | — | — | ✓ | — | Re-include modules auto-skipped because filesystem has no `src/*Test*` directory. |
@@ -37,7 +37,7 @@ The `kmp-test` CLI shares a common flag surface across subcommands, with per-sub
 | `--exclude-coverage <list>` | none | ✓ | ✓ | ✓ | Comma-separated **exact** module names (same matching rules as `--coverage-modules`) to skip from coverage aggregation only (tests still run). |
 | `--no-coverage-xml-autofix` | off | ✓ | — | — | Disable the auto-injected init-script that forces jacoco `xml.required=true` on the coverage-report leg. By default `kmp-test` enables jacoco XML so HTML-only `jacocoTestReport` modules still produce parseable XML. No-op for Kover. Opting out surfaces `coverage_xml_disabled` for HTML-only modules. |
 | `--min-missed-lines <N>` | `0` | ✓ | ✓ | ✓ | Fail (`coverage_threshold_exceeded`, exit 1) if aggregated missed lines exceed `N`. `0` = no gate. |
-| `--min-line-coverage <pct>` | off | ✓ | ✓ | ✓ | Per-module LINE minimum, decimal 0–100. Failing modules appear in `module_coverage_threshold_exceeded.modules`; modules without coverage data are unscored. Use one `--flavor` and build `--variant` for flavored Android modules. |
+| `--min-line-coverage <pct>` | off | ✓ | ✓ | ✓ | Per-module LINE minimum, decimal 0–100. Below-gate modules appear in `module_coverage_threshold_exceeded.modules`. Missing/invalid XML or zero coverable lines makes a required score unavailable (`coverage_data_unavailable`, exit 3). Use one `--flavor` and build `--variant` for flavored Android modules. Inspect `coverage.module_results[]` and `coverage.data_provenance`. |
 | `--output-file <path>` | (writes under `.kmp-test-runner/reports/coverage/`) | ✓ | ✓ | — | Path for the markdown report. Absolute → verbatim; relative → resolved against `--project-root`. When omitted (or set to the historic literal `coverage-full-report.md`), writes to `.kmp-test-runner/reports/coverage/<runId>.md` with a `latest.md` alias. With a custom path, only that file is written — no alias. |
 | `--skip-tests` | off (set internally by `coverage`) | ✓ | implicit | — | Skip test execution; aggregate coverage from existing reports. Coverage subcommand sets this internally. |
 | `--coverage-only` | off | ✓ | — | — | Generate only coverage report — implies `--skip-tests`, skips test discovery. |
@@ -84,7 +84,7 @@ The `kmp-test` CLI shares a common flag surface across subcommands, with per-sub
 | `--list` / `--list-only` | off | ✓ | ✓ | Emit post-filter `modules[]` + `skipped[]` envelope, exit 0 before gradle dispatch. Different from `--dry-run` (shows spawn command). |
 | `--staged-only` | off | — | — | `changed` only: only consider git-staged files (`git diff --cached`). |
 | `--base <ref>` | none | — | — | `changed` only: compare the merge base with `<ref>` against the current tree, including committed, staged, unstaged, and untracked files. With `--staged-only`, exclude unstaged and untracked files. |
-| `--include-dependents` | off | — | — | `changed` only: add transitive project dependents from Gradle's configured graph; reports direct, dependent, and selected module sets separately. |
+| `--include-dependents` | off | — | — | `changed` only: add transitive project dependents from Gradle's configured graph; reports direct, dependent, and selected module sets separately. Graph-probe failure emits `dependency_graph_unavailable` (exit 3). |
 | `--show-modules-only` | off | — | — | `changed` only: list detected modules, exit 0 without running tests. |
 
 ## Subcommand-specific (benchmark / info / describe)

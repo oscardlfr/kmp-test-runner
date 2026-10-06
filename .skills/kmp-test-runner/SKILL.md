@@ -39,9 +39,10 @@ Resolve scope before acting.
 4. **Exact module** — dispatch with the workflow's module-scoping flag set to a module already known:
    explicit from the user, or a prior envelope's `modules[].name` — never descriptive
    wording alone. `--module-filter` (parallel/android/benchmark) takes the name as-is; `changed`
-   has no such flag — its module set is always git-derived. `--coverage-modules` (coverage;
-   `coverage` ignores `--module-filter`) needs the exact name with any leading `:` stripped,
-   comma-separated, no glob.
+   has no such flag — its module set is always git-derived. Use `--coverage-modules` for an exact
+   coverage target (`coverage` also accepts a broader `--module-filter` glob); it needs the name with any leading `:` stripped,
+   comma-separated, no glob. `changed` selects exact module names from Git; use `--base <ref>`
+   to include branch changes and `--include-dependents` to add transitive project consumers.
 5. **Test-capability target** — run `kmp-test describe --json --project-root .` once; check every
    `modules[]` entry's task field for the test type — `test_tasks.unit` for `parallel`'s default,
    `flags-reference.md` for an explicit `--test-type`. 1 eligible: bind dispatch to that entry's
@@ -123,7 +124,7 @@ Pick the subcommand:
 | "run tests; at most 100 missed/uncovered lines" | `kmp-test parallel --min-missed-lines 100 --json --project-root .` ||
 | "run benchmarks" | `kmp-test benchmark --json --project-root .` ||
 | "what would run?" / "dry run" | append `--dry-run` to the command above ||
-| "run only changed tests" | `kmp-test changed --json --project-root .` | Git-derived |
+| "run only changed tests" | `kmp-test changed --json --project-root .` | Git-derived; add `--base <ref>` for branch changes and `--include-dependents` for transitive consumers |
 
 > Deep-dives: [`overview.md`](references/workflows/overview.md).
 
@@ -137,7 +138,11 @@ carries codes (`no_test_modules`+`caused_by_filter`).
 
 Per `errors[]` entry, surface `code`, discriminators, `message`; include `module` only when present.
 For test failures, check `modules[].test_failures[{test,cause,type}]` — `test` is
-`ClassName.methodName`, `cause` message, `type` optional.
+`ClassName.methodName`, `cause` message, `type` optional. `tests.individual_failed` counts
+failing executions; `tests.individual_failed_distinct` counts unique methods within modules.
+For a pre-test compilation failure, use the owning `errors[].compile_failures[]` diagnostics
+and `setup_failed:true`. `parallel.legs[].compile_failures[]` preserves leg-wide evidence;
+recognized compilation failures suppress cascade retry (`retry_fired:false`).
 
 ## Convenience scripts
 
@@ -167,6 +172,10 @@ Confirm the envelope matches `exit_code`:
 - **Never run `gradle clean`.**
 - **`--module-filter` / `--coverage-modules`** narrow scope — see Decision protocol.
 - **`--test-filter`** narrows to one test — `FullyQualifiedClassName#methodName`.
+- **Coverage evidence** — `coverage.module_results[]` gives each module's LINE score and
+  status; a percentage gate uses `--min-line-coverage <pct>`. Check
+  `coverage.data_provenance`: `current_run` for fresh `parallel`/`changed` evidence,
+  `saved_reports` for standalone `coverage` or `--skip-tests`.
 - **Avoid `--no-coverage`** unless coverage doesn't apply.
 - **`--dry-run`** plans without running — same shape, `dry_run: true`.
 - **Don't conflate `parallel`/`android`** — unit (`*:test`/`*:jvmTest`) vs instrumented

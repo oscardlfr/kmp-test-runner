@@ -1,10 +1,10 @@
 # Changed-only tests — `kmp-test changed`
 
-Detect modules touched by uncommitted git changes and run only their tests. In-process delegation to the `parallel` workflow — the same auto-detect and cascade-retry mechanics, narrowed to the modules the user actually edited.
+Detect modules touched by local changes, or by a branch diff with `--base <ref>`, and run only their tests. Optionally include transitive project dependents. Selection delegates in-process to `parallel` with exact module names, so a similarly named module is not selected by substring.
 
 ## Goal
 
-Run `git status` against the working tree (default) or `git diff` against the staged index (`--staged-only`), map each changed file's path to its enclosing gradle module via longest-prefix matching, build an internal `--module-filter` value (not a user-facing flag — see Common flags), and dispatch the unit-tests workflow against just those modules. Surface the resolved modules + dispatch outcome in a single JSON envelope (raw file paths themselves are not surfaced — see Envelope shape excerpt).
+Use the working tree (default), staged index (`--staged-only`), or the merge-base diff against `--base <ref>`. Map changed paths to their enclosing Gradle modules by longest prefix. With `--include-dependents`, add transitive consumers from Gradle's project dependency graph. Dispatch the selected module names exactly through the unit-test workflow. The JSON envelope reports the selection and outcomes; raw file paths are not surfaced.
 
 ## When to use this workflow
 
@@ -15,6 +15,8 @@ The agent should dispatch `kmp-test changed` when the user asks any of:
 - "Quick test pass on my changes" / "fast CI re-run"
 - "What modules would my changes affect?" — combine with `--show-modules-only`
 - "Run only on staged files" — `--staged-only`
+- "Test what this branch changed from develop" — `--base develop`
+- "Test modules affected by my changes" — `--include-dependents` to add transitive project consumers
 - "There's a pending change somewhere and I haven't said which module — find it and test just that"
 - "Whatever I already edited locally, test only that; you'll need to work out where it is"
 
@@ -23,21 +25,23 @@ Do **not** dispatch `changed` for:
 - Full suite runs — `parallel` ([`unit-tests.md`](unit-tests.md)).
 - Coverage-only re-aggregation — `coverage` ([`coverage.md`](coverage.md)).
 - "Test this specific class" — `parallel --test-filter <FQN>` is narrower than file-level detection.
-- Running tests on files committed to a different branch — `changed` reads the working tree against `HEAD`, not against an arbitrary ref. The user must check out the branch first.
+- Comparing against a ref that is unavailable locally — `--base` requires a resolvable Git ref and merge base.
 
 ## Quickstart
 
 ```bash
 kmp-test changed --json
+kmp-test changed --base develop --include-dependents --show-modules-only --json
 ```
 
 That command:
 
-1. Runs `git status --porcelain` (default) or `git diff --cached --name-only` (`--staged-only`) — mutually exclusive, never both in the same run.
+1. Runs `git status --porcelain` (default), `git diff --cached --name-only` (`--staged-only`), or a NUL-delimited diff from `merge-base(<ref>, HEAD)` (`--base`). Base mode includes committed, staged, unstaged, and untracked paths; adding `--staged-only` excludes unstaged and untracked paths.
 2. Maps each path to its enclosing gradle module by walking the project model (`discoverIncludedModules()` in `lib/orchestrators/changed-orchestrator.js`) — longest-prefix wins, handles arbitrary nesting (`feature/<name>/<api|impl>/...`).
 3. Deduplicates the module set into bare, colon-less module names (e.g. `core:network`, not `:core:network` or `core/network/`).
-4. Builds an internal `--module-filter <comma-list>` value (not user-settable) and delegates **in-process** to the parallel orchestrator's `runParallel()`. No subprocess hop, no re-spawn cost.
-5. Emits a JSON envelope with the resolved modules and the per-module test outcomes.
+4. Optionally probes Gradle's project dependency graph and adds transitive dependent modules. If the graph cannot be resolved, exits 3 with `dependency_graph_unavailable` instead of silently narrowing selection.
+5. Delegates **in-process** to `runParallel()` with exact selected names. No subprocess hop or substring over-selection.
+6. Emits a JSON envelope with the resolved modules and the per-module test outcomes.
 
 If no modules changed: exit 0 with `errors[].code: no_changed_modules` (**soft code** — does NOT promote `exit_code` via WS-5).
 
@@ -49,17 +53,20 @@ Defaults grounded in `lib/cli.js` SUBCOMMAND_HELP. Full matrix in [`../cli/flags
 |------|---------|-------|
 | `--json` | off | Mandatory for agent consumption. |
 | `--staged-only` | off | Only consider files in the git staging area (`git diff --cached`). Useful for pre-commit hooks. |
+| `--base <ref>` | none | Compare from the merge base of `<ref>` and `HEAD`; include current working-tree changes unless `--staged-only` is also set. |
+| `--include-dependents` | off | Add transitive project dependents to the directly changed modules. Requires a usable Gradle dependency graph. |
 | `--show-modules-only` | off | List detected modules in the envelope, exit 0 **without** running tests. Pair with `--json` for a machine-readable preview. |
 | `--test-type <type>` | auto-detect | Forwarded to parallel-orchestrator. Same enum (`all` / `common` / `androidUnit` / etc.). |
 | `--test-filter <pattern>` | none | Inherited. Filter to single class/method. Globs work on JVM; Android resolves to FQN. |
 | `--coverage-tool <tool>` | `auto` | Same default as `parallel` — omitted, forwards nothing, and `parallel`'s own `auto` resolution applies. |
 | `--no-coverage` | off | Alias for `--coverage-tool none`. Expanded via CLI alias (`expandNoCoverageAlias` in `lib/parsers/argv.js`). |
 | `--min-missed-lines <N>` | `0` | Same gate as `parallel`. |
+| `--min-line-coverage <pct>` | off | Per-module LINE percentage gate (0–100). Missing XML or an ambiguous Android variant makes the gate unavailable. |
 | `--exclude-modules <list>` | none | Globs to skip entirely. Composes with changed-derived filter. |
 | `--exclude-coverage <list>` | none | Modules to skip from coverage aggregation only. |
 | `--include-untested` | off | Re-include modules auto-skipped because their filesystem path has no `src/*Test*` directory. |
 | `--include-shared` | off | Include changes in sibling shared-libs project (composite-build context). |
-| `--variant <auto\|debug\|release\|all>` | `auto` | Android variant selector. Forwarded to parallel-orchestrator. |
+| `--variant <value>` | `auto` | Android variant selector: `auto`, `debug`, `release`, `all`, or a composite such as `demoDebug`. Forwarded to parallel-orchestrator. |
 | `--gradle-args "<args>"` | none | Escape hatch — tokens appended LAST (gradle last-wins). |
 | `--isolated` | off | Wrap gradle with `--project-cache-dir <tmp>`. |
 | `--isolated-cache-dir <path>` | per-run tmpdir | Override cache-dir location. Implies `--isolated`. |
@@ -80,12 +87,16 @@ resolved set before running anything, use `--show-modules-only` (runs real detec
 
 ### Change-detection strategy
 
-Two mutually exclusive modes — never both in the same run:
+Without `--base`, two modes are available:
 
 1. **Default (working tree)**: `git status --porcelain` only. Captures modified, added, and untracked files in one command.
 2. **`--staged-only`**: `git diff --cached --name-only` only. Excludes untracked files. Matches what `git commit` would record.
 
-Renames are handled — for the default mode, `git status --porcelain` reports a rename as `R  old -> new`, and the parser keeps only the destination path (`new`); the source is discarded. `--staged-only`'s `git diff --cached --name-only` never emits an old→new pair at all (that's a `--name-status`/`--raw` shape), so there is nothing to strip there either — only the destination-side path is ever seen, by construction. In both modes, only the destination module is affected; the module the file used to live in is never touched.
+With `--base <ref>`, `changed` resolves `git merge-base <ref> HEAD`, then diffs that commit against the current tree. It includes committed, staged, unstaged, and untracked paths; `--staged-only` includes committed and staged paths only. The diff uses `--no-renames`, so both source and destination paths of a cross-module move are selected. A missing ref or failed Git command emits `git_error` (exit 3).
+
+Without `--base`, the default porcelain parser keeps only a rename's destination path. Staged-only detection likewise sees only the destination. The former source module is not selected in these modes.
+
+`--include-dependents` probes the configured Gradle project graph and adds transitive consumers of the direct modules. It leaves direct modules in `changed.detected_modules` and records added modules separately in `changed.dependent_modules`; `changed.selected_modules` is the complete exact dispatch set. A failed graph probe emits `dependency_graph_unavailable` (exit 3). This applies to `--show-modules-only` too.
 
 ### Longest-prefix module mapping
 
@@ -125,11 +136,11 @@ When change detection returns nothing (clean working tree, or `--staged-only` wi
 
 ## Edge cases
 
-- **Renamed file across module boundaries** (default mode, `R  core/a/Foo.kt -> core/b/Foo.kt`): only `core:b` enters the changed set — the source module (`core:a`) is discarded along with the source path.
+- **Renamed file across module boundaries**: default/staged-only mode selects the destination module; `--base` selects source and destination modules through `--no-renames`.
 - **Only *root-level* build-config changes** (`gradle/libs.versions.toml`, `settings.gradle.kts`, or a root-level `build.gradle.kts` — not one living inside a module directory): match no module prefix → discarded → exit 0 with `no_changed_modules`. A module's *own* `build.gradle.kts` (e.g. `core/b/build.gradle.kts`) is a normal file under `core/b/` and maps to `core:b` like any other file in that module — it is not discarded. Pass `--include-untested` to force inclusion if a matched module has no test source set — but note that only applies to files that DID map to a module; a root-level config file with no module match at all still can't be forced in, since there's no module to attach it to.
 - **`--show-modules-only` envelope**: `changed.detected_modules[]` is populated (bare, colon-less names — the field is `detected_modules`, not `modules`) and `tests.total = 0`. The top-level `modules[]` field is *also* populated in this mode, but as the same bare-string array (`["core:b"]`), not the object shape (`{name, type, coverage_plugin, test_failures}`) a real dispatch produces — see Envelope shape excerpt. Like every other `changed` envelope, there is no top-level `parallel:{}` block. Useful for agentic preview ("show me what would run before I commit to a 5-minute test pass").
 - **`--exclude-modules "core:*"` combined with a git-derived changed set**: if I changed `feature:auth` AND `core:network`, passing `--exclude-modules "core:*"` drops `core:network`, leaving only `feature:auth` dispatched. The glob is matched against the bare, colon-separated module name — a hyphen-style glob like `"core-*"` will NOT match `core:network` (no hyphen in the name); use `core:*` or the bare substring `core`.
-- **Detached HEAD or a repository with zero commits yet**: neither actually causes a failure. `git status --porcelain` and `git diff --cached --name-only` don't require HEAD to point at a branch, or even to exist as a real commit — both work identically to the normal case. (`git diff HEAD` — a *different* command `changed` never runs — is the one that would fail on an unborn HEAD; it's not part of this contract.)
+- **Detached HEAD or a repository with zero commits yet**: without `--base`, local detection does not require a branch or commit. Base mode requires a valid merge base; an unborn HEAD or unrelated histories yield `git_error`.
 - **`--staged-only` with nothing staged**: emits `no_changed_modules` (soft, exit 0).
 - **JDK toolchain mismatch on the dispatched modules**: same gate as `parallel` — exit 3 with `errors[].code: unsupported_class_version` (or auto-select if a catalogue match exists). Recovery: see [`unit-tests.md`](unit-tests.md) JDK section.
 - **Coverage tool default**: `changed` and `parallel` share the same `auto` default — `changed` forwards nothing when `--coverage-tool` is unset, so `parallel`'s own auto-detection applies.
@@ -151,7 +162,9 @@ When change detection returns nothing (clean working tree, or `--staged-only` wi
   "changed": {
     "detected_modules": ["feature:auth:impl"],
     "staged_only": false,
-    "base_ref": "HEAD"
+    "base_ref": "develop",
+    "dependent_modules": ["app"],
+    "selected_modules": ["app", "feature:auth:impl"]
   },
   "errors": [],
   "warnings": []
@@ -160,15 +173,16 @@ When change detection returns nothing (clean working tree, or `--staged-only` wi
 
 There is no top-level `parallel:{}` block on any `changed` envelope, ever — not even on a normal, real run. `changed` copies specific fields out of the delegate's result (`tests`, `modules`, `skipped`, `coverage`, `errors`, `warnings`, `isolated`) directly onto its own top level; it never re-attaches the delegate's own `parallel:{legs, ...}` block, and on instrumented runs it does not forward the delegate's `android:{}` block either.
 
-The `changed:{}` block carries exactly 3 fields, always: `detected_modules` (the deduplicated, bare/colon-less module set resolved from git detection), `staged_only` (echoes whether `--staged-only` was set), and `base_ref` — which is always the literal string `"HEAD"`, in both default and `--staged-only` modes. `--staged-only` changes what's compared (the index vs. the working tree), not `base_ref`'s value.
+The `changed:{}` block always carries `detected_modules` (direct, deduplicated module names without a leading `:`), `staged_only`, and `base_ref` (`"HEAD"` by default, or the supplied ref). With `--include-dependents`, it additionally carries `dependent_modules` and `selected_modules` (direct plus dependent names). `changed --show-modules-only` also returns the selected names as bare strings in top-level `modules[]`; a real run returns per-module objects there.
 
-Raw file paths feeding the longest-prefix module mapping are not surfaced in the envelope — they are an implementation detail of `discoverIncludedModules()` in `lib/orchestrators/changed-orchestrator.js`. Agents needing the file list should re-run the same detection directly: `git status --porcelain` for the default mode, or `git diff --cached --name-only` for `--staged-only`.
+Raw file paths feeding the longest-prefix module mapping are not surfaced in the envelope. Inspect the same Git comparison if the file list is needed: working-tree status by default, the cached diff for `--staged-only`, or a no-renames diff from the resolved merge base for `--base` (plus untracked paths unless staged-only).
 
 ## Troubleshooting
 
 Branch on `errors[].code`:
 
 - `no_changed_modules` (soft) → [`../troubleshooting/no-changed-modules.md`](../troubleshooting/no-changed-modules.md) (legitimate exit-0 outcome — surface but don't escalate)
+- `dependency_graph_unavailable` (hard, exit 3) → Gradle project graph could not be resolved with `--include-dependents`; inspect the probe failure instead of treating the direct set as complete.
 - `no_test_modules` → [`../troubleshooting/no-test-modules.md`](../troubleshooting/no-test-modules.md) (modules changed but none have tests)
 - `module_failed` → [`../troubleshooting/module-failed.md`](../troubleshooting/module-failed.md)
 - `task_not_found` → [`../troubleshooting/task-not-found.md`](../troubleshooting/task-not-found.md)
