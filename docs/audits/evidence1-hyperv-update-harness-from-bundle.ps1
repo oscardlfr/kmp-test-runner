@@ -110,17 +110,29 @@ if ([string]::IsNullOrWhiteSpace($TargetTree)) {
   Fail "target tree mismatch: expected $TargetTree, got $resolvedTargetTree"
 }
 
+# The benchmark pins its skill independently of the harness commit. A squash merge can make that
+# skill commit unreachable from develop; the sealed guest cannot fetch it from origin later.
+$cliLines = @(& git.exe -c "safe.directory=$SourceRepoDir" -C $SourceRepoDir show "$TargetCommit`:tools/agentic-eval/cli.mjs" 2>$null)
+if ($LASTEXITCODE -ne 0) { Fail 'target cli source unavailable' }
+$pinMatches = [regex]::Matches(($cliLines -join "`n"), '(?m)^const PINNED_SKILL_SHA = ''([0-9a-f]{40})'';$')
+if ($pinMatches.Count -ne 1) { Fail 'target skill source pin missing or ambiguous' }
+$skillSourceCommit = $pinMatches[0].Groups[1].Value
+Invoke-Checked 'git.exe' @('-C', $SourceRepoDir, 'cat-file', '-e', "$skillSourceCommit^{commit}") 'verify pinned skill commit exists locally'
+
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ReportPath) | Out-Null
 $short = $TargetCommit.Substring(0, 12)
 $exportRef = "refs/evidence1/export/$short"
+$skillExportRef = "refs/evidence1/export/skill-$($skillSourceCommit.Substring(0, 12))"
 $bundlePath = Join-Path (Split-Path -Parent $ReportPath) "harness-$short.bundle"
 Remove-Item -LiteralPath $bundlePath -Force -ErrorAction SilentlyContinue
 
 try {
   Invoke-Checked 'git.exe' @('-C', $SourceRepoDir, 'update-ref', $exportRef, $TargetCommit) 'create temporary export ref'
-  Invoke-Checked 'git.exe' @('-C', $SourceRepoDir, 'bundle', 'create', $bundlePath, $exportRef) 'create git bundle for target commit'
+  Invoke-Checked 'git.exe' @('-C', $SourceRepoDir, 'update-ref', $skillExportRef, $skillSourceCommit) 'create temporary skill export ref'
+  Invoke-Checked 'git.exe' @('-C', $SourceRepoDir, 'bundle', 'create', $bundlePath, $exportRef, $skillExportRef) 'create git bundle for target and pinned skill commits'
 } finally {
   & git.exe -c "safe.directory=$SourceRepoDir" -C $SourceRepoDir update-ref -d $exportRef 2>$null
+  & git.exe -c "safe.directory=$SourceRepoDir" -C $SourceRepoDir update-ref -d $skillExportRef 2>$null
 }
 $bundleHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $bundlePath).Hash.ToLowerInvariant()
 $bundleBytes = (Get-Item -LiteralPath $bundlePath).Length
@@ -196,7 +208,7 @@ try {
   }
 
   $guestReport = Invoke-Command -Session $session -ScriptBlock {
-    param($HarnessDir, $TargetCommit, $TargetTree, $GuestBundlePath, $ExportRef)
+    param($HarnessDir, $TargetCommit, $TargetTree, $GuestBundlePath, $ExportRef, $SkillExportRef, $SkillSourceCommit)
 
     Set-StrictMode -Version Latest
     $ErrorActionPreference = 'Stop'
@@ -276,14 +288,17 @@ try {
       $previousErrorActionPreference = $ErrorActionPreference
       $ErrorActionPreference = 'Continue'
       try {
-        $fetchOutput = & git.exe fetch --force $GuestBundlePath "$ExportRef`:refs/evidence1/target" 2>&1
+        $fetchOutput = & git.exe fetch --force $GuestBundlePath "$ExportRef`:refs/evidence1/target" "$SkillExportRef`:refs/evidence1/skill" 2>&1
         $fetchExit = $LASTEXITCODE
+        $skillObjectOutput = & git.exe cat-file -t $SkillSourceCommit 2>&1
+        $skillObjectExit = $LASTEXITCODE
         $checkoutOutput = & git.exe checkout --detach $TargetCommit 2>&1
         $checkoutExit = $LASTEXITCODE
       } finally {
         $ErrorActionPreference = $previousErrorActionPreference
       }
       if ($fetchExit -ne 0) { FailGuest "git fetch bundle failed: $($fetchOutput -join ' ')" }
+      if ($skillObjectExit -ne 0 -or ($skillObjectOutput | Select-Object -First 1) -cne 'commit') { FailGuest 'pinned skill commit missing after bundle fetch' }
       if ($checkoutExit -ne 0) { FailGuest "git checkout target commit failed: $($checkoutOutput -join ' ')" }
       $head = (& git.exe rev-parse HEAD).Trim()
       $tree = (& git.exe rev-parse 'HEAD^{tree}').Trim()
@@ -379,7 +394,7 @@ try {
     } finally {
       Pop-Location
     }
-  } -ArgumentList $HarnessDir, $TargetCommit, $TargetTree, $guestBundlePath, $exportRef
+  } -ArgumentList $HarnessDir, $TargetCommit, $TargetTree, $guestBundlePath, $exportRef, $skillExportRef, $skillSourceCommit
 
   $report = [ordered]@{
     verdict = 'PASS'
@@ -391,6 +406,7 @@ try {
     source_repo_dir = Resolve-FullPath $SourceRepoDir
     target_ref = $TargetRef
     target_commit = $TargetCommit
+    skill_source_commit = $skillSourceCommit
     target_tree = $TargetTree
     bundle_path = $bundlePath
     bundle_sha256 = $bundleHash
