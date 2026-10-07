@@ -59,7 +59,7 @@ function blockManifest(dir, campaignId, indices, k = 0) {
     runtimes: RUNTIMES.map((runtime) => ({ ...runtime, campaign_cell_indices: [...indices] })),
     scenario_id: 'multi-module-test-failures', seed: 42, execution_profile_id: 'sandboxed-unrestricted-v1', conditions: ['product', 'free'],
     round_order: indices.map((index) => ORDER_16[index]), max_session_count: indices.length * RUNTIMES.length,
-    vm_name: 'vm-under-test', private_root: 'C:\\Evidence1Private\\campaign-under-test',
+    vm_name: 'vm-under-test', private_root: 'C:\\Evidence1Private\\campaign-' + k,
     provider_timeout_seconds: 1800, worker_timeout_seconds: 1860, guest_transport_timeout_seconds: 1920,
     provider_mode: 'live', output_roots: { private: path.join(dir, 'private'), public: path.join(dir, 'public') },
     no_automatic_provider_retry: true, generated_at_utc: `2026-10-02T0${k}:00:00.000Z`,
@@ -98,6 +98,23 @@ function writeBlocks(root, { layout = LAYOUT_4, ids = BLOCK_IDS, manifest = () =
     }
     for (const name of extraDirs) mkdirSync(path.join(dir, 'private', name), { recursive: true });
     return dir;
+  });
+}
+
+function writeRawCustody(blocks) {
+  blocks.forEach((dir) => {
+    const manifest = readJson(path.join(dir, 'manifest.json'));
+    const cells = manifest.runtimes.flatMap((runtime) => runtime.campaign_cell_indices.map((global, local) => {
+      const cellKey = runtime.runtime_id + '-' + global;
+      const raw = path.join(dir, 'private', cellKey, 'transcript.jsonl');
+      if (!existsSync(raw)) writeFileSync(raw, 'rejected cell raw transcript\n');
+      const bytes = readFileSync(raw);
+      return {
+        cell_key: cellKey, order_index: global, arm: manifest.round_order[local],
+        raw_bytes: bytes.length, raw_sha256: createHash('sha256').update(bytes).digest('hex'),
+      };
+    }));
+    writeFileSync(path.join(dir, 'private', 'raw-custody.json'), JSON.stringify({ campaign_id: manifest.campaign_id, cells }));
   });
 }
 
@@ -149,6 +166,8 @@ describe('mergeCampaignBlocks -- the merged directory', () => {
     for (const runtime of manifest.runtimes) expect(runtime.campaign_cell_indices).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
     expect(manifest.round_order).toEqual(ORDER_16);
     expect(manifest.max_session_count).toBe(32);
+    expect(manifest.private_root).toBeNull();
+    expect(manifest.block_private_roots).toEqual(BLOCK_IDS.map((campaign_id, k) => ({ campaign_id, private_root: 'C:\\Evidence1Private\\campaign-' + k })));
     expect(result.manifest).toEqual(manifest);
   });
 
@@ -158,7 +177,7 @@ describe('mergeCampaignBlocks -- the merged directory', () => {
     mergeBlocks(writeBlocks(root), out);
     const manifest = readJson(path.join(out, 'manifest.json'));
     const first = readJson(path.join(root, 'block-0', 'manifest.json'));
-    for (const key of ['schema', 'scenario_id', 'seed', 'execution_profile_id', 'conditions', 'vm_name', 'private_root', 'provider_timeout_seconds', 'worker_timeout_seconds', 'guest_transport_timeout_seconds', 'provider_mode', 'no_automatic_provider_retry']) {
+    for (const key of ['schema', 'scenario_id', 'seed', 'execution_profile_id', 'conditions', 'vm_name', 'provider_timeout_seconds', 'worker_timeout_seconds', 'guest_transport_timeout_seconds', 'provider_mode', 'no_automatic_provider_retry']) {
       expect(manifest[key]).toEqual(first[key]);
     }
     expect(manifest.runtimes.map(({ campaign_cell_indices: _ignored, ...rest }) => rest)).toEqual(RUNTIMES);
@@ -184,6 +203,22 @@ describe('mergeCampaignBlocks -- the merged directory', () => {
       }
     });
     expect(listDir(path.join(out, 'private', 'codex-cli-6'))).toEqual(['rejection.json']);
+    expect(readJson(path.join(out, 'manifest.json')).block_private_roots).toEqual(BLOCK_IDS.map((campaign_id, k) => ({
+      campaign_id, private_root: 'C:\\Evidence1Private\\campaign-' + k,
+    })));
+  });
+
+  it('merges four custody-attested blocks including a rejected cell and checks the source transcript hashes', () => {
+    const root = tempRoot();
+    const out = path.join(root, 'merged');
+    const blocks = writeBlocks(root, { record: (k, runtimeId, local) => (k === 2 && runtimeId === 'codex-cli' && local === 2 ? null : undefined) });
+    writeRawCustody(blocks);
+    expect(mergeBlocks(blocks, out).cells).toBe(32);
+    expect(listDir(path.join(out, 'private'))).toHaveLength(32);
+    expect(listDir(path.join(out, 'private', 'codex-cli-10'))).toEqual(['rejection.json', 'transcript.jsonl']);
+    expect(listDir(path.join(out, 'private'))).not.toContain('raw-custody.json');
+    expect(summarizeCampaign(out).summary_status).toBe('ok');
+    expect(scanClosure(out).cells).toHaveLength(32);
   });
 
   it('is deterministic: the same blocks merged twice give byte-identical manifests', () => {
@@ -309,7 +344,6 @@ describe('mergeCampaignBlocks -- it fails closed, one reason per check, and writ
     ['seed', 'seed', (m) => { m.seed = 43; }],
     ['model budget', 'runtimes.claude-code.max_budget_usd', (m) => { m.runtimes[0].max_budget_usd = 7; }],
     ['design', 'runtimes.codex-cli.campaign_design_id', (m) => { m.runtimes[1].campaign_design_id = 'codex-product-vs-free-baseline-v2'; }],
-    ['guest private root', 'private_root', (m) => { m.private_root = 'C:\\Evidence1Private\\another'; }],
   ])('refuses blocks whose manifests differ in the %s', (_label, field, change) => {
     const root = tempRoot();
     const out = path.join(root, 'merged');
@@ -317,6 +351,30 @@ describe('mergeCampaignBlocks -- it fails closed, one reason per check, and writ
     const error = mergeError(blocks, out);
     expectRefusal({ error, code: 'block_manifests_differ', out });
     expect(error.message).toContain(field);
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['outside the private parent', 'C:\\Temp\\campaign-2'],
+    ['traversal', 'C:\\Evidence1Private\\campaign-2\\..\\other'],
+    ['noncanonical separators', 'C:/Evidence1Private/campaign-2'],
+    ['root itself', 'C:\\Evidence1Private'],
+  ])('refuses a %s block private root', (_case, privateRoot) => {
+    const root = tempRoot();
+    const out = path.join(root, 'merged');
+    const blocks = writeBlocks(root, { manifest: (k, m) => { if (k === 2) m.private_root = privateRoot; } });
+    expectRefusal({ error: mergeError(blocks, out), code: 'block_private_root_invalid', out });
+  });
+
+  it.each([
+    ['same root', 'C:\\Evidence1Private\\campaign-0'],
+    ['case alias', 'C:\\Evidence1Private\\CAMPAIGN-0'],
+    ['nested root', 'C:\\Evidence1Private\\campaign-0\\child'],
+  ])('refuses blocks with the %s', (_case, privateRoot) => {
+    const root = tempRoot();
+    const out = path.join(root, 'merged');
+    const blocks = writeBlocks(root, { manifest: (k, m) => { if (k === 2) m.private_root = privateRoot; } });
+    expectRefusal({ error: mergeError(blocks, out), code: 'block_private_roots_overlap', out });
   });
 
   it('refuses a cell index that two blocks both ran', () => {
@@ -462,6 +520,33 @@ describe('mergeCampaignBlocks -- it fails closed, one reason per check, and writ
     const error = mergeError(blocks, out);
     expectRefusal({ error, code: 'cell_directory_unexpected', out });
     expect(error.message).toContain('claude-code-9');
+  });
+
+  it.each([
+    ['wrong campaign', (custody) => { custody.campaign_id = BLOCK_IDS[0]; }],
+    ['missing cell', (custody) => { custody.cells.pop(); }],
+    ['duplicate cell', (custody) => { custody.cells[1] = custody.cells[0]; }],
+    ['wrong hash', (custody) => { custody.cells[0].raw_sha256 = '0'.repeat(64); }],
+    ['wrong cell arm', (custody) => { custody.cells[0].arm = custody.cells[0].arm === 'free' ? 'product' : 'free'; }],
+  ])('refuses raw custody with %s', (_case, corrupt) => {
+    const root = tempRoot();
+    const out = path.join(root, 'merged');
+    const blocks = writeBlocks(root);
+    writeRawCustody(blocks);
+    const file = path.join(blocks[1], 'private', 'raw-custody.json');
+    const custody = readJson(file);
+    corrupt(custody);
+    writeFileSync(file, JSON.stringify(custody));
+    expectRefusal({ error: mergeError(blocks, out), code: 'block_raw_custody_invalid', out });
+  });
+
+  it('refuses an unrecognized sidecar even when raw custody is present', () => {
+    const root = tempRoot();
+    const out = path.join(root, 'merged');
+    const blocks = writeBlocks(root);
+    writeRawCustody(blocks);
+    writeFileSync(path.join(blocks[0], 'private', 'another-sidecar.json'), '{}');
+    expectRefusal({ error: mergeError(blocks, out), code: 'cell_directory_unexpected', out });
   });
 
   it('refuses a cell without a record and audit pair or a rejection', () => {
@@ -651,9 +736,18 @@ describe('the analysis tools on a merged directory', () => {
   it('runs the transcript access scan unchanged on the merged directory', () => {
     const { single, merged } = mergedAndSingle();
     const scan = scanClosure(merged);
-    expect({ ...scan, campaign_id: null }).toEqual({ ...scanClosure(single), campaign_id: null });
+    expect(scan.cells).toEqual(scanClosure(single).cells);
+    expect(scan.patterns).not.toContain('private_root');
     expect(scan.campaign_id).toBe(mergedCampaignId(BLOCK_IDS));
     expect(scan.cells.filter((c) => c.hits.length > 0).map((c) => c.cell_key)).toEqual(['claude-code-12']);
     expect(summarizeCampaign(merged, new Set(), { accessScan: scan }).cells.find((c) => c.cell_key === 'claude-code-12')).toBeUndefined();
+  });
+
+  it('still detects an isolated guest private path in merged transcripts', () => {
+    const { merged } = mergedAndSingle();
+    const transcript = path.join(merged, 'private', 'codex-cli-0', 'transcript.jsonl');
+    writeFileSync(transcript, readFileSync(transcript, 'utf8') + 'C:\\Evidence1Private\\campaign-0\\codex-cli-0\n');
+    expect(scanClosure(merged).cells.find((cell) => cell.cell_key === 'codex-cli-0').hits)
+      .toContainEqual({ label: 'private_evidence', count: 1 });
   });
 });
