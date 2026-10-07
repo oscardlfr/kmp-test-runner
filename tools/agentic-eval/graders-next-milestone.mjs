@@ -156,7 +156,10 @@ export function gradeNextMilestoneScenario({ scenario, observation, bashResults,
       ['final_answer_consistent_with_evidence', false],
     ]) checks.push({ name, passed, detail: 'standard-tools control: final answer is graded against ground truth', evidence_event_indices: [] });
     return {
-      expectedOutcomeMatched: answer.matched, success: answer.matched === true && answer.protocolMatched && ran && checks.slice(0, 3).every((check) => check.passed),
+      // The legacy publication field records an attempted answer verdict. An absent or
+      // malformed claim is a graded negative, while the neutral assessment retains null
+      // to describe why no task-outcome comparison could be made.
+      expectedOutcomeMatched: answer.matched === true, success: answer.matched === true && answer.protocolMatched && ran && checks.slice(0, 3).every((check) => check.passed),
       checks, firstUsefulSignalEventIndex: null, terminalAuthoritativeEventIndex: null,
       testInvocationsTotal: gradleAttempts.length, retries: Math.max(0, gradleAttempts.length - 1),
       harnessEvidenceAmbiguous: junitAttribution.ambiguousJunitEvidence,
@@ -188,7 +191,7 @@ export function gradeNextMilestoneScenario({ scenario, observation, bashResults,
   addCheck('no_provider_contradiction', evidence, evidence ? 'no contradiction' : 'missing or contradictory evidence');
   addCheck('final_answer_consistent_with_evidence', answer.matched === true && answer.protocolMatched && evidence, answer.matched && evidence ? 'answer and evidence matched' : 'answer or evidence mismatched');
   return {
-    expectedOutcomeMatched: evidence && answer.matched,
+    expectedOutcomeMatched: evidence && answer.matched === true,
     success: checks.every((check) => check.passed) && evidence && answer.matched === true && answer.protocolMatched,
     checks, firstUsefulSignalEventIndex: last?.attempt.resultIndex ?? null,
     terminalAuthoritativeEventIndex: last?.attempt.resultIndex ?? null,

@@ -1,15 +1,17 @@
 import { describe, it, expect } from 'vitest';
 import { gradeNextMilestoneScenario } from '../../tools/agentic-eval/graders-next-milestone.mjs';
+import { findScenarioBenchmarkCompletenessViolations } from '../../tools/agentic-eval/schemas.mjs';
 
 const answerText = (expected) => `KMP_EVAL_RESULT\n${JSON.stringify(expected)}\nKMP_EVAL_RESULT_END`;
 const envelope = (extra) => ({ tool: 'kmp-test', schema_version: 3, subcommand: 'parallel', exit_code: 1,
   tests: { total: 0, failed: 0, individual_total: 0, individual_failed: 0, individual_failed_distinct: 0 }, modules: [], errors: [], ...extra });
-function grade(family, expected, result, command = 'kmp-test parallel --json', answer = expected, evidenceScope = undefined) {
+function grade(family, expected, result, command = 'kmp-test parallel --json', answer = expected,
+  evidenceScope = undefined, finalText = undefined) {
   const attempt = { id: 't1', command, resultContent: JSON.stringify(result), resultIndex: 2 };
   return gradeNextMilestoneScenario({ scenario: { family, expected, evidence_scope: evidenceScope, policy: {
     allowed_kmptest_subcommands: ['parallel', 'changed'], allowed_gradle_tasks: [':feature:test'],
   } },
-    observation: { terminal: { finalText: answerText(answer) } }, bashResults: [attempt],
+    observation: { terminal: { finalText: finalText === undefined ? answerText(answer) : finalText } }, bashResults: [attempt],
     checks: [{ name: 'no_transcript_structural_issues', passed: true },
       { name: 'bash_tool_use_present', passed: true }, { name: 'tool_result_correlated', passed: true }],
     junitAttribution: { decisionByAttempt: new Map([['t1', 'allow']]), ambiguousJunitEvidence: false,
@@ -124,5 +126,43 @@ describe('next milestone graders bind final answers to real envelopes', () => {
         ambiguousJunitEvidence: false, captureIncomplete: false, unreliable: false } });
     expect(control(['./gradlew :feature:test']).success).toBe(false);
     expect(control(['./gradlew :core:test :feature:test --continue']).success).toBe(true);
+  });
+
+  it('grades absent and malformed claims as negative legacy verdicts in both arms without inventing a neutral comparison', () => {
+    const expected = { outcome_kind: 'tests_failed', direct_modules: [':core'],
+      dependent_modules: [':feature'], selected_modules: [':core', ':feature'],
+      failing_modules: [':feature'], failed_test_classes: ['FeatureTest'], failed_count: 1 };
+    const result = envelope({ subcommand: 'changed', changed: { detected_modules: ['core'],
+      dependent_modules: ['feature'], selected_modules: ['core', 'feature'] },
+    modules: [{ name: 'feature', test_failures: [{ test: 'pkg.FeatureTest.fails' }] }],
+    errors: [{ code: 'module_failed', module: 'feature', task: ':feature:test' }] });
+    const arms = [
+      ['kmp-test changed --include-dependents --json', result],
+      ['./gradlew :feature:test', { any: 'Gradle output' }],
+    ];
+    for (const [command, output] of arms) {
+      for (const [finalText, reason] of [
+        ['', 'claim-missing'],
+        ['KMP_EVAL_RESULT\n{broken json\nKMP_EVAL_RESULT_END', 'claim-malformed'],
+        [answerText({ outcome_kind: 'tests_failed' }), 'claim-malformed'],
+      ]) {
+        const graded = grade('changed-dependents', expected, output, command, expected, undefined, finalText);
+        expect(graded.expectedOutcomeMatched).toBe(false);
+        expect(graded.success).toBe(false);
+        expect(graded.outcomeAssessment).toMatchObject({ task_outcome_matched: null,
+          task_outcome_reason: reason });
+        expect(graded.terminalEvidence.final_answer_block).toBeDefined();
+      }
+    }
+  });
+
+  it('keeps a complete negative legacy verdict eligible for a scenario aggregate', () => {
+    const complete = { project_commit: 'project-pin', model_resolved: 'model',
+      kmp_test_cli_source_sha: 'source-pin', repo_commit: 'repo-pin', daemon_policy: 'isolated',
+      env_allowlist_profile: 'offline', scenario_id: 'changed-dependents',
+      ambient_skill_profile: {}, success: { value: false }, expected_outcome_matched: { value: false } };
+    expect(findScenarioBenchmarkCompletenessViolations(complete)).toEqual([]);
+    expect(findScenarioBenchmarkCompletenessViolations({ ...complete,
+      expected_outcome_matched: { value: null } })).toContain('expected_outcome_matched');
   });
 });
