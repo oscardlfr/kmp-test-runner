@@ -168,11 +168,8 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     # The Windows leg runs Pester, a Windows-only Gradle TestKit smoke,
-    # coverage Vitest, and the Node 18 compatibility smoke. Keep a real cap,
-    # but give the full matrix enough room to finish: since the evaluation
-    # harness tests were published, that leg measured 27-33 minutes (Gradle
-    # smoke 9-11, each full Vitest run 7-9), and a 30 minute cap cancelled
-    # passing Node 18 suites on hosted runners.
+    # coverage Vitest, and the Node 18 CLI compatibility smoke. The full
+    # evaluation harness suite and Gradle smoke need room on hosted runners.
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
@@ -223,22 +220,17 @@ jobs:
         run: cd gradle-plugin && .\gradlew.bat test --tests "*.TaskActionTest"
       - name: vitest
         run: npx vitest run --coverage
-      # Node 18 smoke: validate the declared engines.node >=18 floor.
-      # Node 18 is EOL (April 2025) — this validates legacy compatibility only.
-      # A future PR should raise engines.node to a supported LTS (22+ or 24).
-      # Runs on both ubuntu and windows: Windows-specific spawnSync dispatch
-      # paths (cmd.exe routing) exercise code paths sensitive to Node version.
-      # npm ci runs fresh under Node 18 — node_modules from Node 24 are not reused.
+      # Node 18 smoke: validate the declared engines.node >=18 product floor.
+      # The Vitest dev toolchain requires Node 20+ and is exercised above on Node 24.
+      # Install only shipped dependencies, then exercise the CLI and its dry-run
+      # dispatch plan on both Ubuntu and Windows using the actual Node 18 binary.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
           node-version: '18.20.8'
-      - name: Node 18 smoke — npm ci under Node 18
-        run: npm ci
-      - name: Node 18 smoke — vitest run on declared-minimum Node (engines.node >=18)
-        # The full suite takes 5.5 to 8 minutes here on a hosted Windows runner (measured over recent runs, the
-        # slowest 480 s); the previous 8-minute limit timed the step out on a slow runner.
-        timeout-minutes: 12
-        run: npx vitest run
+      - name: Node 18 smoke — install production package under Node 18
+        run: npm ci --omit=dev
+      - name: Node 18 smoke — CLI on declared-minimum Node (engines.node >=18)
+        run: node tests/compat/node18-smoke.mjs
   secrets-scan:
     # Always runs — security checks are non-negotiable, even on docs-only PRs.
     # Also gates the release version-pin invariant: tools/sync-versions.js --check

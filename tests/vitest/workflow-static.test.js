@@ -423,11 +423,13 @@ describe('ci.yml Node 24 upgrade and PR-20b guards', () => {
     expect(section).toMatch(/cache:\s+'?npm'?/);
   });
 
-  it('build job contains Node 18 floor smoke (setup-node + fresh npm ci + vitest run)', () => {
+  it('build job tests on Node 24 and smokes the production CLI on Node 18', () => {
     const section = jobSection(wf['ci.yml'], 'build');
     expect(section).not.toBeNull();
+    expect(section).toMatch(/npx vitest run --coverage/);
     expect(section).toMatch(/node-version:\s+['"]18\.20\.8['"]/);
-    expect(section).toMatch(/Node 18 smoke/i);
+    expect(section).toMatch(/npm ci --omit=dev/);
+    expect(section).toMatch(/node tests\/compat\/node18-smoke\.mjs/);
   });
 
   it('build job invokes check-line-endings.mjs', () => {

@@ -10,14 +10,17 @@ export default defineConfig({
     // pool: default ('threads') — DO NOT use 'forks' (kills coverage)
     coverage: {
       provider: 'v8',
-      all: true,
       include: ['lib/**/*.js'],
       reporter: ['text', 'html', 'lcov'],
       thresholds: {
         lines: 91,
-        functions: 90,
-        branches: 80,
-        statements: 91,
+        functions: 91,
+        branches: 83,
+        // Vitest 4's V8 AST remapping changed the measured statement rate.
+        // The same passing suite measured 89.30% on Linux and 89.71% on Windows
+        // after the upgrade; keep a cross-platform floor while tightening the
+        // branch and function floors to the new provider's observed baseline.
+        statements: 89,
       },
       thresholdAutoUpdate: false,
     },
