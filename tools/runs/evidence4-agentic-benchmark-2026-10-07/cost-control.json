@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "pricing_basis": "conservative-published-list-price-upper-not-invoice",
+  "counted_cost_source": "cost-estimate.json",
+  "counted_cells": 31,
+  "counted_upper_usd": 12.309109,
+  "missing_cell": {
+    "runtime_id": "claude-code",
+    "arm": "product",
+    "order_index": 10,
+    "rejection_reason": "rejected_not_reclassifiable",
+    "usage_source": "runtime-reported",
+    "tokens": {
+      "input": 22,
+      "cache_read": 276273,
+      "cache_write": 30499,
+      "output": 10369
+    },
+    "upper_usd": 0.2809846
+  },
+  "all_attempts": 32,
+  "all_attempts_upper_usd": 12.5900936,
+  "frozen_ceiling_usd": 50,
+  "method": "Claude input $2, one-hour cache write $4, cache read $0.20 and output $10 per million tokens; Codex Terra uncached input $2.50, cache read $0.20 and output $12, with conservative possible 2x input/cache and 1.5x output long-context multipliers. Counted costs sum every cost-estimate cell; the missing-cell usage comes from its retained private rejection diagnostic."
+}

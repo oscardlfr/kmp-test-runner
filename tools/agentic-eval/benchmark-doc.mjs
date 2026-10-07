@@ -306,9 +306,19 @@ export function loadScenarioPublicationFacts(scenarioId, corpusDir = join(REPO_R
   const expected = JSON.parse(readFileSync(join(corpusDir, 'expected', `${scenarioId}.json`), 'utf8'));
   if (scenario.id !== scenarioId || expected.id !== scenarioId) throw new Error(`scenario ${scenarioId}: corpus ids do not match`);
   if (scenario.family === 'multi-module-tests') return { family: scenario.family, ...loadScenarioFacts(scenarioId, corpusDir) };
+  // Newer scenarios bind their complete in-scope module list directly. Their allowlist
+  // names executable tasks, so looking only for Gradle's ":tasks" discovery task
+  // would incorrectly reject a valid coverage/changed/compile scenario.
+  const scoped = scenario.evidence_scope?.module_names;
+  if (scoped !== undefined && (!Array.isArray(scoped) || scoped.length === 0
+    || scoped.some((name) => typeof name !== 'string' || !/^:[^:]+(?::[^:]+)*$/.test(name))
+    || new Set(scoped).size !== scoped.length)) {
+    throw new Error(`scenario ${scenarioId}: evidence_scope.module_names is not a unique nonempty Gradle module list`);
+  }
   const tasks = scenario.policy?.allowed_gradle_tasks;
-  const modules = new Set(Array.isArray(tasks) ? tasks.filter((task) => typeof task === 'string' && task.endsWith(':tasks')).map((task) => task.slice(0, -':tasks'.length)) : []);
-  if (modules.size === 0) throw new Error(`scenario ${scenarioId}: allowed_gradle_tasks names no module (no "<module>:tasks" entry)`);
+  const modules = scoped ? new Set(scoped)
+    : new Set(Array.isArray(tasks) ? tasks.filter((task) => typeof task === 'string' && task.endsWith(':tasks')).map((task) => task.slice(0, -':tasks'.length)) : []);
+  if (modules.size === 0) throw new Error(`scenario ${scenarioId}: no in-scope modules in evidence_scope or allowed_gradle_tasks`);
   const facts = { family: scenario.family, moduleCount: modules.size };
   if (scenario.family === 'multi-module-coverage') {
     const threshold = expected.expected?.threshold_percent;
@@ -377,6 +387,7 @@ function countedSessions(summary, runtimeId, arm) {
 export function buildCampaignsBlock(campaigns) {
   const lines = [CAMPAIGNS_CAPTION, '', `| ${CAMPAIGNS_HEADER.join(' | ')} |`, `|---|---|---|---:|---:|---:|---:|---:|---:|`];
   const notMeasured = [];
+  const missingToolCalls = [];
   let codexMeasured = false;
   for (const { evidenceN, summary, costEstimate } of campaigns) {
     for (const runtimeId of RUNTIME_ORDER) {
@@ -387,7 +398,12 @@ export function buildCampaignsBlock(campaigns) {
         const group = summary.by_runtime_arm.find((g) => g.runtime_id === runtimeId && g.arm === arm);
         const sessions = countedSessions(summary, runtimeId, arm);
         if (!group || sessions.length === 0) throw new Error(`Evidence${evidenceN}: no counted sessions for ${runtimeId} ${arm}`);
-        const toolCalls = medianOf(sessions.map((c) => c.tool_calls_total));
+        // The summary computes the median from cells that actually recorded this metric.
+        // A counted D3 protocol negative may lack a command trace: sorting null with
+        // numbers would silently turn that missing value into a zero.
+        const toolCalls = group.tool_calls_total?.median;
+        const withoutToolCalls = sessions.filter((c) => typeof c.tool_calls_total !== 'number').length;
+        if (withoutToolCalls > 0) missingToolCalls.push(`Evidence${evidenceN} ${AGENT_LABEL[runtimeId]} ${ARM_LABEL[arm]}: tool-call median uses ${group.tool_calls_total?.n ?? 0} recorded cells; ${withoutToolCalls} counted ${withoutToolCalls === 1 ? 'cell has' : 'cells have'} no tool-call count.`);
         const toolOutputKb = measured ? medianOf(sessions.map((c) => c.output_bytes)) / 1000 : null;
         const totalTokens = medianOf(sessions.map((c) => sum(Object.values(disjointTokens(c.tokens, runtimeId)))));
         const costs = sessions.map((c) => {
@@ -409,6 +425,7 @@ export function buildCampaignsBlock(campaigns) {
   const notes = [`Key facts matched: counted sessions whose final answer matched the key facts of that campaign's task, out of the counted sessions; the key facts differ between the ${taskCount} tasks.`];
   if (codexMeasured) notes.push('Tool output is the tool results returned to the model for Claude Code and, for Codex CLI, command output as logged; Codex may shorten what the model reads.');
   notes.push(...notMeasured);
+  notes.push(...missingToolCalls);
   if (notes.length > 0) lines.push('', ...notes.map((n) => `- ${n}`));
   return lines.join('\n');
 }

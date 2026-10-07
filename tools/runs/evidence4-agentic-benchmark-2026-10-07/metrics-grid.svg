@@ -1,0 +1,145 @@
+<svg viewBox="0 0 880 739" width="880" height="739" xmlns="http://www.w3.org/2000/svg" role="img" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif">
+  <title>Per-session detail (descriptive)</title>
+  <desc>Color legend. With kmp-test (#0969da), without (#bc4c00). Token component: uncached input (#8250df), cache read (#1b7c83), cache write (#1a7f37), output (#bf3989), reasoning (#cf222e). Shell-command kind: kmp-test (#8250df), gradle (#1a7f37), other (#59636e).</desc>
+  <rect x="1" y="1" width="878" height="737" rx="12" fill="#ffffff" stroke="#d0d7de" stroke-width="1"/>
+  <text x="28.0" y="48.0" font-size="20" font-weight="600" fill="#1f2328">Per-session detail (descriptive)</text>
+  <text x="28.0" y="75.0" font-size="13" font-weight="400" fill="#59636e">Bars are the median session: blue with kmp-test, orange without.</text>
+  <text x="28.0" y="92.0" font-size="13" font-weight="400" fill="#59636e">Descriptive only, not part of the pre-registered analysis.</text>
+  <text x="28.0" y="128.0" font-size="14" font-weight="600" fill="#1f2328">Claude Code · claude-sonnet-5</text>
+  <text x="28.0" y="155.0" font-size="13" font-weight="500" fill="#1f2328">Shell commands by kind</text>
+  <text x="28.0" y="171.0" font-size="11" font-weight="400" fill="#0969da">with kmp-test</text>
+  <rect x="120.0" y="160.0" width="30.3" height="14.0" rx="1" fill="#8250df"/>
+  <rect x="150.3" y="160.0" width="60.5" height="14.0" rx="1" fill="#59636e"/>
+  <text x="370.0" y="171.0" font-size="11" font-weight="400" fill="#1f2328">9</text>
+  <text x="28.0" y="189.0" font-size="11" font-weight="400" fill="#bc4c00">without</text>
+  <rect x="120.0" y="178.0" width="55.5" height="14.0" rx="1" fill="#1a7f37"/>
+  <rect x="175.5" y="178.0" width="186.5" height="14.0" rx="1" fill="#59636e"/>
+  <text x="370.0" y="189.0" font-size="11" font-weight="400" fill="#1f2328">24</text>
+  <rect x="28.0" y="200.0" width="8" height="8" fill="#8250df"/>
+  <text x="40.0" y="207.0" font-size="9" font-weight="400" fill="#59636e">kmp-test 3 vs 0</text>
+  <text x="121.0" y="207.0" font-size="9" font-weight="400" fill="#59636e"> · </text>
+  <rect x="137.2" y="200.0" width="8" height="8" fill="#1a7f37"/>
+  <text x="149.2" y="207.0" font-size="9" font-weight="400" fill="#59636e">gradle 0 vs 5.5</text>
+  <text x="230.2" y="207.0" font-size="9" font-weight="400" fill="#59636e"> · </text>
+  <rect x="246.4" y="200.0" width="8" height="8" fill="#59636e"/>
+  <text x="258.4" y="207.0" font-size="9" font-weight="400" fill="#59636e">other 6 vs 18.5</text>
+  <text x="28.0" y="249.0" font-size="13" font-weight="500" fill="#1f2328">Tokens per session, by type</text>
+  <text x="28.0" y="265.0" font-size="11" font-weight="400" fill="#0969da">with kmp-test</text>
+  <rect x="120.0" y="254.0" width="0.0" height="14.0" rx="1" fill="#8250df"/>
+  <rect x="120.0" y="254.0" width="105.1" height="14.0" rx="1" fill="#1b7c83"/>
+  <rect x="225.1" y="254.0" width="10.8" height="14.0" rx="1" fill="#1a7f37"/>
+  <rect x="235.9" y="254.0" width="2.6" height="14.0" rx="1" fill="#bf3989"/>
+  <text x="370.0" y="265.0" font-size="11" font-weight="400" fill="#1f2328">315.9k</text>
+  <text x="28.0" y="283.0" font-size="11" font-weight="400" fill="#bc4c00">without</text>
+  <rect x="120.0" y="272.0" width="0.0" height="14.0" rx="1" fill="#8250df"/>
+  <rect x="120.0" y="272.0" width="224.6" height="14.0" rx="1" fill="#1b7c83"/>
+  <rect x="344.6" y="272.0" width="13.3" height="14.0" rx="1" fill="#1a7f37"/>
+  <rect x="357.9" y="272.0" width="4.1" height="14.0" rx="1" fill="#bf3989"/>
+  <text x="370.0" y="283.0" font-size="11" font-weight="400" fill="#1f2328">645.1k</text>
+  <rect x="28.0" y="294.0" width="8" height="8" fill="#8250df"/>
+  <text x="40.0" y="301.0" font-size="9" font-weight="400" fill="#59636e">uncached input 22 vs 44</text>
+  <text x="164.2" y="301.0" font-size="9" font-weight="400" fill="#59636e"> · </text>
+  <rect x="180.4" y="294.0" width="8" height="8" fill="#1b7c83"/>
+  <text x="192.4" y="301.0" font-size="9" font-weight="400" fill="#59636e">cache read 280.0k vs 598.8k</text>
+  <rect x="28.0" y="307.0" width="8" height="8" fill="#1a7f37"/>
+  <text x="40.0" y="314.0" font-size="9" font-weight="400" fill="#59636e">cache write 28.9k vs 35.4k</text>
+  <text x="180.4" y="314.0" font-size="9" font-weight="400" fill="#59636e"> · </text>
+  <rect x="196.6" y="307.0" width="8" height="8" fill="#bf3989"/>
+  <text x="208.6" y="314.0" font-size="9" font-weight="400" fill="#59636e">output 7.0k vs 10.9k</text>
+  <text x="28.0" y="356.0" font-size="13" font-weight="500" fill="#1f2328">Wall-clock (min)</text>
+  <text x="28.0" y="370.0" font-size="9" font-weight="400" fill="#59636e">median -38% with kmp-test</text>
+  <text x="28.0" y="388.0" font-size="11" font-weight="400" fill="#0969da">with kmp-test</text>
+  <rect x="120.0" y="377.0" width="149.6" height="14.0" rx="1" fill="#0969da"/>
+  <text x="370.0" y="388.0" font-size="11" font-weight="400" fill="#1f2328">5.0 min</text>
+  <text x="28.0" y="406.0" font-size="11" font-weight="400" fill="#bc4c00">without</text>
+  <rect x="120.0" y="395.0" width="242.0" height="14.0" rx="1" fill="#bc4c00"/>
+  <text x="370.0" y="406.0" font-size="11" font-weight="400" fill="#1f2328">8.1 min</text>
+  <text x="28.0" y="440.0" font-size="13" font-weight="500" fill="#1f2328">API cost (USD) — estimate: midpoint of low/high</text>
+  <text x="28.0" y="454.0" font-size="9" font-weight="400" fill="#59636e">median -35% with kmp-test</text>
+  <text x="28.0" y="472.0" font-size="11" font-weight="400" fill="#0969da">with kmp-test</text>
+  <rect x="120.0" y="461.0" width="157.1" height="14.0" rx="1" fill="#0969da"/>
+  <text x="370.0" y="472.0" font-size="11" font-weight="400" fill="#1f2328">$0.23</text>
+  <text x="28.0" y="490.0" font-size="11" font-weight="400" fill="#bc4c00">without</text>
+  <rect x="120.0" y="479.0" width="242.0" height="14.0" rx="1" fill="#bc4c00"/>
+  <text x="370.0" y="490.0" font-size="11" font-weight="400" fill="#1f2328">$0.35</text>
+  <text x="28.0" y="524.0" font-size="13" font-weight="500" fill="#1f2328">Turns</text>
+  <text x="28.0" y="538.0" font-size="9" font-weight="400" fill="#59636e">median -55% with kmp-test</text>
+  <text x="28.0" y="556.0" font-size="11" font-weight="400" fill="#0969da">with kmp-test</text>
+  <text x="120.0" y="556.0" font-size="11" font-weight="400" fill="#1f2328">12</text>
+  <text x="28.0" y="574.0" font-size="11" font-weight="400" fill="#bc4c00">without</text>
+  <text x="120.0" y="574.0" font-size="11" font-weight="400" fill="#1f2328">26.5</text>
+  <text x="28.0" y="590.0" font-size="9" font-weight="400" fill="#59636e">Not comparable across agents: Claude counts assistant turns; Codex</text>
+  <text x="28.0" y="606.0" font-size="9" font-weight="400" fill="#59636e">reports one turn per session.</text>
+  <text x="28.0" y="640.0" font-size="13" font-weight="500" fill="#1f2328">Tool output returned to the model (bytes)</text>
+  <text x="28.0" y="654.0" font-size="9" font-weight="400" fill="#59636e">median -30% with kmp-test</text>
+  <text x="28.0" y="672.0" font-size="11" font-weight="400" fill="#0969da">with kmp-test</text>
+  <rect x="120.0" y="661.0" width="168.3" height="14.0" rx="1" fill="#0969da"/>
+  <text x="370.0" y="672.0" font-size="11" font-weight="400" fill="#1f2328">30.2 KB</text>
+  <text x="28.0" y="690.0" font-size="11" font-weight="400" fill="#bc4c00">without</text>
+  <rect x="120.0" y="679.0" width="242.0" height="14.0" rx="1" fill="#bc4c00"/>
+  <text x="370.0" y="690.0" font-size="11" font-weight="400" fill="#1f2328">43.4 KB</text>
+  <text x="456.0" y="128.0" font-size="14" font-weight="600" fill="#1f2328">Codex CLI · gpt-5.6-terra</text>
+  <text x="456.0" y="155.0" font-size="13" font-weight="500" fill="#1f2328">Shell commands by kind</text>
+  <text x="456.0" y="171.0" font-size="11" font-weight="400" fill="#0969da">with kmp-test</text>
+  <rect x="548.0" y="160.0" width="20.2" height="14.0" rx="1" fill="#8250df"/>
+  <rect x="568.2" y="160.0" width="15.1" height="14.0" rx="1" fill="#59636e"/>
+  <text x="798.0" y="171.0" font-size="11" font-weight="400" fill="#1f2328">3.5</text>
+  <text x="456.0" y="189.0" font-size="11" font-weight="400" fill="#bc4c00">without</text>
+  <text x="548.0" y="189.0" font-size="11" font-weight="400" fill="#59636e">n/a</text>
+  <rect x="456.0" y="200.0" width="8" height="8" fill="#8250df"/>
+  <text x="468.0" y="207.0" font-size="9" font-weight="400" fill="#59636e">kmp-test 2 vs n/a</text>
+  <text x="559.8" y="207.0" font-size="9" font-weight="400" fill="#59636e"> · </text>
+  <rect x="576.0" y="200.0" width="8" height="8" fill="#1a7f37"/>
+  <text x="588.0" y="207.0" font-size="9" font-weight="400" fill="#59636e">gradle 0 vs n/a</text>
+  <text x="669.0" y="207.0" font-size="9" font-weight="400" fill="#59636e"> · </text>
+  <rect x="685.2" y="200.0" width="8" height="8" fill="#59636e"/>
+  <text x="697.2" y="207.0" font-size="9" font-weight="400" fill="#59636e">other 1.5 vs n/a</text>
+  <text x="456.0" y="249.0" font-size="13" font-weight="500" fill="#1f2328">Tokens per session, by type</text>
+  <text x="456.0" y="265.0" font-size="11" font-weight="400" fill="#0969da">with kmp-test</text>
+  <rect x="548.0" y="254.0" width="12.8" height="14.0" rx="1" fill="#8250df"/>
+  <rect x="560.8" y="254.0" width="81.0" height="14.0" rx="1" fill="#1b7c83"/>
+  <rect x="641.8" y="254.0" width="0.4" height="14.0" rx="1" fill="#bf3989"/>
+  <rect x="642.2" y="254.0" width="1.1" height="14.0" rx="1" fill="#cf222e"/>
+  <text x="798.0" y="265.0" font-size="11" font-weight="400" fill="#1f2328">254.0k</text>
+  <text x="456.0" y="283.0" font-size="11" font-weight="400" fill="#bc4c00">without</text>
+  <rect x="548.0" y="272.0" width="22.5" height="14.0" rx="1" fill="#8250df"/>
+  <rect x="570.5" y="272.0" width="126.9" height="14.0" rx="1" fill="#1b7c83"/>
+  <rect x="697.4" y="272.0" width="1.1" height="14.0" rx="1" fill="#bf3989"/>
+  <rect x="698.5" y="272.0" width="0.5" height="14.0" rx="1" fill="#cf222e"/>
+  <text x="798.0" y="283.0" font-size="11" font-weight="400" fill="#1f2328">402.4k</text>
+  <rect x="456.0" y="294.0" width="8" height="8" fill="#8250df"/>
+  <text x="468.0" y="301.0" font-size="9" font-weight="400" fill="#59636e">uncached input 34.1k vs 59.9k</text>
+  <text x="624.6" y="301.0" font-size="9" font-weight="400" fill="#59636e"> · </text>
+  <rect x="640.8" y="294.0" width="8" height="8" fill="#1b7c83"/>
+  <text x="652.8" y="301.0" font-size="9" font-weight="400" fill="#59636e">cache read 215.8k vs 338.3k</text>
+  <rect x="456.0" y="307.0" width="8" height="8" fill="#bf3989"/>
+  <text x="468.0" y="314.0" font-size="9" font-weight="400" fill="#59636e">output 1.1k vs 2.8k</text>
+  <text x="570.6" y="314.0" font-size="9" font-weight="400" fill="#59636e"> · </text>
+  <rect x="586.8" y="307.0" width="8" height="8" fill="#cf222e"/>
+  <text x="598.8" y="314.0" font-size="9" font-weight="400" fill="#59636e">reasoning 2.9k vs 1.4k</text>
+  <text x="456.0" y="356.0" font-size="13" font-weight="500" fill="#1f2328">Wall-clock (min)</text>
+  <text x="456.0" y="370.0" font-size="9" font-weight="400" fill="#59636e">median -12% with kmp-test</text>
+  <text x="456.0" y="388.0" font-size="11" font-weight="400" fill="#0969da">with kmp-test</text>
+  <rect x="548.0" y="377.0" width="160.2" height="14.0" rx="1" fill="#0969da"/>
+  <text x="798.0" y="388.0" font-size="11" font-weight="400" fill="#1f2328">5.4 min</text>
+  <text x="456.0" y="406.0" font-size="11" font-weight="400" fill="#bc4c00">without</text>
+  <rect x="548.0" y="395.0" width="181.2" height="14.0" rx="1" fill="#bc4c00"/>
+  <text x="798.0" y="406.0" font-size="11" font-weight="400" fill="#1f2328">6.1 min</text>
+  <text x="456.0" y="440.0" font-size="13" font-weight="500" fill="#1f2328">API cost (USD) — estimate: midpoint of low/high</text>
+  <text x="456.0" y="454.0" font-size="9" font-weight="400" fill="#59636e">median -36% with kmp-test</text>
+  <text x="456.0" y="472.0" font-size="11" font-weight="400" fill="#0969da">with kmp-test</text>
+  <rect x="548.0" y="461.0" width="111.2" height="14.0" rx="1" fill="#0969da"/>
+  <text x="798.0" y="472.0" font-size="11" font-weight="400" fill="#1f2328">$0.16</text>
+  <text x="456.0" y="490.0" font-size="11" font-weight="400" fill="#bc4c00">without</text>
+  <rect x="548.0" y="479.0" width="173.4" height="14.0" rx="1" fill="#bc4c00"/>
+  <text x="798.0" y="490.0" font-size="11" font-weight="400" fill="#1f2328">$0.25</text>
+  <text x="456.0" y="524.0" font-size="13" font-weight="500" fill="#1f2328">Turns</text>
+  <text x="456.0" y="540.0" font-size="11" font-weight="400" fill="#0969da">with kmp-test</text>
+  <text x="548.0" y="540.0" font-size="11" font-weight="400" fill="#1f2328">1</text>
+  <text x="456.0" y="558.0" font-size="11" font-weight="400" fill="#bc4c00">without</text>
+  <text x="548.0" y="558.0" font-size="11" font-weight="400" fill="#59636e">n/a</text>
+  <text x="456.0" y="574.0" font-size="9" font-weight="400" fill="#59636e">Not comparable across agents: Claude counts assistant turns; Codex</text>
+  <text x="456.0" y="590.0" font-size="9" font-weight="400" fill="#59636e">reports one turn per session.</text>
+  <text x="456.0" y="624.0" font-size="13" font-weight="500" fill="#1f2328">Tool output returned to the model (bytes)</text>
+  <text x="456.0" y="641.0" font-size="12" font-weight="400" fill="#59636e">not recorded for Codex CLI</text>
+</svg>

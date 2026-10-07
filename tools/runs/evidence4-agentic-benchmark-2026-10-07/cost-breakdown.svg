@@ -1,0 +1,49 @@
+<svg viewBox="0 0 880 222" width="880" height="222" xmlns="http://www.w3.org/2000/svg" role="img" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif">
+  <title>Where a session's API cost goes</title>
+  <desc>Each bar is as long as its group's median session cost, on one scale for the whole figure, and its colored segments split that cost by each component's share. Color legend. With kmp-test (#0969da), without (#bc4c00). Cost component: cache write (#1a7f37), cache read (#1b7c83), output (#bf3989), uncached input (#8250df).</desc>
+  <rect x="1" y="1" width="878" height="220" rx="12" fill="#ffffff" stroke="#d0d7de" stroke-width="1"/>
+  <text x="28.0" y="48.0" font-size="20" font-weight="600" fill="#1f2328">Where a session's API cost goes</text>
+  <text x="28.0" y="75.0" font-size="13" font-weight="400" fill="#59636e">Bar length is the median session cost, on one scale for both agents; the colors split it by each group's</text>
+  <text x="28.0" y="92.0" font-size="13" font-weight="400" fill="#59636e">share of its total cost (percentages below). Blue: with kmp-test; orange: without.</text>
+  <text x="28.0" y="127.0" font-size="13" font-weight="500" fill="#1f2328">Claude Code · claude-sonnet-5</text>
+  <text x="28.0" y="143.0" font-size="11" font-weight="400" fill="#0969da">with kmp-test</text>
+  <rect x="120.0" y="132.0" width="69.2" height="14.0" rx="1" fill="#1a7f37"/>
+  <rect x="189.2" y="132.0" width="40.1" height="14.0" rx="1" fill="#1b7c83"/>
+  <rect x="229.3" y="132.0" width="47.8" height="14.0" rx="1" fill="#bf3989"/>
+  <rect x="277.1" y="132.0" width="0.0" height="14.0" rx="1" fill="#8250df"/>
+  <text x="285.1" y="143.0" font-size="11" font-weight="400" fill="#1f2328">$0.226</text>
+  <text x="28.0" y="161.0" font-size="11" font-weight="400" fill="#bc4c00">without</text>
+  <rect x="120.0" y="150.0" width="78.8" height="14.0" rx="1" fill="#1a7f37"/>
+  <rect x="198.8" y="150.0" width="92.3" height="14.0" rx="1" fill="#1b7c83"/>
+  <rect x="291.1" y="150.0" width="70.8" height="14.0" rx="1" fill="#bf3989"/>
+  <rect x="361.9" y="150.0" width="0.1" height="14.0" rx="1" fill="#8250df"/>
+  <text x="370.0" y="161.0" font-size="11" font-weight="400" fill="#1f2328">$0.348</text>
+  <rect x="28.0" y="172.0" width="8" height="8" fill="#1a7f37"/>
+  <text x="40.0" y="179.0" font-size="9" font-weight="400" fill="#59636e">cache write 44% vs 33%</text>
+  <text x="158.8" y="179.0" font-size="9" font-weight="400" fill="#59636e"> · </text>
+  <rect x="175.0" y="172.0" width="8" height="8" fill="#1b7c83"/>
+  <text x="187.0" y="179.0" font-size="9" font-weight="400" fill="#59636e">cache read 26% vs 38%</text>
+  <text x="300.4" y="179.0" font-size="9" font-weight="400" fill="#59636e"> · </text>
+  <rect x="316.6" y="172.0" width="8" height="8" fill="#bf3989"/>
+  <text x="328.6" y="179.0" font-size="9" font-weight="400" fill="#59636e">output 30% vs 29%</text>
+  <rect x="28.0" y="185.0" width="8" height="8" fill="#8250df"/>
+  <text x="40.0" y="192.0" font-size="9" font-weight="400" fill="#59636e">uncached input &lt;1% vs &lt;1%</text>
+  <text x="456.0" y="127.0" font-size="13" font-weight="500" fill="#1f2328">Codex CLI · gpt-5.6-terra</text>
+  <text x="456.0" y="143.0" font-size="11" font-weight="400" fill="#0969da">with kmp-test</text>
+  <rect x="548.0" y="132.0" width="30.9" height="14.0" rx="1" fill="#1b7c83"/>
+  <rect x="578.9" y="132.0" width="30.9" height="14.0" rx="1" fill="#bf3989"/>
+  <rect x="609.8" y="132.0" width="49.4" height="14.0" rx="1" fill="#8250df"/>
+  <text x="667.2" y="143.0" font-size="11" font-weight="400" fill="#1f2328">$0.160</text>
+  <text x="456.0" y="161.0" font-size="11" font-weight="400" fill="#bc4c00">without</text>
+  <rect x="548.0" y="150.0" width="53.5" height="14.0" rx="1" fill="#1b7c83"/>
+  <rect x="601.5" y="150.0" width="34.2" height="14.0" rx="1" fill="#bf3989"/>
+  <rect x="635.7" y="150.0" width="85.7" height="14.0" rx="1" fill="#8250df"/>
+  <text x="729.4" y="161.0" font-size="11" font-weight="400" fill="#1f2328">$0.249</text>
+  <rect x="456.0" y="172.0" width="8" height="8" fill="#1b7c83"/>
+  <text x="468.0" y="179.0" font-size="9" font-weight="400" fill="#59636e">cache read 28% vs 31%</text>
+  <text x="581.4" y="179.0" font-size="9" font-weight="400" fill="#59636e"> · </text>
+  <rect x="597.6" y="172.0" width="8" height="8" fill="#bf3989"/>
+  <text x="609.6" y="179.0" font-size="9" font-weight="400" fill="#59636e">output 28% vs 20%</text>
+  <rect x="456.0" y="185.0" width="8" height="8" fill="#8250df"/>
+  <text x="468.0" y="192.0" font-size="9" font-weight="400" fill="#59636e">uncached input 44% vs 49%</text>
+</svg>

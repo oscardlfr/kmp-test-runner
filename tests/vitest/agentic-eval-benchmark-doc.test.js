@@ -606,6 +606,8 @@ describe('the fixed prose of docs/agentic-benchmark.md is backed by the committe
 const E3_DATE = '2026-10-02';
 const E3_DIR_NAME = `evidence3-agentic-benchmark-${E3_DATE}`;
 const E3_DIR = join(REPO_ROOT, 'tools', 'runs', E3_DIR_NAME);
+const E4_DIR_NAME = 'evidence4-agentic-benchmark-2026-10-07';
+const E4_DIR = join(REPO_ROOT, 'tools', 'runs', E4_DIR_NAME);
 const CORPUS_DIR = join(REPO_ROOT, 'tools', 'agentic-eval', 'corpus');
 const BENCHMARK_DOC_SCRIPT = join(REPO_ROOT, 'tools', 'agentic-eval', 'benchmark-doc.mjs');
 const AGENTS = ['claude-code', 'codex-cli'];
@@ -627,12 +629,14 @@ const sessionCost = (cell, costEstimate) => {
 const thousands = (v) => v.toLocaleString('en-US');
 
 describe('Evidence3: the cost breakdown and the generated blocks of docs/agentic-benchmark.md', () => {
-  let summary, costEstimate, e2Summary, e2CostEstimate, context, doc;
+  let summary, costEstimate, e2Summary, e2CostEstimate, e4Summary, e4CostEstimate, context, doc;
   beforeAll(() => {
     summary = loadSummary(join(E3_DIR, 'campaign-summary.json'));
     costEstimate = loadCostEstimate(join(E3_DIR, 'cost-estimate.json'));
     e2Summary = loadSummary(join(RUNS_DIR, 'campaign-summary.json'));
     e2CostEstimate = loadCostEstimate(join(RUNS_DIR, 'cost-estimate.json'));
+    e4Summary = loadSummary(join(E4_DIR, 'campaign-summary.json'));
+    e4CostEstimate = loadCostEstimate(join(E4_DIR, 'cost-estimate.json'));
     context = docContext(3, E3_DATE, summary, costEstimate);
     doc = crlfNormalize(readFileSync(DOC_PATH, 'utf8'));
   });
@@ -668,7 +672,7 @@ describe('Evidence3: the cost breakdown and the generated blocks of docs/agentic
         expect(staleOutputs({ svgPath, svg, docPath: 'doc.md', doc, filled })).toEqual([]);
         writeFileSync(svgPath, crlf(svg.replace('Where a session', 'Where the session')));
         expect(staleOutputs({ svgPath, svg, docPath: 'doc.md', doc: crlf(doc), filled })).toEqual([svgPath]);
-        expect(staleOutputs({ svgPath, svg, docPath: 'doc.md', doc: crlf(doc.replace('## Both campaigns', '## Both  campaigns')), filled })).toEqual([svgPath, 'doc.md']);
+        expect(staleOutputs({ svgPath, svg, docPath: 'doc.md', doc: crlf(doc.replace('## Across campaigns', '## Across  campaigns')), filled })).toEqual([svgPath, 'doc.md']);
         const missing = join(dir, 'missing.svg');
         expect(staleOutputs({ svgPath: missing, svg, docPath: 'doc.md', doc, filled })).toEqual([missing]);
       } finally {
@@ -965,8 +969,9 @@ describe('Evidence3: the cost breakdown and the generated blocks of docs/agentic
     // One expected row, computed here: a median over the group's counted sessions for every column but the last.
     const expectedRow = (evidenceN, s, c, runtimeId, arm) => {
       const cells = countedCells(s, runtimeId, arm);
-      const measured = runtimeId === 'claude-code' || cells.every((x) => x.output_bytes_kind === 'command_output');
-      const calls = median(cells.map((x) => x.tool_calls_total));
+      const measured = runtimeId === 'claude-code' || s.cells.filter((x) => x.runtime_id === runtimeId && x.status !== 'missing').every((x) => x.output_bytes_kind === 'command_output');
+      const observedCalls = cells.map((x) => x.tool_calls_total).filter((v) => typeof v === 'number');
+      const calls = median(observedCalls);
       return [
         `Evidence${evidenceN}`, AGENT_NAME[runtimeId], ARM_NAME[arm],
         Number.isInteger(calls) ? String(calls) : calls.toFixed(1),
@@ -981,19 +986,20 @@ describe('Evidence3: the cost breakdown and the generated blocks of docs/agentic
     it('has one row per campaign, agent and arm, Evidence2 first, and every cell is recomputed independently from the two summaries and cost estimates', () => {
       const block = readDocBlock(doc, 'campaigns');
       const rows = block.split('\n').filter((l) => l.startsWith('| Evidence'));
-      const expected = [[2, e2Summary, e2CostEstimate], [3, summary, costEstimate]]
+      const expected = [[2, e2Summary, e2CostEstimate], [3, summary, costEstimate], [4, e4Summary, e4CostEstimate]]
         .flatMap(([n, s, c]) => AGENTS.flatMap((runtimeId) => ARMS.map((arm) => `| ${expectedRow(n, s, c, runtimeId, arm).join(' | ')} |`)));
       expect(rows).toEqual(expected);
-      expect(rows).toHaveLength(8); // 2 campaigns x 2 agents x 2 arms
+      expect(rows).toHaveLength(12); // 3 campaigns x 2 agents x 2 arms
       // Evidence3's own groups, pinned: key facts matched 7 of 8 with kmp-test and 7 of 7 without, for both agents.
-      expect(rows.slice(4).map((r) => r.split('|')[9].trim())).toEqual(['7/8', '7/7', '7/8', '7/7']);
+      expect(rows.slice(4, 8).map((r) => r.split('|')[9].trim())).toEqual(['7/8', '7/7', '7/8', '7/7']);
+      expect(rows.slice(8).map((r) => r.split('|')[9].trim())).toEqual(['7/7', '5/8', '8/8', '1/8']);
     });
 
     it('has the caption and header of the plan, and says what the columns mean', () => {
       const block = readDocBlock(doc, 'campaigns');
       expect(block.startsWith('\nMedian per session, by campaign (each campaign compares its own arms; the tasks differ)\n')).toBe(true);
       expect(block).toContain('| Campaign | Agent | Arm | Tool calls | Tool output (KB) | Total tokens | Est. cost (USD) | Wall-clock (min) | Key facts matched |');
-      expect(block).toContain('- Key facts matched: counted sessions whose final answer matched the key facts of that campaign\'s task, out of the counted sessions; the key facts differ between the two tasks.');
+      expect(block).toContain('- Key facts matched: counted sessions whose final answer matched the key facts of that campaign\'s task, out of the counted sessions; the key facts differ between the three tasks.');
     });
 
     it('shows — for Evidence2\'s Codex CLI tool output (erratum E6), numbers for Evidence3\'s, and says what Codex CLI\'s numbers are', () => {
@@ -1001,10 +1007,12 @@ describe('Evidence3: the cost breakdown and the generated blocks of docs/agentic
       const rows = block.split('\n').filter((l) => l.startsWith('| Evidence'));
       const toolOutput = (row) => row.split('|')[5].trim();
       expect(rows.filter((r) => r.startsWith('| Evidence2 | Codex CLI')).map(toolOutput)).toEqual(['—', '—']);
-      for (const row of rows.filter((r) => !r.startsWith('| Evidence2 | Codex CLI'))) expect(toolOutput(row), row).toMatch(/^\d+\.\d$/);
+      for (const row of rows.filter((r) => !r.startsWith('| Evidence2 | Codex CLI') && !r.startsWith('| Evidence4 | Codex CLI'))) expect(toolOutput(row), row).toMatch(/^\d+\.\d$/);
+      expect(rows.filter((r) => r.startsWith('| Evidence4 | Codex CLI')).map(toolOutput)).toEqual(['—', '—']);
       expect(block).toContain('- Tool output is the tool results returned to the model for Claude Code and, for Codex CLI, command output as logged; Codex may shorten what the model reads.');
       expect(block).toContain('- Evidence2: tool output was not measured for Codex CLI, shown as —.');
       expect(block).not.toContain('Evidence3: tool output was not measured');
+      expect(block).toContain('- Evidence4: tool output was not measured for Codex CLI, shown as —.');
     });
 
     // Re-pointed with the root README block (WO-16): the README bullets give each scenario's tool calls, cost and key facts, so those three
@@ -1012,8 +1020,8 @@ describe('Evidence3: the cost breakdown and the generated blocks of docs/agentic
     it('the root README bullets state the same tool-call medians, costs and key facts as this table, for both scenarios', () => {
       const readme = crlfNormalize(readFileSync(join(REPO_ROOT, 'README.md'), 'utf8'));
       const rows = readDocBlock(doc, 'campaigns').split('\n').filter((l) => l.startsWith('| Evidence')).map((r) => r.split('|').map((x) => x.trim()));
-      expect(rows).toHaveLength(8);
-      for (const [evidence, bulletStart] of [['Evidence2', '- **1 module'], ['Evidence3', '- **11 modules']]) {
+      expect(rows).toHaveLength(12);
+      for (const [evidence, bulletStart] of [['Evidence2', '- **1 module'], ['Evidence3', '- **11 modules · find'], ['Evidence4', '- **11 modules · measure']]) {
         const bullet = readme.split('\n').find((l) => l.startsWith(bulletStart));
         expect(bullet, evidence).toBeDefined();
         const [claudeWith, claudeWithout, codexWith, codexWithout] = ['Claude Code', 'Codex CLI'].flatMap((agent) => ['with kmp-test', 'without'].map((arm) => rows.find((r) => r[1] === evidence && r[2] === agent && r[3] === arm)));
@@ -1046,9 +1054,10 @@ describe('the fixed prose of the Evidence3 section is backed by the committed da
     const at = (needle) => doc.indexOf(needle);
     expect(at('### Cost method')).toBeGreaterThan(-1);
     expect(at('## Evidence3 (2026-10-02): many modules, failing tests')).toBeGreaterThan(at('### Cost method'));
-    expect(at('## Both campaigns')).toBeGreaterThan(at('### Session conditions'));
-    expect(at('## Limitations')).toBeGreaterThan(at('## Both campaigns'));
-    expect(doc.slice(at('## Both campaigns'), at('## Limitations')).trimEnd().endsWith(docBlockMarkers('campaigns').end)).toBe(true);
+    expect(at('## Evidence4 (2026-10-07): LINE coverage by module')).toBeGreaterThan(at('### Session conditions'));
+    expect(at('## Across campaigns')).toBeGreaterThan(at('## Evidence4 (2026-10-07): LINE coverage by module'));
+    expect(at('## Limitations')).toBeGreaterThan(at('## Across campaigns'));
+    expect(doc.slice(at('## Across campaigns'), at('## Limitations')).trimEnd().endsWith(docBlockMarkers('campaigns').end)).toBe(true);
   });
 
   it('every link and image of the section points at a file that exists, and the figures are the ones the Evidence3 folder publishes', () => {
@@ -1058,10 +1067,11 @@ describe('the fixed prose of the Evidence3 section is backed by the committed da
     for (const figure of ['scorecard.svg', 'metrics-grid.svg', 'cost-breakdown.svg']) expect(targets).toContain(`../tools/runs/${E3_DIR_NAME}/${figure}`);
   });
 
-  it('the alt text of both cost-breakdown figures says what they show: the median estimated cost per session, split by cost component', () => {
+  it('the alt text of each cost-breakdown figure names what it shows', () => {
     const figures = [...doc.matchAll(/!\[([^\]]*)\]\(([^)]*cost-breakdown\.svg)\)/g)].map((m) => ({ alt: m[1], url: m[2] }));
-    expect(figures.map((f) => f.url)).toEqual(['../tools/runs/evidence2-agentic-benchmark-2026-09-30/cost-breakdown.svg', `../tools/runs/${E3_DIR_NAME}/cost-breakdown.svg`]);
-    for (const { alt } of figures) expect(alt).toBe('Stacked bars: median estimated API cost per session for Claude Code and Codex CLI, with and without kmp-test, split by cost component.');
+    expect(figures.map((f) => f.url)).toEqual(['../tools/runs/evidence2-agentic-benchmark-2026-09-30/cost-breakdown.svg', `../tools/runs/${E3_DIR_NAME}/cost-breakdown.svg`, `../tools/runs/${E4_DIR_NAME}/cost-breakdown.svg`]);
+    for (const { alt } of figures.slice(0, 2)) expect(alt).toBe('Stacked bars: median estimated API cost per session for Claude Code and Codex CLI, with and without kmp-test, split by cost component.');
+    expect(figures[2].alt).toBe('Evidence4 estimated API cost components per counted session.');
   });
 
   it('"No session changed a file that a later session would load": the Claude Code sessions are all agent_state_clean, and the only ones that are not are the Codex CLI sessions whose config.toml the record names', () => {
@@ -1093,7 +1103,7 @@ describe('the fixed prose of the Evidence3 section is backed by the committed da
     expect(summary.by_runtime_arm.map((g) => g.declared)).toEqual([8, 8, 8, 8]);
     expect(Math.min(...summary.by_runtime_arm.map((g) => g.counted))).toBe(7);
     expect(Math.max(...summary.by_runtime_arm.map((g) => g.counted))).toBe(8);
-    expect(doc.replace(/\s+/g, ' ')).toContain('small samples (4 sessions per agent and arm in Evidence2; 8 planned per agent and arm in Evidence3, of which 7 or 8 were counted)');
+    expect(doc.replace(/\s+/g, ' ')).toContain('small samples (4 sessions per agent and arm in Evidence2; 8 planned per agent and arm in Evidence3 and Evidence4, of which 7 or 8 were counted)');
   });
 
   // The one place of the section that names the failing modules is the subsection on the key-fact misses (the architect's amendment,
@@ -1293,5 +1303,55 @@ describe('publication blocks for later scenario families', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('the committed Evidence4 publication', () => {
+  const runDir = join(REPO_ROOT, 'tools', 'runs', 'evidence4-agentic-benchmark-2026-10-07');
+
+  it('uses the declared 11-module scope rather than requiring a Gradle discovery task', () => {
+    const facts = loadScenarioPublicationFacts('multi-module-line-coverage');
+    expect(facts).toEqual({ family: 'multi-module-coverage', moduleCount: 11, thresholdPercent: 26 });
+    expect(buildScenarioBlock(facts)).toContain('11 in-scope modules');
+  });
+
+  it('keeps the counted D3 negative and excludes only the structural rejection from scores', () => {
+    const summary = loadSummary(join(runDir, 'campaign-summary.json'));
+    expect(summary.cells).toHaveLength(32);
+    expect(summary.cells.filter((cell) => cell.status === 'accepted')).toHaveLength(30);
+    expect(summary.cells.filter((cell) => cell.status === 'negative-d3').map((cell) => [cell.runtime_id, cell.arm, cell.round_index])).toEqual([['codex-cli', 'free', 8]]);
+    expect(summary.cells.filter((cell) => cell.status === 'missing').map((cell) => [cell.runtime_id, cell.arm, cell.round_index])).toEqual([['claude-code', 'product', 10]]);
+    expect(summary.by_runtime_arm.map((group) => `${group.runtime_id}/${group.arm}:${group.key_facts_match.matched}/${group.key_facts_match.of}`))
+      .toEqual(['claude-code/free:5/8', 'claude-code/product:7/7', 'codex-cli/free:1/8', 'codex-cli/product:8/8']);
+    const sensitivity = loadSummary(join(runDir, 'campaign-summary-sensitivity.json'));
+    expect(sensitivity.by_runtime_arm).toEqual(summary.by_runtime_arm);
+  });
+
+  it('reconciles all 32 attempt costs, including measured usage of the missing cell', () => {
+    const estimate = loadCostEstimate(join(runDir, 'cost-estimate.json'));
+    const control = JSON.parse(readFileSync(join(runDir, 'cost-control.json'), 'utf8'));
+    expect(estimate.runtimes['claude-code'].cells).toHaveLength(15);
+    expect(estimate.runtimes['codex-cli'].cells).toHaveLength(16);
+    const claudeUpper = estimate.runtimes['claude-code'].cells.reduce((total, { tokens: t }) => total
+      + (t.input * 2 + t.cache_read * 0.2 + t.cache_creation * 4 + t.output * 10) / 1e6, 0);
+    const codexUpper = estimate.runtimes['codex-cli'].cells.reduce((total, { tokens: t }) => total
+      + (t.input * 2.5 * 2 + t.cache_read * 0.2 * 2 + t.output * 12 * 1.5) / 1e6, 0);
+    expect(claudeUpper + codexUpper).toBeCloseTo(control.counted_upper_usd, 7);
+    expect(control.missing_cell).toMatchObject({ runtime_id: 'claude-code', arm: 'product', order_index: 10, usage_source: 'runtime-reported' });
+    const t = control.missing_cell.tokens;
+    expect((t.input * 2 + t.cache_read * 0.2 + t.cache_write * 4 + t.output * 10) / 1e6).toBeCloseTo(control.missing_cell.upper_usd, 7);
+    expect(control.counted_upper_usd + control.missing_cell.upper_usd).toBeCloseTo(control.all_attempts_upper_usd, 7);
+    expect(control.all_attempts_upper_usd).toBeLessThan(control.frozen_ceiling_usd);
+  });
+
+  it('has fresh generated figures and document blocks', () => {
+    const summary = loadSummary(join(runDir, 'campaign-summary.json'));
+    const cost = loadCostEstimate(join(runDir, 'cost-estimate.json'));
+    const doc = crlfNormalize(readFileSync(DOC_PATH, 'utf8'));
+    const blocks = docBlocks(4, summary, cost, docContext(4, '2026-10-07', summary, cost));
+    for (const [id, content] of Object.entries(blocks)) expect(readDocBlock(doc, id), id).toBe(`\n${content}\n`);
+    expect(crlfNormalize(readFileSync(join(runDir, 'cost-breakdown.svg'), 'utf8'))).toBe(renderCostBreakdownSvg(summary, cost));
+    expect(doc).toContain('Codex CLI free-arm index 8 is a counted protocol failure');
+    expect(doc).toContain('Codex CLI without: tool-call median uses 7 recorded cells');
   });
 });

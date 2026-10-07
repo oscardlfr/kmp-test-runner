@@ -26,8 +26,9 @@ const DOC_PATH = join(REPO_ROOT, 'docs', 'agentic-benchmark.md');
 const SCRIPT = join(REPO_ROOT, 'tools', 'agentic-eval', 'readme-evidence.mjs');
 const E2 = 'evidence2-agentic-benchmark-2026-09-30';
 const E3 = 'evidence3-agentic-benchmark-2026-10-02';
-const LABELS = ['1 module · run its tests, check a coverage budget', '11 modules · find the 6 failing tests'];
-const NOTES = [undefined, 'An earlier attempt failed on infrastructure and is not analyzed.'];
+const E4 = 'evidence4-agentic-benchmark-2026-10-07';
+const LABELS = ['1 module · run its tests, check a coverage budget', '11 modules · find the 6 failing tests', '11 modules · measure LINE coverage per module'];
+const NOTES = [undefined, 'An earlier attempt failed on infrastructure and is not analyzed.', 'An earlier campaign was aborted after a timeout and is excluded. The revised campaign scheduled 32 positions and counted 31, including one Codex D3 protocol negative; one Claude session is missing.'];
 const RUNTIMES = ['claude-code', 'codex-cli'];
 const ARMS = ['product', 'free'];
 const AGENT_NAME = { 'claude-code': 'Claude Code', 'codex-cli': 'Codex CLI' };
@@ -65,10 +66,11 @@ function expectedFor(dir) {
   const costEstimate = loadJson(join(RUNS, dir, 'cost-estimate.json'));
   const groups = RUNTIMES.map((runtimeId) => ARMS.map((arm) => {
     const cells = summary.cells.filter((c) => c.runtime_id === runtimeId && c.arm === arm && c.status !== 'missing');
-    const declared = summary.by_runtime_arm.find((g) => g.runtime_id === runtimeId && g.arm === arm).declared;
+    const aggregate = summary.by_runtime_arm.find((g) => g.runtime_id === runtimeId && g.arm === arm);
+    const declared = aggregate.declared;
     return {
       runtimeId, arm, declared, counted: cells.length,
-      calls: median(cells.map((c) => c.tool_calls_total)),
+      calls: aggregate.tool_calls_total.median,
       cost: median(cells.map((c) => sessionCost(costEstimate, c))),
       wall: median(cells.map((c) => c.duration_ms)) / 60000,
       kf: `${cells.filter((c) => c.key_facts_match === true).length}/${cells.length}`,
@@ -100,12 +102,12 @@ function scratchRuns() {
 }
 
 describe('the campaign registry', () => {
-  it('the committed registry lists Evidence2 and Evidence3, in that order, with their labels, and not Evidence1', () => {
+  it('the committed registry lists Evidence2, Evidence3 and Evidence4, in that order, with their labels, and not Evidence1', () => {
     const registry = loadJson(OVERVIEW_REGISTRY_PATH);
     expect(registry.schema).toBe(1);
-    expect(registry.campaigns).toEqual([{ dir: E2, label: LABELS[0] }, { dir: E3, label: LABELS[1], note: NOTES[1] }]);
+    expect(registry.campaigns).toEqual([{ dir: E2, label: LABELS[0] }, { dir: E3, label: LABELS[1], note: NOTES[1] }, { dir: E4, label: LABELS[2], note: NOTES[2] }]);
     const campaigns = loadCampaignRegistry();
-    expect(campaigns.map((c) => [c.dir, c.label, c.evidenceN, c.note])).toEqual([[E2, LABELS[0], 2, undefined], [E3, LABELS[1], 3, NOTES[1]]]);
+    expect(campaigns.map((c) => [c.dir, c.label, c.evidenceN, c.note])).toEqual([[E2, LABELS[0], 2, undefined], [E3, LABELS[1], 3, NOTES[1]], [E4, LABELS[2], 4, NOTES[2]]]);
     expect(Object.keys(campaigns[0])).not.toContain('note');
     for (const c of campaigns) {
       expect(c.summary.by_runtime_arm).toHaveLength(4);
@@ -275,7 +277,7 @@ describe('the overview figure', () => {
     const titles = textsOf('overviewScenarioTitle');
     const metas = textsOf('overviewScenarioMeta');
     expect(titles.map((t) => t.text)).toEqual(LABELS);
-    expect(metas.map((t) => t.text)).toEqual(['Evidence2 · 4 + 4 sessions per agent', 'Evidence3 · 8 + 7 sessions counted per agent']);
+    expect(metas.map((t) => t.text)).toEqual(['Evidence2 · 4 + 4 sessions per agent', 'Evidence3 · 8 + 7 sessions counted per agent', 'Evidence4 · sessions counted: Claude Code 7 + 8 · Codex CLI 8 + 8']);
     titles.forEach((title, i) => {
       expect([title.fontSize, title.fontWeight, title.fill]).toEqual([14, 600, COLOR_TEXT]);
       expect([metas[i].fontSize, metas[i].fontWeight, metas[i].fill]).toEqual([12, 400, COLOR_SECONDARY]);
@@ -286,7 +288,7 @@ describe('the overview figure', () => {
 
   it('draws Claude Code first, then Codex CLI, in each scenario, each with its resolved model under it', () => {
     expect(textsOf('overviewAgent').map((t) => [t.text, t.fontSize, t.fontWeight])).toEqual(
-      [['Claude Code', 13, 500], ['Codex CLI', 13, 500], ['Claude Code', 13, 500], ['Codex CLI', 13, 500]],
+      expected.flatMap(() => [['Claude Code', 13, 500], ['Codex CLI', 13, 500]]),
     );
     const models = textsOf('overviewModel');
     expect(models.map((t) => t.text)).toEqual(expected.flatMap((e) => RUNTIMES.map((r) => e.versions.models[r])));
@@ -409,11 +411,15 @@ describe('the root README block', () => {
 
   it('has, for each scenario, a bullet in the specified form with every number and version recomputed from the committed data', () => {
     const bullets = block.split('\n').filter((l) => l.startsWith('- '));
-    const countsOf = (e, same) => (e.groups.every((pair) => pair.every((g) => g.counted === g.declared)) ? `${same[0]} + ${same[1]} sessions per agent` : `${same[0]} + ${same[1]} sessions counted per agent`);
-    [E2, E3].forEach((dir, i) => {
+    const countsOf = (e) => {
+      const [claude, codex] = e.groups;
+      if (claude.some((g, i) => g.counted !== codex[i].counted)) return `sessions counted: Claude Code ${claude.map((g) => g.counted).join(' + ')} · Codex CLI ${codex.map((g) => g.counted).join(' + ')}`;
+      return `${claude[0].counted} + ${claude[1].counted} sessions ${e.groups.every((pair) => pair.every((g) => g.counted === g.declared)) ? 'per agent' : 'counted per agent'}`;
+    };
+    [E2, E3, E4].forEach((dir, i) => {
       const e = expectedFor(dir);
       const [claude, codex] = e.groups;
-      const counts = countsOf(e, [claude[0].counted, claude[1].counted]);
+      const counts = countsOf(e);
       const evidence = `Evidence${i + 2}`;
       const missing = e.groups.flat().reduce((sum, g) => sum + g.declared - g.counted, 0);
       const missingClause = missing > 0 ? ` ${missing} session${missing === 1 ? '' : 's'} missing data (not counted, not replaced).` : '';
@@ -433,7 +439,7 @@ describe('the root README block', () => {
   it('links and shows only files that exist on disk', () => {
     const targets = [...block.matchAll(/\]\(([^)#\s]+)(?:#[^)]*)?\)/g)].map((m) => m[1]);
     expect(targets).toEqual([
-      'tools/runs/agentic-benchmark-overview.svg', `tools/runs/${E2}/README.md`, `tools/runs/${E3}/README.md`, 'docs/agentic-benchmark.md',
+      'tools/runs/agentic-benchmark-overview.svg', `tools/runs/${E2}/README.md`, `tools/runs/${E3}/README.md`, `tools/runs/${E4}/README.md`, 'docs/agentic-benchmark.md',
     ]);
     for (const target of targets) expect(existsSync(join(REPO_ROOT, target)), target).toBe(true);
   });
@@ -596,8 +602,9 @@ describe('the missing-sessions clause of an overview bullet', () => {
     expect(missingSessionsClause(5)).toBe('5 sessions missing data (not counted, not replaced).');
   });
 
-  it('agrees with the committed summaries: Evidence2 none, Evidence3 two', () => {
+  it('agrees with the committed summaries: Evidence2 none, Evidence3 two, Evidence4 one', () => {
     expect(missingSessionsOf(loadJson(join(RUNS, E2, 'campaign-summary.json')))).toBe(0);
     expect(missingSessionsOf(loadJson(join(RUNS, E3, 'campaign-summary.json')))).toBe(2);
+    expect(missingSessionsOf(loadJson(join(RUNS, E4, 'campaign-summary.json')))).toBe(1);
   });
 });
