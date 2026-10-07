@@ -10,7 +10,6 @@ export default defineConfig({
     // pool: default ('threads') — DO NOT use 'forks' (kills coverage)
     coverage: {
       provider: 'v8',
-      all: true,
       include: ['lib/**/*.js'],
       reporter: ['text', 'html', 'lcov'],
       thresholds: {
