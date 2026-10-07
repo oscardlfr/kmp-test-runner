@@ -5,7 +5,7 @@
 // each of these two sibling files stays independently runnable) with one addition: a `usage`
 // override, since this file's whole point is exercising specific token counts.
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -511,6 +511,27 @@ describe('CLI entry point -- real `node cost-estimate.mjs <dir>` subprocess invo
       expect(result.status).toBe(1);
       expect(result.stderr).toContain('not-recorded');
       expect(existsSync(outPath)).toBe(false);
+    });
+  });
+
+  it('invalidates a pre-existing --out estimate on failure and preserves its exact bytes', () => {
+    withTempDir((dir) => {
+      writeFullCampaign(dir);
+      writeAcceptedCell(dir, 'codex-cli-0', {
+        runtimeId: 'codex-cli', condition: 'current-skill', roundIndex: 0,
+        usage: { source: 'not-recorded', input: null, cached_input: null, cache_write: null, output: null },
+      });
+      const outPath = path.join(dir, 'cost-estimate.json');
+      const staleBytes = Buffer.from('{"schema":2,"stale":true}\r\n', 'utf8');
+      writeFileSync(outPath, staleBytes);
+
+      const result = spawnSync(process.execPath, [COST_ESTIMATE_SCRIPT, dir, '--out', outPath], { encoding: 'utf8' });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('not-recorded');
+      expect(existsSync(outPath)).toBe(false);
+      const invalidated = readdirSync(dir).filter((name) => name.startsWith('cost-estimate.json.invalidated-'));
+      expect(invalidated).toHaveLength(1);
+      expect(readFileSync(path.join(dir, invalidated[0]))).toEqual(staleBytes);
     });
   });
 

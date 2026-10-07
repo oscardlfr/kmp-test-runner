@@ -54,7 +54,8 @@
 //
 // Usage: node tools/agentic-eval/cost-estimate.mjs <campaign-dir>
 
-import { writeFileSync } from 'node:fs';
+import { existsSync, renameSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadCountedCellTokens } from './campaign-summary.mjs';
@@ -174,6 +175,13 @@ function main(argv) {
   }
   const result = buildCostEstimate(campaignDir);
   if (!result.ok) {
+    if (outPath && existsSync(outPath)) {
+      // Keep the prior bytes for audit, but remove them from the active path so a failed
+      // recomputation cannot be mistaken for a current estimate.
+      const invalidatedPath = `${outPath}.invalidated-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID()}`;
+      renameSync(outPath, invalidatedPath);
+      console.error(`::warning::previous --out estimate invalidated and preserved at ${invalidatedPath}`);
+    }
     console.error(`::error::${result.reason}`);
     return 1;
   }
