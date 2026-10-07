@@ -156,6 +156,27 @@ describe('next milestone graders bind final answers to real envelopes', () => {
     }
   });
 
+  it('grades the observed zero-command, empty-final-text control as a complete negative verdict', () => {
+    const expected = { outcome_kind: 'tests_failed', direct_modules: [':core'],
+      dependent_modules: [':feature'], selected_modules: [':core', ':feature'],
+      failing_modules: [':feature'], failed_test_classes: ['FeatureTest'], failed_count: 1 };
+    const graded = gradeNextMilestoneScenario({
+      scenario: { family: 'changed-dependents', expected,
+        evidence_scope: { required_gradle_tasks: [':core:test', ':feature:test'] },
+        policy: { allowed_kmptest_subcommands: ['changed'],
+          allowed_gradle_tasks: [':core:test', ':feature:test'] } },
+      observation: { terminal: { finalText: '' } }, bashResults: [],
+      checks: [{ name: 'no_transcript_structural_issues', passed: true }],
+      junitAttribution: { decisionByAttempt: new Map(), ambiguousJunitEvidence: false,
+        captureIncomplete: false, unreliable: false },
+    });
+    expect(graded).toMatchObject({ expectedOutcomeMatched: false, success: false,
+      testInvocationsTotal: 0, notApplicableReason: 'next_milestone_standard_tools',
+      outcomeAssessment: { task_outcome_matched: null, task_outcome_reason: 'claim-missing',
+        answer_protocol_matched: false, provider_evidence_kind: 'none' },
+      terminalEvidence: { final_answer_block: { found: false, parsed: false } } });
+  });
+
   it('keeps a complete negative legacy verdict eligible for a scenario aggregate', () => {
     const complete = { project_commit: 'project-pin', model_resolved: 'model',
       kmp_test_cli_source_sha: 'source-pin', repo_commit: 'repo-pin', daemon_policy: 'isolated',
