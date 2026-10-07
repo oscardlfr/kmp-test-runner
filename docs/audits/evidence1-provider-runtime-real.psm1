@@ -337,15 +337,22 @@ function Invoke-E1ProviderRuntimeSession {
       $json = ($bundleOutput | ConvertTo-Json -Depth 10 -Compress)
       if ($json.Length -gt 4000) { $json.Substring(0, 4000) + '...(truncated)' } else { $json }
     }
+    $bundleReason = if ($null -eq $bundleResult) { '' } else { [string](Get-E1ProviderRuntimeSafeProperty $bundleResult 'reason_code') }
+    $unknownAfterDispatch = $bundleReason.StartsWith('guest_bundle_transport_unknown_after_dispatch:', [StringComparison]::Ordinal)
+    $outputSummary = [ordered]@{
+      worker_output_present = $false
+      guest_bundle_result_present = ($null -ne $bundleResult)
+      guest_bundle_verdict = $(if ($null -eq $bundleVerdict) { $null } else { [string]$bundleVerdict })
+      guest_bundle_reason_code = $(if ($null -eq $bundleResult) { $null } else { $bundleReason })
+      guest_bundle_output_json = $guestOutputJson
+    }
+    if ($unknownAfterDispatch) {
+      $outputSummary.inference_phase = 'unknown'
+      $outputSummary.transport_boundary = 'job_issued'
+    }
     return New-E1ProviderRuntimeSessionResult -RuntimeId $runtimeId -ModelId $modelId -RoundIndex $roundIndex `
       -SessionId ([guid]::NewGuid().ToString('N')) -StartedAtUtc $startedAtUtc -CompletedAtUtc $completedAtUtc `
-      -ExitCode 1 -Verdict 'FAIL' -ReasonCode 'provider_runtime_real_worker_failed' -OutputSummary ([ordered]@{
-        worker_output_present = $false
-        guest_bundle_result_present = ($null -ne $bundleResult)
-        guest_bundle_verdict = $(if ($null -eq $bundleVerdict) { $null } else { [string]$bundleVerdict })
-        guest_bundle_reason_code = $(if ($null -eq $bundleResult) { $null } else { [string](Get-E1ProviderRuntimeSafeProperty $bundleResult 'reason_code') })
-        guest_bundle_output_json = $guestOutputJson
-      })
+      -ExitCode 1 -Verdict 'FAIL' -ReasonCode $(if ($unknownAfterDispatch) { 'post_dispatch_transport_phase_unknown' } else { 'provider_runtime_real_worker_failed' }) -OutputSummary $outputSummary
   }
   Assert-E1ProviderRuntimeSessionResult $bundleOutput
   if ([string]$bundleOutput.runtime_id -cne $runtimeId -or [string]$bundleOutput.model_id -cne $modelId -or
