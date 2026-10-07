@@ -1018,8 +1018,27 @@ function Invoke-E1RunLiveRunningState($Context) {
         -PromptSha256 ([string]$cell.campaign_design_id)
     }
     Assert-E1ProviderRuntimeSessionResult $session
-    if ([string]$session.verdict -cne 'PASS') { $overallOk = $false }
     $sessions += $session
+    # A remoting socket can disappear after the guest job was issued while the
+    # guest process is still running. No following cell may be dispatched in
+    # that VM. Return FAIL now so the state walk runs its failure-safe offline
+    # and VM-Off closure, then copies any already completed cell evidence.
+    # This attempt remains failed; replacement requires a new campaign_id.
+    if ($Context.UseRealBackends -and
+        [string]$session.verdict -ceq 'FAIL' -and
+        [string]$session.reason_code -ceq 'post_dispatch_transport_phase_unknown' -and
+        [string]$session.output_summary.transport_boundary -ceq 'job_issued' -and
+        [string]$session.output_summary.inference_phase -ceq 'unknown') {
+      $semanticRejectionCount = @($sessions | Where-Object { (Get-E1SafeBenchmarkStatus $_.output_summary) -ceq 'rejected' }).Count
+      return New-E1RunStateReceipt -CampaignId $Context.CampaignId -StateName 'LiveRunning' -Verdict 'FAIL' `
+        -ReasonCode 'post_dispatch_transport_phase_unknown' -Detail ([ordered]@{
+          sessions = $sessions
+          cell_count = $cells.Count
+          semantic_rejection_count = $semanticRejectionCount
+          next_cell_not_dispatched = $true
+        })
+    }
+    if ([string]$session.verdict -cne 'PASS') { $overallOk = $false }
   }
   $verdict = if ($overallOk) { 'PASS' } else { 'FAIL' }
   $reasonCode = if ($overallOk) { $null } else { 'one_or_more_provider_sessions_failed' }

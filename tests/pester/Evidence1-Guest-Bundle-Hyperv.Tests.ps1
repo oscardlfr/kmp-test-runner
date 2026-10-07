@@ -105,6 +105,22 @@ Describe 'Invoke-E1GuestBundle: logon-candidate fallback boundary (2026-09-28 in
         $script:invokeCalls | Should -Be 1
     }
 
+    It 'classifies a remoting socket loss only after job issuance as unknown phase and never replays' {
+        $script:sessionCalls = 0
+        function New-PSSession { param($VMId, $Credential, [switch]$ErrorAction) $script:sessionCalls++; [pscustomobject]@{ Id = [guid]::NewGuid() } }
+        function Invoke-Command { param($Session, $ScriptBlock, $ArgumentList, [switch]$AsJob) [pscustomobject]@{ Id = 999 } }
+        function Wait-Job { param($Job, $Timeout) $true }
+        function Receive-Job { param($Job, [switch]$ErrorAction) throw [System.Management.Automation.Remoting.PSRemotingTransportException]::new('socket lost') }
+        function Stop-Job { param($Job, [switch]$ErrorAction) }
+        function Remove-Job { param($Job, [switch]$Force, [switch]$ErrorAction) }
+        function Remove-PSSession { param($Session, [switch]$ErrorAction) }
+
+        $result = Invoke-E1GuestBundle -VMName 'Evidence1-Runner-E2E' -GuestCredentialPath $script:CredPath -BundleName $script:BundleName -Arguments @{} -TimeoutSeconds 60
+        $result.verdict | Should -BeExactly 'FAIL'
+        $result.reason_code | Should -Match '^guest_bundle_transport_unknown_after_dispatch:'
+        $script:sessionCalls | Should -Be 1
+    }
+
     It '(M2) FAILs immediately when Invoke-Command itself throws, and never attempts a second candidate -- cannot prove the remote scriptblock did not already start' {
         $script:sessionCalls = 0
         function New-PSSession { param($VMId, $Credential, [switch]$ErrorAction) $script:sessionCalls++; [pscustomobject]@{ Id = [guid]::NewGuid() } }

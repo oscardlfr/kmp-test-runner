@@ -41,6 +41,14 @@ Describe 'Evidence1 ProviderRuntime real canonical worker dispatch' {
     $result.output_summary.guest_bundle_reason_code|Should -BeExactly 'guest_worker_specific_reason'
     ($result.output_summary.guest_bundle_output_json|ConvertFrom-Json).diagnostic_detail|Should -BeExactly 'xyz'
   }
+  It 'classifies the post-job transport loss as a failed session with unknown phase' {
+    $fake={ [ordered]@{verdict='FAIL';reason_code='guest_bundle_transport_unknown_after_dispatch: socket lost';output=$null} }
+    $result=Invoke-E1ProviderRuntimeSession -CurrentCampaignInputs (New-TestInputs) -Cell (New-TestCell) -VMName 'Evidence1E2E' -GuestCredentialPath 'C:\fake.xml' -QueueRoot 'C:\queue' -AllowedRoot 'C:\allowed' -TriggerTask {} -InvokeGuestBundle $fake
+    $result.reason_code|Should -BeExactly 'post_dispatch_transport_phase_unknown'
+    $result.output_summary.transport_boundary|Should -BeExactly 'job_issued'
+    $result.output_summary.inference_phase|Should -BeExactly 'unknown'
+    $result.output_summary.worker_output_present|Should -BeFalse
+  }
   It 'stamps real elapsed start/complete times for a worker-failed result, not two identical UtcNow calls' {
     $fake={ Start-Sleep -Milliseconds 30; [ordered]@{verdict='FAIL';output=$null} }
     $result=Invoke-E1ProviderRuntimeSession -CurrentCampaignInputs (New-TestInputs) -Cell (New-TestCell) -VMName 'Evidence1E2E' -GuestCredentialPath 'C:\fake.xml' -QueueRoot 'C:\queue' -AllowedRoot 'C:\allowed' -TriggerTask {} -InvokeGuestBundle $fake

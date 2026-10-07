@@ -74,6 +74,17 @@ function Get-E1GuestBundleSanitizedErrorText([string]$Message) {
   return $singleLine
 }
 
+# A broken remoting socket after Invoke-Command -AsJob was issued does not
+# establish whether the guest process reached inference or completed. Keep
+# this narrow: shape/validation errors and ordinary worker failures are not
+# transport losses and must retain their historical FAIL path.
+function Test-E1GuestBundleTransportException($Exception) {
+  for ($current = $Exception; $null -ne $current; $current = $current.InnerException) {
+    if ([string]$current.GetType().Name -ceq 'PSRemotingTransportException') { return $true }
+  }
+  return $false
+}
+
 function New-E1GuestBundleInvocationResult {
   [CmdletBinding()]
   param(
@@ -182,8 +193,11 @@ function Invoke-E1GuestBundle {
     } catch {
       $errorText = Get-E1GuestBundleSanitizedErrorText $_.Exception.Message
       if ($jobIssued) {
+        $reason = if (Test-E1GuestBundleTransportException $_.Exception) {
+          "guest_bundle_transport_unknown_after_dispatch: $errorText"
+        } else { "guest_bundle_failed: $errorText" }
         return New-E1GuestBundleInvocationResult -BundleName $BundleName -VMName $VMName -VMId $vmId `
-          -LogonNameUsed $logon -Verdict 'FAIL' -ReasonCode "guest_bundle_failed: $errorText"
+          -LogonNameUsed $logon -Verdict 'FAIL' -ReasonCode $reason
       }
       $lastFailureReason = "guest_bundle_auth_failed: $errorText"
     } finally {
