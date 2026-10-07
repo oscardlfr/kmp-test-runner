@@ -1,0 +1,345 @@
+{
+  "schema": 2,
+  "runtimes": {
+    "claude-code": {
+      "model": "claude-sonnet-5",
+      "per_million_tokens": {
+        "input": 2,
+        "cache_write_5m": 2.5,
+        "cache_write_1h": 4,
+        "cache_read": 0.2,
+        "output": 10
+      },
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "retrieved": "2026-09-29",
+      "cells": [
+        {
+          "arm": "product",
+          "order_index": 0,
+          "tokens": {
+            "input": 34,
+            "output": 16100,
+            "cache_read": 747908,
+            "cache_creation": 71943
+          }
+        },
+        {
+          "arm": "free",
+          "order_index": 1,
+          "tokens": {
+            "input": 36,
+            "output": 9420,
+            "cache_read": 451088,
+            "cache_creation": 32367
+          }
+        },
+        {
+          "arm": "free",
+          "order_index": 2,
+          "tokens": {
+            "input": 54,
+            "output": 10871,
+            "cache_read": 814235,
+            "cache_creation": 38585
+          }
+        },
+        {
+          "arm": "product",
+          "order_index": 3,
+          "tokens": {
+            "input": 10,
+            "output": 3619,
+            "cache_read": 85560,
+            "cache_creation": 21899
+          }
+        },
+        {
+          "arm": "free",
+          "order_index": 4,
+          "tokens": {
+            "input": 42,
+            "output": 8507,
+            "cache_read": 532458,
+            "cache_creation": 32343
+          }
+        },
+        {
+          "arm": "product",
+          "order_index": 5,
+          "tokens": {
+            "input": 8,
+            "output": 3100,
+            "cache_read": 64834,
+            "cache_creation": 23359
+          }
+        },
+        {
+          "arm": "product",
+          "order_index": 6,
+          "tokens": {
+            "input": 10,
+            "output": 6290,
+            "cache_read": 96711,
+            "cache_creation": 26553
+          }
+        },
+        {
+          "arm": "free",
+          "order_index": 7,
+          "tokens": {
+            "input": 66,
+            "output": 15434,
+            "cache_read": 1072245,
+            "cache_creation": 50148
+          }
+        },
+        {
+          "arm": "free",
+          "order_index": 8,
+          "tokens": {
+            "input": 46,
+            "output": 10839,
+            "cache_read": 621426,
+            "cache_creation": 33867
+          }
+        },
+        {
+          "arm": "product",
+          "order_index": 9,
+          "tokens": {
+            "input": 28,
+            "output": 6961,
+            "cache_read": 372991,
+            "cache_creation": 28900
+          }
+        },
+        {
+          "arm": "free",
+          "order_index": 11,
+          "tokens": {
+            "input": 70,
+            "output": 12794,
+            "cache_read": 1139257,
+            "cache_creation": 48308
+          }
+        },
+        {
+          "arm": "product",
+          "order_index": 12,
+          "tokens": {
+            "input": 38,
+            "output": 10126,
+            "cache_read": 592200,
+            "cache_creation": 35179
+          }
+        },
+        {
+          "arm": "free",
+          "order_index": 13,
+          "tokens": {
+            "input": 40,
+            "output": 11777,
+            "cache_read": 576105,
+            "cache_creation": 36993
+          }
+        },
+        {
+          "arm": "free",
+          "order_index": 14,
+          "tokens": {
+            "input": 40,
+            "output": 7164,
+            "cache_read": 452514,
+            "cache_creation": 24489
+          }
+        },
+        {
+          "arm": "product",
+          "order_index": 15,
+          "tokens": {
+            "input": 22,
+            "output": 7232,
+            "cache_read": 280043,
+            "cache_creation": 30017
+          }
+        }
+      ]
+    },
+    "codex-cli": {
+      "model": "gpt-5.6-terra",
+      "per_million_tokens": {
+        "input": 2,
+        "cache_write_5m": 2.5,
+        "cache_write_1h": 2.5,
+        "cache_read": 0.2,
+        "output": 12
+      },
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "retrieved": "2026-09-29",
+      "uncached_input_may_be_cache_writes": true,
+      "pricing_note": "OpenAI Input pricing tooltip (developers.openai.com/api/docs/pricing, retrieved 2026-09-29): \"Input tokens are either Input, Cached Input, or Cache Write and writes are not an additive fee.\"",
+      "cells": [
+        {
+          "arm": "product",
+          "order_index": 0,
+          "tokens": {
+            "input": 35858,
+            "output": 2072,
+            "cache_read": 215808,
+            "cache_creation": 0
+          }
+        },
+        {
+          "arm": "free",
+          "order_index": 1,
+          "tokens": {
+            "input": 67134,
+            "output": 3659,
+            "cache_read": 260608,
+            "cache_creation": 0
+          }
+        },
+        {
+          "arm": "free",
+          "order_index": 2,
+          "tokens": {
+            "input": 36239,
+            "output": 4677,
+            "cache_read": 254720,
+            "cache_creation": 0
+          }
+        },
+        {
+          "arm": "product",
+          "order_index": 3,
+          "tokens": {
+            "input": 47687,
+            "output": 6179,
+            "cache_read": 452352,
+            "cache_creation": 0
+          }
+        },
+        {
+          "arm": "free",
+          "order_index": 4,
+          "tokens": {
+            "input": 50927,
+            "output": 4101,
+            "cache_read": 348416,
+            "cache_creation": 0
+          }
+        },
+        {
+          "arm": "product",
+          "order_index": 5,
+          "tokens": {
+            "input": 31872,
+            "output": 2912,
+            "cache_read": 177152,
+            "cache_creation": 0
+          }
+        },
+        {
+          "arm": "product",
+          "order_index": 6,
+          "tokens": {
+            "input": 32053,
+            "output": 2689,
+            "cache_read": 152832,
+            "cache_creation": 0
+          }
+        },
+        {
+          "arm": "free",
+          "order_index": 7,
+          "tokens": {
+            "input": 68089,
+            "output": 7251,
+            "cache_read": 828416,
+            "cache_creation": 0
+          }
+        },
+        {
+          "arm": "free",
+          "order_index": 8,
+          "tokens": {
+            "input": 57136,
+            "output": 4797,
+            "cache_read": 328192,
+            "cache_creation": 0
+          }
+        },
+        {
+          "arm": "product",
+          "order_index": 9,
+          "tokens": {
+            "input": 32654,
+            "output": 6164,
+            "cache_read": 360704,
+            "cache_creation": 0
+          }
+        },
+        {
+          "arm": "product",
+          "order_index": 10,
+          "tokens": {
+            "input": 31336,
+            "output": 5167,
+            "cache_read": 150784,
+            "cache_creation": 0
+          }
+        },
+        {
+          "arm": "free",
+          "order_index": 11,
+          "tokens": {
+            "input": 74572,
+            "output": 4360,
+            "cache_read": 561152,
+            "cache_creation": 0
+          }
+        },
+        {
+          "arm": "product",
+          "order_index": 12,
+          "tokens": {
+            "input": 35637,
+            "output": 2822,
+            "cache_read": 215808,
+            "cache_creation": 0
+          }
+        },
+        {
+          "arm": "free",
+          "order_index": 13,
+          "tokens": {
+            "input": 62763,
+            "output": 3239,
+            "cache_read": 443136,
+            "cache_creation": 0
+          }
+        },
+        {
+          "arm": "free",
+          "order_index": 14,
+          "tokens": {
+            "input": 48984,
+            "output": 2813,
+            "cache_read": 243456,
+            "cache_creation": 0
+          }
+        },
+        {
+          "arm": "product",
+          "order_index": 15,
+          "tokens": {
+            "input": 47271,
+            "output": 6535,
+            "cache_read": 344064,
+            "cache_creation": 0
+          }
+        }
+      ]
+    }
+  }
+}
