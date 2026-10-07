@@ -261,6 +261,36 @@ function assertOutDirUsable(outDir) {
   if (!statSync(outDir).isDirectory() || readdirSync(outDir).length > 0) refuse('out_dir_not_empty', outDir);
 }
 
+/** An optional private custody sidecar is produced after raw transcripts are copied off the VM. It is not a
+ * cell and is not copied into the merged cell tree; validate it against the exact source block bytes. */
+function assertBlockRawCustody(block, expected) {
+  const privateDir = join(block.dir, 'private');
+  const sidecar = join(privateDir, 'raw-custody.json');
+  if (!existsSync(sidecar)) return;
+  const custody = readJsonFile(sidecar, 'block_raw_custody_invalid');
+  if (custody?.campaign_id !== block.id || !Array.isArray(custody.cells) || custody.cells.length !== expected.size) {
+    refuse('block_raw_custody_invalid', block.id);
+  }
+  const seen = new Set();
+  for (const cell of custody.cells) {
+    const planned = expected.get(cell?.cell_key);
+    if (!planned || seen.has(cell.cell_key) || cell.order_index !== planned.index || cell.arm !== planned.arm
+      || !Number.isSafeInteger(cell.raw_bytes) || cell.raw_bytes < 0 || !/^[0-9a-f]{64}$/.test(cell.raw_sha256)) {
+      refuse('block_raw_custody_invalid', block.id + '/' + (cell?.cell_key ?? 'unknown'));
+    }
+    seen.add(cell.cell_key);
+    let bytes;
+    try {
+      bytes = readFileSync(join(privateDir, cell.cell_key, 'transcript.jsonl'));
+    } catch {
+      refuse('block_raw_custody_invalid', block.id + '/' + cell.cell_key + ' transcript absent');
+    }
+    if (bytes.length !== cell.raw_bytes || createHash('sha256').update(bytes).digest('hex') !== cell.raw_sha256) {
+      refuse('block_raw_custody_invalid', block.id + '/' + cell.cell_key + ' transcript digest');
+    }
+  }
+}
+
 /**
  * Merges the closure directories of completed block runs into `outDir`.
  * @param {{blockDirs: string[], outDir: string}} options
@@ -302,9 +332,13 @@ export function mergeCampaignBlocks({ blockDirs, outDir }) {
   const planned = [];
   for (const block of blocks) {
     const privateDir = join(block.dir, 'private');
-    const expected = new Set(block.manifest.runtimes.flatMap((runtime) => runtime.campaign_cell_indices.map((index) => `${runtime.runtime_id}-${index}`)));
-    const unexpected = (existsSync(privateDir) ? readdirSync(privateDir) : []).find((name) => !expected.has(name));
-    if (unexpected !== undefined) refuse('cell_directory_unexpected', `${block.id}/private/${unexpected}`);
+    const expected = new Map(block.manifest.runtimes.flatMap((runtime) => runtime.campaign_cell_indices.map((index, local) =>
+      [runtime.runtime_id + '-' + index, { index, arm: block.manifest.round_order[local] }])));
+    const unexpected = (existsSync(privateDir) ? readdirSync(privateDir, { withFileTypes: true }) : [])
+      .find((entry) => !(expected.has(entry.name) && entry.isDirectory())
+        && !(entry.name === 'raw-custody.json' && entry.isFile()));
+    if (unexpected !== undefined) refuse('cell_directory_unexpected', block.id + '/private/' + unexpected.name);
+    assertBlockRawCustody(block, expected);
     for (const runtime of block.manifest.runtimes) {
       runtime.campaign_cell_indices.forEach((_, local) => {
         planned.push({ runtimeId: runtime.runtime_id, ...readCell(block, runtime, local, plans.get(runtime.runtime_id)) });
