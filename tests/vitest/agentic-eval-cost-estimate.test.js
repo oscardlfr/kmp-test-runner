@@ -88,7 +88,7 @@ function acceptedRecord({ runId, runtimeId, condition, roundIndex, usage = DEFAU
       cache_read: nullableMetric(usage.cached_input), cache_creation: nullableMetric(usage.cache_write),
     },
     usage: {
-      source: 'runtime-reported', input: usage.input, cached_input: usage.cached_input,
+      source: usage.source ?? 'runtime-reported', input: usage.input, cached_input: usage.cached_input,
       cache_write: usage.cache_write, output: usage.output, reasoning_output: null,
       attributable_to_skill_load: {
         status: 'not-recorded',
@@ -282,9 +282,18 @@ describe('tokensForRow -- binding per-runtime token mapping', () => {
     expect(tokens).toEqual({ input: 700, cache_read: 300, output: 500, cache_creation: 999 });
   });
 
-  it('a missing/non-number usage dimension reads as 0, never inferred', () => {
-    expect(tokensForRow('claude-code', {})).toEqual({ input: 0, cache_read: 0, output: 0, cache_creation: 0 });
-    expect(tokensForRow('codex-cli', null)).toEqual({ input: 0, cache_read: 0, output: 0, cache_creation: 0 });
+  it('missing priced dimensions cannot be mapped to fabricated zero tokens', () => {
+    expect(tokensForRow('claude-code', {})).toBeNull();
+    expect(tokensForRow('codex-cli', null)).toBeNull();
+    expect(tokensForRow('codex-cli', { input: 12, cached_input: null, output: 3 })).toBeNull();
+    expect(tokensForRow('claude-code', { input: 12, cached_input: 0, cache_write: null, output: 3 })).toBeNull();
+  });
+
+  it('explicit runtime-reported zeros remain valid zeros', () => {
+    expect(tokensForRow('claude-code', { source: 'runtime-reported', input: 0, cached_input: 0, cache_write: 0, output: 0 }))
+      .toEqual({ input: 0, cache_read: 0, output: 0, cache_creation: 0 });
+    expect(tokensForRow('codex-cli', { source: 'runtime-reported', input: 0, cached_input: 0, cache_write: null, output: 0 }))
+      .toEqual({ input: 0, cache_read: 0, output: 0, cache_creation: 0 });
   });
 
   it('Codex: input never goes negative even if cached_input somehow exceeds input', () => {
@@ -294,6 +303,33 @@ describe('tokensForRow -- binding per-runtime token mapping', () => {
 });
 
 describe('buildCostEstimate', () => {
+  it('refuses a counted Codex cell with source not-recorded and all usage dimensions null', () => {
+    withTempDir((dir) => {
+      writeFullCampaign(dir);
+      writeAcceptedCell(dir, 'codex-cli-0', {
+        runtimeId: 'codex-cli', condition: 'current-skill', roundIndex: 0,
+        usage: { source: 'not-recorded', input: null, cached_input: null, cache_write: null, output: null },
+      });
+      const result = buildCostEstimate(dir);
+      expect(result.ok).toBe(false);
+      expect(result.reason).toMatch(/codex-cli.*product.*index 0.*not-recorded/);
+    });
+  });
+
+  it.each([
+    ['codex-cli', { input: 100, cached_input: null, cache_write: null, output: 10 }, 'cached_input'],
+    ['claude-code', { input: 100, cached_input: 0, cache_write: null, output: 10 }, 'cache_write'],
+  ])('refuses incomplete %s priced usage, naming %s', (runtimeId, usage, missingDimension) => {
+    withTempDir((dir) => {
+      writeFullCampaign(dir);
+      writeAcceptedCell(dir, `${runtimeId}-0`, { runtimeId, condition: 'current-skill', roundIndex: 0, usage });
+      const result = buildCostEstimate(dir);
+      expect(result.ok).toBe(false);
+      expect(result.reason).toContain(runtimeId);
+      expect(result.reason).toContain(missingDimension);
+    });
+  });
+
   it('a genuinely live, complete campaign produces a schema-2 doc that passes validateCostEstimate', () => {
     withTempDir((dir) => {
       writeFullCampaign(dir);
@@ -463,6 +499,21 @@ describe('buildCostEstimate', () => {
 // FIXED guard (resolve(process.argv[1]) === fileURLToPath(import.meta.url)); this proves that
 // claim by executing the real script, not by pattern-matching the source.
 describe('CLI entry point -- real `node cost-estimate.mjs <dir>` subprocess invocation', () => {
+  it('exits nonzero without writing an estimate when a counted cell has no recorded usage', () => {
+    withTempDir((dir) => {
+      writeFullCampaign(dir);
+      writeAcceptedCell(dir, 'codex-cli-0', {
+        runtimeId: 'codex-cli', condition: 'current-skill', roundIndex: 0,
+        usage: { source: 'not-recorded', input: null, cached_input: null, cache_write: null, output: null },
+      });
+      const outPath = path.join(dir, 'cost-estimate.json');
+      const result = spawnSync(process.execPath, [COST_ESTIMATE_SCRIPT, dir, '--out', outPath], { encoding: 'utf8' });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('not-recorded');
+      expect(existsSync(outPath)).toBe(false);
+    });
+  });
+
   it('prints non-empty, schema-2 JSON and exits 0 for a valid, complete live campaign', () => {
     withTempDir((dir) => {
       writeFullCampaign(dir);

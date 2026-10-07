@@ -82,30 +82,37 @@ export const RUNTIME_PRICING = Object.freeze({
   }),
 });
 
-/** Applies the BINDING per-runtime token mapping (see this file's header) to one counted cell's
- * raw usage. A missing/non-number dimension reads as 0 -- never inferred, but a cost-estimate row
- * only exists for a cell this module's own completeness gate (every arm has at least one counted
- * cell) already accepted, so an absent dimension here means "genuinely zero for this session", not
- * "not yet measured". */
+const PRICED_USAGE_DIMENSIONS = Object.freeze({
+  'claude-code': Object.freeze(['input', 'cached_input', 'cache_write', 'output']),
+  'codex-cli': Object.freeze(['input', 'cached_input', 'output']),
+});
+
+function missingPricedDimensions(runtimeId, usage) {
+  return (PRICED_USAGE_DIMENSIONS[runtimeId] ?? []).filter((dimension) =>
+    !Number.isSafeInteger(usage?.[dimension]) || usage[dimension] < 0);
+}
+
+/** Applies the BINDING per-runtime token mapping to one counted cell's recorded usage.
+ * Returns null when any priced dimension is absent; a null usage value is unknown, never zero.
+ * Codex cache_write is excluded because this mapping prices its uncached input as input and
+ * assigns cache_creation=0 by definition, not by reading that unreported dimension. */
 export function tokensForRow(runtimeId, usage) {
-  const u = usage ?? {};
-  const input = typeof u.input === 'number' ? u.input : 0;
-  const cachedInput = typeof u.cached_input === 'number' ? u.cached_input : 0;
-  const output = typeof u.output === 'number' ? u.output : 0;
+  if (!PRICED_USAGE_DIMENSIONS[runtimeId] || (usage?.source != null && usage.source !== 'runtime-reported')
+      || missingPricedDimensions(runtimeId, usage).length > 0) return null;
+  const { input, cached_input: cachedInput, output } = usage;
   if (runtimeId === 'codex-cli') {
     return { input: Math.max(input - cachedInput, 0), output, cache_read: cachedInput, cache_creation: 0 };
   }
-  const cacheWrite = typeof u.cache_write === 'number' ? u.cache_write : 0;
-  return { input, output, cache_read: cachedInput, cache_creation: cacheWrite };
+  return { input, output, cache_read: cachedInput, cache_creation: usage.cache_write };
 }
 
 /** Builds the schema-2 cost-estimate.json object for a live campaign directory.
  * @returns {{ok:true, doc:object}|{ok:false, reason:string}} Never a partial or guessed estimate:
  *   fails closed on a non-live/unreadable campaign, a cell whose recorded model_id doesn't match
  *   this module's own pinned RUNTIME_PRICING (the price table would silently describe the wrong
- *   model), or a runtime with an arm that has no counted cell. Each arm's cells are that arm's
- *   counted cells, whatever their number (a canary has 1 per arm, a campaign 8) and whether or not
- *   the two arms of a runtime match.
+ *   model), incomplete/unrecorded priced usage, or a runtime with an arm that has no counted cell.
+ *   Each arm's cells are that arm's counted cells, whatever their number (a canary has 1 per arm,
+ *   a campaign 8) and whether or not the two arms of a runtime match.
  */
 export function buildCostEstimate(campaignDir) {
   const rows = loadCountedCellTokens(campaignDir);
@@ -124,10 +131,18 @@ export function buildCostEstimate(campaignDir) {
       const n = runtimeRows.filter((r) => r.arm === arm).length;
       if (n < 1) return { ok: false, reason: `${runtimeId}: expected at least 1 counted ${arm} cell, got ${n}` };
     }
-    const cells = runtimeRows
-      .slice()
-      .sort((a, b) => a.roundIndex - b.roundIndex)
-      .map((r) => ({ arm: r.arm, order_index: r.roundIndex, tokens: tokensForRow(runtimeId, r.usage) }));
+    const cells = [];
+    for (const row of runtimeRows.slice().sort((a, b) => a.roundIndex - b.roundIndex)) {
+      const location = `${runtimeId} ${row.arm} index ${row.roundIndex}`;
+      if (row.usage?.source !== 'runtime-reported') {
+        return { ok: false, reason: `${location}: usage source ${JSON.stringify(row.usage?.source ?? 'not-recorded')} cannot be priced` };
+      }
+      const missing = missingPricedDimensions(runtimeId, row.usage);
+      if (missing.length > 0) {
+        return { ok: false, reason: `${location}: missing priced usage dimensions: ${missing.join(', ')}` };
+      }
+      cells.push({ arm: row.arm, order_index: row.roundIndex, tokens: tokensForRow(runtimeId, row.usage) });
+    }
     runtimes[runtimeId] = {
       model: pricing.model, per_million_tokens: pricing.per_million_tokens,
       source: pricing.source, retrieved: pricing.retrieved,
