@@ -251,7 +251,7 @@ jobs:
       - name: Mint required-checks-drift (GitHub App) token
         id: required-checks-app-token
         if: github.event_name == 'push' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main')
-        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547  # v1.12.0
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
         with:
           app-id: ${{ secrets.REQUIRED_CHECKS_APP_ID }}
           private-key: ${{ secrets.REQUIRED_CHECKS_APP_PRIVATE_KEY }}
