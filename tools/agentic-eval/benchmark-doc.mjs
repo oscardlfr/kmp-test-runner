@@ -292,7 +292,7 @@ export function buildScenarioBlock(scenarioFacts) {
     case 'multi-module-coverage':
       return `**Scenario:** in NowInAndroid, the agent runs unit tests and measures LINE coverage separately for ${moduleCount} in-scope modules. It reports which modules fall below the ${scenarioFacts.thresholdPercent}% threshold and which have no coverage data.`;
     case 'changed-dependents':
-      return `**Scenario:** in NowInAndroid, a committed production-code change affects a module whose own tests pass. The agent compares against the specified base, includes dependent modules, runs the selected unit tests and reports the selected modules and failing tests. ${moduleCount} modules are in scope.`;
+      return `**Scenario:** in NowInAndroid, a committed production-code change affects a module whose own tests pass. The agent compares against the specified base, includes dependent modules, runs the selected unit tests and reports the selected modules and failing tests. ${scenarioFacts.selectedModuleCount ?? moduleCount} modules are selected by the dependency graph; ${moduleCount} have host-test dispatch in scope.`;
     case 'compile-failure':
       return `**Scenario:** in NowInAndroid, a small production-code change breaks compilation. The agent runs the in-scope unit tests, identifies the failing compile task and diagnostic, and reports which dependents could not run. ${moduleCount} modules are in scope.`;
     default:
@@ -326,7 +326,16 @@ export function loadScenarioPublicationFacts(scenarioId, corpusDir = join(REPO_R
       throw new Error(`scenario ${scenarioId}: expected.threshold_percent is not a valid percentage`);
     }
     facts.thresholdPercent = threshold;
-  } else if (!['changed-dependents', 'compile-failure'].includes(scenario.family)) {
+  } else if (scenario.family === 'changed-dependents') {
+    const selected = expected.expected?.selected_modules;
+    if (!Array.isArray(selected) || selected.length < modules.size
+      || selected.some((name) => typeof name !== 'string' || !/^:[^:]+(?::[^:]+)*$/.test(name))
+      || new Set(selected).size !== selected.length
+      || [...modules].some((name) => !selected.includes(name))) {
+      throw new Error(`scenario ${scenarioId}: expected.selected_modules must uniquely contain every in-scope host-test module`);
+    }
+    facts.selectedModuleCount = selected.length;
+  } else if (scenario.family !== 'compile-failure') {
     throw new Error(`scenario ${scenarioId}: unsupported publication family ${scenario.family}`);
   }
   return facts;

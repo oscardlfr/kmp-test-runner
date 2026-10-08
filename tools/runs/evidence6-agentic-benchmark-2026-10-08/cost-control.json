@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "campaign_id": "83cf3b74-dca1-8dcb-81d4-9ac4d0a3036b",
+  "scheduled_positions": 32,
+  "counted_positions": 32,
+  "primary_all_attempt_conservative_long_context_list_price_upper_usd": 7.6612948,
+  "excluded_canary_upper_usd": 1.4347988,
+  "known_canary_plus_primary_upper_usd": 9.0960936,
+  "hypothetical_unknown_use_administrative_reserve_usd": 25,
+  "frozen_control_total_usd": 34.0960936,
+  "frozen_ceiling_usd": 60,
+  "actual_oauth_charges": null,
+  "note": "The reserve is an accounting control, not observed spend or an invoice. The cost-estimate.json price-table retrieval metadata predates the frozen price refresh."
+}

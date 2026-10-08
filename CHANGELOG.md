@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `changed --include-dependents` expands direct changes through the configured project dependency graph and reports direct, dependent and selected modules separately (#563).
+- Per-module LINE coverage evidence and `--min-line-coverage` thresholds distinguish measured modules below budget from modules without coverage data (#563).
+- Structured compiler diagnostics identify the owning compile task and source location on `parallel` and `changed` failures, while leaving tests blocked by compilation distinct from failing JUnit methods (#563).
+- Published preregistered Evidence4, Evidence5 and Evidence6 campaign records, controls, session tables and charts. Each scenario reports factual correctness separately from product-protocol compliance (#569 and this release).
+
+### Fixed
+
+- The evaluation harness now contains uncertain guest transport loss, merges isolated block roots, grades missing final claims as negative outcomes and rejects unrecorded usage in cost estimates (#564–#572). These changes do not alter the public CLI contract.
+- Updated vulnerable development test dependencies (#570).
+
+### Benchmark limits
+
+- Evidence5 revised4 counted 29 of 32 scheduled sessions; three provider rejections before inference remain missing and were not replayed. Earlier Evidence5 attempts are excluded and separately disclosed. Evidence6 counted all 32 positions. The records describe one task each and do not establish a causal product effect.
+
 ## [0.17.0] — 2026-10-02
 
 ### Added

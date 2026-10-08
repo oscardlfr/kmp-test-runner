@@ -1,0 +1,1443 @@
+{
+  "schema": 2,
+  "summary_status": "ok",
+  "reason_code": null,
+  "campaign_id": "83cf3b74-dca1-8dcb-81d4-9ac4d0a3036b",
+  "scenario_id": "compile-failure-data-repository",
+  "provider_mode": "live",
+  "benchmark_eligible_counts": {
+    "claude-code": {
+      "true": 16,
+      "false": 0
+    },
+    "codex-cli": {
+      "true": 16,
+      "false": 0
+    }
+  },
+  "provenance": {
+    "repo_commit": {
+      "values": [
+        "727b2f3b9ca16e5435ea048efbc077b94167ee71"
+      ],
+      "mixed": false
+    },
+    "skill_source_sha": {
+      "values": [
+        "39ea824e301022af57990cb6e30a2fb381ad6df2"
+      ],
+      "mixed": false
+    },
+    "kmp_test_cli_version": {
+      "values": [
+        "0.17.0"
+      ],
+      "mixed": false
+    },
+    "kmp_test_cli_source_sha": {
+      "values": [
+        "727b2f3b9ca16e5435ea048efbc077b94167ee71"
+      ],
+      "mixed": false
+    },
+    "runtime_cli_version": {
+      "claude-code": {
+        "values": [
+          "2.1.238"
+        ],
+        "mixed": false
+      },
+      "codex-cli": {
+        "values": [
+          "0.154.0"
+        ],
+        "mixed": false
+      }
+    },
+    "model_resolved": {
+      "claude-code": {
+        "values": [
+          "claude-sonnet-5"
+        ],
+        "mixed": false
+      },
+      "codex-cli": {
+        "values": [
+          "gpt-5.6-terra"
+        ],
+        "mixed": false
+      }
+    },
+    "reasoning_effort": {
+      "claude-code": {
+        "values": [
+          "high"
+        ],
+        "mixed": false
+      },
+      "codex-cli": {
+        "values": [
+          "high"
+        ],
+        "mixed": false
+      }
+    },
+    "reasoning_effort_source": {
+      "claude-code": {
+        "values": [
+          "harness-pinned-cli-flag"
+        ],
+        "mixed": false
+      },
+      "codex-cli": {
+        "values": [
+          "model-registry-default-reasoning-mode"
+        ],
+        "mixed": false
+      }
+    },
+    "block_campaign_ids": [
+      "b0d9cd76-e0a1-4092-8580-a4af9696a946",
+      "e6256e2f-fe01-4a88-8c19-6b9b79afabd4",
+      "614c33d1-b37f-4585-b265-e9dd260087a8",
+      "6ff5d259-9a30-44b5-ba4e-6e0221af7f2d"
+    ]
+  },
+  "by_runtime_arm": [
+    {
+      "runtime_id": "claude-code",
+      "arm": "free",
+      "declared": 8,
+      "accepted": 8,
+      "negative_d3": 0,
+      "missing": 0,
+      "counted": 8,
+      "missing_reasons": [],
+      "key_facts_match": {
+        "matched": 6,
+        "of": 8
+      },
+      "full_answer_match": {
+        "matched": 6,
+        "of": 8
+      },
+      "success": null,
+      "duration_ms": {
+        "n": 8,
+        "min": 220315,
+        "max": 543720,
+        "mean": 341477,
+        "median": 278176,
+        "stddev_sample": 122643.83493
+      },
+      "tool_calls_total": {
+        "n": 8,
+        "min": 7,
+        "max": 9,
+        "mean": 8,
+        "median": 8,
+        "stddev_sample": 0.755929
+      },
+      "shell_commands_total": {
+        "n": 8,
+        "min": 7,
+        "max": 9,
+        "mean": 8,
+        "median": 8,
+        "stddev_sample": 0.755929
+      },
+      "tokens": {
+        "input": {
+          "n": 8,
+          "min": 16,
+          "max": 20,
+          "mean": 18,
+          "median": 18,
+          "stddev_sample": 1.511858
+        },
+        "output": {
+          "n": 8,
+          "min": 3047,
+          "max": 3938,
+          "mean": 3542,
+          "median": 3584.5,
+          "stddev_sample": 282.201549
+        },
+        "cached_input": {
+          "n": 8,
+          "min": 145605,
+          "max": 214627,
+          "mean": 174055.5,
+          "median": 165925.5,
+          "stddev_sample": 26934.789103
+        },
+        "cache_write": {
+          "n": 8,
+          "min": 20747,
+          "max": 26236,
+          "mean": 23346.625,
+          "median": 23009.5,
+          "stddev_sample": 2144.377894
+        }
+      },
+      "kmp_test_vs_gradle": {
+        "available": true,
+        "kmp_test_count": 0,
+        "gradle_count": 29
+      }
+    },
+    {
+      "runtime_id": "claude-code",
+      "arm": "product",
+      "declared": 8,
+      "accepted": 8,
+      "negative_d3": 0,
+      "missing": 0,
+      "counted": 8,
+      "missing_reasons": [],
+      "key_facts_match": {
+        "matched": 8,
+        "of": 8
+      },
+      "full_answer_match": {
+        "matched": 8,
+        "of": 8
+      },
+      "success": {
+        "matched": 0,
+        "of": 8,
+        "label": "product protocol, not a cross-arm comparison"
+      },
+      "duration_ms": {
+        "n": 8,
+        "min": 205258,
+        "max": 409321,
+        "mean": 271749,
+        "median": 256587,
+        "stddev_sample": 71217.777403
+      },
+      "tool_calls_total": {
+        "n": 8,
+        "min": 2,
+        "max": 16,
+        "mean": 6.25,
+        "median": 4,
+        "stddev_sample": 4.803273
+      },
+      "shell_commands_total": {
+        "n": 8,
+        "min": 1,
+        "max": 15,
+        "mean": 5.25,
+        "median": 3,
+        "stddev_sample": 4.803273
+      },
+      "tokens": {
+        "input": {
+          "n": 8,
+          "min": 6,
+          "max": 34,
+          "mean": 14.5,
+          "median": 10,
+          "stddev_sample": 9.606545
+        },
+        "output": {
+          "n": 8,
+          "min": 1835,
+          "max": 7678,
+          "mean": 4333.125,
+          "median": 3790.5,
+          "stddev_sample": 2256.999933
+        },
+        "cached_input": {
+          "n": 8,
+          "min": 38737,
+          "max": 395806,
+          "mean": 153951.625,
+          "median": 82398.5,
+          "stddev_sample": 133932.253574
+        },
+        "cache_write": {
+          "n": 8,
+          "min": 14578,
+          "max": 36417,
+          "mean": 24105.5,
+          "median": 23930.5,
+          "stddev_sample": 6264.240326
+        }
+      },
+      "kmp_test_vs_gradle": {
+        "available": true,
+        "kmp_test_count": 29,
+        "gradle_count": 0
+      }
+    },
+    {
+      "runtime_id": "codex-cli",
+      "arm": "free",
+      "declared": 8,
+      "accepted": 8,
+      "negative_d3": 0,
+      "missing": 0,
+      "counted": 8,
+      "missing_reasons": [],
+      "key_facts_match": {
+        "matched": 8,
+        "of": 8
+      },
+      "full_answer_match": {
+        "matched": 8,
+        "of": 8
+      },
+      "success": null,
+      "duration_ms": {
+        "n": 8,
+        "min": 174951,
+        "max": 321749,
+        "mean": 249512.125,
+        "median": 260323,
+        "stddev_sample": 45381.719184
+      },
+      "tool_calls_total": {
+        "n": 8,
+        "min": 5,
+        "max": 12,
+        "mean": 7.125,
+        "median": 7,
+        "stddev_sample": 2.232071
+      },
+      "shell_commands_total": {
+        "n": 8,
+        "min": 5,
+        "max": 12,
+        "mean": 7.125,
+        "median": 7,
+        "stddev_sample": 2.232071
+      },
+      "tokens": {
+        "input": {
+          "n": 8,
+          "min": 209201,
+          "max": 303461,
+          "mean": 250284.5,
+          "median": 241700.5,
+          "stddev_sample": 32845.099717
+        },
+        "output": {
+          "n": 8,
+          "min": 2112,
+          "max": 3549,
+          "mean": 2697.25,
+          "median": 2623.5,
+          "stddev_sample": 425.604696
+        },
+        "cached_input": {
+          "n": 8,
+          "min": 176640,
+          "max": 270336,
+          "mean": 212672,
+          "median": 204544,
+          "stddev_sample": 32051.816334
+        },
+        "cache_write": {
+          "n": 0,
+          "min": null,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "stddev_sample": null
+        }
+      },
+      "kmp_test_vs_gradle": {
+        "available": true,
+        "kmp_test_count": 0,
+        "gradle_count": 32
+      }
+    },
+    {
+      "runtime_id": "codex-cli",
+      "arm": "product",
+      "declared": 8,
+      "accepted": 8,
+      "negative_d3": 0,
+      "missing": 0,
+      "counted": 8,
+      "missing_reasons": [],
+      "key_facts_match": {
+        "matched": 8,
+        "of": 8
+      },
+      "full_answer_match": {
+        "matched": 8,
+        "of": 8
+      },
+      "success": {
+        "matched": 0,
+        "of": 8,
+        "label": "product protocol, not a cross-arm comparison"
+      },
+      "duration_ms": {
+        "n": 8,
+        "min": 220316,
+        "max": 333194,
+        "mean": 251042.375,
+        "median": 230701.5,
+        "stddev_sample": 40780.686118
+      },
+      "tool_calls_total": {
+        "n": 8,
+        "min": 2,
+        "max": 12,
+        "mean": 4.25,
+        "median": 3,
+        "stddev_sample": 3.19598
+      },
+      "shell_commands_total": {
+        "n": 8,
+        "min": 2,
+        "max": 12,
+        "mean": 4.25,
+        "median": 3,
+        "stddev_sample": 3.19598
+      },
+      "tokens": {
+        "input": {
+          "n": 8,
+          "min": 180574,
+          "max": 396505,
+          "mean": 234475.625,
+          "median": 224006.5,
+          "stddev_sample": 68262.653697
+        },
+        "output": {
+          "n": 8,
+          "min": 1608,
+          "max": 4913,
+          "mean": 2456.875,
+          "median": 1951,
+          "stddev_sample": 1145.633379
+        },
+        "cached_input": {
+          "n": 8,
+          "min": 148736,
+          "max": 333568,
+          "mean": 198880,
+          "median": 188416,
+          "stddev_sample": 57954.53556
+        },
+        "cache_write": {
+          "n": 0,
+          "min": null,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "stddev_sample": null
+        }
+      },
+      "kmp_test_vs_gradle": {
+        "available": true,
+        "kmp_test_count": 12,
+        "gradle_count": 0
+      }
+    }
+  ],
+  "cells": [
+    {
+      "runtime_id": "claude-code",
+      "arm": "free",
+      "round_index": 1,
+      "cell_key": "claude-code-1",
+      "status": "accepted",
+      "reason": null,
+      "key_facts_match": true,
+      "full_answer_match": true,
+      "success": null,
+      "duration_ms": 543720,
+      "tool_calls_total": 8,
+      "tokens": {
+        "input": 18,
+        "cached_input": 180210,
+        "cache_write": 25254,
+        "output": 3383,
+        "reasoning_output": null
+      },
+      "num_turns": 9,
+      "total_cost_usd": null,
+      "output_bytes": 36222,
+      "output_bytes_kind": "tool_results",
+      "command_kind_counts": {
+        "kmp_test": 0,
+        "gradle": 4,
+        "other": 4
+      },
+      "session_id": "f380602b-452f-4d9f-836e-d03cb71b039e",
+      "agent_state_clean": true
+    },
+    {
+      "runtime_id": "claude-code",
+      "arm": "free",
+      "round_index": 2,
+      "cell_key": "claude-code-2",
+      "status": "accepted",
+      "reason": null,
+      "key_facts_match": true,
+      "full_answer_match": true,
+      "success": null,
+      "duration_ms": 274446,
+      "tool_calls_total": 8,
+      "tokens": {
+        "input": 18,
+        "cached_input": 167360,
+        "cache_write": 22419,
+        "output": 3938,
+        "reasoning_output": null
+      },
+      "num_turns": 9,
+      "total_cost_usd": null,
+      "output_bytes": 29974,
+      "output_bytes_kind": "tool_results",
+      "command_kind_counts": {
+        "kmp_test": 0,
+        "gradle": 4,
+        "other": 4
+      },
+      "session_id": "76a9b7fc-ef2b-462c-ad7b-34840db17f5e",
+      "agent_state_clean": true
+    },
+    {
+      "runtime_id": "claude-code",
+      "arm": "free",
+      "round_index": 4,
+      "cell_key": "claude-code-4",
+      "status": "accepted",
+      "reason": null,
+      "key_facts_match": true,
+      "full_answer_match": true,
+      "success": null,
+      "duration_ms": 281906,
+      "tool_calls_total": 7,
+      "tokens": {
+        "input": 16,
+        "cached_input": 156777,
+        "cache_write": 23600,
+        "output": 3748,
+        "reasoning_output": null
+      },
+      "num_turns": 8,
+      "total_cost_usd": null,
+      "output_bytes": 33204,
+      "output_bytes_kind": "tool_results",
+      "command_kind_counts": {
+        "kmp_test": 0,
+        "gradle": 3,
+        "other": 4
+      },
+      "session_id": "1d422ace-5b21-422e-8842-b4aac70c3983",
+      "agent_state_clean": true
+    },
+    {
+      "runtime_id": "claude-code",
+      "arm": "free",
+      "round_index": 7,
+      "cell_key": "claude-code-7",
+      "status": "accepted",
+      "reason": null,
+      "key_facts_match": false,
+      "full_answer_match": false,
+      "success": null,
+      "duration_ms": 449883,
+      "tool_calls_total": 9,
+      "tokens": {
+        "input": 20,
+        "cached_input": 213575,
+        "cache_write": 25618,
+        "output": 3699,
+        "reasoning_output": null
+      },
+      "num_turns": 10,
+      "total_cost_usd": null,
+      "output_bytes": 36163,
+      "output_bytes_kind": "tool_results",
+      "command_kind_counts": {
+        "kmp_test": 0,
+        "gradle": 4,
+        "other": 5
+      },
+      "session_id": "8856be76-bc40-47a2-bd3a-b1d4390b2f78",
+      "agent_state_clean": true
+    },
+    {
+      "runtime_id": "claude-code",
+      "arm": "free",
+      "round_index": 8,
+      "cell_key": "claude-code-8",
+      "status": "accepted",
+      "reason": null,
+      "key_facts_match": true,
+      "full_answer_match": true,
+      "success": null,
+      "duration_ms": 457104,
+      "tool_calls_total": 9,
+      "tokens": {
+        "input": 20,
+        "cached_input": 214627,
+        "cache_write": 26236,
+        "output": 3693,
+        "reasoning_output": null
+      },
+      "num_turns": 10,
+      "total_cost_usd": null,
+      "output_bytes": 36548,
+      "output_bytes_kind": "tool_results",
+      "command_kind_counts": {
+        "kmp_test": 0,
+        "gradle": 4,
+        "other": 5
+      },
+      "session_id": "2f3bdfe3-70cb-4b85-8ef3-7f89c254112d",
+      "agent_state_clean": true
+    },
+    {
+      "runtime_id": "claude-code",
+      "arm": "free",
+      "round_index": 11,
+      "cell_key": "claude-code-11",
+      "status": "accepted",
+      "reason": null,
+      "key_facts_match": true,
+      "full_answer_match": true,
+      "success": null,
+      "duration_ms": 220315,
+      "tool_calls_total": 7,
+      "tokens": {
+        "input": 16,
+        "cached_input": 145605,
+        "cache_write": 20747,
+        "output": 3047,
+        "reasoning_output": null
+      },
+      "num_turns": 8,
+      "total_cost_usd": null,
+      "output_bytes": 28438,
+      "output_bytes_kind": "tool_results",
+      "command_kind_counts": {
+        "kmp_test": 0,
+        "gradle": 3,
+        "other": 4
+      },
+      "session_id": "e79f9c1d-4496-48bb-9bac-a3e7dbced66f",
+      "agent_state_clean": true
+    },
+    {
+      "runtime_id": "claude-code",
+      "arm": "free",
+      "round_index": 13,
+      "cell_key": "claude-code-13",
+      "status": "accepted",
+      "reason": null,
+      "key_facts_match": false,
+      "full_answer_match": false,
+      "success": null,
+      "duration_ms": 234735,
+      "tool_calls_total": 8,
+      "tokens": {
+        "input": 18,
+        "cached_input": 164491,
+        "cache_write": 21734,
+        "output": 3476,
+        "reasoning_output": null
+      },
+      "num_turns": 9,
+      "total_cost_usd": null,
+      "output_bytes": 29374,
+      "output_bytes_kind": "tool_results",
+      "command_kind_counts": {
+        "kmp_test": 0,
+        "gradle": 3,
+        "other": 5
+      },
+      "session_id": "48220be5-c899-45c2-983a-a6104dd4dc25",
+      "agent_state_clean": true
+    },
+    {
+      "runtime_id": "claude-code",
+      "arm": "free",
+      "round_index": 14,
+      "cell_key": "claude-code-14",
+      "status": "accepted",
+      "reason": null,
+      "key_facts_match": true,
+      "full_answer_match": true,
+      "success": null,
+      "duration_ms": 269707,
+      "tool_calls_total": 8,
+      "tokens": {
+        "input": 18,
+        "cached_input": 149799,
+        "cache_write": 21165,
+        "output": 3352,
+        "reasoning_output": null
+      },
+      "num_turns": 9,
+      "total_cost_usd": null,
+      "output_bytes": 28414,
+      "output_bytes_kind": "tool_results",
+      "command_kind_counts": {
+        "kmp_test": 0,
+        "gradle": 4,
+        "other": 4
+      },
+      "session_id": "fbb985ac-9291-4dd2-8828-b28929f4ec03",
+      "agent_state_clean": true
+    },
+    {
+      "runtime_id": "claude-code",
+      "arm": "product",
+      "round_index": 0,
+      "cell_key": "claude-code-0",
+      "status": "accepted",
+      "reason": null,
+      "key_facts_match": true,
+      "full_answer_match": true,
+      "success": false,
+      "duration_ms": 205258,
+      "tool_calls_total": 3,
+      "tokens": {
+        "input": 8,
+        "cached_input": 64429,
+        "cache_write": 22450,
+        "output": 2428,
+        "reasoning_output": null
+      },
+      "num_turns": 5,
+      "total_cost_usd": null,
+      "output_bytes": 26874,
+      "output_bytes_kind": "tool_results",
+      "command_kind_counts": {
+        "kmp_test": 1,
+        "gradle": 0,
+        "other": 1
+      },
+      "session_id": "dff1c5e0-9d40-4e00-9f3d-cc72cb5bd6ea",
+      "agent_state_clean": true
+    },
+    {
+      "runtime_id": "claude-code",
+      "arm": "product",
+      "round_index": 3,
+      "cell_key": "claude-code-3",
+      "status": "accepted",
+      "reason": null,
+      "key_facts_match": true,
+      "full_answer_match": true,
+      "success": false,
+      "duration_ms": 317775,
+      "tool_calls_total": 10,
+      "tokens": {
+        "input": 22,
+        "cached_input": 316785,
+        "cache_write": 36417,
+        "output": 5798,
+        "reasoning_output": null
+      },
+      "num_turns": 12,
+      "total_cost_usd": null,
+      "output_bytes": 46312,
+      "output_bytes_kind": "tool_results",
+      "command_kind_counts": {
+        "kmp_test": 7,
+        "gradle": 0,
+        "other": 2
+      },
+      "session_id": "273534a9-47d2-4249-bd4b-0c0b5331ca4c",
+      "agent_state_clean": true
+    },
+    {
+      "runtime_id": "claude-code",
+      "arm": "product",
+      "round_index": 5,
+      "cell_key": "claude-code-5",
+      "status": "accepted",
+      "reason": null,
+      "key_facts_match": true,
+      "full_answer_match": true,
+      "success": false,
+      "duration_ms": 223846,
+      "tool_calls_total": 2,
+      "tokens": {
+        "input": 6,
+        "cached_input": 38737,
+        "cache_write": 14578,
+        "output": 1835,
+        "reasoning_output": null
+      },
+      "num_turns": 4,
+      "total_cost_usd": null,
+      "output_bytes": 10091,
+      "output_bytes_kind": "tool_results",
+      "command_kind_counts": {
+        "kmp_test": 1,
+        "gradle": 0,
+        "other": 0
+      },
+      "session_id": "e05ab815-727c-4324-a9a7-9ae4a8817c5a",
+      "agent_state_clean": true
+    },
+    {
+      "runtime_id": "claude-code",
+      "arm": "product",
+      "round_index": 6,
+      "cell_key": "claude-code-6",
+      "status": "accepted",
+      "reason": null,
+      "key_facts_match": true,
+      "full_answer_match": true,
+      "success": false,
+      "duration_ms": 222055,
+      "tool_calls_total": 3,
+      "tokens": {
+        "input": 8,
+        "cached_input": 64658,
+        "cache_write": 22657,
+        "output": 2952,
+        "reasoning_output": null
+      },
+      "num_turns": 5,
+      "total_cost_usd": null,
+      "output_bytes": 26874,
+      "output_bytes_kind": "tool_results",
+      "command_kind_counts": {
+        "kmp_test": 1,
+        "gradle": 0,
+        "other": 1
+      },
+      "session_id": "bacd4b70-8f9b-446b-9a74-fffaeea606da",
+      "agent_state_clean": true
+    },
+    {
+      "runtime_id": "claude-code",
+      "arm": "product",
+      "round_index": 9,
+      "cell_key": "claude-code-9",
+      "status": "accepted",
+      "reason": null,
+      "key_facts_match": true,
+      "full_answer_match": true,
+      "success": false,
+      "duration_ms": 206959,
+      "tool_calls_total": 4,
+      "tokens": {
+        "input": 10,
+        "cached_input": 81406,
+        "cache_write": 19678,
+        "output": 2411,
+        "reasoning_output": null
+      },
+      "num_turns": 6,
+      "total_cost_usd": null,
+      "output_bytes": 23287,
+      "output_bytes_kind": "tool_results",
+      "command_kind_counts": {
+        "kmp_test": 3,
+        "gradle": 0,
+        "other": 0
+      },
+      "session_id": "c0b86de5-324c-478b-8608-acadb09261d5",
+      "agent_state_clean": true
+    },
+    {
+      "runtime_id": "claude-code",
+      "arm": "product",
+      "round_index": 10,
+      "cell_key": "claude-code-10",
+      "status": "accepted",
+      "reason": null,
+      "key_facts_match": true,
+      "full_answer_match": true,
+      "success": false,
+      "duration_ms": 289328,
+      "tool_calls_total": 4,
+      "tokens": {
+        "input": 10,
+        "cached_input": 83391,
+        "cache_write": 25802,
+        "output": 4629,
+        "reasoning_output": null
+      },
+      "num_turns": 6,
+      "total_cost_usd": null,
+      "output_bytes": 30013,
+      "output_bytes_kind": "tool_results",
+      "command_kind_counts": {
+        "kmp_test": 3,
+        "gradle": 0,
+        "other": 0
+      },
+      "session_id": "6d09144b-9fad-45f9-8073-1ff7d789afcb",
+      "agent_state_clean": true
+    },
+    {
+      "runtime_id": "claude-code",
+      "arm": "product",
+      "round_index": 12,
+      "cell_key": "claude-code-12",
+      "status": "accepted",
+      "reason": null,
+      "key_facts_match": true,
+      "full_answer_match": true,
+      "success": false,
+      "duration_ms": 299450,
+      "tool_calls_total": 8,
+      "tokens": {
+        "input": 18,
+        "cached_input": 186401,
+        "cache_write": 25204,
+        "output": 6934,
+        "reasoning_output": null
+      },
+      "num_turns": 10,
+      "total_cost_usd": null,
+      "output_bytes": 21588,
+      "output_bytes_kind": "tool_results",
+      "command_kind_counts": {
+        "kmp_test": 7,
+        "gradle": 0,
+        "other": 0
+      },
+      "session_id": "29a86d81-2d8f-453d-a6bc-e3a707b489cb",
+      "agent_state_clean": true
+    },
+    {
+      "runtime_id": "claude-code",
+      "arm": "product",
+      "round_index": 15,
+      "cell_key": "claude-code-15",
+      "status": "accepted",
+      "reason": null,
+      "key_facts_match": true,
+      "full_answer_match": true,
+      "success": false,
+      "duration_ms": 409321,
+      "tool_calls_total": 16,
+      "tokens": {
+        "input": 34,
+        "cached_input": 395806,
+        "cache_write": 26058,
+        "output": 7678,
+        "reasoning_output": null
+      },
+      "num_turns": 18,
+      "total_cost_usd": null,
+      "output_bytes": 19505,
+      "output_bytes_kind": "tool_results",
+      "command_kind_counts": {
+        "kmp_test": 6,
+        "gradle": 0,
+        "other": 9
+      },
+      "session_id": "de10944b-a0a2-4da7-a2f5-1967f48a2815",
+      "agent_state_clean": true
+    },
+    {
+      "runtime_id": "codex-cli",
+      "arm": "free",
+      "round_index": 1,
+      "cell_key": "codex-cli-1",
+      "status": "accepted",
+      "reason": null,
+      "key_facts_match": true,
+      "full_answer_match": true,
+      "success": null,
+      "duration_ms": 265191,
+      "tool_calls_total": 7,
+      "tokens": {
+        "input": 303461,
+        "cached_input": 270336,
+        "cache_write": null,
+        "output": 2683,
+        "reasoning_output": 1048
+      },
+      "num_turns": 1,
+      "total_cost_usd": null,
+      "output_bytes": 97609,
+      "output_bytes_kind": "command_output",
+      "command_kind_counts": {
+        "kmp_test": 0,
+        "gradle": 4,
+        "other": 3
+      },
+      "session_id": "01a1192b-9865-7a53-a697-b5b4ce552d02",
+      "agent_state_clean": false
+    },
+    {
+      "runtime_id": "codex-cli",
+      "arm": "free",
+      "round_index": 2,
+      "cell_key": "codex-cli-2",
+      "status": "accepted",
+      "reason": null,
+      "key_facts_match": true,
+      "full_answer_match": true,
+      "success": null,
+      "duration_ms": 258344,
+      "tool_calls_total": 5,
+      "tokens": {
+        "input": 243097,
+        "cached_input": 196096,
+        "cache_write": null,
+        "output": 2112,
+        "reasoning_output": 878
+      },
+      "num_turns": 1,
+      "total_cost_usd": null,
+      "output_bytes": 66495,
+      "output_bytes_kind": "command_output",
+      "command_kind_counts": {
+        "kmp_test": 0,
+        "gradle": 3,
+        "other": 2
+      },
+      "session_id": "01a11941-d300-78c3-848e-a2054984de98",
+      "agent_state_clean": false
+    },
+    {
+      "runtime_id": "codex-cli",
+      "arm": "free",
+      "round_index": 4,
+      "cell_key": "codex-cli-4",
+      "status": "accepted",
+      "reason": null,
+      "key_facts_match": true,
+      "full_answer_match": true,
+      "success": null,
+      "duration_ms": 174951,
+      "tool_calls_total": 8,
+      "tokens": {
+        "input": 219759,
+        "cached_input": 186624,
+        "cache_write": null,
+        "output": 3002,
+        "reasoning_output": 1298
+      },
+      "num_turns": 1,
+      "total_cost_usd": null,
+      "output_bytes": 25884,
+      "output_bytes_kind": "command_output",
+      "command_kind_counts": {
+        "kmp_test": 0,
+        "gradle": 3,
+        "other": 5
+      },
+      "session_id": "01a11970-59a7-71b3-8870-0e06a81d455a",
+      "agent_state_clean": false
+    },
+    {
+      "runtime_id": "codex-cli",
+      "arm": "free",
+      "round_index": 7,
+      "cell_key": "codex-cli-7",
+      "status": "accepted",
+      "reason": null,
+      "key_facts_match": true,
+      "full_answer_match": true,
+      "success": null,
+      "duration_ms": 262302,
+      "tool_calls_total": 5,
+      "tokens": {
+        "input": 232628,
+        "cached_input": 190208,
+        "cache_write": null,
+        "output": 2695,
+        "reasoning_output": 1340
+      },
+      "num_turns": 1,
+      "total_cost_usd": null,
+      "output_bytes": 97236,
+      "output_bytes_kind": "command_output",
+      "command_kind_counts": {
+        "kmp_test": 0,
+        "gradle": 4,
+        "other": 1
+      },
+      "session_id": "01a1198b-5cf4-7853-9fe2-f9d81a22f34f",
+      "agent_state_clean": false
+    },
+    {
+      "runtime_id": "codex-cli",
+      "arm": "free",
+      "round_index": 8,
+      "cell_key": "codex-cli-8",
+      "status": "accepted",
+      "reason": null,
+      "key_facts_match": true,
+      "full_answer_match": true,
+      "success": null,
+      "duration_ms": 321749,
+      "tool_calls_total": 12,
+      "tokens": {
+        "input": 287473,
+        "cached_input": 243712,
+        "cache_write": null,
+        "output": 3549,
+        "reasoning_output": 1373
+      },
+      "num_turns": 1,
+      "total_cost_usd": null,
+      "output_bytes": 67733,
+      "output_bytes_kind": "command_output",
+      "command_kind_counts": {
+        "kmp_test": 0,
+        "gradle": 6,
+        "other": 6
+      },
+      "session_id": "01a119b4-009b-77c3-895f-953db019f0c6",
+      "agent_state_clean": false
+    },
+    {
+      "runtime_id": "codex-cli",
+      "arm": "free",
+      "round_index": 11,
+      "cell_key": "codex-cli-11",
+      "status": "accepted",
+      "reason": null,
+      "key_facts_match": true,
+      "full_answer_match": true,
+      "success": null,
+      "duration_ms": 252718,
+      "tool_calls_total": 7,
+      "tokens": {
+        "input": 240304,
+        "cached_input": 212992,
+        "cache_write": null,
+        "output": 2564,
+        "reasoning_output": 993
+      },
+      "num_turns": 1,
+      "total_cost_usd": null,
+      "output_bytes": 40419,
+      "output_bytes_kind": "command_output",
+      "command_kind_counts": {
+        "kmp_test": 0,
+        "gradle": 4,
+        "other": 3
+      },
+      "session_id": "01a119d1-54f3-7241-ad98-07482ff54606",
+      "agent_state_clean": false
+    },
+    {
+      "runtime_id": "codex-cli",
+      "arm": "free",
+      "round_index": 13,
+      "cell_key": "codex-cli-13",
+      "status": "accepted",
+      "reason": null,
+      "key_facts_match": true,
+      "full_answer_match": true,
+      "success": null,
+      "duration_ms": 195691,
+      "tool_calls_total": 7,
+      "tokens": {
+        "input": 209201,
+        "cached_input": 176640,
+        "cache_write": null,
+        "output": 2499,
+        "reasoning_output": 924
+      },
+      "num_turns": 1,
+      "total_cost_usd": null,
+      "output_bytes": 28481,
+      "output_bytes_kind": "command_output",
+      "command_kind_counts": {
+        "kmp_test": 0,
+        "gradle": 4,
+        "other": 3
+      },
+      "session_id": "01a119f1-db50-7ae2-8608-abc5d6f0c6ba",
+      "agent_state_clean": false
+    },
+    {
+      "runtime_id": "codex-cli",
+      "arm": "free",
+      "round_index": 14,
+      "cell_key": "codex-cli-14",
+      "status": "accepted",
+      "reason": null,
+      "key_facts_match": true,
+      "full_answer_match": true,
+      "success": null,
+      "duration_ms": 265151,
+      "tool_calls_total": 6,
+      "tokens": {
+        "input": 266353,
+        "cached_input": 224768,
+        "cache_write": null,
+        "output": 2474,
+        "reasoning_output": 1122
+      },
+      "num_turns": 1,
+      "total_cost_usd": null,
+      "output_bytes": 94264,
+      "output_bytes_kind": "command_output",
+      "command_kind_counts": {
+        "kmp_test": 0,
+        "gradle": 4,
+        "other": 2
+      },
+      "session_id": "01a11a02-3485-7e51-9244-315d6a6ead5c",
+      "agent_state_clean": false
+    },
+    {
+      "runtime_id": "codex-cli",
+      "arm": "product",
+      "round_index": 0,
+      "cell_key": "codex-cli-0",
+      "status": "accepted",
+      "reason": null,
+      "key_facts_match": true,
+      "full_answer_match": true,
+      "success": false,
+      "duration_ms": 224034,
+      "tool_calls_total": 3,
+      "tokens": {
+        "input": 224933,
+        "cached_input": 199424,
+        "cache_write": null,
+        "output": 1741,
+        "reasoning_output": 837
+      },
+      "num_turns": 1,
+      "total_cost_usd": null,
+      "output_bytes": 43937,
+      "output_bytes_kind": "command_output",
+      "command_kind_counts": {
+        "kmp_test": 1,
+        "gradle": 0,
+        "other": 2
+      },
+      "session_id": "01a11926-623a-7d50-b3d3-9aa16cd14124",
+      "agent_state_clean": false
+    },
+    {
+      "runtime_id": "codex-cli",
+      "arm": "product",
+      "round_index": 3,
+      "cell_key": "codex-cli-3",
+      "status": "accepted",
+      "reason": null,
+      "key_facts_match": true,
+      "full_answer_match": true,
+      "success": false,
+      "duration_ms": 333194,
+      "tool_calls_total": 12,
+      "tokens": {
+        "input": 396505,
+        "cached_input": 333568,
+        "cache_write": null,
+        "output": 4913,
+        "reasoning_output": 2966
+      },
+      "num_turns": 1,
+      "total_cost_usd": null,
+      "output_bytes": 63179,
+      "output_bytes_kind": "command_output",
+      "command_kind_counts": {
+        "kmp_test": 2,
+        "gradle": 0,
+        "other": 10
+      },
+      "session_id": "01a11947-c01a-7050-bfea-fc304de428ab",
+      "agent_state_clean": false
+    },
+    {
+      "runtime_id": "codex-cli",
+      "arm": "product",
+      "round_index": 5,
+      "cell_key": "codex-cli-5",
+      "status": "accepted",
+      "reason": null,
+      "key_facts_match": true,
+      "full_answer_match": true,
+      "success": false,
+      "duration_ms": 293825,
+      "tool_calls_total": 4,
+      "tokens": {
+        "input": 180574,
+        "cached_input": 148736,
+        "cache_write": null,
+        "output": 3411,
+        "reasoning_output": 2586
+      },
+      "num_turns": 1,
+      "total_cost_usd": null,
+      "output_bytes": 58248,
+      "output_bytes_kind": "command_output",
+      "command_kind_counts": {
+        "kmp_test": 3,
+        "gradle": 0,
+        "other": 1
+      },
+      "session_id": "01a11974-f3af-73d2-b313-f7329ac386be",
+      "agent_state_clean": false
+    },
+    {
+      "runtime_id": "codex-cli",
+      "arm": "product",
+      "round_index": 6,
+      "cell_key": "codex-cli-6",
+      "status": "accepted",
+      "reason": null,
+      "key_facts_match": true,
+      "full_answer_match": true,
+      "success": false,
+      "duration_ms": 220316,
+      "tool_calls_total": 2,
+      "tokens": {
+        "input": 181155,
+        "cached_input": 148736,
+        "cache_write": null,
+        "output": 1608,
+        "reasoning_output": 808
+      },
+      "num_turns": 1,
+      "total_cost_usd": null,
+      "output_bytes": 31196,
+      "output_bytes_kind": "command_output",
+      "command_kind_counts": {
+        "kmp_test": 1,
+        "gradle": 0,
+        "other": 1
+      },
+      "session_id": "01a11985-f59f-7313-86d5-f6aff4e7c10a",
+      "agent_state_clean": false
+    },
+    {
+      "runtime_id": "codex-cli",
+      "arm": "product",
+      "round_index": 9,
+      "cell_key": "codex-cli-9",
+      "status": "accepted",
+      "reason": null,
+      "key_facts_match": true,
+      "full_answer_match": true,
+      "success": false,
+      "duration_ms": 248019,
+      "tool_calls_total": 3,
+      "tokens": {
+        "input": 224048,
+        "cached_input": 188416,
+        "cache_write": null,
+        "output": 2315,
+        "reasoning_output": 1388
+      },
+      "num_turns": 1,
+      "total_cost_usd": null,
+      "output_bytes": 43970,
+      "output_bytes_kind": "command_output",
+      "command_kind_counts": {
+        "kmp_test": 1,
+        "gradle": 0,
+        "other": 2
+      },
+      "session_id": "01a119ba-d1c7-7010-9595-cd00cd46eb72",
+      "agent_state_clean": false
+    },
+    {
+      "runtime_id": "codex-cli",
+      "arm": "product",
+      "round_index": 10,
+      "cell_key": "codex-cli-10",
+      "status": "accepted",
+      "reason": null,
+      "key_facts_match": true,
+      "full_answer_match": true,
+      "success": false,
+      "duration_ms": 230793,
+      "tool_calls_total": 3,
+      "tokens": {
+        "input": 223965,
+        "cached_input": 188416,
+        "cache_write": null,
+        "output": 1970,
+        "reasoning_output": 1139
+      },
+      "num_turns": 1,
+      "total_cost_usd": null,
+      "output_bytes": 43956,
+      "output_bytes_kind": "command_output",
+      "command_kind_counts": {
+        "kmp_test": 1,
+        "gradle": 0,
+        "other": 2
+      },
+      "session_id": "01a119cb-e205-77d2-b881-1ba11b0eab8c",
+      "agent_state_clean": false
+    },
+    {
+      "runtime_id": "codex-cli",
+      "arm": "product",
+      "round_index": 12,
+      "cell_key": "codex-cli-12",
+      "status": "accepted",
+      "reason": null,
+      "key_facts_match": true,
+      "full_answer_match": true,
+      "success": false,
+      "duration_ms": 227548,
+      "tool_calls_total": 3,
+      "tokens": {
+        "input": 224591,
+        "cached_input": 188416,
+        "cache_write": null,
+        "output": 1765,
+        "reasoning_output": 813
+      },
+      "num_turns": 1,
+      "total_cost_usd": null,
+      "output_bytes": 43944,
+      "output_bytes_kind": "command_output",
+      "command_kind_counts": {
+        "kmp_test": 1,
+        "gradle": 0,
+        "other": 2
+      },
+      "session_id": "01a119ec-7b45-7e32-9e39-71e8355ade21",
+      "agent_state_clean": false
+    },
+    {
+      "runtime_id": "codex-cli",
+      "arm": "product",
+      "round_index": 15,
+      "cell_key": "codex-cli-15",
+      "status": "accepted",
+      "reason": null,
+      "key_facts_match": true,
+      "full_answer_match": true,
+      "success": false,
+      "duration_ms": 230610,
+      "tool_calls_total": 4,
+      "tokens": {
+        "input": 220034,
+        "cached_input": 195328,
+        "cache_write": null,
+        "output": 1932,
+        "reasoning_output": 991
+      },
+      "num_turns": 1,
+      "total_cost_usd": null,
+      "output_bytes": 57566,
+      "output_bytes_kind": "command_output",
+      "command_kind_counts": {
+        "kmp_test": 2,
+        "gradle": 0,
+        "other": 2
+      },
+      "session_id": "01a11a08-2f3e-7fd2-ad6a-77a0f4917ce4",
+      "agent_state_clean": false
+    }
+  ],
+  "limitations": [
+    "cost: not-recorded (no incurred-cost field exists in the record/audit/rejection schema today; max_budget_usd is a pre-flight cap, never actual spend)",
+    "kmp-test vs Gradle invocation split is only available for accepted cells, never for D3-reclassified negative cells",
+    "JUnit-XML capture is not verified for codex-cli (its PostToolUse hook correlation has never been validated against a real transcript)"
+  ]
+}
