@@ -608,6 +608,10 @@ const E3_DIR_NAME = `evidence3-agentic-benchmark-${E3_DATE}`;
 const E3_DIR = join(REPO_ROOT, 'tools', 'runs', E3_DIR_NAME);
 const E4_DIR_NAME = 'evidence4-agentic-benchmark-2026-10-07';
 const E4_DIR = join(REPO_ROOT, 'tools', 'runs', E4_DIR_NAME);
+const E5_DIR_NAME = 'evidence5-agentic-benchmark-2026-10-08';
+const E5_DIR = join(REPO_ROOT, 'tools', 'runs', E5_DIR_NAME);
+const E6_DIR_NAME = 'evidence6-agentic-benchmark-2026-10-08';
+const E6_DIR = join(REPO_ROOT, 'tools', 'runs', E6_DIR_NAME);
 const CORPUS_DIR = join(REPO_ROOT, 'tools', 'agentic-eval', 'corpus');
 const BENCHMARK_DOC_SCRIPT = join(REPO_ROOT, 'tools', 'agentic-eval', 'benchmark-doc.mjs');
 const AGENTS = ['claude-code', 'codex-cli'];
@@ -629,7 +633,7 @@ const sessionCost = (cell, costEstimate) => {
 const thousands = (v) => v.toLocaleString('en-US');
 
 describe('Evidence3: the cost breakdown and the generated blocks of docs/agentic-benchmark.md', () => {
-  let summary, costEstimate, e2Summary, e2CostEstimate, e4Summary, e4CostEstimate, context, doc;
+  let summary, costEstimate, e2Summary, e2CostEstimate, e4Summary, e4CostEstimate, e5Summary, e5CostEstimate, e6Summary, e6CostEstimate, context, doc;
   beforeAll(() => {
     summary = loadSummary(join(E3_DIR, 'campaign-summary.json'));
     costEstimate = loadCostEstimate(join(E3_DIR, 'cost-estimate.json'));
@@ -637,6 +641,10 @@ describe('Evidence3: the cost breakdown and the generated blocks of docs/agentic
     e2CostEstimate = loadCostEstimate(join(RUNS_DIR, 'cost-estimate.json'));
     e4Summary = loadSummary(join(E4_DIR, 'campaign-summary.json'));
     e4CostEstimate = loadCostEstimate(join(E4_DIR, 'cost-estimate.json'));
+    e5Summary = loadSummary(join(E5_DIR, 'campaign-summary.json'));
+    e5CostEstimate = loadCostEstimate(join(E5_DIR, 'cost-estimate.json'));
+    e6Summary = loadSummary(join(E6_DIR, 'campaign-summary.json'));
+    e6CostEstimate = loadCostEstimate(join(E6_DIR, 'cost-estimate.json'));
     context = docContext(3, E3_DATE, summary, costEstimate);
     doc = crlfNormalize(readFileSync(DOC_PATH, 'utf8'));
   });
@@ -986,20 +994,22 @@ describe('Evidence3: the cost breakdown and the generated blocks of docs/agentic
     it('has one row per campaign, agent and arm, Evidence2 first, and every cell is recomputed independently from the two summaries and cost estimates', () => {
       const block = readDocBlock(doc, 'campaigns');
       const rows = block.split('\n').filter((l) => l.startsWith('| Evidence'));
-      const expected = [[2, e2Summary, e2CostEstimate], [3, summary, costEstimate], [4, e4Summary, e4CostEstimate]]
+      const expected = [[2, e2Summary, e2CostEstimate], [3, summary, costEstimate], [4, e4Summary, e4CostEstimate], [5, e5Summary, e5CostEstimate], [6, e6Summary, e6CostEstimate]]
         .flatMap(([n, s, c]) => AGENTS.flatMap((runtimeId) => ARMS.map((arm) => `| ${expectedRow(n, s, c, runtimeId, arm).join(' | ')} |`)));
       expect(rows).toEqual(expected);
-      expect(rows).toHaveLength(12); // 3 campaigns x 2 agents x 2 arms
+      expect(rows).toHaveLength(20); // 5 campaigns x 2 agents x 2 arms
       // Evidence3's own groups, pinned: key facts matched 7 of 8 with kmp-test and 7 of 7 without, for both agents.
       expect(rows.slice(4, 8).map((r) => r.split('|')[9].trim())).toEqual(['7/8', '7/7', '7/8', '7/7']);
-      expect(rows.slice(8).map((r) => r.split('|')[9].trim())).toEqual(['7/7', '5/8', '8/8', '1/8']);
+      expect(rows.slice(8, 12).map((r) => r.split('|')[9].trim())).toEqual(['7/7', '5/8', '8/8', '1/8']);
+      expect(rows.slice(12, 16).map((r) => r.split('|')[9].trim())).toEqual(['4/7', '0/6', '8/8', '0/8']);
+      expect(rows.slice(16, 20).map((r) => r.split('|')[9].trim())).toEqual(['8/8', '6/8', '8/8', '8/8']);
     });
 
     it('has the caption and header of the plan, and says what the columns mean', () => {
       const block = readDocBlock(doc, 'campaigns');
       expect(block.startsWith('\nMedian per session, by campaign (each campaign compares its own arms; the tasks differ)\n')).toBe(true);
       expect(block).toContain('| Campaign | Agent | Arm | Tool calls | Tool output (KB) | Total tokens | Est. cost (USD) | Wall-clock (min) | Key facts matched |');
-      expect(block).toContain('- Key facts matched: counted sessions whose final answer matched the key facts of that campaign\'s task, out of the counted sessions; the key facts differ between the three tasks.');
+      expect(block).toContain('- Key facts matched: counted sessions whose final answer matched the key facts of that campaign\'s task, out of the counted sessions; the key facts differ between the five tasks.');
     });
 
     it('shows — for Evidence2\'s Codex CLI tool output (erratum E6), numbers for Evidence3\'s, and says what Codex CLI\'s numbers are', () => {
@@ -1020,8 +1030,8 @@ describe('Evidence3: the cost breakdown and the generated blocks of docs/agentic
     it('the root README bullets state the same tool-call medians, costs and key facts as this table, for both scenarios', () => {
       const readme = crlfNormalize(readFileSync(join(REPO_ROOT, 'README.md'), 'utf8'));
       const rows = readDocBlock(doc, 'campaigns').split('\n').filter((l) => l.startsWith('| Evidence')).map((r) => r.split('|').map((x) => x.trim()));
-      expect(rows).toHaveLength(12);
-      for (const [evidence, bulletStart] of [['Evidence2', '- **1 module'], ['Evidence3', '- **11 modules · find'], ['Evidence4', '- **11 modules · measure']]) {
+      expect(rows).toHaveLength(20);
+      for (const [evidence, bulletStart] of [['Evidence2', '- **1 module'], ['Evidence3', '- **11 modules · find'], ['Evidence4', '- **11 modules · measure'], ['Evidence5', '- **19 selected modules'], ['Evidence6', '- **11 modules · identify']]) {
         const bullet = readme.split('\n').find((l) => l.startsWith(bulletStart));
         expect(bullet, evidence).toBeDefined();
         const [claudeWith, claudeWithout, codexWith, codexWithout] = ['Claude Code', 'Codex CLI'].flatMap((agent) => ['with kmp-test', 'without'].map((arm) => rows.find((r) => r[1] === evidence && r[2] === agent && r[3] === arm)));
@@ -1069,9 +1079,11 @@ describe('the fixed prose of the Evidence3 section is backed by the committed da
 
   it('the alt text of each cost-breakdown figure names what it shows', () => {
     const figures = [...doc.matchAll(/!\[([^\]]*)\]\(([^)]*cost-breakdown\.svg)\)/g)].map((m) => ({ alt: m[1], url: m[2] }));
-    expect(figures.map((f) => f.url)).toEqual(['../tools/runs/evidence2-agentic-benchmark-2026-09-30/cost-breakdown.svg', `../tools/runs/${E3_DIR_NAME}/cost-breakdown.svg`, `../tools/runs/${E4_DIR_NAME}/cost-breakdown.svg`]);
+    expect(figures.map((f) => f.url)).toEqual(['../tools/runs/evidence2-agentic-benchmark-2026-09-30/cost-breakdown.svg', `../tools/runs/${E3_DIR_NAME}/cost-breakdown.svg`, `../tools/runs/${E4_DIR_NAME}/cost-breakdown.svg`, `../tools/runs/${E5_DIR_NAME}/cost-breakdown.svg`, `../tools/runs/${E6_DIR_NAME}/cost-breakdown.svg`]);
     for (const { alt } of figures.slice(0, 2)) expect(alt).toBe('Stacked bars: median estimated API cost per session for Claude Code and Codex CLI, with and without kmp-test, split by cost component.');
     expect(figures[2].alt).toBe('Evidence4 estimated API cost components per counted session.');
+    expect(figures[3].alt).toBe('Evidence5 estimated API cost components per counted session.');
+    expect(figures[4].alt).toBe('Evidence6 estimated API cost components per counted session.');
   });
 
   it('"No session changed a file that a later session would load": the Claude Code sessions are all agent_state_clean, and the only ones that are not are the Codex CLI sessions whose config.toml the record names', () => {
@@ -1103,7 +1115,9 @@ describe('the fixed prose of the Evidence3 section is backed by the committed da
     expect(summary.by_runtime_arm.map((g) => g.declared)).toEqual([8, 8, 8, 8]);
     expect(Math.min(...summary.by_runtime_arm.map((g) => g.counted))).toBe(7);
     expect(Math.max(...summary.by_runtime_arm.map((g) => g.counted))).toBe(8);
-    expect(doc.replace(/\s+/g, ' ')).toContain('small samples (4 sessions per agent and arm in Evidence2; 8 planned per agent and arm in Evidence3 and Evidence4, of which 7 or 8 were counted)');
+    expect(loadSummary(join(E5_DIR, 'campaign-summary.json')).by_runtime_arm.map((g) => g.counted).sort()).toEqual([6, 7, 8, 8]);
+    expect(loadSummary(join(E6_DIR, 'campaign-summary.json')).by_runtime_arm.map((g) => g.counted)).toEqual([8, 8, 8, 8]);
+    expect(doc.replace(/\s+/g, ' ')).toContain('small samples (4 sessions per agent and arm in Evidence2; 8 planned per agent and arm in Evidence3–6, with 6–8 counted per group)');
   });
 
   // The one place of the section that names the failing modules is the subsection on the key-fact misses (the architect's amendment,

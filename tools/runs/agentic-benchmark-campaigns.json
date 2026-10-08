@@ -3,6 +3,8 @@
   "campaigns": [
     { "dir": "evidence2-agentic-benchmark-2026-09-30", "label": "1 module · run its tests, check a coverage budget" },
     { "dir": "evidence3-agentic-benchmark-2026-10-02", "label": "11 modules · find the 6 failing tests", "note": "An earlier attempt failed on infrastructure and is not analyzed." },
-    { "dir": "evidence4-agentic-benchmark-2026-10-07", "label": "11 modules · measure LINE coverage per module", "note": "An earlier campaign was aborted after a timeout and is excluded. The revised campaign scheduled 32 positions and counted 31, including one Codex D3 protocol negative; one Claude session is missing." }
+    { "dir": "evidence4-agentic-benchmark-2026-10-07", "label": "11 modules · measure LINE coverage per module", "note": "An earlier campaign was aborted after a timeout and is excluded. The revised campaign scheduled 32 positions and counted 31, including one Codex D3 protocol negative; one Claude session is missing." },
+    { "dir": "evidence5-agentic-benchmark-2026-10-08", "label": "19 selected modules · changed dependencies and a downstream failure", "note": "The frozen revised4 campaign scheduled 32 positions and counted 29; three Claude sessions ended before inference and remain unscored. Earlier protocols are excluded and disclosed separately." },
+    { "dir": "evidence6-agentic-benchmark-2026-10-08", "label": "11 modules · identify a compile failure and unrun dependents", "note": "All 32 positions were counted. Product key facts and product protocol success are separate; the protocol criterion was 0/8 for each agent." }
   ]
 }

@@ -27,8 +27,10 @@ const SCRIPT = join(REPO_ROOT, 'tools', 'agentic-eval', 'readme-evidence.mjs');
 const E2 = 'evidence2-agentic-benchmark-2026-09-30';
 const E3 = 'evidence3-agentic-benchmark-2026-10-02';
 const E4 = 'evidence4-agentic-benchmark-2026-10-07';
-const LABELS = ['1 module · run its tests, check a coverage budget', '11 modules · find the 6 failing tests', '11 modules · measure LINE coverage per module'];
-const NOTES = [undefined, 'An earlier attempt failed on infrastructure and is not analyzed.', 'An earlier campaign was aborted after a timeout and is excluded. The revised campaign scheduled 32 positions and counted 31, including one Codex D3 protocol negative; one Claude session is missing.'];
+const E5 = 'evidence5-agentic-benchmark-2026-10-08';
+const E6 = 'evidence6-agentic-benchmark-2026-10-08';
+const LABELS = ['1 module · run its tests, check a coverage budget', '11 modules · find the 6 failing tests', '11 modules · measure LINE coverage per module', '19 selected modules · changed dependencies and a downstream failure', '11 modules · identify a compile failure and unrun dependents'];
+const NOTES = [undefined, 'An earlier attempt failed on infrastructure and is not analyzed.', 'An earlier campaign was aborted after a timeout and is excluded. The revised campaign scheduled 32 positions and counted 31, including one Codex D3 protocol negative; one Claude session is missing.', 'The frozen revised4 campaign scheduled 32 positions and counted 29; three Claude sessions ended before inference and remain unscored. Earlier protocols are excluded and disclosed separately.', 'All 32 positions were counted. Product key facts and product protocol success are separate; the protocol criterion was 0/8 for each agent.'];
 const RUNTIMES = ['claude-code', 'codex-cli'];
 const ARMS = ['product', 'free'];
 const AGENT_NAME = { 'claude-code': 'Claude Code', 'codex-cli': 'Codex CLI' };
@@ -102,12 +104,12 @@ function scratchRuns() {
 }
 
 describe('the campaign registry', () => {
-  it('the committed registry lists Evidence2, Evidence3 and Evidence4, in that order, with their labels, and not Evidence1', () => {
+  it('the committed registry lists Evidence2 through Evidence6 in order with their labels, and not Evidence1', () => {
     const registry = loadJson(OVERVIEW_REGISTRY_PATH);
     expect(registry.schema).toBe(1);
-    expect(registry.campaigns).toEqual([{ dir: E2, label: LABELS[0] }, { dir: E3, label: LABELS[1], note: NOTES[1] }, { dir: E4, label: LABELS[2], note: NOTES[2] }]);
+    expect(registry.campaigns).toEqual([{ dir: E2, label: LABELS[0] }, { dir: E3, label: LABELS[1], note: NOTES[1] }, { dir: E4, label: LABELS[2], note: NOTES[2] }, { dir: E5, label: LABELS[3], note: NOTES[3] }, { dir: E6, label: LABELS[4], note: NOTES[4] }]);
     const campaigns = loadCampaignRegistry();
-    expect(campaigns.map((c) => [c.dir, c.label, c.evidenceN, c.note])).toEqual([[E2, LABELS[0], 2, undefined], [E3, LABELS[1], 3, NOTES[1]], [E4, LABELS[2], 4, NOTES[2]]]);
+    expect(campaigns.map((c) => [c.dir, c.label, c.evidenceN, c.note])).toEqual([[E2, LABELS[0], 2, undefined], [E3, LABELS[1], 3, NOTES[1]], [E4, LABELS[2], 4, NOTES[2]], [E5, LABELS[3], 5, NOTES[3]], [E6, LABELS[4], 6, NOTES[4]]]);
     expect(Object.keys(campaigns[0])).not.toContain('note');
     for (const c of campaigns) {
       expect(c.summary.by_runtime_arm).toHaveLength(4);
@@ -277,7 +279,7 @@ describe('the overview figure', () => {
     const titles = textsOf('overviewScenarioTitle');
     const metas = textsOf('overviewScenarioMeta');
     expect(titles.map((t) => t.text)).toEqual(LABELS);
-    expect(metas.map((t) => t.text)).toEqual(['Evidence2 · 4 + 4 sessions per agent', 'Evidence3 · 8 + 7 sessions counted per agent', 'Evidence4 · sessions counted: Claude Code 7 + 8 · Codex CLI 8 + 8']);
+    expect(metas.map((t) => t.text)).toEqual(['Evidence2 · 4 + 4 sessions per agent', 'Evidence3 · 8 + 7 sessions counted per agent', 'Evidence4 · sessions counted: Claude Code 7 + 8 · Codex CLI 8 + 8', 'Evidence5 · sessions counted: Claude Code 7 + 6 · Codex CLI 8 + 8', 'Evidence6 · 8 + 8 sessions per agent']);
     titles.forEach((title, i) => {
       expect([title.fontSize, title.fontWeight, title.fill]).toEqual([14, 600, COLOR_TEXT]);
       expect([metas[i].fontSize, metas[i].fontWeight, metas[i].fill]).toEqual([12, 400, COLOR_SECONDARY]);
@@ -439,7 +441,7 @@ describe('the root README block', () => {
   it('links and shows only files that exist on disk', () => {
     const targets = [...block.matchAll(/\]\(([^)#\s]+)(?:#[^)]*)?\)/g)].map((m) => m[1]);
     expect(targets).toEqual([
-      'tools/runs/agentic-benchmark-overview.svg', `tools/runs/${E2}/README.md`, `tools/runs/${E3}/README.md`, `tools/runs/${E4}/README.md`, 'docs/agentic-benchmark.md',
+      'tools/runs/agentic-benchmark-overview.svg', `tools/runs/${E2}/README.md`, `tools/runs/${E3}/README.md`, `tools/runs/${E4}/README.md`, `tools/runs/${E5}/README.md`, `tools/runs/${E6}/README.md`, 'docs/agentic-benchmark.md',
     ]);
     for (const target of targets) expect(existsSync(join(REPO_ROOT, target)), target).toBe(true);
   });

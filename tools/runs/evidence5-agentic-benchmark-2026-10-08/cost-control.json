@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "campaign_id": "830d4337-800f-8735-95cd-d51460a231cc",
+  "scheduled_positions": 32,
+  "counted_positions": 29,
+  "missing_positions": 3,
+  "missing_cell_keys": [
+    "claude-code-13",
+    "claude-code-14",
+    "claude-code-15"
+  ],
+  "missing_usage": "runtime-reported explicit zero for all token dimensions; not unknown",
+  "counted_cells_conservative_long_context_list_price_upper_usd": 12.2237994,
+  "missing_cells_conservative_long_context_list_price_upper_usd": 0,
+  "primary_all_attempt_upper_usd": 12.2237994,
+  "excluded_revised4_canary_upper_usd": 1.7364388,
+  "known_revised4_attempt_upper_usd": 13.9602382,
+  "hypothetical_unknown_use_administrative_reserve_usd": 25,
+  "frozen_control_total_usd": 38.9602382,
+  "frozen_ceiling_usd": 70,
+  "actual_oauth_charges": null,
+  "note": "The reserve is an accounting control, not observed spend or an invoice. Historical Evidence5 attempts are separate."
+}
