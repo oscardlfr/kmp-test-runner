@@ -10,6 +10,7 @@ import {
 } from '../../lib/project/output-root.js';
 import { cleanArtifacts } from '../../lib/project/artifact-sweep.js';
 import { runDescribe } from '../../lib/orchestrators/describe-orchestrator.js';
+import { main } from '../../lib/cli.js';
 import {
   acquireProjectRunLock, releaseProjectRunLock, hostLockfilePath, lockfilePath,
 } from '../../lib/runners/lockfile.js';
@@ -71,6 +72,14 @@ describe('configurable output root', () => {
     rmSync(output, { recursive: true });
     assertOutputRootOwned(a, output, { create: true });
     expect(() => assertOutputRootOwned(b, output, { create: true })).toThrow(/different project/);
+  });
+
+  it('rejects a corrupt ownership marker instead of trusting an external root', () => {
+    const project = fixture();
+    const output = path.join(fixture(), 'artifacts');
+    mkdirSync(output);
+    writeFileSync(path.join(output, '.kmp-test-runner-output-root.json'), '{broken json');
+    expect(() => assertOutputRootOwned(project, output)).toThrow(/ownership marker is invalid/);
   });
 
   it('reports an unsafe describe output root distinctly from project-model errors', () => {
@@ -153,6 +162,87 @@ describe('configurable output root', () => {
     releaseProjectRunLock(project, standard);
     expect(existsSync(hostLockfilePath(project))).toBe(false);
     expect(existsSync(lockfilePath(project))).toBe(false);
+  });
+
+  it('clean dry-run and deletion honor an external root while preserving its ownership marker', () => {
+    const project = fixture();
+    const output = path.join(fixture(), 'artifacts');
+    assertOutputRootOwned(project, output, { create: true });
+    mkdirSync(path.join(output, 'logs'));
+    writeFileSync(path.join(output, 'logs', 'run.log'), 'test log');
+    const originalArgv = process.argv;
+    const originalWrite = process.stdout.write;
+    const invoke = (extra = []) => {
+      const chunks = [];
+      process.stdout.write = chunk => { chunks.push(String(chunk)); return true; };
+      process.argv = ['node', 'kmp-test.js', 'clean', '--project-root', project,
+        '--output-dir', output, '--json', ...extra];
+      try {
+        const exitCode = main();
+        return { exitCode, report: JSON.parse(chunks.join('').trim()) };
+      } finally {
+        process.argv = originalArgv;
+        process.stdout.write = originalWrite;
+      }
+    };
+    const planned = invoke(['--dry-run']);
+    expect(planned.exitCode).toBe(0);
+    expect(planned.report.clean.targets).toContain(path.join(output, 'logs'));
+    expect(existsSync(path.join(output, 'logs', 'run.log'))).toBe(true);
+    const completed = invoke();
+    expect(completed.exitCode).toBe(0);
+    expect(completed.report.clean.removed).toContain(path.join(output, 'logs'));
+    expect(existsSync(path.join(output, 'logs'))).toBe(false);
+    expect(existsSync(path.join(output, '.kmp-test-runner-output-root.json'))).toBe(true);
+    expect(existsSync(path.join(project, '.kmp-test-runner'))).toBe(false);
+  });
+
+  it('clean refuses an external root while the project is locked by another run', () => {
+    const project = fixture();
+    const output = path.join(fixture(), 'artifacts');
+    assertOutputRootOwned(project, output, { create: true });
+    mkdirSync(path.join(output, 'logs'));
+    writeFileSync(path.join(output, 'logs', 'run.log'), 'keep');
+    const held = acquireProjectRunLock(project, 'parallel', { customOutputRoot: true });
+    expect(held.ok).toBe(true);
+    const originalArgv = process.argv;
+    const originalWrite = process.stdout.write;
+    const chunks = [];
+    try {
+      process.stdout.write = chunk => { chunks.push(String(chunk)); return true; };
+      process.argv = ['node', 'kmp-test.js', 'clean', '--project-root', project,
+        '--output-dir', output, '--json'];
+      expect(main()).toBe(3);
+      expect(JSON.parse(chunks.join('').trim()).errors[0].code).toBe('lock_held');
+      expect(existsSync(path.join(output, 'logs', 'run.log'))).toBe(true);
+    } finally {
+      process.argv = originalArgv;
+      process.stdout.write = originalWrite;
+      releaseProjectRunLock(project, held);
+    }
+  });
+
+  it('clean returns a typed error for an unowned external root in both preview and deletion', () => {
+    const project = fixture();
+    const output = path.join(fixture(), 'artifacts');
+    mkdirSync(path.join(output, 'logs'), { recursive: true });
+    writeFileSync(path.join(output, 'logs', 'unrelated.txt'), 'keep');
+    const originalArgv = process.argv;
+    const originalWrite = process.stdout.write;
+    for (const extra of [['--dry-run'], []]) {
+      const chunks = [];
+      try {
+        process.stdout.write = chunk => { chunks.push(String(chunk)); return true; };
+        process.argv = ['node', 'kmp-test.js', 'clean', '--project-root', project,
+          '--output-dir', output, '--json', ...extra];
+        expect(main()).toBe(2);
+        expect(JSON.parse(chunks.join('').trim()).errors[0].code).toBe('unsafe_output_root');
+        expect(readFileSync(path.join(output, 'logs', 'unrelated.txt'), 'utf8')).toBe('keep');
+      } finally {
+        process.argv = originalArgv;
+        process.stdout.write = originalWrite;
+      }
+    }
   });
 
   it('routes a real CLI coverage report through the PowerShell wrapper into --output-dir', () => {
