@@ -2,10 +2,9 @@
 
 > Current decision queue for `kmp-test-runner`, reviewed 2026-10-08. No item below is assigned to a future version until the maintainer decides. Completed work and the original planning record are preserved in [backlog history](backlog-history-through-evidence6.md). `AGENTS.md` owns development rules; [PRODUCT.md](PRODUCT.md) owns product principles.
 
-## Current release gate
+## Verified campaign baseline
 
-- **0.18.0 is in progress, not yet published.** Evidence4, Evidence5 revised4 and Evidence6 have completed their preregistered campaigns, independent controls and public reports. The version/README [PR #574](https://github.com/oscardlfr/kmp-test-runner/pull/574) awaits all required checks, merge and the release workflow. Verify the protected-branch commit, tag, GitHub assets, npm provenance/latest and Gradle package before marking this complete. The exact evaluation VM is Off, its VHD detached, network offline, with no active run marker. See the [benchmark report](docs/agentic-benchmark.md) and the three records: [Evidence4](tools/runs/evidence4-agentic-benchmark-2026-10-07/README.md), [Evidence5](tools/runs/evidence5-agentic-benchmark-2026-10-08/README.md), [Evidence6](tools/runs/evidence6-agentic-benchmark-2026-10-08/README.md).
-- **Evidence4–6 implementation and collection are complete.** Compile diagnostics, current-run per-module coverage, `changed --base` with dependents, the three scenario families, block merge/custody and publication were delivered before this release gate. Earlier failed or excluded attempts remain disclosed in the records. The [original parked plan](backlog-history-through-evidence6.md) is historical, not open work.
+Evidence4, Evidence5 revised4 and Evidence6 completed their preregistered campaigns, independent controls and reports. Compile diagnostics, current-run per-module coverage, `changed --base` with dependents, block merge/custody and publication were delivered. Earlier failed or excluded attempts remain disclosed. See the [benchmark report](docs/agentic-benchmark.md) and the three records: [Evidence4](tools/runs/evidence4-agentic-benchmark-2026-10-07/README.md), [Evidence5](tools/runs/evidence5-agentic-benchmark-2026-10-08/README.md), [Evidence6](tools/runs/evidence6-agentic-benchmark-2026-10-08/README.md). The [original parked plan](backlog-history-through-evidence6.md) is historical, not open work.
 
 ## Product candidates
 

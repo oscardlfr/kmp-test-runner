@@ -1,8 +1,6 @@
 # Backlog history through Evidence6
 
-> Historical snapshot archived on 2026-10-08. Its statuses, version references, estimates and "queued" headings describe decisions at the time they were written; they are not the current work queue. See [BACKLOG.md](BACKLOG.md) for current candidates and the 0.18.0 release gate. This archive preserves prerelease decisions and links for traceability.
-
-> Active and queued tasks for `kmp-test-runner`. Newest first. `AGENTS.md` owns portable agent rules; this file owns planning history and the current queue.
+> Historical snapshot archived on 2026-10-08. Its statuses, version references, estimates and "queued" headings describe decisions at the time they were written; they are not the current work queue. See [BACKLOG.md](BACKLOG.md) for current candidates. This archive preserves prerelease decisions and links for traceability.
 
 ---
 
