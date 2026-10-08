@@ -574,3 +574,40 @@ describe('CLI entry point -- real `node cost-estimate.mjs <dir>` subprocess invo
     });
   });
 });
+
+describe('Evidence5 revised4 -- all-attempt cost mode', () => {
+  function withNonD3Rejection(dir, usage) {
+    writeFullCampaign(dir);
+    const manifestPath = path.join(dir, 'manifest.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    manifest.round_order = ['product', 'free', 'product', 'free', 'product', 'free', 'product', 'free'];
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+    const cellDir = path.join(dir, 'private', 'codex-cli-0');
+    rmSync(path.join(cellDir, 'record.json'));
+    rmSync(path.join(cellDir, 'audit.json'));
+    writeFileSync(path.join(cellDir, 'rejection.json'), JSON.stringify({ cells: [{
+      condition: 'current-skill', cell_metrics: { usage }, failed_checks: ['cleanTranscriptOk'],
+    }] }));
+  }
+
+  it('prices a complete-use rejected missing position in the revised4 ledger', () => withTempDir((dir) => {
+    withNonD3Rejection(dir, { source: 'runtime-reported', input: 1000, cached_input: 200, cache_write: null, output: 500 });
+    const legacy = buildCostEstimate(dir);
+    expect(legacy.ok).toBe(true);
+    expect(legacy.doc.runtimes['codex-cli'].cells).toHaveLength(7);
+    const strict = buildCostEstimate(dir, { strictD3Raw: true });
+    expect(strict.ok).toBe(true);
+    expect(strict.doc.runtimes['codex-cli'].cells).toHaveLength(8);
+    expect(strict.doc.runtimes['codex-cli'].cells.find((c) => c.order_index === 0)?.tokens.output).toBe(500);
+    const cli = spawnSync(process.execPath, [COST_ESTIMATE_SCRIPT, dir, '--strict-d3-raw'], { encoding: 'utf8' });
+    expect(cli.status).toBe(0);
+    expect(JSON.parse(cli.stdout).runtimes['codex-cli'].cells).toHaveLength(8);
+  }));
+
+  it('refuses unknown usage on a rejected scheduled position', () => withTempDir((dir) => {
+    withNonD3Rejection(dir, { source: 'not-recorded', input: null, cached_input: null, cache_write: null, output: null });
+    const strict = buildCostEstimate(dir, { strictD3Raw: true });
+    expect(strict.ok).toBe(false);
+    expect(strict.reason).toMatch(/codex-cli.*product.*index 0.*not-recorded/);
+  }));
+});
