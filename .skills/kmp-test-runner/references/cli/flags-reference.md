@@ -8,6 +8,7 @@ The `kmp-test` CLI shares a common flag surface across subcommands, with per-sub
 |------|---------|:--------:|:--------:|:---------:|:-------:|:-------:|:------:|:----:|:--------:|-------|
 | `--json` | off | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Single JSON envelope on stdout. **Mandatory for agent consumption.** Suppresses human output. |
 | `--project-root <path>` | `cwd` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Absolute or relative path to the gradle project root. |
+| `--output-dir <path>` | `<project>/.kmp-test-runner` | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | ✓ | Dedicated root for runner-owned reports, logs, cache and captures. Also accepted by `clean`. Relative to project root; paths traversing symlinks or Windows junctions are rejected. Precedence over `KMP_TEST_OUTPUT_DIR` and config. Explicit per-artifact path flags still win. |
 | `--dry-run` | off | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | Plan envelope, exit 0, no gradle spawn. Still validates `gradlew` exists. |
 | `--color <mode>` | `auto` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | `always` / `never` / `auto`. Auto injects `--console=plain` when stdout is non-TTY or `NO_COLOR` set. Respected by all gradle subprocesses (since v0.10 #1). |
 | `--help` | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Per-subcommand help text. |
@@ -39,7 +40,7 @@ The `kmp-test` CLI shares a common flag surface across subcommands, with per-sub
 | `--no-coverage-xml-autofix` | off | ✓ | — | — | Disable the auto-injected init-script that forces jacoco `xml.required=true` on the coverage-report leg. By default `kmp-test` enables jacoco XML so HTML-only `jacocoTestReport` modules still produce parseable XML. No-op for Kover. Opting out surfaces `coverage_xml_disabled` for HTML-only modules. |
 | `--min-missed-lines <N>` | `0` | ✓ | ✓ | ✓ | Fail (`coverage_threshold_exceeded`, exit 1) if aggregated missed lines exceed `N`. `0` = no gate. |
 | `--min-line-coverage <pct>` | off | ✓ | ✓ | ✓ | Per-module LINE minimum, decimal 0–100. Below-gate modules appear in `module_coverage_threshold_exceeded.modules`. Missing/invalid XML or zero coverable lines makes a required score unavailable (`coverage_data_unavailable`, exit 3). Use one `--flavor` and build `--variant` for flavored Android modules. Inspect `coverage.module_results[]` and `coverage.data_provenance`. |
-| `--output-file <path>` | (writes under `.kmp-test-runner/reports/coverage/`) | ✓ | ✓ | — | Path for the markdown report. Absolute → verbatim; relative → resolved against `--project-root`. When omitted (or set to the historic literal `coverage-full-report.md`), writes to `.kmp-test-runner/reports/coverage/<runId>.md` with a `latest.md` alias. With a custom path, only that file is written — no alias. |
+| `--output-file <path>` | (writes under the output root's `reports/coverage/`) | ✓ | ✓ | — | Path for the markdown report. Absolute → verbatim; relative → resolved against `--project-root`. When omitted (or set to the historic literal `coverage-full-report.md`), writes to `reports/coverage/<runId>.md` under the resolved output root with a `latest.md` alias. With a custom path, only that file is written — no alias. |
 | `--skip-tests` | off (set internally by `coverage`) | ✓ | implicit | — | Skip test execution; aggregate coverage from existing reports. Coverage subcommand sets this internally. |
 | `--coverage-only` | off | ✓ | — | — | Generate only coverage report — implies `--skip-tests`, skips test discovery. |
 
@@ -64,7 +65,7 @@ The `kmp-test` CLI shares a common flag surface across subcommands, with per-sub
 | `--clear-data` | off | ✓ (`androidInstrumented`) | — | — | ✓ | `adb shell pm clear <pkg>` before retry. Implies `--auto-retry`. |
 | `--flavor <name>` | none | ✓ (`androidUnit`/`androidInstrumented`/`all` + coverage) | ✓ (Android) | ✓ | ✓ | Android `productFlavors` weave for unit, instrumented, benchmark, and coverage report tasks. Accepted by standalone `coverage` to select an AGP report. Convention-applied flavors are recovered from the gradle probe. No `--flavor` on a flavored test project → flavor-agnostic umbrella (`test`/`connectedAndroidTest`) + `flavor_defaulted_umbrella` warning. `--flavor` on a non-flavored parallel leg → `flavor_unused` (exit 2). |
 | `--capture-on-fail` | off | ✓ (`androidInstrumented`) | — | — | ✓ | On instrumented-module failure, capture a device screenshot (`adb exec-out screencap`) + UI-hierarchy dump (`adb exec-out uiautomator dump`), best-effort. Paths surface on `errors[].screenshot_file` / `.ui_hierarchy_file` (`capture_error` when adb can't oblige). On `parallel`: once per still-failed module, after `--auto-retry`/cascade settle (no per-attempt spam). Forensic-only — **never** changes the exit code. Emulators are first-class. |
-| `--capture-dir <path>` | per-run log dir | ✓ (`androidInstrumented`) | — | — | ✓ | Override where `--capture-on-fail` artifacts land (default `.kmp-test-runner/logs/android/<runId>/`, namespaced `<module>_screenshot.png` / `<module>_ui-hierarchy.xml`). Implies `--capture-on-fail`. Relative → resolved against `--project-root`. |
+| `--capture-dir <path>` | per-run log dir | ✓ (`androidInstrumented`) | — | — | ✓ | Override where `--capture-on-fail` artifacts land (default `logs/android/<runId>/` under the resolved output root, namespaced `<module>_screenshot.png` / `<module>_ui-hierarchy.xml`). Implies `--capture-on-fail`. Relative → resolved against `--project-root`. |
 | `--skip-app` | off | — | — | — | ✓ | Skip `app/androidApp` modules. android-only. |
 | `--verbose` | off | — | — | — | ✓ | Show last 30 lines of log on failure. android-only. |
 
@@ -109,7 +110,7 @@ The `kmp-test` CLI shares a common flag surface across subcommands, with per-sub
 | Flag | Default | Notes |
 |------|---------|-------|
 | `--skip-probe` | off | Skip gradle tasks probe (static analysis + cache only — fast but may miss KMP-aware task names). |
-| `--no-cache` | off | Bypass `.kmp-test-runner/cache/model-*.json`; force fresh probe. |
+| `--no-cache` | off | Bypass the resolved output root's `cache/model-*.json`; force fresh probe. |
 
 ## Env vars
 
@@ -126,6 +127,7 @@ The `kmp-test` CLI shares a common flag surface across subcommands, with per-sub
 | `KMP_TEST_OUTER_TIMEOUT_MS` | script-backed subcommands | Whole CLI/wrapper watchdog override in milliseconds. Independent of each Gradle task's `--timeout`; useful for broad multi-module runs. |
 | `KMP_GRADLE_MAXBUFFER_MB` | always | Max stdout/stderr captured per gradle/adb subprocess, in megabytes (default `64`). Exceeding the cap surfaces as `errors[].code: "spawn_error"`. |
 | `KMP_TEST_NO_SWEEP` | test subcommands | Set to `1` to disable the startup artifact-lifecycle sweep of `.kmp-test-runner/` (config key `cleanup:{auto,logsTtlDays}`). Explicit purge: `kmp-test clean [--all] [--dry-run]`. |
+| `KMP_TEST_OUTPUT_DIR` | test subcommands, describe, clean | Dedicated output root when no `--output-dir` is given. Overrides project and user config `defaults.outputDir`; relative paths resolve against `--project-root`. |
 | `KMP_PROBE_TIMEOUT` | always | `lib/gradle-tasks-probe.sh` timeout in seconds (default 60). |
 | `KMP_TEST_SKIP_ADB` | info, doctor | Set to `1` to skip ADB probe (equivalent to `--no-adb` on `info`). |
 | `JAVA_HOME` | always | Injected via JDK catalogue auto-select when host default mismatches project's `jvmToolchain(N)`. |

@@ -43,7 +43,8 @@ _pm_locate_model_file() {
     cache_key="$(_kmp_compute_cache_key "$project_root" 2>/dev/null)" || return 1
     [[ -z "$cache_key" ]] && return 1
     # v0.8.0 dual-read: try new path, fall back to legacy `.kmp-test-runner-cache/`
-    local model_file="$project_root/.kmp-test-runner/cache/model-${cache_key}.json"
+    local output_root="${KMP_TEST_OUTPUT_ROOT_RESOLVED:-$project_root/.kmp-test-runner}"
+    local model_file="$output_root/cache/model-${cache_key}.json"
     if [[ -s "$model_file" ]]; then
         echo "$model_file"
         return 0

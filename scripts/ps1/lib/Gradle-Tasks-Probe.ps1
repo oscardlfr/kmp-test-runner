@@ -105,7 +105,8 @@ function Invoke-GradleTasksProbe {
 
     # v0.8.0 — cache moved from .kmp-test-runner-cache\ to .kmp-test-runner\cache\.
     # Dual-read for v0.7.x compat; writes go to the new path only.
-    $cacheDir = Join-Path $ProjectRoot '.kmp-test-runner\cache'
+    $outputRoot = if ($env:KMP_TEST_OUTPUT_ROOT_RESOLVED) { $env:KMP_TEST_OUTPUT_ROOT_RESOLVED } else { Join-Path $ProjectRoot '.kmp-test-runner' }
+    $cacheDir = Join-Path $outputRoot 'cache'
     $legacyCacheDir = Join-Path $ProjectRoot '.kmp-test-runner-cache'
     $cacheKey = Get-KmpCacheKey -ProjectRoot $ProjectRoot
     if (-not $cacheKey) { return $null }
@@ -239,8 +240,8 @@ function Clear-GradleTasksCache {
     if (-not (Test-Path $ProjectRoot)) { return }
     # v0.8.0 — sweep BOTH the new path and the legacy `.kmp-test-runner-cache\`
     # so a manual reset doesn't leave stale v0.7.x caches behind.
-    foreach ($dir in @('.kmp-test-runner\cache', '.kmp-test-runner-cache')) {
-        $cacheDir = Join-Path $ProjectRoot $dir
+    $outputRoot = if ($env:KMP_TEST_OUTPUT_ROOT_RESOLVED) { $env:KMP_TEST_OUTPUT_ROOT_RESOLVED } else { Join-Path $ProjectRoot '.kmp-test-runner' }
+    foreach ($cacheDir in @((Join-Path $outputRoot 'cache'), (Join-Path $ProjectRoot '.kmp-test-runner-cache'))) {
         if (-not (Test-Path $cacheDir)) { continue }
         Get-ChildItem -Path $cacheDir -Filter 'tasks-*.txt' -ErrorAction SilentlyContinue |
             ForEach-Object { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue }

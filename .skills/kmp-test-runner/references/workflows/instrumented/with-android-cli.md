@@ -75,6 +75,7 @@ Defaults grounded in `lib/cli.js` SUBCOMMAND_HELP (the canonical source). Full p
 | Flag | Default | Notes |
 |------|---------|-------|
 | `--json` | off | Mandatory for agent consumption. |
+| `--output-dir <path>` | `<project>/.kmp-test-runner` | Put runner-owned logs, caches, reports and default failure captures in a dedicated directory. Journey evidence remains a separate agent-owned artifact. |
 | `--device <serial>` | auto | Pin ADB device. Validated against `adb devices`; pins `ANDROID_SERIAL` in the gradle subprocess env (covers legacy `connected{Variant}AndroidTest`). On `connectedAndroidDeviceTest` (KMP `withDeviceTestBuilder` task) the orchestrator ALSO injects `-Pandroid.testInstrumentationRunnerArguments.deviceSerial=<serial>` because the device-test reporter ignores `ANDROID_SERIAL`. Mismatch → `instrumented_setup_failed` (exit 3). |
 | `--device-task <name>` | auto | Force gradle task name. Two modern KMP variants: `androidConnectedCheck` for `androidLibrary{}` without device-test opt-in, `connectedAndroidDeviceTest` for `androidLibrary { withDeviceTestBuilder { sourceSetTreeName = "test" } }`. Preempts auto-resolution. |
 | `--modules <names>` | all discovered | Exact Gradle module paths, comma-separated and supplied once. Unknown or ambiguous names fail with exit 2. Use this for one known module. |
@@ -147,6 +148,8 @@ android screen capture --device=$Serial --output=$Screen
 ```
 
 Inspect the layout and **view the screenshot** before deciding a visual assertion. Evaluate the XML actions in order, stop after an unmet expectation, and record `PASSED` / `FAILED` / `SKIPPED`, commands, observations, and evidence paths per action in `journey-result.md`. The Journey verdict comes from those observations, not `tests.json`. A successful JUnit context test can coexist with a failed Journey if the app displays an error or wrong screen. Do not mark a Journey PASS just because `android run`, `layout`, or `screen capture` exited 0.
+
+On a physical device, the first `android layout --output=$Layout` invocation may install its layout instrumentation server and exit before writing the file. Check `Test-Path -LiteralPath $Layout`; if absent, run the command again and require the file before evaluating an assertion. This happened in a local Windows device smoke test; an exit code of zero alone did not prove a layout was captured.
 
 For diagnostics after an instrumented failure, capture the same serial with `android layout --device=$Serial` and `android screen capture --device=$Serial`. The current `android layout --diff` flag is [deprecated and has no effect](https://developer.android.com/tools/agents/android-cli/commands/layout); use a full capture. `android describe` locates AGP build outputs, while `kmp-test describe --json` is the test-module planning source.
 

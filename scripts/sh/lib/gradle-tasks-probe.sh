@@ -96,7 +96,7 @@ probe_gradle_tasks() {
 
     # v0.8.0 — cache moved from .kmp-test-runner-cache/ to .kmp-test-runner/cache/.
     # Dual-read for v0.7.x compat; writes go to the new path only.
-    local cache_dir="$project_root/.kmp-test-runner/cache"
+    local cache_dir="${KMP_TEST_OUTPUT_ROOT_RESOLVED:-$project_root/.kmp-test-runner}/cache"
     local legacy_cache_dir="$project_root/.kmp-test-runner-cache"
     local cache_key
     cache_key="$(_kmp_compute_cache_key "$project_root")"
@@ -221,7 +221,7 @@ module_first_existing_task() {
 clear_gradle_tasks_cache() {
     local project_root="$1"
     [[ -z "$project_root" || ! -d "$project_root" ]] && return 1
-    rm -f "$project_root/.kmp-test-runner/cache/tasks-"*.txt 2>/dev/null
+    rm -f "${KMP_TEST_OUTPUT_ROOT_RESOLVED:-$project_root/.kmp-test-runner}/cache/tasks-"*.txt 2>/dev/null
     rm -f "$project_root/.kmp-test-runner-cache/tasks-"*.txt 2>/dev/null
     return 0
 }

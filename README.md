@@ -58,7 +58,7 @@ KMP projects mix JVM, Android, and native targets — each with its own Gradle t
 
 Google's [Android CLI](https://developer.android.com/tools/agents/android-cli) covers project, device and UI workflows, including [Journeys for app testing](https://developer.android.com/tools/agents/android-cli/journeys). `kmp-test` focuses on KMP/Gradle test dispatch, per-module coverage and a parseable JSON verdict. In one captured Gradle-and-reports comparison, its JSON output was about 100 tokens versus about 13,000 tokens of raw output; [the measurement](docs/token-cost-measurement.md) gives the project, commands and limits.
 
-**Multi-agent safe (v0.3.8+).** When two `kmp-test` runs target the same project root — common with parallel agents or CI matrix shards — an advisory lockfile (`.kmp-test-runner.lock`) coordinates them and per-run-id-suffixed report files prevent clobber. The second arrival exits with a clear `lock_held` error (`--json` surfaces `errors[].code = "lock_held"`) instead of corrupting reports. Pass `--force` to override deliberately. See [`docs/concurrency.md`](docs/concurrency.md) for the full collision matrix.
+**Multi-agent safe (v0.3.8+).** When two `kmp-test` runs target the same project root — common with parallel agents or CI matrix shards — a project-keyed advisory lock coordinates them even if they choose different output directories. Per-run-id-suffixed report files prevent clobber. The second arrival exits with a clear `lock_held` error (`--json` surfaces `errors[].code = "lock_held"`). Pass `--force` to override deliberately. See [`docs/concurrency.md`](docs/concurrency.md) for the full collision matrix.
 
 ## Installation
 
@@ -333,6 +333,7 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 | `--fresh-daemon` | _(off)_ | Stop existing Gradle daemons before launching — useful when memory pressure or stale config-cache entries from prior runs cause flakes. Adds ~5 s of cold-start overhead |
 | `--skip-tests` | _(off)_ | Skip test execution; still runs coverage aggregation if the report files already exist. Equivalent to `kmp-test coverage` (the `coverage` subcommand sets this internally) |
 | `--output-file <path>` | `coverage-full-report.md` | Filename for the aggregated coverage / parallel report. The per-run-id-suffixed copy uses this as the base name; the stable mirror (last writer wins) takes the literal value. See [`docs/concurrency.md`](docs/concurrency.md) |
+| `--output-dir <path>` | `<project>/.kmp-test-runner` | Dedicated root for runner-owned reports, logs, model/task cache, isolated cache and failure captures. Relative paths resolve against `--project-root`. Custom `--output-file`, `--capture-dir` and `--isolated-cache-dir` paths still win. See [Output location](#output-location). |
 | `--coverage-only` | _(off)_ | Generate only the coverage report — implies `--skip-tests` and skips test discovery. Faster than `coverage` subcommand when the gradle reports are already on disk |
 | `--benchmark` | _(off)_ | Run benchmark suites instead of tests. The `benchmark` subcommand sets this internally; pass directly to `parallel` only if you're composing the orchestrator |
 | `--benchmark-config <smoke\|main\|stress>` | `smoke` | Benchmark profile. `smoke` = ~5 min/module outer timeout (single warmup + 3 measurement iters). `main` = ~30 min/module (full warmup + 10 iters). `stress` = ~60 min/module (max warmup + 20 iters). Applies to the `benchmark` subcommand |
@@ -375,6 +376,7 @@ In `--json` mode, the envelope carries `errors[0].code = "jdk_mismatch"` plus `r
 | `KMP_GRADLE_MAXBUFFER_MB` | always | Max stdout/stderr captured per gradle/adb subprocess, in megabytes (default `64`). Raise on machines running very verbose builds; exceeding the cap surfaces as `errors[].code: "spawn_error"` instead of killing the run silently |
 | `KMP_JUNIT_XML_MAX_MB` | `parallel` / `changed` | Size cap (megabytes) for a single `TEST-*.xml` report before it's skipped during the test-count walk (default `32`). A skipped report surfaces as `warnings[].code: "junit_xml_oversized"`; `tests.individual_total` then undercounts and that task's `test_failures[]` may be incomplete |
 | `KMP_TEST_NO_SWEEP` | test subcommands | Set to `1` to disable the startup artifact-lifecycle sweep of `.kmp-test-runner/` (see the `cleanup` config key) |
+| `KMP_TEST_OUTPUT_DIR` | test subcommands and `clean` | Output root when `--output-dir` is absent. Overrides config; a relative path resolves against the project root. |
 
 ### Project config — `.kmp-test-runner.json`
 
@@ -391,7 +393,7 @@ Drop a `.kmp-test-runner.json` at your project root to pin stable defaults inste
 
 All fields are optional. Unknown fields are preserved silently for forward compat. Type-mismatched fields are dropped with a `[WARN]` line on stderr.
 
-`cleanup` controls the **artifact lifecycle sweep**: every test run (after acquiring the project lock) removes stale entries under `.kmp-test-runner/` — orphaned `cache-isolated/` gradle caches, init-scripts and `*.tmp.*` leftovers older than 24 h, and per-run `logs/` directories older than `logsTtlDays` (default 7). The model/tasks cache, `reports/`, the lockfile, and this config file are never auto-swept. Disable with `"auto": false` or the `KMP_TEST_NO_SWEEP=1` env var. For an explicit purge use `kmp-test clean` (`--all` adds the model cache + reports, `--dry-run` lists targets with sizes first).
+`cleanup` controls the **artifact lifecycle sweep**: every test run (after acquiring the project lock) removes stale entries under the resolved output root — orphaned `cache-isolated/` gradle caches, init-scripts and `*.tmp.*` leftovers older than 24 h, and per-run `logs/` directories older than `logsTtlDays` (default 7). The model/tasks cache, `reports/`, the lockfile, and this config file are never auto-swept. Disable with `"auto": false` or the `KMP_TEST_NO_SWEEP=1` env var. For an explicit purge use `kmp-test clean` (`--all` adds the model cache + reports, `--dry-run` lists targets with sizes first).
 
 ### User-global config — `~/.kmp-test/config.json`
 
@@ -416,9 +418,15 @@ Per-project preset accepts all fields the project-local file does (`sharedProjec
 
 **`java_home` security note.** The `java_home` field is permitted ONLY in the user-global file. A `java_home` entry in a checked-in `.kmp-test-runner.json` is dropped and warned, since a malicious PR could otherwise redirect a teammate's spawn env without their consent.
 
+### Output location
+
+By default the CLI writes its own artifacts to `<project>/.kmp-test-runner/`. Set `--output-dir <path>`, `KMP_TEST_OUTPUT_DIR`, or `defaults.outputDir` in project or user config to use a dedicated directory elsewhere. Precedence is **CLI > environment > project config > user config > default**. A relative path is resolved against `--project-root`; use an empty or already runner-owned directory as an external root. Output paths may not traverse symlinks or Windows junctions. The CLI marks a custom root as belonging to the canonical project and refuses to reuse that root for another project. `kmp-test clean` and automatic sweeping act on the selected root; pass the same setting when cleaning an external root.
+
+The setting covers files created by `kmp-test` itself, including reports, logs, caches, init scripts and failure captures. Gradle's `build/`, `.gradle/`, JUnit XML and coverage XML remain owned by Gradle and may still be written within the project. Custom `--output-file`, `--capture-dir` and `--isolated-cache-dir` paths override the root for their respective artifacts. The historical `--output-file coverage-full-report.md` value keeps the default report location under the selected root. The advisory lock stays keyed to the project, even when two commands specify different output roots; see [Concurrency](docs/concurrency.md).
+
 ### Quick start: gitignore CLI artifacts
 
-The CLI writes its outputs (cache, coverage reports, Android log dumps) under a single `.kmp-test-runner/` subdir at your project root. Add this one line to your project `.gitignore`:
+With the default output location, the CLI writes its outputs (cache, coverage reports, Android log dumps) under a single `.kmp-test-runner/` subdir at your project root. Add this one line to your project `.gitignore`:
 
 ```
 # kmp-test-runner local artifacts (CLI output — never commit)

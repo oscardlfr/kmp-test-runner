@@ -14,11 +14,15 @@ If your runs target *different* project roots, none of this applies — you're a
 
 > **Same-host coordination only.** The lockfile is filesystem-local. Cross-host coordination (CI agents on different runners reading shared blob storage) needs a real lock manager — out of scope.
 
+### Current lock behavior with `--output-dir`
+
+Current CLI runs take a host-local advisory lock keyed by the canonical project path. Choosing different `--output-dir` values therefore does not let two runs of the same project bypass the lock. Runs using the default output root also take the historical `<project>/.kmp-test-runner.lock`; runs using an external root check for an active historical lock without creating one in the project. `--force` and `--isolated-no-lock` retain their explicit bypass behavior. The host-local lock coordinates current CLI processes on the same host and user environment; older binaries that only know the historical lock cannot observe an external-root run, so avoid overlapping mixed-version invocations. Cross-host coordination remains out of scope.
+
 ## What v0.3.8 fixes (Tier 1)
 
 ### Advisory lockfile
 
-On every spawning subcommand (`parallel`, `changed`, `android`, `benchmark`, `coverage`) the CLI:
+In v0.3.8, every spawning subcommand (`parallel`, `changed`, `android`, `benchmark`, `coverage`) used the project lock as follows. Current builds add the host-local lock described above:
 
 1. Reads `<project>/.kmp-test-runner.lock` if it exists.
 2. **No lock found** → writes its own (`{schema:1, pid, start_time, subcommand, project_root, version}` JSON), proceeds.
@@ -92,7 +96,7 @@ The full subcommand × resource × outcome matrix. Each shared resource has a do
 | `android` | single attached device (`emulator-5554` etc.) | both runs share the device — instrumented tests interleave on-device, last-writer wins on `connectedAndroidTest` HTML report | inherent for single-device hosts; multi-device fan-out via `--device <serial>` per run |
 | `changed` | `git status` / `git diff` snapshot | each run computes the changed-module set independently — modules diverge if files change between snapshots | inherent race — agents should snapshot files before parallel runs |
 | `*` | `.gradle/` daemon + build cache | Gradle serialises internally on the configuration cache lock — *correct* (no corruption) but *slow* under contention | **Tier 3** (`--isolated` injects `--project-cache-dir <tmp>` — v0.9) |
-| `*` | `.kmp-test-runner.lock` (advisory) | second invocation refused with exit `3` + `errors[].code = "lock_held"`; `--force` overrides | **Tier 1** (v0.3.8); `--isolated-no-lock` opts out (Tier 3 — v0.9) |
+| `*` | project-keyed advisory locks | second invocation refused with exit `3` + `errors[].code = "lock_held"`, even when output roots differ; `--force` overrides | **Tier 1** (v0.3.8), now with a host-local key plus the historical project lock for default-root runs; `--isolated-no-lock` opts out (Tier 3 — v0.9) |
 | `*` | `<project>/.kmp-test-runner/` config-derived defaults | read-only; multiple runs read independently | not applicable — read-only |
 
 ## Tier 3 — `--isolated` (v0.9)
@@ -103,7 +107,7 @@ Even with Tier 1 lockfile, two runs targeting the same project share Gradle's da
 
 | Flag | Effect |
 |---|---|
-| `--isolated` | Inject `--project-cache-dir <project>/.kmp-test-runner/cache-isolated/<runId>` into every gradle spawn. The runId dir is auto-removed after the run. |
+| `--isolated` | Inject `--project-cache-dir <output-root>/cache-isolated/<runId>` into every gradle spawn. The runId dir is auto-removed after the run. |
 | `--isolated-cache-dir <path>` | Use `<path>` instead of the default. Implies `--isolated`. The dir is treated as user-owned — it is **never** auto-removed. Useful for CI tmpfs / RAM-disk pinning. |
 | `--isolated-no-lock` | Bypass the Tier 1 advisory lockfile (`.kmp-test-runner.lock`). Required for true concurrent fan-out — without it, the lock still serializes runs. |
 | `KMP_TEST_KEEP_ISOLATED=1` (env) | Skip cleanup of auto-generated dirs. Debug aid — preserve the cache for inspection. |
