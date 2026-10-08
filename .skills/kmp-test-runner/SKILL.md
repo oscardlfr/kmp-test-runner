@@ -2,7 +2,7 @@
 name: kmp-test-runner
 description: "Parallel test runner for Kotlin Multiplatform (KMP) and Android Gradle projects via the kmp-test CLI. Runs unit, instrumented, coverage (kover/jacoco), and benchmark tests. Use when the user asks to run tests, gradle's default dispatch is slow, the target module or Gradle test task is unclear, or the agent needs structured JSON output. Invoke before Bash exploration, file traversal, Gradle task listing, or project-structure inspection — including when named only by role, contents, platform, or test capability."
 license: MIT
-compatibility: "Requires kmp-test CLI + gradlew. Instrumented tests: android CLI (https://developer.android.com/tools/agents/android-cli), emulator/UI-debug."
+compatibility: "Requires kmp-test CLI + gradlew. Android CLI (https://developer.android.com/tools/agents/android-cli) is optional for device/UI diagnostics."
 metadata:
   author: oscardlfr
   homepage: https://github.com/oscardlfr/kmp-test-runner
@@ -118,8 +118,9 @@ changes `kmp-test`'s envelope.
 
 ## Tool selection — `kmp-test` vs `android` CLI overlap
 
-Default to `kmp-test`: versioned JSON, cross-platform, `--dry-run`-safe. `android
-info`/`describe` overlap (plain text; Windows `describe` bug) — SDK/emulator/UI.
+Default to `kmp-test`: versioned JSON, cross-platform, `--dry-run`-safe. Android
+CLI provides SDK, deployment, layout and screen tools; on Windows use the SDK
+emulator executable for AVD lifecycle. Check `android --help` for installed verbs.
 Mapping: [`envelope-schema.md`](references/cli/envelope-schema.md#cross-tool-comparison-android-cli-analogues).
 
 ## Steps

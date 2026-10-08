@@ -18,7 +18,7 @@ The agent should dispatch `kmp-test parallel` when the user asks any of:
 
 Do **not** dispatch `parallel` for:
 
-- Android instrumented tests on a device or emulator — use the `android` workflow ([`instrumented/with-android-cli.md`](instrumented/with-android-cli.md) *or* [`instrumented/without-android-cli.md`](instrumented/without-android-cli.md), branch on `which android`).
+- Android instrumented tests on a device or emulator — use the `android` workflow ([`instrumented/with-android-cli.md`](instrumented/with-android-cli.md) *or* [`instrumented/without-android-cli.md`](instrumented/without-android-cli.md), based on whether Android CLI is installed; on Windows probe with `Get-Command android`).
 - Coverage-only re-aggregation when tests already ran — use the `coverage` workflow ([`coverage.md`](coverage.md)).
 - Benchmarks — use the `benchmark` workflow ([`benchmarks.md`](benchmarks.md)).
 - "Tests for the files I just changed" — use the `changed` workflow ([`changed.md`](changed.md)).
