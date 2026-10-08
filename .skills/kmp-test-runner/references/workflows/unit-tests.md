@@ -14,7 +14,7 @@ The agent should dispatch `kmp-test parallel` when the user asks any of:
 - "Make sure the tests still pass" / "verify nothing broke"
 - "Run the tests" + a missed-lines budget ("...at most X missed/uncovered lines") — narrow with `--min-missed-lines <N>`; without an explicit budget, plain `parallel` already aggregates coverage by default (no flag needed)
 - "Run the JVM / desktop / iOS / macOS tests" — narrow with `--test-type`
-- "Run only `<module>`'s tests" — narrow with `--module-filter`
+- "Run only `<module>`'s tests" — select exactly with `--modules`
 
 Do **not** dispatch `parallel` for:
 
@@ -47,7 +47,8 @@ Defaults grounded in `lib/cli.js` SUBCOMMAND_HELP (the canonical source). Full p
 |------|---------|-------|
 | `--json` | off | Mandatory for agent consumption. Without it the CLI prints human-readable text. |
 | `--test-type <type>` | auto-detect | One of `all` / `common` / `androidUnit` / `androidInstrumented` / `desktop` / `ios` / `macos` / `jvm` / `js` / `wasm`. Auto picks `common` for KMP-desktop, `androidUnit` otherwise. |
-| `--module-filter <glob>` | `*` | Glob, comma-separated. Narrow dispatch (e.g. `"core-*"`, `":feature:auth,:feature:profile"`). |
+| `--modules <names>` | _(all)_ | Exact comma-separated Gradle module names; use full `:paths` to avoid ambiguity. |
+| `--module-filter <pattern>` | `*` | Broad comma-separated patterns: `*`/`?` are globs; plain tokens are substrings. |
 | `--test-filter <pattern>` | none | Filter to a single class or method. JVM legs use `gradle --tests` (globs OK); Android-instrumented resolves wildcards to FQN by source scan. Combined form `Class#method` works on both. |
 | `--max-workers <N>` | `0` (auto) | Number of parallel gradle workers. `0` lets gradle decide. |
 | `--coverage-tool <tool>` | `auto` | `auto` / `jacoco` / `kover` / `none`. `auto` picks per-module from the project model. |

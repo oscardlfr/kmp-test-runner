@@ -1193,8 +1193,8 @@ describe('the fixed prose of the Evidence3 section is backed by the committed da
       expect(readme).toContain('`--variant` / `--android-variant <value>`');
       expect(readme).toContain('Accepts `auto`, `debug`, `release`, `all`, or a flavored variant such as `demoDebug` or `prodRelease`');
       expect(misses).toContain('`--variant` takes `auto`, `debug`, `release` or `all`');
-      const backlog = crlfNormalize(readFileSync(join(REPO_ROOT, 'BACKLOG.md'), 'utf8'));
-      const queued = backlog.slice(backlog.indexOf('## QUEUED — post-v0.3.4 ideas (newest first)'));
+      const history = crlfNormalize(readFileSync(join(REPO_ROOT, 'backlog-history-through-evidence6.md'), 'utf8'));
+      const queued = history.slice(history.indexOf('## QUEUED — post-v0.3.4 ideas (newest first)'));
       const allHeadings = [...queued.matchAll(/^### (.+)$/gm)].map((m) => m[1]);
       // They were queued at the top when this section was written (WO-15); WO-17 shipped them: the heading becomes
       // "✅ SHIPPED <date> (PR #<n>) — <title>" with the title and the text kept, and the parked milestone and newer items may sit above them.

@@ -22,6 +22,7 @@ param(
     [switch]$IncludeShared,
     [string]$TestType = "",
     [string]$ModuleFilter = "*",
+    [string]$Modules,
     [switch]$SkipTests,
     [int]$MinMissedLines = 0,
     [double]$MinLineCoverage = -1,
@@ -100,6 +101,7 @@ $kmpArgv = @('--project-root', $ProjectRoot)
 if ($IncludeShared)        { $kmpArgv += @('--include-shared') }
 if ($TestType)             { $kmpArgv += @('--test-type', $TestType) }
 if ($ModuleFilter -and $ModuleFilter -ne "*") { $kmpArgv += @('--module-filter', $ModuleFilter) }
+if ($Modules)              { $kmpArgv += @('--modules', $Modules) }
 if ($SkipTests)            { $kmpArgv += @('--skip-tests') }
 if ($MinMissedLines -gt 0) { $kmpArgv += @('--min-missed-lines', "$MinMissedLines") }
 if ($MinLineCoverage -ge 0) {

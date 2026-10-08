@@ -38,8 +38,9 @@ Resolve scope before acting.
    descriptive wording ("app", "shared") isn't an exact module.
 4. **Exact module** — dispatch with the workflow's module-scoping flag set to a module already known:
    explicit from the user, or a prior envelope's `modules[].name` — never descriptive
-   wording alone. `--module-filter` (parallel/android/benchmark) takes the name as-is; `changed`
-   has no such flag — its module set is always git-derived. Use `--coverage-modules` for an exact
+   wording alone. Use `--modules` for `parallel`/`android`; `benchmark` has only the broad
+   `--module-filter`, so verify its returned scope. `changed`
+   has no exact flag — its module set is always git-derived. Use `--coverage-modules` for an exact
    coverage target (`coverage` also accepts a broader `--module-filter` glob); it needs the name with any leading `:` stripped,
    comma-separated, no glob. `changed` selects exact module names from Git; use `--base <ref>`
    to include branch changes and `--include-dependents` to add transitive project consumers.
@@ -47,9 +48,8 @@ Resolve scope before acting.
    `modules[]` entry's task field for the test type — `test_tasks.unit` for `parallel`'s default,
    `flags-reference.md` for an explicit `--test-type`. 1 eligible: bind dispatch to that entry's
    exact `modules[].name` (strip `:` for `--coverage-modules`) — never a different entry merely
-   resembling by name, type, or platform. For `--module-filter`, first check `modules[]`: if the
-   bound name's substring also matches another entry, ask instead of dispatching (`--coverage-modules`
-   is already exact). Keep the same resolved workflow and every mandatory modifier while retaining
+   resembling by name, type, or platform. `parallel`/`android` use `--modules` for this binding;
+   the substring `--module-filter` is only for broad selection. Keep the same resolved workflow and every mandatory modifier while retaining
    the bound exact `modules[].name`. `describe` only completes unknown discovery data; it does not
    reconstruct the workflow or remove a threshold. For a tests-plus-budget request, use one
    canonical `parallel` dispatch with the bound exact `modules[].name` and the originally resolved
@@ -77,8 +77,20 @@ Resolve scope before acting.
 
 Start with the structured CLI from the project root.
 
-`--module-filter` matches by substring unless the value has glob characters — verify `modules[]`
-before trusting exact scope.
+When the user names an exact execution set, use one `--modules ":feature:auth,:feature:profile"`
+on `parallel` or `android` (also `parallel --test-type androidInstrumented`). Full Gradle paths
+avoid ambiguous short names. The selector resolves against the project model, deduplicates names,
+and rejects unknown or ambiguous names with typed exit-2 JSON errors. `--list-only --json` shows
+the post-filter module set; `--dry-run --json` previews it with static model analysis.
+
+Use `--module-filter` for a broad execution pattern: comma-separated tokens containing `*` or `?`
+are globs, while plain tokens use substring matching. `:core:data` may also match
+`:core:database`. With `--modules`, a filter or `--exclude-modules` narrows the resolved set;
+automatic test-source, test-type and configured skip rules still apply. Inspect `modules[]` and
+`skipped[]` before claiming an exact task count. `--modules` scopes test dispatch; use
+`--coverage-modules` separately to scope coverage aggregation. `describe --module-filter` is different: it uses
+a JavaScript regex because it queries the metadata array rather than dispatching tests; anchor
+with `^` and `$` when querying one full name.
 
 `--coverage-modules` is exact-match only (no substring, no glob). `coverage`'s own `modules[]` is
 always empty — verify via `plan.coverage_modules` on `--dry-run` (echoes the filter, unresolved)
