@@ -128,8 +128,18 @@ describe('configurable output root', () => {
     const link = path.join(linkParent, 'alias');
     symlinkSync(build, link, process.platform === 'win32' ? 'junction' : 'dir');
     const output = path.join(link, 'new-artifacts');
-    expect(() => assertOutputRootOwned(project, output, { create: true })).toThrow(/unsafe output root/);
+    expect(() => assertOutputRootOwned(project, output, { create: true })).toThrow(/symlinked output path/);
     expect(existsSync(path.join(build, 'new-artifacts'))).toBe(false);
+  });
+
+  it('rejects a symlinked parent even when its target looks like a safe directory', () => {
+    const project = fixture();
+    const target = fixture();
+    const link = path.join(fixture(), 'alias');
+    symlinkSync(target, link, process.platform === 'win32' ? 'junction' : 'dir');
+    const output = path.join(link, 'artifacts');
+    expect(() => assertOutputRootOwned(project, output, { create: true })).toThrow(/symlinked output path/);
+    expect(existsSync(path.join(target, 'artifacts'))).toBe(false);
   });
 
   it('refuses to clean a symlinked output root', () => {

@@ -8,7 +8,7 @@ The `kmp-test` CLI shares a common flag surface across subcommands, with per-sub
 |------|---------|:--------:|:--------:|:---------:|:-------:|:-------:|:------:|:----:|:--------:|-------|
 | `--json` | off | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Single JSON envelope on stdout. **Mandatory for agent consumption.** Suppresses human output. |
 | `--project-root <path>` | `cwd` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Absolute or relative path to the gradle project root. |
-| `--output-dir <path>` | `<project>/.kmp-test-runner` | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | ✓ | Dedicated root for runner-owned reports, logs, cache and captures. Also accepted by `clean`. Relative to project root; precedence over `KMP_TEST_OUTPUT_DIR` and config. Explicit per-artifact path flags still win. |
+| `--output-dir <path>` | `<project>/.kmp-test-runner` | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | ✓ | Dedicated root for runner-owned reports, logs, cache and captures. Also accepted by `clean`. Relative to project root; paths traversing symlinks or Windows junctions are rejected. Precedence over `KMP_TEST_OUTPUT_DIR` and config. Explicit per-artifact path flags still win. |
 | `--dry-run` | off | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | — | Plan envelope, exit 0, no gradle spawn. Still validates `gradlew` exists. |
 | `--color <mode>` | `auto` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | `always` / `never` / `auto`. Auto injects `--console=plain` when stdout is non-TTY or `NO_COLOR` set. Respected by all gradle subprocesses (since v0.10 #1). |
 | `--help` | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | Per-subcommand help text. |
