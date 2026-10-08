@@ -38,6 +38,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { assertOutputRootOwned, OUTPUT_ROOT_ENV } from '../../lib/project/output-root.js';
 
 import {
   runCoverage,
@@ -871,6 +872,25 @@ describe('runCoverage', () => {
     expect(existsSync(path.join(reportsDir, 'TEST-RUN-ID.md'))).toBe(true);
     expect(existsSync(path.join(reportsDir, 'latest.md'))).toBe(true);
     expect(envelope.coverage.missed_lines).toBe(1);
+  });
+
+  it('places the default report under the configured output root', async () => {
+    const projectRoot = makeProject([{ name: 'a', coverage: 'kover' }]);
+    dropFakeXml(projectRoot, 'a', 'kover');
+    const outputRoot = path.join(projectRoot, 'runner-artifacts');
+    assertOutputRootOwned(projectRoot, outputRoot, { create: true });
+    const { exitCode } = await runCoverage({
+      projectRoot,
+      args: [],
+      env: { [OUTPUT_ROOT_ENV]: outputRoot },
+      parseCoverageXml: makeParseCoverageStub({
+        rowsByModule: { a: ['a|pkg|Foo.kt|Foo|9|1|10|90.0|7'] },
+      }),
+      runId: 'CUSTOM-ROOT',
+    });
+    expect(exitCode).toBe(0);
+    expect(existsSync(path.join(outputRoot, 'reports', 'coverage', 'CUSTOM-ROOT.md'))).toBe(true);
+    expect(existsSync(path.join(projectRoot, '.kmp-test-runner', 'reports', 'coverage', 'CUSTOM-ROOT.md'))).toBe(false);
   });
 
   it('clean break — no coverage-full-report.md or coverage-full-report-<runId>.md written at project root (v0.8.0)', async () => {

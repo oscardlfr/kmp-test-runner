@@ -36,8 +36,9 @@ function _Get-PmModelFile {
     try { $cacheKey = Get-KmpCacheKey -ProjectRoot $ProjectRoot } catch { return $null }
     if (-not $cacheKey) { return $null }
     # v0.8.0 dual-read: try new path, fall back to legacy `.kmp-test-runner-cache\`
-    foreach ($dir in @('.kmp-test-runner\cache', '.kmp-test-runner-cache')) {
-        $candidate = Join-Path $ProjectRoot "$dir\model-$cacheKey.json"
+    $outputRoot = if ($env:KMP_TEST_OUTPUT_ROOT_RESOLVED) { $env:KMP_TEST_OUTPUT_ROOT_RESOLVED } else { Join-Path $ProjectRoot '.kmp-test-runner' }
+    foreach ($dir in @((Join-Path $outputRoot 'cache'), (Join-Path $ProjectRoot '.kmp-test-runner-cache'))) {
+        $candidate = Join-Path $dir "model-$cacheKey.json"
         if ((Test-Path $candidate) -and ((Get-Item $candidate).Length -gt 0)) {
             return $candidate
         }

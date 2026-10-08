@@ -46,6 +46,7 @@ export const SUBCOMMAND_TO_ORCHESTRATOR = Object.freeze({
 // SUBCOMMAND_HELP that's only parsed at cli.js level still counts as "parsed".
 export const CLI_GLOBAL_FLAGS = Object.freeze(new Set([
   '--project-root',
+  '--output-dir',
   '--json',
   '--format',         // `--format json` accepted as alias for `--json`
   '--dry-run',
