@@ -261,7 +261,7 @@ jobs:
           GH_TOKEN: ${{ steps.required-checks-app-token.outputs.token }}
         run: node tools/validate-required-checks.mjs --check-drift
       - name: TruffleHog OSS
-        uses: trufflesecurity/trufflehog@27b0417c16317ca9a472a9a8092acce143b49c55  # v3.95.9
+        uses: trufflesecurity/trufflehog@0186870afd2c4a90def791d80260923ba583d076  # v3.98.0
         with:
           extra_args: --only-verified
   decouple-audit:
