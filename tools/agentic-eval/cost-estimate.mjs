@@ -58,7 +58,7 @@ import { existsSync, renameSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadCountedCellTokens } from './campaign-summary.mjs';
+import { loadCountedCellTokens, loadAllAttemptCellTokens } from './campaign-summary.mjs';
 
 export const COST_ESTIMATE_SCHEMA = 2;
 
@@ -115,9 +115,15 @@ export function tokensForRow(runtimeId, usage) {
  *   Each arm's cells are that arm's counted cells, whatever their number (a canary has 1 per arm,
  *   a campaign 8) and whether or not the two arms of a runtime match.
  */
-export function buildCostEstimate(campaignDir) {
-  const rows = loadCountedCellTokens(campaignDir);
+export function buildCostEstimate(campaignDir, { strictD3Raw = false } = {}) {
+  // Revised4 counts every attempted inference in the budget, including a non-D3 rejected
+  // position. A missing or unpriced attempt remains a row and makes this estimate fail.
+  const rows = strictD3Raw ? loadAllAttemptCellTokens(campaignDir) : loadCountedCellTokens(campaignDir);
   if (rows == null) return { ok: false, reason: 'campaign_not_live_or_unreadable' };
+  if (strictD3Raw && rows.some((row) => !['claude-code', 'codex-cli'].includes(row.runtimeId)
+    || !['product', 'free'].includes(row.arm))) {
+    return { ok: false, reason: 'scheduled_attempt_identity_or_arm_unknown' };
+  }
 
   const runtimes = {};
   for (const [runtimeId, pricing] of Object.entries(RUNTIME_PRICING)) {
@@ -169,11 +175,12 @@ function main(argv) {
   const campaignDir = argv[0];
   const outIndex = argv.indexOf('--out');
   const outPath = outIndex >= 0 ? argv[outIndex + 1] : null;
+  const strictD3Raw = argv.includes('--strict-d3-raw');
   if (!campaignDir) {
-    console.error('usage: cost-estimate.mjs <campaign-dir> [--out <file>]');
+    console.error('usage: cost-estimate.mjs <campaign-dir> [--out <file>] [--strict-d3-raw]');
     return 1;
   }
-  const result = buildCostEstimate(campaignDir);
+  const result = buildCostEstimate(campaignDir, { strictD3Raw });
   if (!result.ok) {
     if (outPath && existsSync(outPath)) {
       // Keep the prior bytes for audit, but remove them from the active path so a failed

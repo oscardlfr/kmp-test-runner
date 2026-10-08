@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import os from 'node:os';
 
-import { summarizeCampaign, renderMarkdown, accessScanEffects, CAMPAIGN_SUMMARY_SCHEMA } from '../../tools/agentic-eval/campaign-summary.mjs';
+import { summarizeCampaign, renderMarkdown, accessScanEffects, qualifiesForStrictD3Negative, loadCountedCellTokens, CAMPAIGN_SUMMARY_SCHEMA } from '../../tools/agentic-eval/campaign-summary.mjs';
 import { validateSummary } from '../../tools/agentic-eval/readme-evidence.mjs';
 import { GRADING_CHECK_NAMES } from '../../tools/agentic-eval/graders.mjs';
 import { computeExecutionProfileSha256 } from '../../tools/agentic-eval/registries.mjs';
@@ -22,6 +22,74 @@ const EXECUTION_PROFILE_BASE = Object.freeze({
   id: 'sandboxed-unrestricted-v1', isolation_kind: 'external-sandbox', network_mode: 'restricted',
   isolation_attestation_required: true, policy_mode: 'not_applicable',
   required_capabilities: ['structuredTranscript', 'correlatedToolResults', 'skillStateEvidence'],
+});
+
+describe('Evidence5 revised4 -- strict raw D3 classification', () => {
+  function fixture(dir, { completeLast = true, terminal = true } = {}) {
+    writeManifest(dir, { runtimes: [{ runtime_id: 'codex-cli', model_id: 'gpt-5.6-terra', campaign_design_id: 'codex-product-vs-free-baseline-v2', campaign_cell_indices: [0] }] });
+    writeRejectedCell(dir, 'codex-cli-0', { runtimeId: 'codex-cli', condition: 'current-skill', roundIndex: 0, d3Qualifying: true });
+    const cellDir = path.join(dir, 'private', 'codex-cli-0');
+    const rejectionPath = path.join(cellDir, 'rejection.json');
+    const rejection = JSON.parse(readFileSync(rejectionPath, 'utf8'));
+    const cell = rejection.cells[0];
+    const events = [
+      { type: 'thread.started' },
+      { type: 'item.started', item: { type: 'command_execution', id: 'item_1' } },
+      { type: 'item.completed', item: { type: 'command_execution', id: 'item_1' } },
+      { type: 'item.started', item: { type: 'command_execution', id: 'item_2' } },
+      { type: 'item.started', item: { type: 'command_execution', id: 'item_3' } },
+      ...(completeLast ? [{ type: 'item.completed', item: { type: 'command_execution', id: 'item_3' } }] : []),
+      ...(terminal ? [{ type: 'turn.completed', usage: { input_tokens: 400, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 100 } }] : []),
+    ];
+    const transcriptPath = path.join(cellDir, 'transcript.jsonl');
+    writeFileSync(transcriptPath, events.map((e) => JSON.stringify(e)).join('\n') + '\n');
+    return { cell, rejectionPath, transcriptPath };
+  }
+
+  it('counts one earlier unresolved shell even when a later command completes', () => withTempDir((dir) => {
+    const { cell, transcriptPath } = fixture(dir);
+    expect(qualifiesForStrictD3Negative('codex-cli', cell, transcriptPath)).toBe(true);
+    expect(summarizeCampaign(dir, new Set(), { strictD3Raw: true }).cells[0].status).toBe('negative-d3');
+  }));
+
+  it('never credits a rejected D3 claim even when its diagnostic reports a match', () => withTempDir((dir) => {
+    const { rejectionPath } = fixture(dir);
+    const diagnostic = JSON.parse(readFileSync(rejectionPath, 'utf8'));
+    diagnostic.cells[0].outcome_assessment.task_outcome_matched = true;
+    writeFileSync(rejectionPath, JSON.stringify(diagnostic));
+    expect(summarizeCampaign(dir).cells[0].full_answer_match).toBe(true); // historical behavior is unchanged
+    const strict = summarizeCampaign(dir, new Set(), { strictD3Raw: true }).cells[0];
+    expect(strict.status).toBe('negative-d3');
+    expect(strict.key_facts_match).toBe(false);
+    expect(strict.full_answer_match).toBe(false);
+    expect(strict.success).toBe(false);
+  }));
+
+  it('keeps two unresolved commands missing despite the legacy D3 diagnostic', () => withTempDir((dir) => {
+    const { cell, transcriptPath } = fixture(dir, { completeLast: false });
+    expect(qualifiesForStrictD3Negative('codex-cli', cell, transcriptPath)).toBe(false);
+    expect(summarizeCampaign(dir).cells[0].status).toBe('negative-d3');
+    expect(summarizeCampaign(dir, new Set(), { strictD3Raw: true }).cells[0].status).toBe('missing');
+    expect(loadCountedCellTokens(dir, { strictD3Raw: true })).toEqual([]);
+    const cli = spawnSync(process.execPath, [CAMPAIGN_SUMMARY_SCRIPT, dir, '--strict-d3-raw'], { encoding: 'utf8' });
+    expect(cli.status).toBe(0);
+    expect(JSON.parse(cli.stdout).cells[0].status).toBe('missing');
+  }));
+
+  it('requires a successful raw terminal and complete priced usage', () => withTempDir((dir) => {
+    const { cell, transcriptPath } = fixture(dir, { terminal: false });
+    expect(qualifiesForStrictD3Negative('codex-cli', cell, transcriptPath)).toBe(false);
+    const completed = { type: 'turn.completed', usage: { input_tokens: 399, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 100 } };
+    writeFileSync(transcriptPath, readFileSync(transcriptPath, 'utf8') + JSON.stringify(completed) + '\n');
+    expect(qualifiesForStrictD3Negative('codex-cli', cell, transcriptPath)).toBe(false);
+  }));
+
+  it('fails closed on missing raw and missing usage', () => withTempDir((dir) => {
+    const { cell, transcriptPath } = fixture(dir);
+    expect(qualifiesForStrictD3Negative('codex-cli', cell, `${transcriptPath}.absent`)).toBe(false);
+    cell.cell_metrics.usage.output = null;
+    expect(qualifiesForStrictD3Negative('codex-cli', cell, transcriptPath)).toBe(false);
+  }));
 });
 const EXECUTION_PROFILE = Object.freeze({
   ...EXECUTION_PROFILE_BASE, sha256: computeExecutionProfileSha256(EXECUTION_PROFILE_BASE),

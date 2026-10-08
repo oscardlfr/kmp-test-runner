@@ -61,6 +61,78 @@ function qualifiesForD3NegativeReclassification(runtimeId, rejectionCell) {
   return pre.terminal_present === true && pre.terminal_result_subtype === 'success' && pre.terminal_is_error === false;
 }
 
+/** Evidence5 revised4's prospective, narrower D3 rule. The legacy predicate above remains
+ * unchanged for already frozen campaigns. A successful terminal alone cannot establish that
+ * exactly one shell result is absent; this checks the original Codex event stream as well as
+ * the rejection diagnostic. Fail closed on an unreadable or ambiguous stream. */
+export function qualifiesForStrictD3Negative(runtimeId, rejectionCell, transcriptPath) {
+  if (!qualifiesForD3NegativeReclassification(runtimeId, rejectionCell)) return false;
+  const correlation = rejectionCell.correlation_observability;
+  const kinds = ['shell', 'skill', 'other'];
+  const zeros = (counts) => counts != null && typeof counts === 'object'
+    && kinds.every((kind) => counts[kind] === 0);
+  const issueKinds = ['duplicate_tool_use_id', 'orphan_tool_result_missing_id',
+    'orphan_tool_result_unknown_id', 'duplicate_tool_result', 'malformed_stream_line'];
+  if (correlation.missing_result_counts_by_kind.shell !== 1
+    || !zeros(correlation.missing_id_counts_by_kind)
+    || !issueKinds.every((key) => correlation.correlation_issue_counts?.[key] === 0)
+    || rejectionCell.unexpected_tool_uses_count !== 0
+    || !['rejected', 'confirmed', 'incomplete'].every((key) => rejectionCell.foreign_skill_summary?.[key] === 0)
+    || correlation.policy_mode !== 'not_applicable'
+    || correlation.dispatch_status_counts?.pre_dispatch_blocked !== 0
+    || correlation.dispatch_status_counts?.unclassified !== 0
+    || rejectionCell.pre_inference_failure.terminal_turn_count !== 1) return false;
+  const usage = rejectionCell.cell_metrics?.usage;
+  if (usage?.source !== 'runtime-reported'
+    || !Number.isInteger(usage.input) || usage.input <= 0
+    || !Number.isInteger(usage.output) || usage.output < 0
+    || !Number.isInteger(usage.cached_input) || usage.cached_input < 0
+    || usage.cached_input > usage.input
+    || !(usage.cache_write === null || (Number.isInteger(usage.cache_write) && usage.cache_write >= 0))) return false;
+
+  let lines;
+  try {
+    lines = readFileSync(transcriptPath, 'utf8').trimEnd().split(/\r?\n/).map((line) => JSON.parse(line));
+  } catch {
+    return false;
+  }
+  if (lines.length < 3) return false;
+  const started = new Set();
+  const completed = new Set();
+  let terminalCount = 0;
+  for (const [index, event] of lines.entries()) {
+    if (event == null || typeof event !== 'object' || typeof event.type !== 'string') return false;
+    if (event.type === 'turn.failed' || event.type === 'turn.cancelled') return false;
+    if (event.type === 'turn.completed') {
+      terminalCount += 1;
+      if (index !== lines.length - 1) return false;
+      const reported = event.usage;
+      if (!reported || reported.input_tokens !== usage.input
+        || reported.output_tokens !== usage.output
+        || reported.cached_input_tokens !== usage.cached_input
+        || reported.cache_write_input_tokens !== (usage.cache_write ?? 0)) return false;
+      continue;
+    }
+    if (event.item?.type !== 'command_execution') continue;
+    const id = event.item.id;
+    if (typeof id !== 'string' || id.length === 0) return false;
+    if (event.type === 'item.started') {
+      if (started.has(id)) return false;
+      started.add(id);
+    } else if (event.type === 'item.completed') {
+      if (!started.has(id) || completed.has(id)) return false;
+      completed.add(id);
+    } else if (event.type === 'item.updated') {
+      if (!started.has(id) || completed.has(id)) return false;
+    } else return false;
+  }
+  if (terminalCount !== 1 || completed.size < 1 || started.size - completed.size !== 1) return false;
+  if (correlation.tool_use_counts_by_kind?.shell !== started.size
+    || correlation.dispatch_status_counts?.unaccounted !== 1
+    || rejectionCell.pre_inference_failure.tool_attempt_count !== started.size) return false;
+  return true;
+}
+
 // D2: "key facts" is deliberately STRICT for this scenario -- all four fields must be exactly
 // 'matched'. 'not-applicable' is never accepted here even though buildTaskFieldCorrectness can
 // produce it: every one of these four fields genuinely applies to coverage_threshold_exceeded, so
@@ -470,10 +542,11 @@ export function accessScanEffects(scan, campaignId) {
  * qualifiesForD3NegativeReclassification/countedCellMetrics this module's own summarizeCampaign
  * uses -- never a re-derived copy of the classification rules -- so cost-estimate.mjs (a sibling
  * generator over the same campaign directory) can never silently disagree with campaign-summary.json
- * on which cells count. Returns null when the campaign itself isn't live/readable; the caller
+ * on which cells count when both are called with the same `strictD3Raw` option. The opt-in rule is
+ * prospective for Evidence5 revised4 and does not change historical summaries. Returns null when the campaign itself isn't live/readable; the caller
  * decides how to report that (this function is not itself a JSON-envelope producer).
  */
-export function loadCountedCellTokens(campaignDir) {
+export function loadCountedCellTokens(campaignDir, { strictD3Raw = false } = {}) {
   const manifestPath = join(campaignDir, 'manifest.json');
   let manifest;
   try {
@@ -495,7 +568,9 @@ export function loadCountedCellTokens(campaignDir) {
         : null;
 
     const isAccepted = loaded.status === 'accepted';
-    const isNegativeD3 = loaded.status === 'rejected' && qualifiesForD3NegativeReclassification(cell.runtimeId, loaded.rejectionCell);
+    const isNegativeD3 = loaded.status === 'rejected' && (strictD3Raw
+      ? qualifiesForStrictD3Negative(cell.runtimeId, loaded.rejectionCell, join(privateRoot, cell.cellKey, 'transcript.jsonl'))
+      : qualifiesForD3NegativeReclassification(cell.runtimeId, loaded.rejectionCell));
     if (!isAccepted && !isNegativeD3) continue;
 
     rows.push({
@@ -506,6 +581,30 @@ export function loadCountedCellTokens(campaignDir) {
   return rows;
 }
 
+/** Revised4 cost ledger: every scheduled inference attempt consumes budget, even when the
+ * outcome is structurally missing. Keep such rows with null usage so pricing fails closed.
+ * Outcome classification is deliberately absent from this accounting view. */
+export function loadAllAttemptCellTokens(campaignDir) {
+  let manifest;
+  try { manifest = JSON.parse(readFileSync(join(campaignDir, 'manifest.json'), 'utf8')); }
+  catch { return null; }
+  if (manifest.provider_mode !== 'live') return null;
+  const privateRoot = join(campaignDir, 'private');
+  return expectedCellsFromManifest(manifest)
+    .sort((a, b) => a.runtimeId.localeCompare(b.runtimeId) || a.roundIndex - b.roundIndex)
+    .map((cell) => {
+      const loaded = loadCell(privateRoot, cell.cellKey);
+      const observedArm = loaded.status === 'accepted' ? armFor(loaded.record.condition)
+        : loaded.status === 'rejected' ? armFor(loaded.rejectionCell.condition) : cell.designArm;
+      const usage = observedArm === cell.designArm
+        ? loaded.status === 'accepted' ? loaded.record.usage
+          : loaded.status === 'rejected' ? loaded.rejectionCell.cell_metrics?.usage : null
+        : null;
+      return { runtimeId: cell.runtimeId, modelId: cell.modelId, arm: cell.designArm,
+        roundIndex: cell.roundIndex, usage };
+    });
+}
+
 /** The core, pure-ish (filesystem reads only, no writes) summarization. Reads `manifest.json`,
  * rejects outright if `provider_mode` is not `live` (mirrors the eligibility finalizer's own H21
  * gate, 2.8), then reads and cross-validates every declared cell before aggregating.
@@ -514,15 +613,16 @@ export function loadCountedCellTokens(campaignDir) {
  *   (tools/runs/evidence2-agentic-benchmark-2026-09-30/preregistration.md Amendment A2 D13/R8). Defaults to an empty Set, so
  *   an omitted or empty argument reproduces today's output byte-for-byte (Amendment A2 R7's required
  *   regression test) -- this parameter changes nothing about CAMPAIGN_SUMMARY_SCHEMA itself.
- * @param {{accessScan?: object|null}} [options] -- `accessScan` is a parsed transcript-access-scan.mjs
+ * @param {{accessScan?: object|null, strictD3Raw?: boolean}} [options] -- `accessScan` is a parsed transcript-access-scan.mjs
  *   result (see accessScanEffects): the cells it flags are excluded exactly like excludeCellKeys, and its
  *   limitations are appended after every other one. A scan with nothing to report changes nothing, byte
  *   for byte. Throws (message starting "access scan:") when the scan is malformed or for another campaign.
+ *   `strictD3Raw` opts into the revised4 exact-one-unresolved-shell rule over the original raw stream.
  * @returns {object} CAMPAIGN_SUMMARY_SCHEMA-shaped result -- see this file's own README/tests for
  *   the full field list; never throws for an individual cell's own defects (those become that
  *   cell's `status:'missing'` + `reason`, not a whole-campaign failure).
  */
-export function summarizeCampaign(campaignDir, excludeCellKeys = new Set(), { accessScan = null } = {}) {
+export function summarizeCampaign(campaignDir, excludeCellKeys = new Set(), { accessScan = null, strictD3Raw = false } = {}) {
   const manifestPath = join(campaignDir, 'manifest.json');
   let manifest;
   try {
@@ -623,16 +723,22 @@ export function summarizeCampaign(campaignDir, excludeCellKeys = new Set(), { ac
           successValue = e.success === true;
           if (successValue) successMatches += 1;
         }
-      } else if (cell.loaded.status === 'rejected' && qualifiesForD3NegativeReclassification(cell.runtimeId, cell.loaded.rejectionCell)) {
+      } else if (cell.loaded.status === 'rejected' && (strictD3Raw
+        ? qualifiesForStrictD3Negative(cell.runtimeId, cell.loaded.rejectionCell, join(privateRoot, cell.cellKey, 'transcript.jsonl'))
+        : qualifiesForD3NegativeReclassification(cell.runtimeId, cell.loaded.rejectionCell))) {
         status = 'negative-d3';
         negativeD3Count += 1;
         counted.push(cell);
-        const correctness = buildTaskFieldCorrectness(cell.loaded.rejectionCell.outcome_assessment, null, campaignFamily);
-        keyFactsMatch = isKeyFactsMatch(correctness, campaignFamily);
-        fullAnswerMatch = cell.loaded.rejectionCell.outcome_assessment?.task_outcome_matched === true;
+        const correctness = strictD3Raw ? null
+          : buildTaskFieldCorrectness(cell.loaded.rejectionCell.outcome_assessment, null, campaignFamily);
+        keyFactsMatch = strictD3Raw ? false : isKeyFactsMatch(correctness, campaignFamily);
+        fullAnswerMatch = strictD3Raw ? false : cell.loaded.rejectionCell.outcome_assessment?.task_outcome_matched === true;
         if (keyFactsMatch) keyFactsMatches += 1;
         if (fullAnswerMatch) fullAnswerMatches += 1;
-        if (cell.arm === 'product') successEligible += 1; // never eligible to be true: agent abandoned, so success stays counted-false implicitly (not incremented)
+        if (cell.arm === 'product') {
+          successEligible += 1;
+          if (strictD3Raw) successValue = false; // revised4 makes the counted protocol negative explicit
+        }
         reason = 'agent closed the turn with an in-progress command (D3)';
       } else {
         status = 'missing';
@@ -815,8 +921,9 @@ function main(argv) {
   const excludeCellsPath = excludeCellsIndex >= 0 ? argv[excludeCellsIndex + 1] : null;
   const accessScanIndex = argv.indexOf('--access-scan');
   const accessScanPath = accessScanIndex >= 0 ? argv[accessScanIndex + 1] : null;
+  const strictD3Raw = argv.includes('--strict-d3-raw');
   if (!campaignDir || !existsSync(campaignDir) || (accessScanIndex >= 0 && !accessScanPath)) {
-    console.error('usage: campaign-summary.mjs <campaign-dir> [--markdown <file>] [--exclude-cells <infra-flake-classification.json>] [--access-scan <access-scan.json>]');
+    console.error('usage: campaign-summary.mjs <campaign-dir> [--markdown <file>] [--exclude-cells <infra-flake-classification.json>] [--access-scan <access-scan.json>] [--strict-d3-raw]');
     return 1;
   }
   // Sensitivity-analysis seam (tools/runs/evidence2-agentic-benchmark-2026-09-30/preregistration.md Amendment A2 D13/R8):
@@ -847,7 +954,7 @@ function main(argv) {
   }
   let summary;
   try {
-    summary = summarizeCampaign(campaignDir, excludeCellKeys, { accessScan });
+    summary = summarizeCampaign(campaignDir, excludeCellKeys, { accessScan, strictD3Raw });
   } catch (error) {
     if (!(error instanceof AccessScanError)) throw error;
     console.error(`error: ${error.message}`);
