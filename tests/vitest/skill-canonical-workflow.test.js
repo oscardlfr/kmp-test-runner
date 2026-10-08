@@ -1363,7 +1363,7 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     expect(step3).toMatch(/descriptive\s+wording\s+\("app",\s*"shared"\)\s+isn.t\s+an\s+exact\s+module/i);
   });
 
-  it('step: exact module dispatches filtered using the already-known name', () => {
+  it('step: exact module dispatch uses --modules with an already-known name', () => {
     // Round-2 fix: scoped to this step's own text (was previously an unscoped whole-section
     // match, which doesn't actually prove THIS step's content is correct/complete).
     const start = protocol.indexOf('**Exact module**');
@@ -1372,7 +1372,8 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     expect(end).toBeGreaterThan(start);
     const step4 = protocol.slice(start, end);
     expect(step4).toMatch(/already known|already-known/i);
-    expect(step4).toMatch(/--module-filter/);
+    expect(step4).toMatch(/--modules/);
+    expect(step4).toMatch(/`parallel`\/`android`|`parallel`\/`android` use `--modules`/);
     // Round-5 fix: changed has NO user-facing --module-filter at all (proven against the real
     // parser in the "changed module-filter contract" describe block above -- parseArgs returns
     // unknown_flag) -- round 4 wrongly grouped it alongside parallel/android/benchmark. Scoped to
@@ -1380,9 +1381,7 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     // the old bug ("(parallel/android/benchmark/changed)"), so this doesn't just re-match the
     // unscoped word "changed" appearing anywhere else in the step (e.g. a future unrelated
     // mention would not false-fail this check).
-    const filterIdx = step4.indexOf('--module-filter');
-    const parenWindow = step4.slice(filterIdx, filterIdx + 60);
-    expect(parenWindow).not.toMatch(/\bchanged\b/);
+    expect(step4).toMatch(/broad\s+`--module-filter`/);
     expect(step4).toMatch(/`changed`/);
     expect(step4.toLowerCase()).toMatch(/git-derived/);
     // Round-3 fix: coverage silently accepts --module-filter but ignores it (its own scoping
@@ -1497,21 +1496,14 @@ describe('Decision protocol -- single canonical entry point, first in the docume
     );
   });
 
-  // Post-merge CodeRabbit + human review round (PR #403, HEAD 87278cd): the binding test above is
-  // necessary but not sufficient. Even a correctly-bound exact modules[].name can still widen
-  // dispatch scope, because --module-filter's own non-glob matching is a SUBSTRING contract
-  // (proven against the real matchModuleFilter() in the "Module-filter substring-widening
-  // contract" describe block above: binding to :foo also matches a co-resident :fooApp). The
-  // protocol must close that gap with an explicit pre-dispatch check against the SAME already-
-  // fetched modules[] list, scoped to --module-filter workflows only -- --coverage-modules is
-  // separately exact-match (tested above) and needs no such check.
-  it('step: before an exact-bind dispatch via --module-filter, the SAME modules[] must be checked for a substring collision -- ask instead of silently widening scope', () => {
+  // Exact dispatch now uses --modules, so a known path cannot widen through
+  // --module-filter's legacy substring contract.
+  it('step: a discovered exact target is bound through --modules, with no substring dispatch', () => {
     const start = protocol.indexOf('**Test-capability target**');
     const end = protocol.indexOf('**Likely-no-tests target**');
     const step5 = protocol.slice(start, end);
-    expect(step5).toMatch(
-      /`--module-filter`,\s*first\s+check\s+`modules\[\]`:\s*if\s+the\s+bound\s+name.s\s+substring\s+also\s+matches\s+another\s+entry,\s*ask\s+instead\s+of\s+dispatching\s*\(`--coverage-modules`\s+is\s+already\s+exact\)/i
-    );
+    expect(step5).toMatch(/`parallel`\/`android` use `--modules` for this binding/);
+    expect(step5).toMatch(/`--module-filter` is only for broad selection/);
   });
 
   it('never presents --module-filter with a bracketed placeholder', () => {
@@ -1638,15 +1630,16 @@ describe('Decision protocol -- single canonical entry point, first in the docume
   // whole-protocol "verify" search would keep passing even if this specific warning were deleted,
   // since neighboring steps use "verify" for unrelated things -- both warnings are now scoped to
   // their own paragraph, ending exactly where the next one begins.
-  it('warns --module-filter (only) is substring-based and to verify modules[]', () => {
-    const start = protocol.indexOf('`--module-filter` matches by substring');
+  it('explains exact selection, broad substring matching and scope verification', () => {
+    const start = protocol.indexOf('When the user names an exact execution set');
     const end = protocol.indexOf('`--coverage-modules` is exact-match only');
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
     const paragraph = protocol.slice(start, end);
+    expect(paragraph).toMatch(/use one `--modules/);
     expect(paragraph.toLowerCase()).toContain('substring');
     expect(paragraph).toMatch(/modules\[\]/);
-    expect(paragraph).not.toContain('--coverage-modules');
+    expect(paragraph).toMatch(/`describe --module-filter` is different/);
   });
 
   it('warns --coverage-modules is exact-match only, distinguishing dry-run from real-run verification', () => {

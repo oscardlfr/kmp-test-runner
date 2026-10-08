@@ -91,3 +91,27 @@ Describe 'GradleArgs wrapper — unknown parameter robustness (PR-10 $RemainingA
         }
     }
 }
+
+Describe 'Exact module forwarding through the PowerShell wrapper' {
+
+    It '-Modules preserves a comma-separated exact selection for list-only' {
+        $work = New-MinimalFixture
+        try {
+            Set-Content -Path (Join-Path $work 'settings.gradle.kts') -Value 'include(":core:data", ":core:database")'
+            foreach ($name in @('data', 'database')) {
+                $module = Join-Path $work "core\$name"
+                New-Item -ItemType Directory -Path (Join-Path $module 'src\jvmTest\kotlin') -Force | Out-Null
+                Set-Content -Path (Join-Path $module 'build.gradle.kts') -Value 'plugins { kotlin("jvm") }'
+            }
+            $output = & pwsh -NoLogo -NoProfile -File $script:Wrapper `
+                -ProjectRoot $work -Modules ':core:data,:core:data' -ListOnly 2>&1
+            $text = $output | Out-String
+            $LASTEXITCODE | Should -Be 0
+            $text | Should -Match 'Parallel modules \(1\)'
+            $text | Should -Match '  - core:data'
+            $text | Should -Not -Match '  - core:database'
+        } finally {
+            Remove-Item -Recurse -Force -Path $work -ErrorAction SilentlyContinue
+        }
+    }
+}

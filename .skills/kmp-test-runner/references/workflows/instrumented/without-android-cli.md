@@ -13,7 +13,7 @@ The agent should dispatch `kmp-test android` when the user asks any of:
 - "Run instrumented tests" / "run on device" / "run connectedAndroidTest"
 - "Run UI tests" / "run espresso tests" / "run the screenshot tests"
 - "Run instrumented tests on `<SERIAL>`" — pin with `--device <SERIAL>`
-- "Run only `<module>`'s instrumented tests" — narrow with `--module-filter`
+- "Run only `<module>`'s instrumented tests" — select exactly with `--modules`
 
 Do **not** dispatch `android` for:
 
@@ -55,7 +55,8 @@ Defaults grounded in `lib/cli.js` SUBCOMMAND_HELP (the canonical source). Full p
 | `--json` | off | Mandatory for agent consumption. |
 | `--device <serial>` | auto | Pin ADB device. Validated against `adb devices`; pins `ANDROID_SERIAL` in the gradle subprocess env. On `connectedAndroidDeviceTest` (KMP `withDeviceTestBuilder` task) the orchestrator ALSO injects `-Pandroid.testInstrumentationRunnerArguments.deviceSerial=<serial>` (the device-test reporter ignores `ANDROID_SERIAL`). Mismatch → `instrumented_setup_failed` (exit 3). |
 | `--device-task <name>` | auto | Force gradle task name. Two modern KMP variants: `androidConnectedCheck` for `androidLibrary{}` without device-test opt-in, `connectedAndroidDeviceTest` for `androidLibrary { withDeviceTestBuilder { sourceSetTreeName = "test" } }`. Preempts auto-resolution. |
-| `--module-filter <glob>` | `*` | Glob, comma-separated. Narrow dispatch. |
+| `--modules <names>` | _(all)_ | Exact comma-separated Gradle module names; use full `:paths` to avoid ambiguity. |
+| `--module-filter <pattern>` | `*` | Broad comma-separated patterns: `*`/`?` are globs; plain tokens are substrings. |
 | `--test-filter <pattern>` | none | Single class or `Class#method`. Wildcards resolved to FQN by source scan. |
 | `--variant <auto\|debug\|release\|all>` | auto | Build variant. `auto` respects `testBuildType="release"` projects. |
 | `--flavor <name>` | none | Android `productFlavors` weave. Unused → `flavor_unused` (exit 2). |
