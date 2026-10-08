@@ -1222,6 +1222,13 @@ describe('the fixed prose of the Evidence3 section is backed by the committed da
 });
 
 describe('publication blocks for later scenario families', () => {
+  it('distinguishes Evidence5 graph selection from host-test dispatch', () => {
+    const facts = loadScenarioPublicationFacts('changed-dependents-network-topic');
+    expect(facts.selectedModuleCount).toBe(19);
+    expect(facts.moduleCount).toBe(14);
+    expect(buildScenarioBlock(facts)).toContain('19 modules are selected by the dependency graph; 14 have host-test dispatch in scope.');
+  });
+
   const cases = [
     { evidenceN: 4, family: 'multi-module-coverage', expected: {
       outcome_kind: 'coverage_threshold_exceeded', threshold_percent: 26,
@@ -1232,7 +1239,7 @@ describe('publication blocks for later scenario families', () => {
       outcome_kind: 'tests_failed', direct_modules: [':core:data'], dependent_modules: [':core:domain'],
       selected_modules: [':core:data', ':core:domain'], failing_modules: [':core:domain'],
       failed_test_classes: ['DependentTest'], failed_count: 1,
-    }, phrases: ['compares against the specified base', 'includes dependent modules', '2 modules are in scope'] },
+    }, phrases: ['compares against the specified base', 'includes dependent modules', '2 modules are selected by the dependency graph; 2 have host-test dispatch in scope'] },
     { evidenceN: 6, family: 'compile-failure', expected: {
       outcome_kind: 'compilation_failed', compile_module: ':core:data', compile_task: ':core:data:compileKotlin',
       diagnostic_file: 'core/data/Foo.kt', diagnostic_line: 10,
