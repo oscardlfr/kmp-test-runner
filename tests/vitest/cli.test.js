@@ -844,6 +844,54 @@ describe('main() — exit codes & flow', () => {
     });
   });
 
+  it('--output-dir reaches the script environment and creates only the selected runner root', () => {
+    withFakeGradleProject(dir => {
+      const output = path.join(dir, 'runner-artifacts');
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir,
+        '--output-dir', output];
+      expect(main()).toBe(EXIT.SUCCESS);
+      const scriptCall = spawnMock.mock.calls.find(
+        c => c[1]?.some(a => String(a).endsWith('.sh') || String(a).endsWith('.ps1'))
+      );
+      expect(scriptCall).toBeTruthy();
+      expect(scriptCall[2].env.KMP_TEST_OUTPUT_ROOT_RESOLVED).toBe(output);
+      expect(existsSync(path.join(output, '.kmp-test-runner-output-root.json'))).toBe(true);
+      expect(existsSync(path.join(dir, '.kmp-test-runner'))).toBe(false);
+    });
+  });
+
+  it('--output-dir rejects a nonempty unowned root before spawning the script', () => {
+    withFakeGradleProject(dir => {
+      const output = path.join(dir, 'runner-artifacts');
+      mkdirSync(output);
+      writeFileSync(path.join(output, 'unrelated.txt'), 'keep');
+      process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir,
+        '--output-dir', output];
+      expect(main()).toBe(EXIT.ENV_ERROR);
+      expect(readFileSync(path.join(output, 'unrelated.txt'), 'utf8')).toBe('keep');
+      expect(spawnMock.mock.calls.some(
+        c => c[1]?.some(a => String(a).endsWith('.sh') || String(a).endsWith('.ps1'))
+      )).toBe(false);
+    });
+  });
+
+  it('--output-dir missing value returns a typed JSON argument error', () => {
+    withFakeGradleProject(dir => {
+      const captured = [];
+      const origWrite = process.stdout.write.bind(process.stdout);
+      process.stdout.write = chunk => { captured.push(String(chunk)); return true; };
+      try {
+        process.argv = ['node', 'kmp-test.js', 'parallel', '--project-root', dir,
+          '--output-dir', '--json'];
+        expect(main()).toBe(EXIT.CONFIG_ERROR);
+        const report = JSON.parse(captured.join('').trim());
+        expect(report.errors[0]).toMatchObject({ code: 'invalid_flag_value', flag: '--output-dir' });
+      } finally {
+        process.stdout.write = origWrite;
+      }
+    });
+  });
+
   it('--json mode emits a single valid JSON object on stdout', () => {
     spawnMock.mockReturnValue({
       status: 0,
