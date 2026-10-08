@@ -329,16 +329,16 @@ Different abstractions: `kmp-test` answers "what modules can I run tests on?"; `
 | Gradle config | `gradle_config{parallel, workers_max, caching, daemon, configureondemand, jvmargs}` | (not surfaced) |
 | User-global / project config | `checks[]` rows for User Config / Project Config (matched preset key) | (not surfaced) |
 
-`android info` is a quick SDK-location probe; `kmp-test doctor` is a full test-orchestration readiness check with discriminated diagnostics. Do **not** `JSON.parse(android info)` — it's plain text. For programmatic SDK lookup on the same machine, prefer `kmp-test doctor --json | jq '.checks[] | select(.name=="Android SDK") | .value'`.
+`android info` is a quick SDK-location probe; `android info sdk` returns only the SDK path on the current CLI. `kmp-test doctor` is a full test-orchestration readiness check with discriminated diagnostics. Do **not** `JSON.parse(android info)` — it's plain text. On Windows PowerShell, `$Sdk = (android info sdk).Trim()` gives the SDK path; on POSIX, the `doctor --json` output can be queried with `jq`.
 
 ### When to pick which tool
 
 - **`kmp-test` (default for this skill)** — cross-platform, stable schema, discriminated error/warning codes, no side effects on `--dry-run`.
-- **`android` CLI** — quick SDK probe (`android info | grep sdk`), emulator/screen/UI workflows (`android emulator`, `android screen capture`, `android layout`), or build-artifact enumeration on POSIX hosts (`android describe` writes per-target JSON files).
+- **`android` CLI** — quick SDK probe (`android info sdk`), app deployment and screen/UI workflows (`android run`, `android screen capture`, `android layout`). Use the SDK emulator executable for AVD lifecycle on Windows; Google's current known issues list `android emulator` as disabled there. `android describe` writes per-target build-output files, separate from kmp-test module discovery.
 
-### Platform caveat (`android describe` 0.7.15)
+### Windows verification boundary
 
-At `android` CLI version `0.7.15222914`, `android describe` invokes the POSIX `gradlew` shell script on Windows instead of `gradlew.bat`, crashing with `CreateProcess error=193, %1 no es una aplicación Win32 válida`. **Avoid `android describe` on Windows hosts** until upstream fixes; use `kmp-test parallel --dry-run --json` for cross-platform module enumeration. No `--gradlew` override flag exists in `android describe` at this version.
+An older Android CLI build failed to invoke `gradlew.bat` from `android describe` on Windows. This has not been retested here with the current build, so do not infer either that the bug persists or that it is fixed. For kmp-test module selection, use `kmp-test describe --json`; check the installed Android CLI help and run `android describe` separately only when its AGP build-output paths are needed.
 
 ## See also
 

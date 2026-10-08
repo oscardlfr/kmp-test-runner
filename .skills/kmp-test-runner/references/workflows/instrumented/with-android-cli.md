@@ -1,6 +1,6 @@
 # Instrumented tests (with android CLI) — `kmp-test android`
 
-The canonical workflow for "run instrumented tests on a connected device or emulator" **when Google's `android` CLI is installed** (probe: `which android && android info >/dev/null 2>&1`). Dispatches `<module>:connectedAndroidTest` (or `<module>:androidConnectedCheck` for KMP `androidLibrary{}` DSL) across instrumented-capable modules, surfaces a single JSON envelope summarising per-module pass/fail and device attribution. The `android` CLI verbs supplement the agent's diagnostic surface — they do **not** alter `kmp-test android`'s dispatch or its envelope shape; the without-CLI branch produces a byte-identical envelope.
+Use this workflow for instrumented tests when Google's `android` CLI is installed. `kmp-test android` dispatches each selected module's connected-test task and emits its own JSON envelope. Android CLI helps the agent deploy an app and inspect its UI; it does not change Gradle dispatch or add a Journey verdict to the `kmp-test` envelope. Check the installed `android --version` and command help before using a verb: Android CLI changes independently of this skill.
 
 ## Goal
 
@@ -13,7 +13,7 @@ The agent should dispatch `kmp-test android` when the user asks any of:
 - "Run instrumented tests" / "run on device" / "run connectedAndroidTest"
 - "Run UI tests" / "run espresso tests" / "run the screenshot tests"
 - "Run instrumented tests on `<SERIAL>`" — pin with `--device <SERIAL>`
-- "Run only `<module>`'s instrumented tests" — narrow with `--module-filter`
+- "Run only `<module>`'s instrumented tests" — select its exact Gradle path with `--modules :module`; `--module-filter` remains a glob/substr filter.
 
 Do **not** dispatch `android` for:
 
@@ -22,19 +22,41 @@ Do **not** dispatch `android` for:
 - Coverage-only re-aggregation — use the `coverage` workflow ([`../coverage.md`](../coverage.md)).
 - Macrobenchmark / microbenchmark dispatch on Android — use the `benchmark` workflow ([`../benchmarks.md`](../benchmarks.md)) with `--platform android`; it shares the same `instrumented_setup_failed` contract.
 
-## Quickstart
+## Windows PowerShell: pin one local device
 
-```bash
-# Branch check (canonical, from SKILL.md "Environment detection")
-which android && android info >/dev/null 2>&1 && echo "HAS_ANDROID_CLI"
+Prerequisites: a Gradle project with `gradlew.bat` and instrumented tests, `kmp-test`, a compatible JDK, Android SDK platform-tools, Android CLI, and a USB device with debugging authorized or a **local** emulator. This example also works when `adb.exe` is absent from `PATH` before the setup line. Replace the project, module and serial with values observed on your machine. If no device is online yet, follow [Local AVDs on Windows](#local-avds-on-windows) before dispatch.
 
-# Verify a device is bootable
-android emulator list                              # AVDs (offline)
-adb devices -l                                     # connected devices (online status)
+```powershell
+Get-Command android, kmp-test
+android --version
+android run --help
+android layout --help
+android screen capture --help
 
-# Pick a device + dispatch
-kmp-test android --device <DEVICE_SERIAL> --json
+$Project = 'C:\path\to\your-project'
+$Module = ':app'
+$Sdk = (android info sdk).Trim()
+$Adb = Join-Path $Sdk 'platform-tools\adb.exe'
+$env:Path = "$(Split-Path $Adb);$env:Path" # kmp-test also spawns adb
+kmp-test doctor --project-root $Project --json
+& $Adb devices -l                         # copy a row whose status is device
+$Serial = 'emulator-5554'                  # example only; use the listed serial
+& $Adb -s $Serial shell getprop sys.boot_completed # expect 1
+
+$Evidence = Join-Path $Project '.kmp-test-runner\journey-evidence'
+New-Item -ItemType Directory -Force -Path $Evidence | Out-Null
+$TestsJson = Join-Path $Evidence 'tests.json'
+$TestsStderr = Join-Path $Evidence 'tests.stderr.log'
+kmp-test android --project-root $Project --modules $Module --device $Serial --json `
+  1> $TestsJson 2> $TestsStderr
+$TestProcessExit = $LASTEXITCODE
+$Test = Get-Content -Raw $TestsJson | ConvertFrom-Json
+"runner process exit: $TestProcessExit"
+$Test | Select-Object exit_code, tests, modules
+$Test.android.device_serial             # must equal $Serial
 ```
+
+The shell exit and JSON `exit_code` must agree. `tests.total/passed/failed` describe the runner's instrumented tasks; they are **not** Journey assertions. `android.device_serial` identifies the device selected by the runner. Check Gradle's per-task log if its reporter prints a different device name. With multiple devices, never rely on auto-selection.
 
 That command:
 
@@ -55,6 +77,7 @@ Defaults grounded in `lib/cli.js` SUBCOMMAND_HELP (the canonical source). Full p
 | `--json` | off | Mandatory for agent consumption. |
 | `--device <serial>` | auto | Pin ADB device. Validated against `adb devices`; pins `ANDROID_SERIAL` in the gradle subprocess env (covers legacy `connected{Variant}AndroidTest`). On `connectedAndroidDeviceTest` (KMP `withDeviceTestBuilder` task) the orchestrator ALSO injects `-Pandroid.testInstrumentationRunnerArguments.deviceSerial=<serial>` because the device-test reporter ignores `ANDROID_SERIAL`. Mismatch → `instrumented_setup_failed` (exit 3). |
 | `--device-task <name>` | auto | Force gradle task name. Two modern KMP variants: `androidConnectedCheck` for `androidLibrary{}` without device-test opt-in, `connectedAndroidDeviceTest` for `androidLibrary { withDeviceTestBuilder { sourceSetTreeName = "test" } }`. Preempts auto-resolution. |
+| `--modules <names>` | all discovered | Exact Gradle module paths, comma-separated and supplied once. Unknown or ambiguous names fail with exit 2. Use this for one known module. |
 | `--module-filter <glob>` | `*` | Glob, comma-separated. Narrow dispatch. |
 | `--test-filter <pattern>` | none | Single class or `Class#method`. Wildcards resolved to FQN by source scan. |
 | `--variant <auto\|debug\|release\|all>` | auto | Build variant. `auto` respects `testBuildType="release"` projects. |
@@ -77,48 +100,57 @@ Defaults grounded in `lib/cli.js` SUBCOMMAND_HELP (the canonical source). Full p
 | `--color <mode>` | auto | `always` / `never` / `auto`. Controls `--console=plain` injection. |
 | `--force` | off | Bypass project lockfile when another `kmp-test` process holds it. |
 
-## Android CLI augmentation
+## Local AVDs on Windows
 
-The `android` CLI (0.7.x at the time of writing — see [developer.android.com/tools/agents/android-cli](https://developer.android.com/tools/agents/android-cli)) extends the agent's instrumented-test diagnostic surface in three ways. None of them change `kmp-test android`'s dispatch — they enrich what the agent sees when something goes wrong.
+Google [lists `android emulator` as disabled on Windows](https://developer.android.com/tools/agents/android-cli#known-issues). Use the SDK emulator executable for AVD lifecycle; `android layout`, `android screen capture` and `android run` can still target a serial explicitly. The following Windows startup pattern was exercised with a local AVD. It is optional when a physical device is already connected.
 
-### Device discovery + AVD lifecycle
-
-```bash
-android emulator list             # AVD names from $ANDROID_HOME/avd/ (offline)
-android emulator start <AVD>      # Foreground boot
-android emulator start <AVD> --cold   # Snapshot bypass — clean userdata
-android emulator stop             # adb emu kill under the hood
+```powershell
+$Emulator = Join-Path $Sdk 'emulator\emulator.exe'
+& $Emulator -list-avds
+Start-Process -FilePath $Emulator -ArgumentList @('-avd', 'YOUR_AVD', '-no-window', '-no-audio') -WindowStyle Hidden
+& $Adb devices -l
+$Serial = 'emulator-5554' # replace after the intended AVD appears online
+# Wait until the intended serial reports device and boot_completed is 1.
+& $Adb -s $Serial wait-for-device
+& $Adb -s $Serial shell getprop sys.boot_completed
+& $Adb -s $Serial emu avd name           # confirm the AVD behind this serial
 ```
 
-`android emulator start` foregrounds — pair with `adb wait-for-device` in scripts, or background it (`&` in bash; `Start-Process` in PowerShell). Windows PowerShell limitation: `android emulator` is disabled on PowerShell hosts in CLI 0.7.x (documented at the URL above) — on PowerShell, fall back to invoking the emulator binary directly (`$env:ANDROID_HOME\emulator\emulator.exe -avd <AVD>`). The without-CLI branch ([`without-android-cli.md`](without-android-cli.md)) documents that path in full.
+Use a serial from the **online** ADB row. An `offline` row is not a usable device. On Windows, the SDK's `adb.exe` may exist even when `adb` is not on `PATH`; the setup above adds platform-tools before invoking `kmp-test`.
 
-### UI + visual diagnostics on instrumented failures
+## Agent-guided Journey after the Gradle test
 
-```bash
-android screen capture -o failure.png             # PNG snapshot
-android screen capture --annotate -o annotated.png   # Compose semantic bboxes
-android layout                                     # UiAutomator tree as native JSON
-android layout --pretty                            # human-formatted
-android layout --diff > delta.json                 # incremental vs last capture
+Google's [Journey guide](https://developer.android.com/tools/agents/android-cli/journeys) defines a Journey as natural-language actions evaluated by an agent on a running app. The [official skill reference](https://developer.android.com/agents/skills/devtools/android-cli/references/journeys) specifies sequential evaluation and a per-action report. `android --help` has no `journeys` run command. Ask the agent to read a Journey XML file, perform each action on **the same `$Serial`**, and write a separate report. For example:
+
+```xml
+<journey name="Review list loads">
+  <description>Open the app and verify its primary content.</description>
+  <actions>
+    <action>Launch the app on the selected device.</action>
+    <action>Verify that at least one review card is visible.</action>
+  </actions>
+</journey>
 ```
 
-Use these when `errors[].code: module_failed` fires on an instrumented module — the visual + semantic-tree snapshot often reveals "view not visible / wrong activity / dialog dismissed mid-test" causes the JUnit XML alone won't show. `android screen capture --annotate` is the only diagnostic verb that has **no clean adb equivalent** (the without-CLI branch's substitute is the Layout Inspector standalone JAR).
+After the Gradle run, locate its built app APK and use the installed CLI's `android run --help` to check the flags. These PowerShell commands were exercised with Android CLI 1.0.16500706; on older installed builds, check each verb's help because `screen capture --device` may be absent.
 
-### Gradle introspection — sharp caveat
+```powershell
+$Apk = Join-Path $Project 'app\build\outputs\apk\debug\app-debug.apk'
+$Layout = Join-Path $Evidence 'journey-layout.json'
+$Screen = Join-Path $Evidence 'journey-screen.png'
+android run --device=$Serial --apks=$Apk
+& $Adb -s $Serial shell dumpsys activity activities # confirm intended app is top resumed
+android layout --device=$Serial --full --pretty --output=$Layout
+android screen capture --device=$Serial --output=$Screen
+# For an action that requires input, inspect the UI first, then target the same device:
+# & $Adb -s $Serial shell input tap <x> <y>
+```
 
-`android describe` reports the project's gradle-resolved output paths (APK / AAB / resources). It is **not a substitute** for `kmp-test describe` — they answer different questions:
+Inspect the layout and **view the screenshot** before deciding a visual assertion. Evaluate the XML actions in order, stop after an unmet expectation, and record `PASSED` / `FAILED` / `SKIPPED`, commands, observations, and evidence paths per action in `journey-result.md`. The Journey verdict comes from those observations, not `tests.json`. A successful JUnit context test can coexist with a failed Journey if the app displays an error or wrong screen. Do not mark a Journey PASS just because `android run`, `layout`, or `screen capture` exited 0.
 
-- `kmp-test describe --json` — walks the kmp-test project model (per-module `test_tasks`, coverage plugin attribution, dependency graph). **Canonical for agent test-dispatch planning.**
-- `android describe` — walks AGP build outputs. Useful only when the agent needs to locate `outputs/connected_android_test_additional_output/<variant>/` for macrobenchmark Trace artifact pull post-dispatch.
+For diagnostics after an instrumented failure, capture the same serial with `android layout --device=$Serial` and `android screen capture --device=$Serial`. The current `android layout --diff` flag is [deprecated and has no effect](https://developer.android.com/tools/agents/android-cli/commands/layout); use a full capture. `android describe` locates AGP build outputs, while `kmp-test describe --json` is the test-module planning source.
 
-When in doubt, use `kmp-test describe`.
-
-### What NOT to use from the android CLI
-
-- `android info` — analytics network calls (warning if offline; non-fatal). Useful as the branch-detection probe only.
-- `android run` — installs an APK and launches an activity via `am start`. Useful for manual repro of a failing instrumented scenario; do **not** use to bypass the kmp-test dispatch contract.
-- `android create` — scaffolds a new Android project. Irrelevant for instrumented testing.
-- `android docs search` / `android docs fetch` — knowledge-base verbs. Tangential to the test loop; the agent's WebFetch tool is the canonical doc lookup path.
+**Automation boundary:** Google describes agent-run Journeys in CI, but the published CLI reference documents no Journey invocation, stable JSON/JUnit result schema, or aggregate exit-code contract. Treat the agent's report as a separate artifact and apply an explicit human or project-owned gate if CI needs a Journey verdict. Android CLI is optional for `kmp-test android`. [Remote physical devices](https://developer.android.com/tools/agents/android-cli/commands/device_remote) are an unverified option here and bill a Google Cloud project; do not reserve one without authorization.
 
 ## Behaviors únicos
 
@@ -145,7 +177,7 @@ The orchestrator probes per-module via the project model and picks the right tas
 
 ## Edge cases
 
-- **Cold-boot timing**: `android emulator start <AVD>` foregrounds and takes 15-60s to reach a wakeful state. Pair with `adb wait-for-device` before invoking `kmp-test android`, or accept that the first call will see `instrumented_setup_failed` if the emulator hasn't finished booting.
+- **Cold-boot timing**: an AVD can appear as `offline` or `device` before Android finishes booting. Check `& $Adb -s $Serial shell getprop sys.boot_completed` for `1` before dispatch. On Windows, start the local AVD with the SDK emulator executable as shown above.
 - **`--device <SERIAL>` with offline serial**: `adb devices -l` shows `offline` next to the serial; `kmp-test android --device <OFFLINE_SERIAL>` emits `instrumented_setup_failed` (exit 3) — the dispatch never spawns gradle. Recovery: `adb -s <SERIAL> reboot` (real device) or restart the emulator.
 - **`--flavor` + KMP `androidLibrary{}`**: AGP 9+ KMP DSL has a limited `productFlavors{}` surface — some flavor / variant combinations don't weave into a connected-test task name. Use `--device-task androidConnectedCheck` to bypass flavor resolution entirely; the gradle task ignores the flavor selector.
 - **`--isolated` + `--device`**: safe combination *for parallel runs against different project roots* — each isolated run pins its own serial and gets its own config-cache dir. Without `--device` → `isolated_runtime_race` (exit 2) at parse time, because two concurrent isolated runs would race for ADB's auto-picked device. **`--isolated` does NOT bypass the project lockfile**: concurrent runs against the **same** `--project-root` still trigger `lock_held` (exit 3) — `--isolated` isolates cache state, not project ownership. Use `--force` to bypass the lockfile when the prior process is known-dead.
@@ -165,16 +197,8 @@ The `android` subcommand emits the standard top-level envelope (see [`../../cli/
   "contracts": { "coverage_evidence": 1 },
   "subcommand": "android",
   "exit_code": 0,
-  "tests": { "total": 3, "passed": 3, "failed": 0, "skipped": 0 },
-  "modules": [
-    {
-      "name": ":app",
-      "type": "kmp",
-      "android_dsl": true,
-      "android_dsl_variant": "kmpAndroidLibrary",
-      "test_failures": []
-    }
-  ],
+  "tests": { "total": 1, "passed": 1, "failed": 0, "skipped": 0 },
+  "modules": ["app"],
   "coverage": {
     "tool": "auto",
     "missed_lines": null,
@@ -185,7 +209,7 @@ The `android` subcommand emits the standard top-level envelope (see [`../../cli/
     "device_serial": "<DEVICE_SERIAL>",
     "device_task": "",
     "flavor": "",
-    "instrumented_modules": [":app"]
+    "instrumented_modules": ["app"]
   },
   "errors": [],
   "warnings": []
